@@ -17,27 +17,32 @@ Raspberry Pi Imager → Raspberry Pi OS **Lite (64-bit)** → Edit settings:
 
 Boot it and confirm `ssh pi@threadwatch.local` works.
 
-## 2. Install
+## 2. Install (reproducible, two commands)
+
+From your workstation, with this repo checked out (this also carries your
+local config.toml / devices.json / credentials.toml, which git never sees):
 
 ```bash
-sudo apt update
-sudo apt install -y git python3-serial python3-cryptography
-# Note: while this repository is private, the Pi needs auth to clone it -
-# either `gh auth login` on the Pi, an SSH deploy key, or make the repo
-# public. (python3-cryptography is only needed for the optional
-# credentials/decryption features - see docs/CREDENTIALS.md.)
-git clone https://github.com/jharris4/thread-debugger.git
-cd thread-debugger
-cp config/config.example.toml config/config.toml
-# edit config/config.toml: set your Thread channel (and webhook if wanted)
-# optionally: create config/devices.json from config/devices.example.json
+bin/push-to-host.sh pi@threadwatch.local
 ```
 
-Serial port permission (log out/in after):
+That rsyncs the repo to the host and runs `sudo bin/setup-host.sh` there,
+which is idempotent and does everything: apt packages (python3-serial,
+python3-cryptography), dialout group, config scaffolding, credentials file
+permissions, systemd unit install + enable. Re-run either script any time.
 
-```bash
-sudo usermod -aG dialout pi
-```
+Two gotchas the scripts assume you've handled once:
+
+- **Passwordless sudo**: current Raspberry Pi OS images may not grant it.
+  One-time fix (typing the Pi password once):
+  `ssh -t pi@threadwatch.local 'sudo sh -c "echo \"pi ALL=(ALL) NOPASSWD: ALL\" > /etc/sudoers.d/010_pi-nopasswd"'`
+- **The Imager's SSH key field wants the key CONTENT** (the one-line
+  `ssh-ed25519 AAAA... user@host` from `cat ~/.ssh/id_ed25519.pub`),
+  not a file path.
+
+Manual/cloning alternative: `git clone` works too (while the repo is
+private the host needs auth - gh login or a deploy key), then run
+`sudo bin/setup-host.sh` on the host.
 
 ## 3. Dongle
 

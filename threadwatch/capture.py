@@ -1,7 +1,8 @@
-"""Continuous capture daemon: dongle -> ring buffer pcaps + live detection."""
+"""Continuous capture daemon: dongle -> ring buffer pcaps + live pipeline."""
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import sys
@@ -9,9 +10,9 @@ import time
 from pathlib import Path
 
 from .config import Config
-from .detect import Detector
-from .names import DeviceNames, LastSeen
+from .events import EventLog, NullEventLog
 from .pcap import PcapStreamReader, PcapWriter, Frame
+from .pipeline import Pipeline, load_decryptor
 
 
 def find_sniffer_port() -> str:
@@ -28,7 +29,6 @@ def find_sniffer_port() -> str:
             "No nRF 802.15.4 sniffer found. Is the dongle plugged in and flashed "
             "with the sniffer firmware? (see SETUP.md; flash with bin/flash-dongle.sh)"
         )
-    # Prefer the cu.* form on macOS (non-blocking on open).
     for c in candidates:
         if "/cu." in c:
             return c
@@ -60,11 +60,10 @@ class RingWriter:
         self.current_hour = hour
         self.current_path = self.ring_dir / f"threadwatch-{hour}.pcap"
         fresh = not self.current_path.exists()
-        self.fh = open(self.current_path, "ab" if not fresh else "wb")
+        self.fh = open(self.current_path, "wb" if fresh else "ab")
         if fresh:
             self.writer = PcapWriter(self.fh, self.dlt)
         else:
-            # Appending after restart: records only, header already present.
             self.writer = PcapWriter.__new__(PcapWriter)
             self.writer.stream = self.fh
             self.writer.dlt = self.dlt
@@ -93,6 +92,14 @@ def run_capture(cfg: Config) -> None:
     sniffer.start_threaded(str(fifo_path), port, cfg.channel, metadata="ieee802154-tap")
     print(f"[threadwatch] capturing channel {cfg.channel} from {port}", flush=True)
 
+    events = EventLog(cfg.state_dir / "events.jsonl",
+                      webhook_url=cfg.detector.webhook_url,
+                      webhook_min_severity=cfg.webhook_min_severity)
+    decryptor = load_decryptor(cfg)
+    print(f"[threadwatch] credentials: {'loaded (deep inspection on)' if decryptor else 'none (header-level only)'}",
+          flush=True)
+    pipe = Pipeline(cfg, events, decryptor)
+
     stop = {"flag": False}
 
     def _sig(_signo, _frame):
@@ -101,29 +108,25 @@ def run_capture(cfg: Config) -> None:
     signal.signal(signal.SIGTERM, _sig)
     signal.signal(signal.SIGINT, _sig)
 
-    names = DeviceNames(cfg.devices_path)
-    seen = LastSeen(cfg.state_dir / "last-seen.json")
-    detector = Detector(cfg.detector)
     total = 0
     started = time.time()
-    last_status = 0.0
-
+    last_tick = 0.0
+    ring = None
     try:
         with open(fifo_path, "rb") as fifo:
             reader = PcapStreamReader(fifo)
             ring = RingWriter(cfg.ring_dir, cfg.keep_files, reader.dlt)
             for frame in reader:
-                # The sniffer timestamps relative to its own clock; stamp with host time.
-                frame.ts = time.time()
+                frame.ts = time.time()   # host wall clock, NTP-aligned
                 ring.write(frame)
-                seen.touch(frame.src, frame.ts, frame.ftype)
-                detector.add_frame(frame.ts)
+                pipe.ingest(frame)
                 total += 1
-                now = time.time()
-                if now - last_status >= 10:
-                    last_status = now
-                    seen.maybe_save()
-                    _write_status(cfg, port, total, started, detector, ring)
+                now = frame.ts
+                if now - last_tick >= 10:
+                    if last_tick and int(last_tick) // 30 != int(now) // 30:
+                        pipe.periodic(now)
+                    last_tick = now
+                    _write_status(cfg, port, total, started, pipe, ring, decryptor)
                 if stop["flag"]:
                     break
     finally:
@@ -131,17 +134,14 @@ def run_capture(cfg: Config) -> None:
             sniffer._stop()
         except Exception:
             pass
-        seen.save()
-        try:
+        pipe.seen.save()
+        if ring:
             ring.close()
-        except UnboundLocalError:
-            pass
         fifo_path.unlink(missing_ok=True)
         print(f"[threadwatch] stopped after {total} frames", flush=True)
 
 
-def _write_status(cfg, port, total, started, detector, ring) -> None:
-    import json
+def _write_status(cfg, port, total, started, pipe: Pipeline, ring, decryptor) -> None:
     status = {
         "updated": time.time(),
         "port": port,
@@ -149,39 +149,47 @@ def _write_status(cfg, port, total, started, detector, ring) -> None:
         "frames_total": total,
         "uptime_s": round(time.time() - started, 1),
         "current_file": str(ring.current_path),
-        "detector": detector.snapshot(),
+        "devices_tracked": len(pipe.devices),
+        "deep_inspection": decryptor is not None,
+        "partition": {"id": pipe.partition[0], "leader_router": pipe.partition[1]}
+        if pipe.partition else None,
+        "detector": pipe.detector.snapshot(),
     }
+    if decryptor:
+        status["crypto"] = dict(decryptor.stats)
     tmp = cfg.state_dir / "status.tmp"
     tmp.write_text(json.dumps(status, indent=1))
     tmp.replace(cfg.state_dir / "status.json")
 
 
 def run_replay(cfg: Config, pcap_path: Path) -> None:
-    """Run the detector + last-seen pipeline over an existing pcap file.
-
-    Validation and offline analysis: frame timestamps from the file are used
-    as-is, so historical storms are detected at their recorded times.
-    """
-    names = DeviceNames(cfg.devices_path)
-    seen = LastSeen(cfg.state_dir / "replay-last-seen.json")
-    detector = Detector(cfg.detector)
-    detector.cfg.alert_cooldown_s = 0  # show every alert in replay
+    """Run the full pipeline over an existing pcap; print events + summary."""
+    events = NullEventLog()
+    decryptor = load_decryptor(cfg)
+    pipe = Pipeline(cfg, events, decryptor)
+    pipe.seen.table = {}   # replay judges the file on its own, not live state
+    pipe.detector.cfg.alert_cooldown_s = 0
     total = 0
     first = last = None
     with open(pcap_path, "rb") as fh:
-        reader = PcapStreamReader(fh)
-        for frame in reader:
+        for frame in PcapStreamReader(fh):
             if first is None:
                 first = frame.ts
             last = frame.ts
-            seen.touch(frame.src, frame.ts, frame.ftype)
-            detector.add_frame(frame.ts)
+            pipe.ingest(frame)
             total += 1
-    import json
-    print(json.dumps({
+    if last:
+        pipe.periodic(last)
+    out = {
         "file": str(pcap_path),
         "frames": total,
-        "duration_s": round((last - first), 1) if first else 0,
-        "detector": detector.snapshot(),
-        "quiet_report": seen.report(names, quiet_after_s=600, now=last),
-    }, indent=1))
+        "duration_s": round(last - first, 1) if first else 0,
+        "deep_inspection": decryptor is not None,
+        "partition": {"id": pipe.partition[0], "leader_router": pipe.partition[1]}
+        if pipe.partition else None,
+        "detector": pipe.detector.snapshot(),
+        "events": events.records,
+    }
+    if decryptor:
+        out["crypto"] = dict(decryptor.stats)
+    print(json.dumps(out, indent=1))

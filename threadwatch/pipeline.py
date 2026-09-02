@@ -1,0 +1,287 @@
+"""The shared frame-analysis pipeline used by live capture and replay.
+
+General-purpose Thread health tracking, one frame at a time:
+
+Key-free (always on):
+  - per-device stats: frame counts, RSSI trend, poll cadence, ACK success
+  - device went-quiet / returned / silent-without-rejoin events
+  - foreign-PAN frames, beacon (join-scan) bursts
+  - traffic floods and phase-locked periodicity (storm signature)
+  - MAC retransmission-rate elevation
+
+With Thread credentials (optional):
+  - MLE visibility: rejoin attempts (Parent/Child ID Request), partition and
+    leader changes, per-device RLOC learning
+  - SRP/DNS-SD name harvesting for auto-naming hints
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from collections import deque
+from pathlib import Path
+from typing import Optional
+
+from .detect import Detector
+from .events import EventLog
+from .names import DeviceNames, LastSeen
+from .pcap import Frame
+
+MLE_REJOIN_COMMANDS = {"Parent Request", "Child ID Request", "Announce"}
+
+
+class DeviceStats:
+    """Rolling per-device health from cleartext headers only."""
+
+    __slots__ = ("rssi_ewma", "rssi_min", "rssi_max", "polls", "last_poll_ts",
+                 "poll_intervals", "tx", "acked", "ack_pending_seq",
+                 "ack_pending_ts", "beacons")
+
+    def __init__(self):
+        self.rssi_ewma = None
+        self.rssi_min = None
+        self.rssi_max = None
+        self.polls = 0
+        self.last_poll_ts = None
+        self.poll_intervals = deque(maxlen=32)
+        self.tx = 0
+        self.acked = 0
+        self.ack_pending_seq = None
+        self.ack_pending_ts = 0.0
+        self.beacons = 0
+
+    def as_dict(self):
+        ivals = sorted(self.poll_intervals)
+        return {
+            "rssi_ewma": round(self.rssi_ewma, 1) if self.rssi_ewma is not None else None,
+            "rssi_min": self.rssi_min, "rssi_max": self.rssi_max,
+            "tx": self.tx, "acked": self.acked,
+            "ack_rate": round(self.acked / self.tx, 3) if self.tx else None,
+            "polls": self.polls,
+            "median_poll_interval_s": round(ivals[len(ivals) // 2], 1) if ivals else None,
+            "beacons": self.beacons,
+        }
+
+
+class Pipeline:
+    def __init__(self, cfg, events: EventLog, decryptor=None):
+        self.cfg = cfg
+        self.events = events
+        self.names = DeviceNames(cfg.devices_path)
+        self.seen = LastSeen(cfg.state_dir / "last-seen.json")
+        self.detector = Detector(cfg.detector)
+        self.decryptor = decryptor
+        self.devices: dict[str, DeviceStats] = {}
+        self.own_pans: dict[int, int] = {}
+        self.partition: Optional[tuple] = None
+        self.last_frame: Optional[Frame] = None
+        self.beacon_times = deque(maxlen=16)
+        self.dup_window = deque(maxlen=4096)   # (ts, src, seq)
+        self.dup_recent = {}                    # (src, seq) -> ts
+        self.retrans_counts = deque(maxlen=30)  # per-window (dups, frames)
+        self._win_dups = 0
+        self._win_frames = 0
+        self._win_start = 0.0
+        self._retrans_alerted = 0.0
+        self.quiet_reported: set[str] = set()
+        self.mle_names_path = cfg.state_dir / "observed-names.json"
+        self.observed_names = {}
+        if self.mle_names_path.exists():
+            try:
+                self.observed_names = json.loads(self.mle_names_path.read_text())
+            except (json.JSONDecodeError, OSError):
+                pass
+
+    # ------------------------------------------------------------ ingest
+
+    def ingest(self, f: Frame) -> None:
+        ts = f.ts
+        self.detector.add_frame(ts)
+        if self.detector.storm_active and self.detector.alerts_sent:
+            pass  # detector handles its own webhook via events at close
+
+        # ACK pairing: an ACK within 10 ms bearing the pending seq.
+        prev = self.last_frame
+        if (f.ftype == 2 and prev is not None and prev.src
+                and prev.seq == f.seq and ts - prev.ts < 0.05):
+            stats = self.devices.get(prev.src)
+            if stats and stats.ack_pending_seq == f.seq:
+                stats.acked += 1
+                stats.ack_pending_seq = None
+
+        if f.src:
+            stats = self.devices.setdefault(f.src, DeviceStats())
+            if f.ftype in (1, 3):
+                stats.tx += 1
+                stats.ack_pending_seq = f.seq
+                stats.ack_pending_ts = ts
+            if f.rssi is not None:
+                stats.rssi_ewma = f.rssi if stats.rssi_ewma is None \
+                    else 0.95 * stats.rssi_ewma + 0.05 * f.rssi
+                stats.rssi_min = f.rssi if stats.rssi_min is None else min(stats.rssi_min, f.rssi)
+                stats.rssi_max = f.rssi if stats.rssi_max is None else max(stats.rssi_max, f.rssi)
+            if f.ftype == 3:   # MAC command = data request (poll) in practice
+                if stats.last_poll_ts is not None:
+                    stats.poll_intervals.append(ts - stats.last_poll_ts)
+                stats.last_poll_ts = ts
+                stats.polls += 1
+            was_new = f.src not in self.seen.table
+            self.seen.touch(f.src, ts, f.ftype)
+            if was_new and len(f.src) == 16:
+                self.events.emit("device_first_seen", "info", ts, addr=f.src,
+                                 name=self.names.name(f.src))
+            if f.src in self.quiet_reported:
+                self.quiet_reported.discard(f.src)
+                self.events.emit("device_returned", "notice", ts, addr=f.src,
+                                 name=self.names.name(f.src))
+
+        # Beacons = someone scanning to join (or beacon requests).
+        if f.ftype == 0:
+            if f.src:
+                self.devices.setdefault(f.src, DeviceStats()).beacons += 1
+            self.beacon_times.append(ts)
+            recent = [t for t in self.beacon_times if ts - t <= 60]
+            if len(recent) == 5:
+                self.events.emit("join_scan_activity", "notice", ts,
+                                 count_60s=len(recent), src=f.src)
+
+        # Foreign PAN: a source PAN that is not the dominant one, sighted
+        # repeatedly (single hits are usually dissection edge cases - verify
+        # candidates in Wireshark with: wpan.src_pan != <dominant>).
+        if f.src_pan is not None:
+            self.own_pans[f.src_pan] = self.own_pans.get(f.src_pan, 0) + 1
+            if len(self.own_pans) > 1:
+                dominant = max(self.own_pans, key=self.own_pans.get)
+                if f.src_pan != dominant and self.own_pans[f.src_pan] == 3:
+                    self.events.emit("possible_foreign_pan", "notice", ts,
+                                     pan=f"0x{f.src_pan:04x}", src=f.src,
+                                     dominant_pan=f"0x{dominant:04x}",
+                                     note="repeated foreign-PAN sightings; verify in Wireshark")
+
+        # Retransmission-rate window (duplicate src+seq within 2 s).
+        if self._win_start == 0.0:
+            self._win_start = ts
+        if f.ftype in (1, 3) and f.src and f.seq is not None:
+            key = (f.src, f.seq)
+            last = self.dup_recent.get(key)
+            if last is not None and ts - last < 2.0:
+                self._win_dups += 1
+            self.dup_recent[key] = ts
+            self._win_frames += 1
+            if len(self.dup_recent) > 8192:
+                cutoff = ts - 4
+                self.dup_recent = {k: v for k, v in self.dup_recent.items() if v > cutoff}
+        if ts - self._win_start >= 60:
+            if self._win_frames >= 100:
+                rate = self._win_dups / self._win_frames
+                self.retrans_counts.append(rate)
+                base = sorted(self.retrans_counts)[len(self.retrans_counts) // 2]
+                if rate > 0.2 and rate > 2 * base and ts - self._retrans_alerted > 900:
+                    self._retrans_alerted = ts
+                    self.events.emit("retransmission_elevation", "warning", ts,
+                                     rate=round(rate, 3), baseline=round(base, 3))
+            self._win_start = ts
+            self._win_dups = self._win_frames = 0
+
+        # Storm detector escalation to the event log (own cooldown, never
+        # per-frame even when the detector's alert cooldown is zeroed).
+        if self.detector.storm_active and ts - getattr(self, "_storm_evt", 0) > max(60.0, self.cfg.detector.alert_cooldown_s):
+            self._storm_evt = ts
+            self.events.emit("phase_locked_storm", "critical", ts,
+                             **self.detector.snapshot())
+
+        # Credentialed visibility.
+        if self.decryptor is not None and f.ftype == 1:
+            self._deep_inspect(f)
+
+        self.last_frame = f
+
+    # ------------------------------------------------- credentialed layer
+
+    def _deep_inspect(self, f: Frame) -> None:
+        from .crypto import Decryptor, MLE_UDP_PORT
+        ext = f.src if f.src and len(f.src) == 16 else None
+        short = f.src if f.src and len(f.src) == 4 else None
+        dext = f.dst if f.dst and len(f.dst) == 16 else None
+        dshort = f.dst if f.dst and len(f.dst) == 4 else None
+        plain = self.decryptor.decrypt_frame(f.psdu, ext, short)
+        if plain is None:
+            return
+        r = Decryptor.udp_ports(plain, mac_src_ext=ext, mac_dst_ext=dext, mac_dst_short=dshort)
+        if not r:
+            return
+        sport, dport, payload, sip, dip = r
+        if MLE_UDP_PORT in (sport, dport):
+            src_for_mle = ext or self.decryptor.short_to_ext.get(short or "")
+            info = self.decryptor.parse_mle(payload, src_for_mle, sip, dip)
+            if not info:
+                return
+            if info.command_name in MLE_REJOIN_COMMANDS:
+                self.events.emit("mle_rejoin_attempt", "notice", f.ts,
+                                 command=info.command_name, src=f.src,
+                                 name=self.names.name(f.src) if f.src else None)
+            if info.partition_id is not None:
+                cur = (info.partition_id, info.leader_router_id)
+                if self.partition is not None and cur != self.partition:
+                    self.events.emit("partition_or_leader_change", "warning", f.ts,
+                                     previous={"partition": self.partition[0],
+                                               "leader_router": self.partition[1]},
+                                     current={"partition": cur[0],
+                                              "leader_router": cur[1]})
+                self.partition = cur
+        else:
+            for n in Decryptor.harvest_names(payload):
+                if f.src and len(n) > 8 and not n.startswith("_"):
+                    self.observed_names.setdefault(f.src, {})[n] = \
+                        self.observed_names.get(f.src, {}).get(n, 0) + 1
+
+    # ------------------------------------------------------- housekeeping
+
+    def periodic(self, now: float) -> None:
+        """Run every ~30 s in live capture: quiet checks, persistence."""
+        self.seen.maybe_save()
+        quiet_after = 90 * 60  # sleepy default; routers judged faster below
+        for addr, row in self.seen.table.items():
+            silent = now - row["last_seen"]
+            stats = self.devices.get(addr)
+            data_heavy = stats and stats.tx > stats.polls
+            threshold = 10 * 60 if data_heavy else quiet_after
+            if silent > threshold and addr not in self.quiet_reported:
+                self.quiet_reported.add(addr)
+                self.events.emit(
+                    "device_quiet", "warning", now, addr=addr,
+                    name=self.names.name(addr), silent_for_s=round(silent),
+                    profile="data-heavy" if data_heavy else "sleepy/polling",
+                    note="no frames heard; if no mle_rejoin_attempt follows, "
+                         "suspect device-internal failure rather than RF")
+        if self.observed_names:
+            tmp = self.mle_names_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self.observed_names, indent=1))
+            tmp.replace(self.mle_names_path)
+
+    def device_summary(self) -> dict:
+        out = {}
+        for addr, stats in self.devices.items():
+            out[addr] = {"name": self.names.name(addr), **stats.as_dict(),
+                         "observed_names": list(self.observed_names.get(addr, {}))[:3]}
+        return out
+
+
+def load_decryptor(cfg):
+    """Return a Decryptor if credentials are configured, else None."""
+    cred_path = Path(cfg.credentials_path) if getattr(cfg, "credentials_path", None) \
+        else (cfg.config_dir / "credentials.toml" if hasattr(cfg, "config_dir") else None)
+    if cred_path is None or not cred_path.exists():
+        return None
+    import tomllib
+    try:
+        raw = tomllib.loads(cred_path.read_text())
+        key_hex = raw.get("credentials", {}).get("network_key", "")
+        if len(key_hex) != 32:
+            return None
+        from .crypto import Decryptor
+        return Decryptor(network_key=bytes.fromhex(key_hex))
+    except Exception as exc:
+        print(f"[threadwatch] credentials unusable ({exc}); continuing key-free", flush=True)
+        return None

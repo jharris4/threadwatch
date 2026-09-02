@@ -34,3 +34,10 @@ alert_cooldown_s = 1800.0
 # create an automation with a webhook trigger and use
 # webhook_url = "http://homeassistant.local:8123/api/webhook/threadwatch-storm"
 webhook_url = ""
+
+[credentials]
+# OPTIONAL. Path to a separate, gitignored, read-only file holding the Thread
+# network key, enabling decryption-based analysis (MLE rejoin/partition
+# visibility, SRP auto-naming). Capture works fully without this.
+# Create it read-only:  see docs/CREDENTIALS.md
+# file = "credentials.toml"

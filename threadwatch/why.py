@@ -1,0 +1,135 @@
+"""`threadwatch why <device>`: reconstruct one device's story from the ring.
+
+Walks the ring pcaps (or a given file) and produces a per-hour narrative for
+one device: cadence, RSSI trend, ACK health, MLE activity (with credentials),
+silences — the questions you ask when something went offline.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from .config import Config
+from .names import DeviceNames
+from .pcap import PcapStreamReader
+from .pipeline import load_decryptor
+
+
+def resolve_target(cfg: Config, target: str) -> tuple[list[str], str]:
+    """Resolve a name or address into the set of extended addresses to track."""
+    names = DeviceNames(cfg.devices_path)
+    t = target.replace(":", "").lower()
+    if len(t) == 16 and all(c in "0123456789abcdef" for c in t):
+        return [t], names.name(t) or t
+    matches = {}
+    if cfg.devices_path and cfg.devices_path.exists():
+        for entry in json.loads(cfg.devices_path.read_text()):
+            name = entry.get("name", "")
+            if target.lower() in name.lower():
+                addrs = entry.get("extendedAddresses") or []
+                if entry.get("extendedAddress"):
+                    addrs = addrs + [entry["extendedAddress"]]
+                matches[name] = [a.replace(":", "").lower() for a in addrs]
+    if len(matches) == 1:
+        name, addrs = next(iter(matches.items()))
+        return addrs, name
+    if len(matches) > 1:
+        raise SystemExit(f"ambiguous name '{target}': {sorted(matches)}")
+    raise SystemExit(f"'{target}' is neither a 16-hex-char address nor a known device name")
+
+
+def run_why(cfg: Config, target: str, pcap_file: Path | None = None) -> None:
+    addrs, display = resolve_target(cfg, target)
+    addr_set = set(addrs)
+    decryptor = load_decryptor(cfg)
+
+    files = [pcap_file] if pcap_file else sorted(cfg.ring_dir.glob("threadwatch-*.pcap"))
+    if not files:
+        raise SystemExit("no ring files; is the capture daemon running?")
+
+    from collections import defaultdict
+    hours = defaultdict(lambda: {"frames": 0, "polls": 0, "rssi": [], "acked": 0,
+                                 "tx": 0, "mle": {}})
+    last_ts = None
+    first_ts = None
+    gaps = []
+    prev_frame = None
+    mle_events = []
+
+    for path in files:
+        try:
+            with open(path, "rb") as fh:
+                for f in PcapStreamReader(fh):
+                    is_ours = f.src in addr_set
+                    # ACK for our previous transmission
+                    if (prev_frame is not None and f.ftype == 2
+                            and f.seq == prev_frame.seq and f.ts - prev_frame.ts < 0.05):
+                        import time as _t
+                        hours[_t.strftime("%m-%d %Hh", _t.localtime(prev_frame.ts))]["acked"] += 1
+                    prev_frame = f if is_ours else None
+                    if not is_ours:
+                        continue
+                    import time as _t
+                    hkey = _t.strftime("%m-%d %Hh", _t.localtime(f.ts))
+                    h = hours[hkey]
+                    h["frames"] += 1
+                    if f.ftype in (1, 3):
+                        h["tx"] += 1
+                    if f.ftype == 3:
+                        h["polls"] += 1
+                    if f.rssi is not None:
+                        h["rssi"].append(f.rssi)
+                    if first_ts is None:
+                        first_ts = f.ts
+                    if last_ts is not None and f.ts - last_ts > 1800:
+                        gaps.append((last_ts, f.ts))
+                    last_ts = f.ts
+                    if decryptor is not None and f.ftype == 1:
+                        from .crypto import Decryptor, MLE_UDP_PORT
+                        plain = decryptor.decrypt_frame(f.psdu, f.src if len(f.src) == 16 else None,
+                                                        f.src if len(f.src) == 4 else None)
+                        if plain:
+                            r = Decryptor.udp_ports(plain, mac_src_ext=f.src if len(f.src) == 16 else None,
+                                                    mac_dst_ext=f.dst if f.dst and len(f.dst) == 16 else None,
+                                                    mac_dst_short=f.dst if f.dst and len(f.dst) == 4 else None)
+                            if r and MLE_UDP_PORT in (r[0], r[1]):
+                                info = decryptor.parse_mle(r[2], f.src if len(f.src) == 16 else None, r[3], r[4])
+                                if info:
+                                    h["mle"][info.command_name] = h["mle"].get(info.command_name, 0) + 1
+                                    if info.command_name in ("Parent Request", "Child ID Request", "Announce"):
+                                        mle_events.append((f.ts, info.command_name))
+        except Exception as exc:
+            print(f"(skipping {path}: {exc})")
+
+    import time as _t
+    print(f"=== {display} ({', '.join(addrs)}) ===")
+    if first_ts is None:
+        print("No frames from this device in the analyzed window.")
+        print("Interpretation: either out of range of the dongle, silent (dead "
+              "battery / crashed radio), or transmitting under an unknown "
+              "rotated address — check `threadwatch report` for unknowns.")
+        return
+    print(f"first seen: {_t.strftime('%Y-%m-%d %H:%M:%S', _t.localtime(first_ts))}")
+    print(f"last seen:  {_t.strftime('%Y-%m-%d %H:%M:%S', _t.localtime(last_ts))}"
+          f"  ({round((_t.time() - last_ts) / 60, 1)} min ago)")
+    print(f"\n{'hour':12s} {'frames':>6s} {'polls':>6s} {'tx':>5s} {'acked':>6s} {'rssi med':>9s}  mle")
+    for hkey in sorted(hours):
+        h = hours[hkey]
+        if h["frames"] == 0 and h["acked"] == 0:
+            continue
+        rssi = sorted(h["rssi"])
+        med = f"{rssi[len(rssi)//2]:.0f}" if rssi else "-"
+        mle = ", ".join(f"{k}x{v}" for k, v in h["mle"].items()) if h["mle"] else ""
+        print(f"{hkey:12s} {h['frames']:6d} {h['polls']:6d} {h['tx']:5d} {h['acked']:6d} {med:>9s}  {mle}")
+    if gaps:
+        print("\nsilences (>30 min):")
+        for a, b in gaps[-10:]:
+            print(f"  {_t.strftime('%m-%d %H:%M', _t.localtime(a))} -> "
+                  f"{_t.strftime('%m-%d %H:%M', _t.localtime(b))}  ({round((b-a)/60)} min)")
+    if mle_events:
+        print("\nrejoin-related MLE (attach attempts):")
+        for ts, cmd in mle_events[-10:]:
+            print(f"  {_t.strftime('%m-%d %H:%M:%S', _t.localtime(ts))}  {cmd}")
+    elif decryptor is not None:
+        print("\nno rejoin-related MLE seen from this device in the window.")

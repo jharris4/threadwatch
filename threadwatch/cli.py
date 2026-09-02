@@ -33,6 +33,13 @@ def main(argv=None) -> int:
     p_report.add_argument("--quiet-minutes", type=float, default=90.0,
                           help="minutes of silence before a device is listed as quiet")
 
+    p_why = sub.add_parser("why", help="reconstruct one device's story from the ring buffer")
+    p_why.add_argument("device", help="device name (from devices.json) or 16-hex extended address")
+    p_why.add_argument("--pcap", type=Path, help="analyze this file instead of the ring")
+
+    p_events = sub.add_parser("events", help="show recent events")
+    p_events.add_argument("-n", type=int, default=30)
+
     args = parser.parse_args(argv)
     cfg = config_mod.load(args.config)
 
@@ -71,6 +78,25 @@ def main(argv=None) -> int:
             if src.exists():
                 shutil.copy2(src, dest / extra)
         print(f"froze {count} ring files -> {dest}")
+        return 0
+
+    if args.cmd == "why":
+        from .why import run_why
+        run_why(cfg, args.device, args.pcap)
+        return 0
+
+    if args.cmd == "events":
+        path = cfg.state_dir / "events.jsonl"
+        if not path.exists():
+            print("no events yet")
+            return 0
+        lines = path.read_text().splitlines()[-args.n:]
+        for line in lines:
+            e = json.loads(line)
+            stamp = time.strftime("%m-%d %H:%M:%S", time.localtime(e.pop("ts")))
+            sev = e.pop("severity")
+            name = e.pop("event")
+            print(f"{stamp} [{sev:8s}] {name}  {json.dumps(e)}")
         return 0
 
     if args.cmd == "report":

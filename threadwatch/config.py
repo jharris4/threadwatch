@@ -20,6 +20,9 @@ class Config:
     keep_files: int = 168                      # ring: hourly files, one week
     devices_path: Optional[Path] = None
     detector: DetectorConfig = field(default_factory=DetectorConfig)
+    config_dir: Path = REPO_ROOT / "config"
+    credentials_path: Optional[Path] = None
+    webhook_min_severity: str = "warning"
 
     @property
     def ring_dir(self) -> Path:
@@ -42,6 +45,7 @@ def load(path: Optional[Path]) -> Config:
         default = REPO_ROOT / "config" / "config.toml"
         path = default if default.exists() else None
     if path:
+        cfg.config_dir = Path(path).resolve().parent
         raw = tomllib.loads(Path(path).read_text())
         net = raw.get("network", {})
         cfg.channel = net.get("channel", cfg.channel)
@@ -58,7 +62,14 @@ def load(path: Optional[Path]) -> Config:
             if key in det:
                 setattr(cfg.detector, key, det[key])
         cfg.detector.webhook_url = raw.get("alerts", {}).get("webhook_url", "")
+        cfg.webhook_min_severity = raw.get("alerts", {}).get("min_severity", "warning")
+        if raw.get("credentials", {}).get("file"):
+            cfg.credentials_path = (Path(path).parent / raw["credentials"]["file"]).resolve()
     default_devices = REPO_ROOT / "config" / "devices.json"
     if cfg.devices_path is None and default_devices.exists():
         cfg.devices_path = default_devices
+    if cfg.credentials_path is None:
+        default_creds = cfg.config_dir / "credentials.toml"
+        if default_creds.exists():
+            cfg.credentials_path = default_creds
     return cfg

@@ -1,0 +1,340 @@
+"""Optional Thread decryption: MAC-layer AES-CCM, 6LoWPAN-lite, MLE parsing.
+
+Only imported when a network key is configured. Requires the `cryptography`
+package (Debian/RPi: apt install python3-cryptography).
+
+Thread key derivation (as implemented by OpenThread and Wireshark):
+    HMAC-SHA256(network_key, key_sequence_be32 || "Thread") -> 32 bytes
+    bytes[0:16]  = MLE key
+    bytes[16:32] = MAC key
+The 802.15.4 aux header carries key_index = (key_sequence % 127) + 1, so the
+sequence is recovered by trying candidates that match the observed index.
+"""
+
+from __future__ import annotations
+
+import hmac
+import hashlib
+import re
+import struct
+from dataclasses import dataclass, field
+from typing import Optional
+
+from cryptography.hazmat.primitives.ciphers.aead import AESCCM
+from cryptography.exceptions import InvalidTag
+
+MLE_UDP_PORT = 19788
+
+MLE_COMMANDS = {
+    0: "Link Request", 1: "Link Accept", 2: "Link Accept And Request",
+    3: "Link Reject", 4: "Advertisement", 5: "Update", 6: "Update Request",
+    7: "Data Request", 8: "Data Response", 9: "Parent Request",
+    10: "Parent Response", 11: "Child ID Request", 12: "Child ID Response",
+    13: "Child Update Request", 14: "Child Update Response", 15: "Announce",
+    16: "Discovery Request", 17: "Discovery Response",
+}
+
+_HOSTNAME_RE = re.compile(rb"([\x01-\x3f][\x20-\x7e]{1,63}){2,}")
+
+
+def derive_keys(network_key: bytes, sequence: int) -> tuple[bytes, bytes]:
+    """Return (mle_key, mac_key) for a key sequence counter."""
+    digest = hmac.new(network_key, struct.pack(">L", sequence) + b"Thread",
+                      hashlib.sha256).digest()
+    return digest[:16], digest[16:32]
+
+
+@dataclass
+class MleInfo:
+    command: int
+    command_name: str
+    partition_id: Optional[int] = None
+    leader_router_id: Optional[int] = None
+    source_addr16: Optional[int] = None
+
+
+@dataclass
+class Decryptor:
+    network_key: bytes
+    # short (rloc16 hex, 4 chars) -> extended (16 chars) learned/seeded mapping
+    short_to_ext: dict = field(default_factory=dict)
+    _keys_by_index: dict = field(default_factory=dict)  # key_index -> [(seq, mle, mac)]
+    stats: dict = field(default_factory=lambda: {
+        "mac_decrypted": 0, "mac_failed": 0, "mac_no_ext_addr": 0,
+        "mle_decrypted": 0, "mle_failed": 0, "plaintext": 0,
+    })
+
+    def _keys_for_index(self, key_index: int):
+        if key_index not in self._keys_by_index:
+            # Sequences matching this index, newest few generations first.
+            candidates = [s for s in range(0, 1024) if (s % 127) + 1 == key_index]
+            self._keys_by_index[key_index] = [
+                (s, *derive_keys(self.network_key, s)) for s in candidates[:8]
+            ]
+        return self._keys_by_index[key_index]
+
+    # ------------------------------------------------------------------ MAC
+
+    def decrypt_frame(self, psdu: bytes, src_ext_hex: Optional[str],
+                      src_short_hex: Optional[str]) -> Optional[bytes]:
+        """Return the decrypted MAC payload of a secured data frame, or the
+        plaintext payload for unsecured frames, or None when undecryptable.
+        The returned bytes start at the MAC payload (after aux header)."""
+        if len(psdu) < 3:
+            return None
+        fcf = struct.unpack("<H", psdu[0:2])[0]
+        security = bool(fcf & 0x0008)
+        hdr_len = self._mac_header_len(psdu)
+        if hdr_len is None:
+            return None
+        if not security:
+            self.stats["plaintext"] += 1
+            return psdu[hdr_len:]
+        if hdr_len + 5 > len(psdu):
+            return None
+        sec_ctl = psdu[hdr_len]
+        sec_level = sec_ctl & 0x07
+        key_mode = (sec_ctl >> 3) & 0x03
+        counter = struct.unpack("<L", psdu[hdr_len + 1:hdr_len + 5])[0]
+        aux_len = 5 + (1 if key_mode == 1 else 5 if key_mode == 2 else 9 if key_mode == 3 else 0)
+        if key_mode != 1 or sec_level != 5:   # Thread uses ENC-MIC-32, key index mode
+            return None
+        key_index = psdu[hdr_len + 5]
+        ext_hex = src_ext_hex or (self.short_to_ext.get(src_short_hex or "") if src_short_hex else None)
+        if not ext_hex:
+            self.stats["mac_no_ext_addr"] += 1
+            return None
+        nonce = bytes.fromhex(ext_hex) + struct.pack(">L", counter) + bytes([sec_level])
+        open_part = psdu[:hdr_len + aux_len]
+        secret = psdu[hdr_len + aux_len:]
+        if len(secret) <= 4 + 2:  # MIC + FCS at least
+            return None
+        # The capture may retain the 2-byte FCS at the tail; try both.
+        for trim in (2, 0):
+            body = secret[:len(secret) - trim]
+            if len(body) <= 4:
+                continue
+            for _seq, _mle, mac_key in self._keys_for_index(key_index):
+                try:
+                    plain = AESCCM(mac_key, tag_length=4).decrypt(nonce, body, open_part)
+                    self.stats["mac_decrypted"] += 1
+                    return plain
+                except InvalidTag:
+                    continue
+        self.stats["mac_failed"] += 1
+        return None
+
+    @staticmethod
+    def _mac_header_len(p: bytes) -> Optional[int]:
+        fcf = struct.unpack("<H", p[0:2])[0]
+        pan_comp = bool(fcf & 0x0040)
+        dst_mode = (fcf >> 10) & 0x3
+        src_mode = (fcf >> 14) & 0x3
+        off = 3
+        if dst_mode in (2, 3):
+            off += 2 + (2 if dst_mode == 2 else 8)
+        if src_mode in (2, 3):
+            if not (pan_comp and dst_mode in (2, 3)):
+                off += 2
+            off += 2 if src_mode == 2 else 8
+        return off if off <= len(p) else None
+
+    # ------------------------------------------------------- 6LoWPAN (lite)
+
+    @staticmethod
+    def _iid_from_ext(ext_hex: str) -> bytes:
+        b = bytearray(bytes.fromhex(ext_hex))
+        b[0] ^= 0x02  # universal/local bit flip
+        return bytes(b)
+
+    @staticmethod
+    def udp_ports(payload: bytes, mac_src_ext: Optional[str] = None,
+                  mac_dst_ext: Optional[str] = None,
+                  mac_dst_short: Optional[str] = None):
+        """Best-effort 6LoWPAN IPHC+NHC parse.
+
+        Returns (sport, dport, udp_payload, src_ip16, dst_ip16) where the IPs
+        are 16-byte addresses when reconstructable (stateless link-local and
+        common multicast forms — sufficient for MLE), else None. Handles the
+        common Thread on-air forms; returns None for non-first fragments and
+        unhandled layouts.
+        """
+        p = payload
+        if p and (p[0] >> 6) == 0b10:   # mesh header
+            hops_deep = (p[0] & 0x0F) == 0x0F
+            p = p[1 + (1 if hops_deep else 0) + 2 + 2:]
+        if p and (p[0] >> 3) == 0b11000:   # FRAG1
+            p = p[4:]
+        elif p and (p[0] >> 3) == 0b11100:  # FRAGN
+            return None
+        if len(p) < 2 or (p[0] >> 5) != 0b011:
+            return None
+        iphc = struct.unpack(">H", p[0:2])[0]
+        off = 2
+        if iphc & 0x0080:  # CID
+            off += 1
+        tf = (iphc >> 11) & 0x3
+        off += (4, 3, 1, 0)[tf]
+        nh_compressed = bool(iphc & 0x0400)
+        if not nh_compressed:
+            off += 1
+        if (iphc >> 8) & 0x3 == 0:
+            off += 1
+        LL = bytes.fromhex("fe80000000000000")
+
+        sam = (iphc >> 4) & 0x3
+        sac = bool(iphc & 0x0040)
+        src_ip = None
+        if not sac:
+            if sam == 0:
+                src_ip = p[off:off + 16]; off += 16
+            elif sam == 1:
+                src_ip = LL + p[off:off + 8]; off += 8
+            elif sam == 2:
+                src_ip = LL + b"\x00\x00\x00\xff\xfe\x00" + p[off:off + 2]; off += 2
+            else:
+                if mac_src_ext:
+                    src_ip = LL + Decryptor._iid_from_ext(mac_src_ext)
+        else:
+            off += (0, 8, 2, 0)[sam]  # context-based: skip, no reconstruction
+
+        m = bool(iphc & 0x0008)
+        dam = iphc & 0x3
+        dac = bool(iphc & 0x0004)
+        dst_ip = None
+        if m and not dac:
+            if dam == 0:
+                dst_ip = p[off:off + 16]; off += 16
+            elif dam == 1:
+                dst_ip = bytes([0xFF, p[off]]) + b"\x00" * 9 + p[off + 1:off + 6]; off += 6
+            elif dam == 2:
+                dst_ip = bytes([0xFF, p[off]]) + b"\x00" * 11 + p[off + 1:off + 4]; off += 4
+            else:
+                dst_ip = bytes([0xFF, 0x02]) + b"\x00" * 13 + p[off:off + 1]; off += 1
+        elif m and dac:
+            off += 6
+        elif not m and not dac:
+            if dam == 0:
+                dst_ip = p[off:off + 16]; off += 16
+            elif dam == 1:
+                dst_ip = LL + p[off:off + 8]; off += 8
+            elif dam == 2:
+                dst_ip = LL + b"\x00\x00\x00\xff\xfe\x00" + p[off:off + 2]; off += 2
+            else:
+                if mac_dst_ext:
+                    dst_ip = LL + Decryptor._iid_from_ext(mac_dst_ext)
+                elif mac_dst_short:
+                    dst_ip = LL + b"\x00\x00\x00\xff\xfe\x00" + bytes.fromhex(mac_dst_short)
+        else:
+            off += (0, 8, 2, 0)[dam]
+
+        if off >= len(p):
+            return None
+        if not nh_compressed:
+            return None
+        nhc = p[off]
+        if (nhc >> 3) != 0b11110:
+            return None
+        pbits = nhc & 0x3
+        off += 1
+        if pbits == 3:
+            sport = 0xF0B0 | (p[off] >> 4); dport = 0xF0B0 | (p[off] & 0xF); off += 1
+        elif pbits == 1:
+            sport = struct.unpack(">H", p[off:off + 2])[0]; dport = 0xF000 | p[off + 2]; off += 3
+        elif pbits == 2:
+            sport = 0xF000 | p[off]; dport = struct.unpack(">H", p[off + 1:off + 3])[0]; off += 3
+        else:
+            sport, dport = struct.unpack(">HH", p[off:off + 4]); off += 4
+        if not (nhc & 0x04):
+            off += 2
+        return sport, dport, p[off:], src_ip, dst_ip
+
+    # ------------------------------------------------------------------ MLE
+
+    def parse_mle(self, udp_payload: bytes, src_ext_hex: Optional[str],
+                  src_ip: Optional[bytes] = None,
+                  dst_ip: Optional[bytes] = None) -> Optional[MleInfo]:
+        """Decrypt and parse an MLE message (UDP port 19788).
+
+        MLE's AES-CCM auth data is srcIPv6 || dstIPv6 || security header
+        (from the security-control byte through the key identifier), so the
+        reconstructed link-local addresses from the 6LoWPAN layer are required
+        for secured messages.
+        """
+        if not udp_payload:
+            return None
+        suite = udp_payload[0]
+        if suite == 255:      # no security (Discovery / Announce)
+            body = udp_payload[1:]
+        elif suite == 0:
+            if len(udp_payload) < 11 or not src_ext_hex or not src_ip or not dst_ip:
+                return None
+            sec_ctl = udp_payload[1]
+            sec_level = sec_ctl & 0x07
+            key_mode = (sec_ctl >> 3) & 0x03
+            counter = struct.unpack("<L", udp_payload[2:6])[0]
+            aux = 1 + 4 + (1 if key_mode == 1 else 5 if key_mode == 2 else 9 if key_mode == 3 else 0)
+            nonce = bytes.fromhex(src_ext_hex) + struct.pack(">L", counter) + bytes([sec_level])
+            aad = src_ip + dst_ip + udp_payload[1:1 + aux]
+            secret = udp_payload[1 + aux:]
+            body = None
+            if key_mode == 2:
+                # Thread MLE: the 4-byte key source IS the key sequence.
+                sequence = struct.unpack(">L", udp_payload[6:10])[0]
+                mle_key, _mac = derive_keys(self.network_key, sequence)
+                candidates = [(sequence, mle_key, _mac)]
+            else:
+                candidates = self._keys_for_index(udp_payload[1 + aux - 1])
+            for _seq, mle_key, _mac in candidates:
+                try:
+                    body = AESCCM(mle_key, tag_length=4).decrypt(nonce, secret, aad)
+                    break
+                except InvalidTag:
+                    continue
+            if body is None:
+                self.stats["mle_failed"] += 1
+                return None
+        else:
+            return None
+        if not body:
+            return None
+        self.stats["mle_decrypted"] += 1
+        info = MleInfo(command=body[0], command_name=MLE_COMMANDS.get(body[0], f"cmd{body[0]}"))
+        off = 1
+        while off + 2 <= len(body):
+            t, l = body[off], body[off + 1]
+            if l == 255 or off + 2 + l > len(body):
+                break
+            val = body[off + 2:off + 2 + l]
+            if t == 11 and l >= 8:  # Leader Data
+                info.partition_id = struct.unpack(">L", val[0:4])[0]
+                info.leader_router_id = val[7]
+            elif t == 0 and l >= 2:  # Source Address (sender's RLOC16)
+                info.source_addr16 = struct.unpack(">H", val[0:2])[0]
+            off += 2 + l
+        # Learn the short->extended mapping from the sender itself, which
+        # unlocks MAC decryption of its short-source data frames.
+        if info.source_addr16 is not None and src_ext_hex:
+            self.short_to_ext[f"{info.source_addr16:04x}"] = src_ext_hex
+        return info
+
+    # ------------------------------------------------------------ SRP names
+
+    @staticmethod
+    def harvest_names(udp_payload: bytes) -> list[str]:
+        """Pull DNS-style labels (SRP/DNS-SD registrations) out of a decrypted
+        UDP payload — a heuristic that surfaces device host/instance names."""
+        names = []
+        for m in _HOSTNAME_RE.finditer(udp_payload):
+            chunk = m.group(0)
+            parts, i = [], 0
+            while i < len(chunk):
+                n = chunk[i]
+                label = chunk[i + 1:i + 1 + n]
+                if not label or not all(0x20 <= c < 0x7F for c in label):
+                    break
+                parts.append(label.decode("ascii", "replace"))
+                i += 1 + n
+            if len(parts) >= 2 and any(len(x) > 2 for x in parts):
+                names.append(".".join(parts))
+        return names

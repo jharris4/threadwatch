@@ -2,33 +2,45 @@
 
 Turn a $10 nRF52840 USB dongle into an always-on Thread network flight
 recorder: continuous 802.15.4 packet capture with a rolling ring buffer,
-plus live detection of the traffic-storm signature that takes Thread
-meshes down — so that when devices drop, the evidence of *why* already
-exists.
+plus a general library of health detectors — so that when *any* device
+drops off your mesh, the evidence of why already exists.
 
-Born from a real incident (2026-09-01) where a nine-hour "RF
-interference" hunt turned out to be the home's own HomeKit hub
-re-subscribing every Matter accessory in lock-step after a switch
-reboot, phase-locking their report timers into channel-saturating
-floods every 80 seconds. With this recorder running, that diagnosis is
-one `threadwatch replay` instead of an evening.
+The goal is broad Thread diagnosis — RF storms, device-internal radio
+death, failed rejoins, parent/partition churn, slow link degradation,
+sleepy-device starvation — not one failure mode. It grew out of a real
+incident (see docs/ANALYSIS.md) but is built to answer the general
+question: *why did this device go offline?*
 
 ## What it does
 
 - **Continuous capture** on your Thread channel into hourly pcap files,
   keeping a rolling week (configurable). ~30 MB/hour for a ~45-node mesh.
-- **Storm detection**: watches for periodic traffic floods (the
-  phase-locked-subscription signature) and POSTs a JSON alert to any
-  webhook (Home Assistant automation, ntfy, etc.).
-- **Device last-seen tracking** from cleartext MAC headers — including
-  HomeKit-only Thread devices that never appear in Home Assistant.
-  `threadwatch report` lists devices gone quiet, and unknown addresses
-  to help you label them.
+- **A health event log** (`events.jsonl`) fed by many detectors, all
+  from cleartext MAC headers:
+  - devices going quiet / returning / silent-without-rejoin;
+  - per-device RSSI trend, ACK-success rate, poll cadence (catches slow
+    link degradation *before* a drop);
+  - foreign-PAN frames and join-scan bursts;
+  - traffic floods and phase-locked periodicity (the storm signature);
+  - MAC retransmission-rate elevation.
+  Warning/critical events POST to any webhook (Home Assistant, ntfy).
+- **`threadwatch why <device>`** — reconstructs one device's story from
+  the ring: hour-by-hour cadence, RSSI, ACKs, silences, and (with
+  credentials) rejoin attempts. This is the "why did X go offline"
+  command.
+- **Device tracking without a controller** — including HomeKit-only
+  Thread devices that never appear in Home Assistant. `threadwatch
+  report` lists quiet devices and unknown addresses to label.
+- **Optional decryption** (`docs/CREDENTIALS.md`): supply the Thread
+  network key and analysis gains MLE visibility (named rejoin attempts,
+  partition/leader changes) and SRP-based auto-naming. Capture never
+  needs the key; it's an analysis-side upgrade, applicable to old pcaps
+  too.
 - **Incident freeze**: `threadwatch freeze my-label` snapshots the ring
   buffer before it rolls over.
-- **Offline analysis**: `threadwatch replay file.pcap` runs the same
-  detection over any capture; the pcaps open in Wireshark for deep dives
-  (see docs/ANALYSIS.md for a filter cookbook).
+- **Offline analysis**: `threadwatch replay file.pcap` runs the whole
+  pipeline over any capture; pcaps also open in Wireshark (see
+  docs/ANALYSIS.md for a filter cookbook and the storm case study).
 
 ## What it deliberately does not do
 
@@ -71,7 +83,16 @@ addresses to names for you (see docs/HOME-ASSISTANT.md).
 
 ## Repository layout
 
-    threadwatch/   the Python package (stdlib + pyserial only)
+    threadwatch/   the Python package
+      pcap.py      classic-pcap I/O + 802.15.4 MAC header parsing
+      pipeline.py  the shared per-frame health pipeline (detectors, stats)
+      detect.py    flood / phase-lock storm detector
+      crypto.py    optional Thread decryption (MLE, 6LoWPAN, SRP names)
+      events.py    append-only event log + webhook dispatch
+      names.py     address->name inventory, last-seen tracking
+      why.py       per-device history reconstruction
+      capture.py   live daemon (ring buffer) + replay
+      cli.py       command-line interface
     vendor/        Nordic's sniffer extcap module (BSD, unmodified)
     firmware/      sniffer firmware hex + prebuilt DFU package
     bin/           threadwatch CLI shim, flash-dongle.sh

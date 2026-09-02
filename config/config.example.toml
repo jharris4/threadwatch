@@ -1,0 +1,36 @@
+# threadwatch configuration. Copy to config.toml and edit.
+# config.toml and devices.json are gitignored: they describe YOUR network.
+
+[network]
+# Thread channel (802.15.4 channel 11-26). Find yours via your border router
+# (e.g. OTBR REST /node/dataset/active, or Home Assistant Thread panel).
+channel = 25
+# Optional, purely informational:
+# network_name = "MyHome"
+# pan_id = "0x4e21"
+# NOTE: deliberately no credentials here. Capture, storm detection and
+# device tracking all work from cleartext MAC headers - the network key is
+# not needed and should not be stored on the capture box.
+
+[capture]
+# serial_port = "/dev/ttyACM0"   # leave unset to auto-detect the dongle
+# data_dir = "~/threadwatch-data"  # default: <repo>/data
+keep_files = 168                  # hourly ring files to retain (168 = 1 week)
+
+[devices]
+# Inventory that maps extended addresses to human names (see names.py docstring).
+inventory = "devices.json"
+
+[detect]
+flood_multiplier = 3.0     # a 10 s window this many times the baseline is a flood
+flood_min_frames = 400     # absolute floor so small meshes don't false-alarm
+period_min_s = 40.0        # phase-lock signature: flood onsets recurring
+period_max_s = 180.0       #   with a stable period in this range
+period_onsets = 3          # consecutive periodic onsets before alerting
+alert_cooldown_s = 1800.0
+
+[alerts]
+# Any HTTP endpoint that accepts a JSON POST. For Home Assistant:
+# create an automation with a webhook trigger and use
+# webhook_url = "http://homeassistant.local:8123/api/webhook/threadwatch-storm"
+webhook_url = ""

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
+CFG="$REPO/config/config.toml"
+if [ -f "$CFG" ]; then
+  exec python3 -m threadwatch --config "$CFG" "$@"
+else
+  exec python3 -m threadwatch "$@"
+fi

@@ -1,0 +1,18 @@
+[Unit]
+Description=threadwatch: continuous Thread/802.15.4 capture and storm detection
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust if you cloned elsewhere or use a different user.
+User=pi
+WorkingDirectory=/home/pi/thread-debugger
+ExecStart=/home/pi/thread-debugger/bin/threadwatch capture
+Restart=always
+RestartSec=10
+# The dongle re-enumerates on replug; give udev a moment.
+ExecStartPre=/bin/sleep 2
+
+[Install]
+WantedBy=multi-user.target

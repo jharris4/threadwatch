@@ -40,6 +40,14 @@ def main(argv=None) -> int:
     p_events = sub.add_parser("events", help="show recent events")
     p_events.add_argument("-n", type=int, default=30)
 
+    p_test = sub.add_parser("alert-test",
+                            help="send a synthetic event through every alert sink and "
+                                 "push every heartbeat once (cooldowns ignored)")
+    p_test.add_argument("--severity", default="warning",
+                        choices=("info", "notice", "warning", "critical"))
+    p_test.add_argument("--event", default="alert_test")
+    p_test.add_argument("--no-heartbeats", action="store_true")
+
     args = parser.parse_args(argv)
     cfg = config_mod.load(args.config)
 
@@ -98,6 +106,30 @@ def main(argv=None) -> int:
             name = e.pop("event")
             print(f"{stamp} [{sev:8s}] {name}  {json.dumps(e)}")
         return 0
+
+    if args.cmd == "alert-test":
+        from .alerts import Dispatcher, HeartbeatRunner, build_heartbeats, build_sinks
+        import socket
+        log = lambda m: print(f"  ! {m}")
+        sinks = build_sinks(cfg.alerts_raw, log)
+        beats = [] if args.no_heartbeats else build_heartbeats(cfg.heartbeats_raw, log)
+        record = {"ts": time.time(), "event": args.event, "severity": args.severity,
+                  "name": "Test device", "addr": "0000000000000000",
+                  "note": f"threadwatch alert-test from {socket.gethostname()}"}
+        failures = 0
+        print(f"sinks ({len(sinks)}):")
+        for sink, err in Dispatcher(sinks, log).deliver_now(record):
+            print(f"  {'ok  ' if err is None else 'FAIL'} {sink.describe()}" + (f" -> {err}" if err else ""))
+            failures += err is not None
+        skipped = [s for s in sinks if s.min_severity > ["info", "notice", "warning", "critical"].index(args.severity)]
+        for s in skipped:
+            print(f"  skip {s.name} (min severity above {args.severity})")
+        if beats:
+            print(f"heartbeats ({len(beats)}):")
+            for beat, err in HeartbeatRunner(beats, healthy=lambda: True, log=log, start=False).push_all(healthy=True):
+                print(f"  {'ok  ' if err is None else 'FAIL'} {beat.describe()}" + (f" -> {err}" if err else ""))
+                failures += err is not None
+        return 1 if failures else 0
 
     if args.cmd == "report":
         from .names import DeviceNames, LastSeen

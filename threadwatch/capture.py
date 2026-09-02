@@ -10,6 +10,7 @@ import threading
 import time
 from pathlib import Path
 
+from .alerts import HeartbeatRunner, build_heartbeats, build_sinks
 from .config import Config
 from .events import EventLog, NullEventLog
 from .pcap import PcapStreamReader, PcapWriter, Frame
@@ -93,9 +94,15 @@ def run_capture(cfg: Config) -> None:
     sniffer.start_threaded(str(fifo_path), port, cfg.channel, metadata="ieee802154-tap")
     print(f"[threadwatch] capturing channel {cfg.channel} from {port}", flush=True)
 
-    events = EventLog(cfg.state_dir / "events.jsonl",
-                      webhook_url=cfg.detector.webhook_url,
-                      webhook_min_severity=cfg.webhook_min_severity)
+    def _log(msg: str) -> None:
+        print(f"[threadwatch] {msg}", flush=True)
+
+    sinks = build_sinks(cfg.alerts_raw, _log)
+    events = EventLog(cfg.state_dir / "events.jsonl", sinks)
+    for s in sinks:
+        _log(f"alert sink {s.describe()} (min {['info', 'notice', 'warning', 'critical'][s.min_severity]})")
+    if not sinks:
+        _log("no alert sinks configured (events go to events.jsonl only; see docs/ALERTING.md)")
     decryptor = load_decryptor(cfg)
     print(f"[threadwatch] credentials: {'loaded (deep inspection on)' if decryptor else 'none (header-level only)'}",
           flush=True)
@@ -139,6 +146,16 @@ def run_capture(cfg: Config) -> None:
                 os._exit(2)
 
     threading.Thread(target=_watchdog, daemon=True).start()
+
+    # Liveness heartbeats: "healthy" means frames are still flowing. Once the
+    # stall timeout passes the watchdog exits anyway; until then the monitor
+    # is told the truth rather than a reassuring beat.
+    heartbeats = build_heartbeats(cfg.heartbeats_raw, _log)
+    for b in heartbeats:
+        _log(f"heartbeat {b.describe()}")
+    HeartbeatRunner(heartbeats,
+                    healthy=lambda: time.time() - beat["last_frame"] < 180.0,
+                    log=_log)
 
     try:
         with open(fifo_path, "rb") as fifo:

@@ -22,7 +22,8 @@ class Config:
     detector: DetectorConfig = field(default_factory=DetectorConfig)
     config_dir: Path = REPO_ROOT / "config"
     credentials_path: Optional[Path] = None
-    webhook_min_severity: str = "warning"
+    alerts_raw: dict = field(default_factory=dict)      # [alerts] table, verbatim
+    heartbeats_raw: list = field(default_factory=list)  # [[heartbeats]] tables, verbatim
 
     @property
     def ring_dir(self) -> Path:
@@ -61,8 +62,11 @@ def load(path: Optional[Path]) -> Config:
                     "period_max_s", "period_onsets", "alert_cooldown_s"):
             if key in det:
                 setattr(cfg.detector, key, det[key])
-        cfg.detector.webhook_url = raw.get("alerts", {}).get("webhook_url", "")
-        cfg.webhook_min_severity = raw.get("alerts", {}).get("min_severity", "warning")
+        # Sinks and heartbeats are built lazily (alerts.build_sinks /
+        # build_heartbeats) so ${ENV} expansion and validation happen where
+        # a disabled sink can be logged rather than crash config loading.
+        cfg.alerts_raw = dict(raw.get("alerts", {}))
+        cfg.heartbeats_raw = list(raw.get("heartbeats", []) or [])
         if raw.get("credentials", {}).get("file"):
             cfg.credentials_path = (Path(path).parent / raw["credentials"]["file"]).resolve()
     default_devices = REPO_ROOT / "config" / "devices.json"

@@ -4,29 +4,40 @@ threadwatch needs none of this to work. But if you run Home Assistant
 (especially with the OTBR add-on), these extensions make it stronger in
 both directions.
 
-## 1. Receive storm alerts in HA
+## 1. Receive alerts in HA
 
-`config.toml`:
+`config.toml` (full reference and other receivers: docs/ALERTING.md):
 
 ```toml
-[alerts]
-webhook_url = "http://homeassistant.local:8123/api/webhook/threadwatch-storm"
+[[alerts.sinks]]
+name = "home-assistant"
+type = "http"
+url = "http://homeassistant.local:8123/api/webhook/threadwatch-<random-suffix>"
+min_severity = "warning"
 ```
 
-HA automation:
+HA automation. The webhook ID is the only secret, so make it unguessable and
+keep `local_only`:
 
 ```yaml
-alias: Threadwatch storm alert
+alias: Threadwatch alert
 triggers:
   - trigger: webhook
-    webhook_id: threadwatch-storm
+    webhook_id: threadwatch-<random-suffix>
     local_only: true
+    allowed_methods: [POST]
 actions:
   - action: notify.notify
     data:
-      title: "Thread storm detected"
-      message: "{{ trigger.json.message }}"
+      title: "Thread {{ trigger.json.severity }}: {{ trigger.json.event }}"
+      message: >-
+        {{ trigger.json.name or trigger.json.addr or '' }}
+        {{ trigger.json.note or '' }}
 ```
+
+The body is the raw event record (`ts`, `event`, `severity`, plus the
+event's own fields such as `name`, `addr`, `note`, `silent_for_s`); there is
+no `message` field. Check the wiring with `bin/threadwatch alert-test`.
 
 ## 2. Blast-radius detection inside HA (belt and suspenders)
 

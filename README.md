@@ -23,7 +23,11 @@ question: *why did this device go offline?*
   - foreign-PAN frames and join-scan bursts;
   - traffic floods and phase-locked periodicity (the storm signature);
   - MAC retransmission-rate elevation.
-  Warning/critical events POST to any webhook (Home Assistant, ntfy).
+  Warning/critical events go to any number of alert sinks (plain HTTP with
+  headers and a body template, or a local command), so Home Assistant,
+  ntfy, Gotify, Discord and friends all work; heartbeats let Gatus,
+  Healthchecks.io or Uptime Kuma page when the recorder itself dies
+  (docs/ALERTING.md).
 - **`threadwatch why <device>`** — reconstructs one device's story from
   the ring: hour-by-hour cadence, RSSI, ACKs, silences, and (with
   credentials) rejoin attempts. This is the "why did X go offline"
@@ -88,7 +92,8 @@ addresses to names for you (see docs/HOME-ASSISTANT.md).
       pipeline.py  the shared per-frame health pipeline (detectors, stats)
       detect.py    flood / phase-lock storm detector
       crypto.py    optional Thread decryption (MLE, 6LoWPAN, SRP names)
-      events.py    append-only event log + webhook dispatch
+      events.py    append-only event log
+      alerts.py    alert sinks (http/command/ntfy preset) + heartbeats
       names.py     address->name inventory, last-seen tracking
       why.py       per-device history reconstruction
       capture.py   live daemon (ring buffer) + replay

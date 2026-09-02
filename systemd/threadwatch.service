@@ -9,6 +9,8 @@ Type=simple
 User=pi
 WorkingDirectory=/home/pi/thread-debugger
 ExecStart=/home/pi/thread-debugger/bin/threadwatch capture
+# Alert/heartbeat secrets (optional; see config/alerts.example.env).
+EnvironmentFile=-/home/pi/thread-debugger/config/alerts.env
 Restart=always
 RestartSec=10
 # The dongle re-enumerates on replug; give udev a moment.

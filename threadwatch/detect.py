@@ -23,7 +23,6 @@ class DetectorConfig:
     period_max_s: float = 180.0
     period_onsets: int = 3            # consecutive periodic onsets to alert
     alert_cooldown_s: float = 1800.0
-    webhook_url: str = ""
 
 
 @dataclass

@@ -40,6 +40,13 @@ if [ -f "$REPO/config/credentials.toml" ]; then
 else
   echo "    no credentials.toml (fine: header-level analysis only; see docs/CREDENTIALS.md)"
 fi
+if [ -f "$REPO/config/alerts.env" ]; then
+  chown "$RUN_USER": "$REPO/config/alerts.env"
+  chmod 400 "$REPO/config/alerts.env"
+  echo "    alerts.env locked to 0400"
+else
+  echo "    no alerts.env (fine unless a sink references \${VARS}; see docs/ALERTING.md)"
+fi
 
 echo "==> systemd service"
 sed -e "s|^User=.*|User=$RUN_USER|" \

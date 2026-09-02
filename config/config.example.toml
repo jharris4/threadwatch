@@ -30,10 +30,46 @@ period_onsets = 3          # consecutive periodic onsets before alerting
 alert_cooldown_s = 1800.0
 
 [alerts]
-# Any HTTP endpoint that accepts a JSON POST. For Home Assistant:
-# create an automation with a webhook trigger and use
-# webhook_url = "http://homeassistant.local:8123/api/webhook/threadwatch-storm"
-webhook_url = ""
+# Where warning/critical events go. Any number of sinks; each has its own
+# severity floor and per-event cooldown. Secrets go in config/alerts.env as
+# environment variables and are referenced as ${NAME}. Full reference and
+# recipes (Home Assistant, ntfy, Gotify, Discord, ...): docs/ALERTING.md
+# Test everything below with:  bin/threadwatch alert-test
+#
+# Shorthand kept from earlier versions - one plain JSON POST of the event
+# record, warning and above:
+# webhook_url = "http://homeassistant.local:8123/api/webhook/threadwatch-<random>"
+#
+# [[alerts.sinks]]
+# name = "home-assistant"
+# type = "http"
+# url = "http://homeassistant.local:8123/api/webhook/threadwatch-<random>"
+# min_severity = "warning"       # info | notice | warning | critical
+# cooldown_s = 300               # per event name, per sink
+#
+# [[alerts.sinks]]
+# name = "phone"
+# type = "ntfy"                  # preset over the http sink
+# url = "https://ntfy.example.net"
+# topic = "alerts"
+# token = "${NTFY_TOKEN}"
+# min_severity = "warning"
+#
+# [[alerts.sinks]]
+# name = "local-script"
+# type = "command"
+# command = ["/usr/local/bin/my-alert.sh"]   # event record JSON on stdin
+
+# Liveness: tell an external monitor "still capturing" so it can page when
+# the recorder itself dies. One entry per monitor; see docs/ALERTING.md for
+# Gatus, Healthchecks.io and Uptime Kuma forms.
+#
+# [[heartbeats]]
+# name = "gatus"
+# url = "http://gatus.example.net:8080/api/v1/endpoints/iot_threadwatch/external?success=true"
+# failure_url = "http://gatus.example.net:8080/api/v1/endpoints/iot_threadwatch/external?success=false&error=capture+stalled"
+# headers = { Authorization = "Bearer ${GATUS_THREADWATCH_TOKEN}" }
+# interval_s = 60
 
 [credentials]
 # OPTIONAL. Path to a separate, gitignored, read-only file holding the Thread

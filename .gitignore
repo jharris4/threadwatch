@@ -4,3 +4,4 @@ data/
 .venv-flash/
 __pycache__/
 *.pyc
+config/credentials.toml

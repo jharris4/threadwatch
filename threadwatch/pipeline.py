@@ -77,7 +77,7 @@ class Pipeline:
         self.partition: Optional[tuple] = None
         self.last_frame: Optional[Frame] = None
         self.beacon_times = deque(maxlen=16)
-        self.dup_window = deque(maxlen=4096)   # (ts, src, seq)
+        self._join_scan_evt = 0.0
         self.dup_recent = {}                    # (src, seq) -> ts
         self.retrans_counts = deque(maxlen=30)  # per-window (dups, frames)
         self._win_dups = 0
@@ -92,14 +92,19 @@ class Pipeline:
                 self.observed_names = json.loads(self.mle_names_path.read_text())
             except (json.JSONDecodeError, OSError):
                 pass
+        # Devices already long-quiet in persisted state are marked as reported
+        # at startup, so a daemon restart does not re-announce every one of
+        # them; they still produce device_returned when they next transmit.
+        now = time.time()
+        for addr, row in self.seen.table.items():
+            if now - row.get("last_seen", now) > 10 * 60:
+                self.quiet_reported.add(addr)
 
     # ------------------------------------------------------------ ingest
 
     def ingest(self, f: Frame) -> None:
         ts = f.ts
         self.detector.add_frame(ts)
-        if self.detector.storm_active and self.detector.alerts_sent:
-            pass  # detector handles its own webhook via events at close
 
         # ACK pairing: an ACK within 10 ms bearing the pending seq.
         prev = self.last_frame
@@ -142,7 +147,8 @@ class Pipeline:
                 self.devices.setdefault(f.src, DeviceStats()).beacons += 1
             self.beacon_times.append(ts)
             recent = [t for t in self.beacon_times if ts - t <= 60]
-            if len(recent) == 5:
+            if len(recent) >= 5 and ts - self._join_scan_evt > 300:
+                self._join_scan_evt = ts
                 self.events.emit("join_scan_activity", "notice", ts,
                                  count_60s=len(recent), src=f.src)
 

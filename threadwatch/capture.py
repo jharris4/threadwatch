@@ -100,13 +100,16 @@ def run_capture(cfg: Config) -> None:
           flush=True)
     pipe = Pipeline(cfg, events, decryptor)
 
-    stop = {"flag": False}
-
+    # Raising from the handler interrupts the blocking FIFO read, so
+    # `systemctl stop` works even when the channel is silent. The finally
+    # block below closes files; a truncated final pcap record is tolerated
+    # by readers.
     def _sig(_signo, _frame):
-        stop["flag"] = True
+        raise SystemExit(0)
 
     signal.signal(signal.SIGTERM, _sig)
     signal.signal(signal.SIGINT, _sig)
+    stop = {"flag": False}
 
     total = 0
     started = time.time()
@@ -139,6 +142,10 @@ def run_capture(cfg: Config) -> None:
             ring.close()
         fifo_path.unlink(missing_ok=True)
         print(f"[threadwatch] stopped after {total} frames", flush=True)
+        # The vendored sniffer starts a non-daemon thread and worker
+        # processes that outlive _stop(); everything of ours is closed and
+        # saved by now, so end the process outright rather than hang.
+        os._exit(0)
 
 
 def _write_status(cfg, port, total, started, pipe: Pipeline, ring, decryptor) -> None:

@@ -21,7 +21,11 @@ Boot it and confirm `ssh pi@threadwatch.local` works.
 
 ```bash
 sudo apt update
-sudo apt install -y git python3-serial
+sudo apt install -y git python3-serial python3-cryptography
+# Note: while this repository is private, the Pi needs auth to clone it -
+# either `gh auth login` on the Pi, an SSH deploy key, or make the repo
+# public. (python3-cryptography is only needed for the optional
+# credentials/decryption features - see docs/CREDENTIALS.md.)
 git clone https://github.com/jharris4/thread-debugger.git
 cd thread-debugger
 cp config/config.example.toml config/config.toml

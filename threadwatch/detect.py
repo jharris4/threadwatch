@@ -7,10 +7,8 @@ relative to a rolling baseline so it adapts to mesh size.
 
 from __future__ import annotations
 
-import json
 import statistics
 import time
-import urllib.request
 from collections import deque
 from dataclasses import dataclass, field
 
@@ -39,6 +37,7 @@ class Detector:
     last_alert: float = 0.0
     alerts_sent: int = 0
     storm_active: bool = False
+    last_alert_details: dict = field(default_factory=dict)
 
     def add_frame(self, ts: float) -> None:
         if self.window_start == 0.0:
@@ -62,6 +61,10 @@ class Detector:
         if flood and not self.in_flood:
             self.onsets.append(self.window_start)
             self._check_periodicity()
+        # A storm that stops flooding is over: clear after 3 missed periods.
+        if (self.storm_active and self.onsets
+                and self.window_start - self.onsets[-1] > 3 * self.cfg.period_max_s):
+            self.storm_active = False
         self.in_flood = flood
         self.counts.append(count)
 
@@ -81,29 +84,16 @@ class Detector:
             self.storm_active = False
 
     def _alert(self, **details) -> None:
+        # Bookkeeping only. Notification is the Pipeline's job: it emits a
+        # `phase_locked_storm` event, and the EventLog owns webhook dispatch.
+        # (Printing or webhooking here would double-alert and pollute the
+        # stdout of `threadwatch replay`.)
         now = time.time()
         if now - self.last_alert < self.cfg.alert_cooldown_s:
             return
         self.last_alert = now
         self.alerts_sent += 1
-        payload = {
-            "event": "thread_storm_detected",
-            "message": "Phase-locked Thread traffic storm signature detected "
-                       f"(periodic floods every ~{details.get('period', 0):.0f}s). "
-                       "Known cure: power-cycle the active HomeKit hub Apple TV.",
-            **details,
-        }
-        print(f"[threadwatch] ALERT: {json.dumps(payload)}", flush=True)
-        if self.cfg.webhook_url:
-            try:
-                req = urllib.request.Request(
-                    self.cfg.webhook_url,
-                    data=json.dumps(payload).encode(),
-                    headers={"Content-Type": "application/json"},
-                )
-                urllib.request.urlopen(req, timeout=10).read()
-            except Exception as exc:  # alerting must never kill capture
-                print(f"[threadwatch] webhook failed: {exc}", flush=True)
+        self.last_alert_details = details
 
     def snapshot(self) -> dict:
         recent = list(self.counts)[-6:]

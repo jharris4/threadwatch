@@ -73,7 +73,7 @@ def main(argv=None) -> int:
         for f in sorted(cfg.ring_dir.glob("threadwatch-*.pcap")):
             shutil.copy2(f, dest / f.name)
             count += 1
-        for extra in ("status.json", "last-seen.json"):
+        for extra in ("status.json", "last-seen.json", "events.jsonl", "observed-names.json"):
             src = cfg.state_dir / extra
             if src.exists():
                 shutil.copy2(src, dest / extra)
@@ -106,8 +106,10 @@ def main(argv=None) -> int:
         report = seen.report(names, quiet_after_s=args.quiet_minutes * 60)
         print(json.dumps(report, indent=1))
         if report["unknown"]:
-            print(f"\n{len(report['unknown'])} unknown address(es) seen. Add them to "
-                  f"config/devices.json to name them (see docs in threadwatch/names.py).")
+            import sys
+            print(f"{len(report['unknown'])} unknown address(es) seen. Add them to "
+                  f"config/devices.json to name them (see docs in threadwatch/names.py).",
+                  file=sys.stderr)
         return 0
 
     return 1

@@ -247,12 +247,17 @@ class Pipeline:
     def periodic(self, now: float) -> None:
         """Run every ~30 s in live capture: quiet checks, persistence."""
         self.seen.maybe_save()
-        quiet_after = 90 * 60  # sleepy default; routers judged faster below
+        # Thresholds: sleepy devices legitimately sleep for long stretches;
+        # data-heavy (router-ish) devices going quiet for half an hour is
+        # notable. Overnight soak 2026-09-02 showed 10 min was too tight
+        # for battery air-quality sensors at night.
+        quiet_sleepy = getattr(self.cfg, "quiet_sleepy_s", 90 * 60)
+        quiet_data_heavy = getattr(self.cfg, "quiet_data_heavy_s", 30 * 60)
         for addr, row in self.seen.table.items():
             silent = now - row["last_seen"]
             stats = self.devices.get(addr)
             data_heavy = stats and stats.tx > stats.polls
-            threshold = 10 * 60 if data_heavy else quiet_after
+            threshold = quiet_data_heavy if data_heavy else quiet_sleepy
             if silent > threshold and addr not in self.quiet_reported:
                 self.quiet_reported.add(addr)
                 self.events.emit(

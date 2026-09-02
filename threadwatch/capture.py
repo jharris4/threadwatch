@@ -6,6 +6,7 @@ import json
 import os
 import signal
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -115,21 +116,47 @@ def run_capture(cfg: Config) -> None:
     started = time.time()
     last_tick = 0.0
     ring = None
+    # Shared with the watchdog thread; benign races (status snapshot only).
+    beat = {"last_frame": time.time(), "total": 0, "ring": None}
+
+    def _watchdog():
+        # The main loop blocks reading the FIFO, so a stalled stream (host
+        # sleep/wake, dongle unplug, sniffer process death) looks alive
+        # forever without this. Exit non-zero so a supervisor restarts us.
+        # Also keeps status.json fresh when the channel is merely quiet.
+        stall_timeout = 180.0
+        while True:
+            time.sleep(30)
+            now = time.time()
+            age = now - beat["last_frame"]
+            if beat["ring"] is not None:
+                _write_status(cfg, port, beat["total"], started, pipe,
+                              beat["ring"], decryptor, last_frame_age=age)
+            if age > stall_timeout:
+                print(f"[threadwatch] no frames for {age:.0f}s - capture "
+                      "stalled (host slept? dongle gone?); exiting for "
+                      "supervisor restart", flush=True)
+                os._exit(2)
+
+    threading.Thread(target=_watchdog, daemon=True).start()
+
     try:
         with open(fifo_path, "rb") as fifo:
             reader = PcapStreamReader(fifo)
             ring = RingWriter(cfg.ring_dir, cfg.keep_files, reader.dlt)
+            beat["ring"] = ring
             for frame in reader:
                 frame.ts = time.time()   # host wall clock, NTP-aligned
                 ring.write(frame)
                 pipe.ingest(frame)
                 total += 1
+                beat["last_frame"] = frame.ts
+                beat["total"] = total
                 now = frame.ts
                 if now - last_tick >= 10:
                     if last_tick and int(last_tick) // 30 != int(now) // 30:
                         pipe.periodic(now)
                     last_tick = now
-                    _write_status(cfg, port, total, started, pipe, ring, decryptor)
                 if stop["flag"]:
                     break
     finally:
@@ -148,9 +175,11 @@ def run_capture(cfg: Config) -> None:
         os._exit(0)
 
 
-def _write_status(cfg, port, total, started, pipe: Pipeline, ring, decryptor) -> None:
+def _write_status(cfg, port, total, started, pipe: Pipeline, ring, decryptor,
+                  last_frame_age: float = 0.0) -> None:
     status = {
         "updated": time.time(),
+        "last_frame_age_s": round(last_frame_age, 1),
         "port": port,
         "channel": cfg.channel,
         "frames_total": total,

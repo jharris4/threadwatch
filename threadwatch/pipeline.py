@@ -115,7 +115,13 @@ class Pipeline:
             announced = 0
             for addr, row in self.seen.table.items():
                 if now - row.get("last_seen", now) <= self.quiet_threshold_s(addr):
-                    row.pop("quiet_reported", None)
+                    if row.pop("quiet_reported", None):
+                        # Heard again after its announced silence, but the
+                        # recorder died before saying so: close the silence
+                        # at the moment it was actually heard.
+                        self.events.emit("device_returned", "notice", row["last_seen"],
+                                         addr=addr, name=self.names.name(addr))
+                        announced += 1
                     continue
                 if row.get("quiet_reported"):
                     self.quiet_reported.add(addr)

@@ -216,6 +216,19 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual([r["event"] for r in replay.events.records], ["device_first_seen"])
         self.assertEqual((self.cfg.state_dir / "last-seen.json").read_text(), before)
 
+    def test_restart_closes_a_silence_that_ended_while_it_was_down(self):
+        now = time.time()
+        pipe = self._pipe()
+        pipe.ingest(frame(now - 3 * 3600, SENSOR))
+        pipe.periodic(now - 3600)                   # announced quiet
+        pipe.seen.table[SENSOR]["last_seen"] = now - 60   # heard again, then killed before saving the return
+        pipe.seen.save()
+        pipe2 = self._pipe()
+        ev = [(r["event"], r["ts"]) for r in pipe2.events.records]
+        self.assertEqual(ev, [("device_returned", now - 60)])
+        self.assertNotIn("quiet_reported", pipe2.seen.table[SENSOR])
+        self.assertEqual(pipe2.quiet_reported, set())
+
     def test_returned_device_can_go_quiet_again(self):
         pipe = self._pipe()
         t0 = 1_700_000_000.0

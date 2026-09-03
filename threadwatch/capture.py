@@ -8,6 +8,7 @@ import signal
 import sys
 import threading
 import time
+import traceback
 from pathlib import Path
 
 from .alerts import HeartbeatRunner, build_heartbeats, build_sinks
@@ -95,18 +96,15 @@ def run_capture(cfg: Config) -> None:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "vendor"))
     from nrf802154_sniffer import Nrf802154Sniffer
 
-    port = cfg.serial_port or find_sniffer_port()
-    fifo_path = cfg.state_dir / "capture.fifo"
-    fifo_path.unlink(missing_ok=True)
-    os.mkfifo(fifo_path)
-
-    sniffer = Nrf802154Sniffer()
-    sniffer.start_threaded(str(fifo_path), port, cfg.channel, metadata="ieee802154-tap")
-    print(f"[threadwatch] capturing channel {cfg.channel} from {port}", flush=True)
-
     def _log(msg: str) -> None:
         print(f"[threadwatch] {msg}", flush=True)
 
+    # Everything that can fail on configuration is built before the sniffer
+    # starts. The vendored sniffer runs a non-daemon thread that blocks until
+    # this process opens the FIFO, so an exception raised after
+    # start_threaded() would leave the interpreter waiting on that thread
+    # forever: a live process that systemd never restarts, holding the port.
+    port = cfg.serial_port or find_sniffer_port()
     sinks = build_sinks(cfg.alerts_raw, _log)
     events = EventLog(cfg.events_dir, sinks)
     for s in sinks:
@@ -114,21 +112,30 @@ def run_capture(cfg: Config) -> None:
     if not sinks:
         _log("no alert sinks configured (events go to the event log only; see docs/ALERTING.md)")
     decryptor = load_decryptor(cfg)
-    print(f"[threadwatch] credentials: {'loaded (deep inspection on)' if decryptor else 'none (header-level only)'}",
-          flush=True)
+    _log(f"credentials: {'loaded (deep inspection on)' if decryptor else 'none (header-level only)'}")
     pipe = Pipeline(cfg, events, decryptor)
+    heartbeats = build_heartbeats(cfg.heartbeats_raw, _log)
+    for b in heartbeats:
+        _log(f"heartbeat {b.describe()}")
+
+    fifo_path = cfg.state_dir / "capture.fifo"
+    fifo_path.unlink(missing_ok=True)
+    os.mkfifo(fifo_path)
+
+    sniffer = Nrf802154Sniffer()
+    sniffer.start_threaded(str(fifo_path), port, cfg.channel, metadata="ieee802154-tap")
+    _log(f"capturing channel {cfg.channel} from {port}")
 
     # Raising from the handler interrupts the blocking FIFO read, so
     # `systemctl stop` works even when the channel is silent. The finally
-    # block below closes files. The watchdog's os._exit path does not, so
-    # a ring file can end in a partial record: readers stop cleanly there
+    # block below closes files. The watchdog's os._exit path flushes the
+    # ring but can still leave a partial record: readers stop cleanly there
     # and RingWriter trims it before appending.
     def _sig(_signo, _frame):
         raise SystemExit(0)
 
     signal.signal(signal.SIGTERM, _sig)
     signal.signal(signal.SIGINT, _sig)
-    stop = {"flag": False}
 
     total = 0
     started = time.time()
@@ -152,17 +159,17 @@ def run_capture(cfg: Config) -> None:
                     _write_status(cfg, port, beat["total"], started, pipe,
                                   beat["ring"], decryptor, last_frame_age=age)
                 except Exception as exc:   # a full disk must not take the stall check with it
-                    print(f"[threadwatch] status.json not written: {exc}", flush=True)
+                    _log(f"status.json not written: {exc}")
             if age > stall_timeout:
-                print(f"[threadwatch] no frames for {age:.0f}s - capture "
-                      "stalled (host slept? dongle gone?); exiting for "
-                      "supervisor restart", flush=True)
-                # The main thread is blocked in the FIFO read, so the table
-                # is not being written; keep what the last frames taught us.
-                try:
-                    pipe.seen.save()
-                except Exception:
-                    pass
+                _log(f"no frames for {age:.0f}s - capture stalled (host slept? "
+                     "dongle gone?); exiting for supervisor restart")
+                # The main thread is blocked in the FIFO read, so nothing is
+                # being written: keep the last frames and what they taught us.
+                for step in (lambda: beat["ring"].fh.flush(), pipe.seen.save):
+                    try:
+                        step()
+                    except Exception:
+                        pass
                 os._exit(2)
 
     threading.Thread(target=_watchdog, daemon=True).start()
@@ -170,13 +177,14 @@ def run_capture(cfg: Config) -> None:
     # Liveness heartbeats: "healthy" means frames are still flowing. Once the
     # stall timeout passes the watchdog exits anyway; until then the monitor
     # is told the truth rather than a reassuring beat.
-    heartbeats = build_heartbeats(cfg.heartbeats_raw, _log)
-    for b in heartbeats:
-        _log(f"heartbeat {b.describe()}")
     HeartbeatRunner(heartbeats,
                     healthy=lambda: time.time() - beat["last_frame"] < 180.0,
                     log=_log)
 
+    # Exit status: 0 for a requested stop, otherwise non-zero so the journal
+    # and the supervisor see a failure, and the traceback is printed here
+    # because the os._exit in finally would otherwise swallow it.
+    exit_code = 0
     try:
         with open(fifo_path, "rb") as fifo:
             reader = PcapStreamReader(fifo)
@@ -194,22 +202,33 @@ def run_capture(cfg: Config) -> None:
                     if last_tick and int(last_tick) // 30 != int(now) // 30:
                         pipe.periodic(now)
                     last_tick = now
-                if stop["flag"]:
-                    break
+        # The sniffer closed its end of the FIFO: dongle unplugged or the
+        # sniffer process died. Not a clean stop.
+        _log("capture stream ended (dongle unplugged? sniffer died?); exiting for supervisor restart")
+        exit_code = 3
+    except SystemExit as exc:
+        exit_code = exc.code if isinstance(exc.code, int) else 0
+    except BaseException:
+        traceback.print_exc()
+        _log("capture crashed; exiting for supervisor restart")
+        exit_code = 1
     finally:
         try:
             sniffer._stop()
         except Exception:
             pass
-        pipe.seen.save()
+        try:
+            pipe.seen.save()
+        except Exception as exc:
+            _log(f"last-seen.json not saved: {exc}")
         if ring:
             ring.close()
         fifo_path.unlink(missing_ok=True)
-        print(f"[threadwatch] stopped after {total} frames", flush=True)
+        _log(f"stopped after {total} frames")
         # The vendored sniffer starts a non-daemon thread and worker
         # processes that outlive _stop(); everything of ours is closed and
         # saved by now, so end the process outright rather than hang.
-        os._exit(0)
+        os._exit(exit_code)
 
 
 def _write_status(cfg, port, total, started, pipe: Pipeline, ring, decryptor,

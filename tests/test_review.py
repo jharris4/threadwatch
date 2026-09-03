@@ -140,7 +140,7 @@ class DayViewTest(unittest.TestCase):
             status, body = get(f"/day/{day}")
             self.assertEqual(status, 200)
             self.assertIn("quiet for 2h00m", body)
-            self.assertIn('<span class="muted">yesterday</span> 23:00', body)   # carried over from the day before
+            self.assertIn('<td class="t">23:00<small>yesterday</small></td>', body)   # carried over from the day before
             self.assertIn("Carried over", body)
             self.assertNotIn("yesterday", get(f"/day/{day_of(T0 - 86400)}")[1])
             self.assertIn("phase-locked storm", body)

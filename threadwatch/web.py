@@ -45,6 +45,7 @@ table{border-collapse:collapse;width:100%;font-size:.94em}
 th,td{text-align:left;padding:.45em .6em;border-bottom:1px solid var(--line);vertical-align:top}
 th{color:var(--muted);font-weight:600;font-size:.85em;text-transform:uppercase;letter-spacing:.03em}
 td.t{white-space:nowrap;color:var(--muted);font-variant-numeric:tabular-nums}
+td.t small{display:block;font-size:.75em;line-height:1.1;opacity:.85}
 td.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .sev{display:inline-block;min-width:5.2em;padding:.05em .5em;border-radius:999px;font-size:.78em;
  font-weight:600;text-align:center;color:#fff;background:var(--info)}
@@ -122,16 +123,20 @@ def hm(ts: Optional[float]) -> str:
     return time.strftime("%H:%M", time.localtime(ts)) if ts else ""
 
 
-def when(ts: Optional[float], day: str) -> str:
-    """HH:MM, prefixed with the day when it is not the page's own day, so a
-    row carried over from an earlier day says so."""
+def when(ts: Optional[float], day: str, stacked: bool = False) -> str:
+    """HH:MM, plus the day when it is not the page's own day, so a row
+    carried over from an earlier day says so. ``stacked`` puts the day on
+    its own line under the time (for the narrow time column); otherwise it
+    is inline, for use inside a sentence."""
     if not ts:
         return ""
     d = day_of(ts)
     if d == day:
         return hm(ts)
     label = "yesterday" if d == prev_day(day) else "tomorrow" if d == next_day(day) else d[5:]
-    return f'<span class="muted">{label}</span> {hm(ts)}'
+    if stacked:
+        return f'{hm(ts)}<small>{label}</small>'
+    return f'{hm(ts)} <span class="muted">{label}</span>'
 
 
 def ago(ts: Optional[float], now: Optional[float] = None) -> str:
@@ -235,7 +240,7 @@ class Site:
             if ep.get("carried_over"):
                 tip = "Carried over: this began on an earlier day and was still going on this one. " + tip
             tip = esc(tip)
-            rows.append(f'<tr title="{tip}"><td class="t">{when(ep["start"], day)}</td>'
+            rows.append(f'<tr title="{tip}"><td class="t">{when(ep["start"], day, stacked=True)}</td>'
                         f'<td><span class="sev {esc(ep["severity"])}">{esc(ep["severity"])}</span></td>'
                         f'<td>{esc(ep["title"])}{span}{who}</td>'
                         f'<td class="detail muted">{esc(ep["detail"])}</td></tr>')
@@ -316,8 +321,8 @@ class Site:
         items = "".join(f'<h2>{esc(title)}</h2><p>{esc(text)}</p>' for _k, title, text in LEGEND)
         conv = ('<h2>How the pages read</h2><p>Each row is an <i>episode</i>, not a log line: repeated '
                 'records about the same thing are one row with a count and a time span. An episode that '
-                'crosses midnight appears on both days; on the later day its time reads '
-                '<i>yesterday 23:01</i>, and a silence not yet over keeps carrying forward until the '
+                'crosses midnight appears on both days; on the later day its time is marked '
+                '<i>yesterday</i>, and a silence not yet over keeps carrying forward until the '
                 'device returns. The strip of days shows how many events '
                 'each day had, with warnings in amber and criticals in red. Packets are kept for a '
                 'week in the ring buffer and forever in frozen incidents; the top of a day page says '

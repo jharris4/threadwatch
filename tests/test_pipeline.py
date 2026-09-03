@@ -294,3 +294,75 @@ class QuietPolicyTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LinkDegradationTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        (d / "devices.json").write_text(json.dumps([
+            {"name": "Hall Router", "extendedAddress": ROUTER, "role": "router"}]))
+        self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json",
+                          link_drop_db=8.0, link_hold_s=30 * 60)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    @staticmethod
+    def _events(pipe, name):
+        return [r for r in pipe.events.records if r["event"] == name]
+
+    def _talk(self, pipe, t0, rssi, n=300):
+        for i in range(n):
+            pipe.ingest(frame(t0 + i, ROUTER, rssi=rssi))
+        return t0 + n
+
+    def test_fading_device_is_logged_then_recovers(self):
+        pipe = Pipeline(self.cfg, NullEventLog())
+        t = self._talk(pipe, 1_700_000_000.0, -60.0)
+        pipe.periodic(t)                                     # reference taken at -60
+        self.assertEqual(pipe.seen.table[ROUTER]["rssi_ref"], -60.0)
+        t = self._talk(pipe, t, -70.0)
+        pipe.periodic(t)                                     # clock starts
+        pipe.periodic(t + 20 * 60)
+        self.assertEqual(self._events(pipe, "rssi_degradation"), [])
+        pipe.periodic(t + 31 * 60)
+        evs = self._events(pipe, "rssi_degradation")
+        self.assertEqual(len(evs), 1)
+        ev = evs[0]
+        self.assertEqual((ev["severity"], ev["name"], ev["reference_dbm"]), ("notice", "Hall Router", -60.0))
+        self.assertGreaterEqual(ev["drop_db"], 9.0)   # the per-frame EWMA rounds to 0.1 dB and settles ~1 dB short
+        self.assertGreaterEqual(ev["low_for_s"], 31 * 60)
+        self.assertIn("weaker than its usual -60 dBm", ev["note"])
+        pipe.periodic(t + 60 * 60)                           # still down: no repeat
+        self.assertEqual(len(self._events(pipe, "rssi_degradation")), 1)
+        t = self._talk(pipe, t + 60 * 60, -60.0)
+        pipe.periodic(t)
+        rec = self._events(pipe, "rssi_recovered")
+        self.assertEqual(len(rec), 1)
+        self.assertEqual(rec[0]["severity"], "info")
+        self.assertNotIn("rssi_degraded", pipe.seen.table[ROUTER])
+
+    def test_link_state_survives_a_restart(self):
+        pipe = Pipeline(self.cfg, NullEventLog())
+        t = self._talk(pipe, 1_700_000_000.0, -60.0)
+        pipe.periodic(t)
+        t = self._talk(pipe, t, -70.0)
+        pipe.periodic(t)
+        pipe.seen.save()
+        pipe2 = Pipeline(self.cfg, NullEventLog())
+        row = pipe2.seen.table[ROUTER]
+        self.assertEqual(row["rssi_ref"], -60.0)
+        self.assertEqual(row["rssi_low_since"], t)
+        pipe2.periodic(t + 31 * 60)
+        self.assertEqual(len(self._events(pipe2, "rssi_degradation")), 1)
+
+    def test_foreign_pan_devices_are_not_assessed(self):
+        pipe = Pipeline(self.cfg, NullEventLog())
+        t0 = 1_700_000_000.0
+        for i in range(300):
+            pipe.ingest(frame(t0 + i, ROUTER, rssi=-60.0))
+            pipe.ingest(frame(t0 + i, STRANGER, pan=OTHER_PAN, rssi=-60.0))
+        pipe.periodic(t0 + 300)
+        self.assertIn("rssi_ref", pipe.seen.table[ROUTER])
+        self.assertNotIn("rssi_ref", pipe.seen.table[STRANGER])

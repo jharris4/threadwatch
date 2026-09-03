@@ -8,6 +8,7 @@ Key-free (always on):
   - foreign-PAN frames, beacon (join-scan) bursts
   - traffic floods and phase-locked periodicity (storm signature)
   - MAC retransmission-rate elevation
+  - slow link degradation: RSSI at the sniffer well below the device's usual
 
 With Thread credentials (optional):
   - short-address identity: sleepy end devices (which never use their
@@ -29,6 +30,7 @@ from typing import Optional
 
 from .detect import Detector
 from .events import EventLog
+from .link import assess as assess_link
 from .names import DeviceNames, LastSeen, reception
 from .pcap import Frame
 
@@ -468,10 +470,38 @@ class Pipeline:
                 continue
             if self.silence_s(row, now) > self.quiet_threshold_s(addr):
                 self._report_quiet(addr, row, now)
+        self._check_links(now, dominant)
         if self.observed_names and not self.ephemeral:
             tmp = self.mle_names_path.with_suffix(".tmp")
             tmp.write_text(json.dumps(self.observed_names, indent=1))
             tmp.replace(self.mle_names_path)
+
+    def _check_links(self, now: float, dominant: Optional[int]) -> None:
+        """Slow link degradation (link.py) for every device on our PAN."""
+        for addr, row in self.seen.table.items():
+            pan = row.get("pan")
+            if dominant is not None and pan is not None and pan != dominant:
+                continue
+            verdict = assess_link(row, now, self.cfg.link_drop_db, self.cfg.link_hold_s)
+            if verdict is None:
+                continue
+            self.seen._dirty = True
+            name = self.names.name(addr)
+            rssi, ref = row.get("rssi"), row.get("rssi_ref")
+            if verdict == "degraded":
+                drop = round(ref - rssi, 1)
+                since = row.get("rssi_low_since", now)
+                self.events.emit(
+                    "rssi_degradation", "notice", now, addr=addr, name=name,
+                    rssi_dbm=rssi, reference_dbm=ref, drop_db=drop,
+                    since=since, low_for_s=round(now - since),
+                    note=(f"heard {drop:g} dB weaker than its usual {ref:g} dBm for "
+                          f"{round((now - since) / 60)} min ({rssi:g} dBm now): the link is "
+                          "fading (moved, obstructed, interference nearby) while the device "
+                          "still talks; a silence without a rejoin may follow"))
+            else:
+                self.events.emit("rssi_recovered", "info", now, addr=addr, name=name,
+                                 rssi_dbm=rssi, reference_dbm=ref)
 
     def _report_quiet(self, addr: str, row: dict, now: float) -> None:
         """Emit device_quiet once and remember, in memory and in the row

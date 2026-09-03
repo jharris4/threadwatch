@@ -21,7 +21,9 @@ question: *why did this device go offline?*
     device rather than the radio);
   - foreign-PAN frames and join-scan bursts;
   - traffic floods and phase-locked periodicity (the storm signature);
-  - MAC retransmission-rate elevation, attributed to the sender and target.
+  - MAC retransmission-rate elevation, attributed to the sender and target;
+  - slow link degradation: a device still talking but heard well below
+    its usual level, the precursor of a silence with no rejoin.
   Per-device RSSI trend, ACK-success rate and poll cadence are tracked too
   and shown by `threadwatch why`, not logged as events.
   Warning/critical events go to any number of alert sinks (plain HTTP with

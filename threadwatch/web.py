@@ -69,6 +69,12 @@ LEGEND = [
      "measured from the device's last frame. 'Still quiet' means it has not come back. A warning "
      "when the sniffer hears the device well; only a notice when its signal is marginal, because "
      "a device at the edge of the sniffer's range fades in and out without anything being wrong."),
+    ("link", "Signal down / recovered",
+     "The device is still talking, but the sniffer hears it well below its usual level: more "
+     "than 8 dB under its daily reference for 30 minutes (set in [link] in config.toml). A "
+     "device that moved, a door or appliance now in the way, a failing antenna, or interference "
+     "near it. Notice, logged only. A silence without a rejoin attempt often follows; a drop "
+     "that lasts a day becomes the new normal."),
     ("retransmissions", "Retransmissions elevated",
      "In one minute, more than 20% of data frames were repeats (same sender and sequence number "
      "within 2 s), and more than double the recent baseline. A repeat means the sender got no "

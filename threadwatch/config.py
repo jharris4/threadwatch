@@ -36,6 +36,10 @@ class Config:
     # 20-70 min at a time while everything at -80 dBm or better never went
     # 2 min without a frame.
     quiet_min_rssi_dbm: float = -82.0
+    # [link] slow degradation: the average RSSI sitting this far below the
+    # device's daily reference for this long is logged (notice). 0 disables.
+    link_drop_db: float = 8.0
+    link_hold_s: float = 30 * 60
     web_bind: str = "0.0.0.0"                  # [web] review pages (threadwatch web)
     web_port: int = 8080
     alerts_raw: dict = field(default_factory=dict)      # [alerts] table, verbatim
@@ -86,6 +90,9 @@ def load(path: Optional[Path]) -> Config:
         cfg.quiet_end_device_s = float(quiet.get("end_device_s", cfg.quiet_end_device_s))
         cfg.quiet_router_s = float(quiet.get("router_s", cfg.quiet_router_s))
         cfg.quiet_min_rssi_dbm = float(quiet.get("min_rssi_dbm", cfg.quiet_min_rssi_dbm))
+        link = raw.get("link", {})
+        cfg.link_drop_db = float(link.get("drop_db", cfg.link_drop_db))
+        cfg.link_hold_s = float(link.get("hold_s", cfg.link_hold_s))
         web = raw.get("web", {})
         cfg.web_bind = str(web.get("bind", cfg.web_bind))
         cfg.web_port = int(web.get("port", cfg.web_port))

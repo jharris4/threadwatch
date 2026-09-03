@@ -63,6 +63,7 @@ def group_episodes(records: list[dict], now: Optional[float] = None) -> list[dic
     retrans: dict[tuple, dict] = {}
     foreign: dict[tuple, dict] = {}
     rejoin: dict[str, dict] = {}
+    open_link: dict[str, dict] = {}
     first_seen: Optional[dict] = None
     join_scan: Optional[dict] = None
 
@@ -112,6 +113,26 @@ def group_episodes(records: list[dict], now: Optional[float] = None) -> list[dic
             else:
                 new("returned", rec, f"{_label(rec)} returned",
                     "was quiet before this day's log starts")
+        elif ev == "rssi_degradation":
+            addr = _addr(rec) or ""
+            ep = open_link.get(addr)
+            if ep is not None:
+                bump(ep, rec)
+                continue
+            drop = rec.get("drop_db")
+            open_link[addr] = new("link", rec, f"{_label(rec)} signal down {drop:g} dB",
+                                  f"{rec.get('rssi_dbm')} dBm, usually {rec.get('reference_dbm')} dBm",
+                                  end=None, low_since=rec.get("since", rec["ts"]))
+        elif ev == "rssi_recovered":
+            addr = _addr(rec) or ""
+            ep = open_link.pop(addr, None)
+            if ep is not None:
+                ep["end"] = rec["ts"]
+                ep["events"].append(rec)
+                ep["title"] += f" for {fmt_duration(rec['ts'] - ep['low_since'])}"
+            else:
+                new("link", rec, f"{_label(rec)} signal recovered",
+                    f"{rec.get('rssi_dbm')} dBm, usually {rec.get('reference_dbm')} dBm")
         elif ev == "retransmission_elevation":
             key = (rec.get("top_sender") or "", rec.get("top_target") or "")
             ep = retrans.get(key)
@@ -170,6 +191,8 @@ def group_episodes(records: list[dict], now: Optional[float] = None) -> list[dic
     for ep in episodes:
         if ep["kind"] == "quiet" and ep["end"] is None:
             ep["title"] = f"{ep['name'] or ep['addr']} quiet for {fmt_duration(now - ep['silent_since'])} (still quiet)"
+        elif ep["kind"] == "link" and ep["end"] is None:
+            ep["title"] += f" for {fmt_duration(now - ep['low_since'])} (still down)"
     return sorted(episodes, key=lambda e: e["start"])
 
 

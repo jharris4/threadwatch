@@ -33,6 +33,14 @@ router_s = 1800            # 30 min
 # (not paged) when quiet: at the edge of range, silence is usually fading.
 min_rssi_dbm = -82
 
+[link]
+# Slow link degradation: a device still heard, but with its average RSSI at
+# the sniffer this far below its own daily reference for this long, is
+# logged at notice (rssi_degradation). A moved or obstructed device, a
+# failing antenna, interference near it. 0 disables.
+drop_db = 8
+hold_s = 1800              # 30 min
+
 [detect]
 flood_multiplier = 3.0     # a 10 s window this many times the baseline is a flood
 flood_min_frames = 400     # absolute floor so small meshes don't false-alarm

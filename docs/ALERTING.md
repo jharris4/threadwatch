@@ -40,6 +40,8 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `possible_foreign_pan` | notice | `pan`, `src`, `dominant_pan`, `note` |
 | `mle_rejoin_attempt` | notice | `command`, `src`, `name` (credentials only) |
 | `device_quiet` | warning, or notice when `reception` is `marginal` | `addr`, `name`, `silent_for_s`, `profile` (`router` / `end-device`), `rssi_dbm`, `reception`, `note` |
+| `rssi_degradation` | notice | `addr`, `name`, `rssi_dbm`, `reference_dbm`, `drop_db`, `since`, `low_for_s`, `note` |
+| `rssi_recovered` | info | `addr`, `name`, `rssi_dbm`, `reference_dbm` |
 | `retransmission_elevation` | warning, or notice when one sender-target pair is `top_share` >= 0.5 of the retries (a chronic bad link, not a storm precursor) | `rate`, `baseline`, `addr`, `name`, `top_sender`, `top_target`, `top_share`, `note` |
 | `partition_or_leader_change` | warning | `previous`, `current` (credentials only) |
 | `phase_locked_storm` | critical | detector snapshot (`period_s`, `onsets`, ...) |
@@ -61,6 +63,14 @@ out for tens of minutes whenever the link fades.
 
 Sleepy end devices are covered only when credentials are configured; see
 docs/CREDENTIALS.md for why their frames are otherwise anonymous.
+
+`rssi_degradation` is the slow version of the same story: the device is
+still heard, but its average RSSI at the sniffer has sat more than
+`[link] drop_db` (default 8) below its own daily reference for
+`[link] hold_s` (default 30 min). The reference is taken once a device has
+been heard 200 frames and refreshed once a day, so a drop that lasts a day
+becomes the new normal. `rssi_recovered` closes it. `drop_db = 0` turns
+the detector off.
 
 ## Secrets
 

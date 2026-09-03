@@ -237,3 +237,26 @@ class FmtEpisodeTest(unittest.TestCase):
         self.assertEqual(lines[0], "09-02 12:00 [warning ] AQ quiet for 40m  no frames heard")
         self.assertEqual(lines[1], "09-02 12:00 [notice  ] retransmissions: AQ -> broadcast x2 over 15m  chatter")
         self.assertTrue(fmt_episode(eps[0], "%Y-%m-%d %H:%M").startswith("2026-09-02 12:00 "))
+
+
+class LinkEpisodeTest(unittest.TestCase):
+    def test_degradation_and_recovery_are_one_row(self):
+        eps = group_episodes([
+            rec("rssi_degradation", "notice", T0, addr=AQ, name="AQ", rssi_dbm=-70.5,
+                reference_dbm=-60.0, drop_db=10.5, since=T0 - 1800),
+            rec("rssi_recovered", "info", T0 + 3600, addr=AQ, name="AQ", rssi_dbm=-61.0,
+                reference_dbm=-60.0),
+        ], now=T0 + 7200)
+        self.assertEqual(len(eps), 1)
+        self.assertEqual(eps[0]["kind"], "link")
+        self.assertEqual(eps[0]["title"], "AQ signal down 10.5 dB for 90m")
+        self.assertEqual(eps[0]["detail"], "-70.5 dBm, usually -60.0 dBm")
+        self.assertEqual(eps[0]["end"], T0 + 3600)
+
+    def test_open_drop_says_still_down(self):
+        eps = group_episodes([
+            rec("rssi_degradation", "notice", T0, addr=AQ, name="AQ", rssi_dbm=-70.0,
+                reference_dbm=-60.0, drop_db=10.0, since=T0 - 1800),
+        ], now=T0 + 1800)
+        self.assertEqual(eps[0]["title"], "AQ signal down 10 dB for 60m (still down)")
+        self.assertIsNone(eps[0]["end"])

@@ -229,6 +229,15 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertNotIn("quiet_reported", pipe2.seen.table[SENSOR])
         self.assertEqual(pipe2.quiet_reported, set())
 
+    def test_storm_event_carries_period_onsets_and_a_note(self):
+        pipe = self._pipe()
+        pipe.detector.storm_active = True
+        pipe.detector.last_alert_details = {"period": 80.5, "onsets": [100.0, 180.5, 261.0]}
+        pipe.ingest(frame(1_700_000_000.0, ROUTER))
+        rec = [r for r in pipe.events.records if r["event"] == "phase_locked_storm"][0]
+        self.assertEqual((rec["period_s"], rec["onsets"]), (80.5, 3))
+        self.assertIn("every 80 s", rec["note"])
+
     def test_returned_device_can_go_quiet_again(self):
         pipe = self._pipe()
         t0 = 1_700_000_000.0

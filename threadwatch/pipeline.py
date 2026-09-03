@@ -251,7 +251,8 @@ class Pipeline:
             if len(recent) >= 5 and ts - self._join_scan_evt > 300:
                 self._join_scan_evt = ts
                 self.events.emit("join_scan_activity", "notice", ts,
-                                 count_60s=len(recent), src=f.src)
+                                 count_60s=len(recent), src=f.src,
+                                 note=f"{len(recent)} beacons in 60 s: something is scanning to join a network")
 
         # Foreign PAN: a source PAN that is not the dominant one, sighted
         # repeatedly (single hits are usually dissection edge cases - verify
@@ -306,7 +307,15 @@ class Pipeline:
         # per-frame even when the detector's alert cooldown is zeroed).
         if self.detector.storm_active and ts - getattr(self, "_storm_evt", 0) > max(60.0, self.cfg.detector.alert_cooldown_s):
             self._storm_evt = ts
+            details = self.detector.last_alert_details
+            period = details.get("period")
+            onsets = details.get("onsets") or []
             self.events.emit("phase_locked_storm", "critical", ts,
+                             period_s=round(period, 1) if period else None, onsets=len(onsets),
+                             onset_times=onsets,
+                             note=(f"traffic floods recurring every {period:.0f} s ({len(onsets)} onsets): "
+                                   "the broadcast-storm signature; run 'threadwatch freeze' to keep the packets"
+                                   if period else "phase-locked traffic floods"),
                              **self.detector.snapshot())
 
         # Credentialed visibility.
@@ -375,9 +384,11 @@ class Pipeline:
             if info.command_name in MLE_REJOIN_COMMANDS:
                 # addr is the extended address (the review pages key on it);
                 # src is whatever the frame carried, often a short address.
+                name = self.names.name(src_for_mle) if src_for_mle else None
                 self.events.emit("mle_rejoin_attempt", "notice", f.ts,
-                                 command=info.command_name, src=f.src, addr=src_for_mle,
-                                 name=self.names.name(src_for_mle) if src_for_mle else None)
+                                 command=info.command_name, src=f.src, addr=src_for_mle, name=name,
+                                 note=f"{info.command_name} from {name or src_for_mle or f.src}: "
+                                      "it lost its parent or its network and is trying to get back")
             if info.partition_id is not None:
                 cur = (info.partition_id, info.leader_router_id)
                 if self.partition is not None and cur != self.partition:
@@ -385,7 +396,10 @@ class Pipeline:
                                      previous={"partition": self.partition[0],
                                                "leader_router": self.partition[1]},
                                      current={"partition": cur[0],
-                                              "leader_router": cur[1]})
+                                              "leader_router": cur[1]},
+                                     note=f"partition {self.partition[0]} leader r{self.partition[1]} -> "
+                                          f"partition {cur[0]} leader r{cur[1]}: the mesh split, merged "
+                                          "or elected a new leader")
                 self.partition = cur
         else:
             for n in Decryptor.harvest_names(payload):

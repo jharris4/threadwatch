@@ -8,7 +8,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch.names import DeviceNames, LastSeen, adopt, load_observed_names, suggest_entries  # noqa: E402
+from threadwatch.names import (DeviceNames, LastSeen, adopt, load_observed_names,  # noqa: E402
+                               rotation_hints, suggest_entries)
 
 AQ = "26976e7f7d20964a"
 TV1 = "b62c32bf669272db"
@@ -50,6 +51,53 @@ class SuggestTest(unittest.TestCase):
             self.assertEqual(load_observed_names(Path(d)), {})
             (Path(d) / "observed-names.json").write_text(json.dumps({AQ: {"x": 1}}))
             self.assertEqual(load_observed_names(Path(d)), {AQ: {"x": 1}})
+
+
+class RotationHintTest(unittest.TestCase):
+    T = 1_756_800_000.0
+    NEW, LATER, OTHER = "0011223344556677", "8899aabbccddeeff", "1234567890abcdef"
+
+    def _names(self, d):
+        inv = Path(d) / "devices.json"
+        inv.write_text(json.dumps([
+            {"name": "Living Room Apple TV", "extendedAddresses": [TV1.upper(), TV2]},
+            {"name": "Office AQ", "extendedAddress": AQ},
+        ]))
+        return DeviceNames(inv)
+
+    def _seen(self):
+        seen = LastSeen(None)
+        seen.touch(TV1, self.T - 86400, 1)
+        seen.touch(TV2, self.T - 3600, 1)             # the TV's current address...
+        seen.touch(TV2, self.T, 1)                    # ...last heard at T
+        seen.touch(AQ, self.T + 7200, 1)              # still talking
+        seen.touch(self.NEW, self.T + 90, 1)          # appeared 90 s after the TV fell silent
+        seen.touch(self.NEW, self.T + 7200, 1)
+        seen.touch(self.LATER, self.T + 3 * 3600, 1)  # appeared hours later: no hint
+        seen.touch(self.OTHER, self.T + 7100, 1)      # appeared while the AQ was still heard: no hint
+        return seen
+
+    def test_new_address_as_a_named_device_falls_silent(self):
+        with tempfile.TemporaryDirectory() as d:
+            names = self._names(d)
+            seen = self._seen()
+            report = seen.report(names, quiet_after_s=1800, now=self.T + 7300)
+            hints = rotation_hints(report["unknown"], seen.table, names)
+            self.assertEqual(hints, {self.NEW: {"name": "Living Room Apple TV", "previous": TV2,
+                                                "delta_s": 90, "rotates": True}})
+            entries = {e["extendedAddress"]: e for e in suggest_entries(report["unknown"], {}, hints)}
+            self.assertIn("possibly a new address of Living Room Apple TV (which rotates): its previous "
+                          f"address {TV2} fell silent 1 min after this one appeared", entries[self.NEW.upper()]["note"])
+            self.assertNotIn("possibly", entries[self.LATER.upper()]["note"])
+            self.assertNotIn("possibly", entries[self.OTHER.upper()]["note"])
+
+    def test_no_hint_when_the_device_kept_talking_after(self):
+        with tempfile.TemporaryDirectory() as d:
+            names = self._names(d)
+            seen = self._seen()
+            seen.touch(TV2, self.T + 3600, 1)         # the old address was heard again an hour later
+            report = seen.report(names, quiet_after_s=1800, now=self.T + 7300)
+            self.assertEqual(rotation_hints(report["unknown"], seen.table, names), {})
 
 
 class AdoptTest(unittest.TestCase):

@@ -195,14 +195,19 @@ def main(argv=None) -> int:
 
     if args.cmd == "report":
         import sys
-        from .names import DeviceNames, LastSeen, load_observed_names, suggest_entries
+        from .names import DeviceNames, LastSeen, load_observed_names, rotation_hints, suggest_entries
         names = DeviceNames(cfg.devices_path)
         seen = LastSeen(cfg.state_dir / "last-seen.json")
         report = seen.report(names, quiet_after_s=args.quiet_minutes * 60,
                              min_rssi_dbm=cfg.quiet_min_rssi_dbm)
         if args.suggest:
-            entries = suggest_entries(report["unknown"], load_observed_names(cfg.state_dir))
+            hints = rotation_hints(report["unknown"], seen.table, names)
+            entries = suggest_entries(report["unknown"], load_observed_names(cfg.state_dir), hints)
             print(json.dumps(entries, indent=2, ensure_ascii=False))
+            for addr, h in hints.items():
+                print(f"{addr}: looks like {h['name']!r} rotated its address "
+                      f"({h['delta_s']:+d} s from its previous one going silent). If so: "
+                      f"threadwatch adopt {addr} '{h['name']}'", file=sys.stderr)
             if entries:
                 print(f"{len(entries)} entr{'y' if len(entries) == 1 else 'ies'} to fill in and "
                       f"paste into {_inventory_path(cfg).name}, or name one directly with: "

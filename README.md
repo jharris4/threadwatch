@@ -96,7 +96,9 @@ returns, then name it:
 
 `adopt` appends to `config/devices.json` (an existing name gains the
 address, which is how a rotation is recorded); `--suggest` prefills names
-from SRP hostnames when credentials are configured. If you run Home
+from SRP hostnames when credentials are configured, and flags an unknown
+address that appeared just as a named device's last address fell silent
+as probably that device's new address, with the `adopt` line to run. If you run Home
 Assistant + OTBR, its Thread panel and the OTBR REST API map most
 addresses to names for you (see docs/HOME-ASSISTANT.md).
 

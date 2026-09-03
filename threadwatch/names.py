@@ -221,12 +221,54 @@ def load_observed_names(state_dir: Path) -> dict[str, dict[str, int]]:
     return data if isinstance(data, dict) else {}
 
 
-def suggest_entries(unknown: list[dict], observed: dict[str, dict[str, int]]) -> list[dict]:
+ROTATION_WINDOW_S = 15 * 60
+
+
+def rotation_hints(unknown: list[dict], table: dict[str, dict], names: DeviceNames,
+                   window_s: float = ROTATION_WINDOW_S) -> dict[str, dict]:
+    """Which unknown addresses look like a known device's new address.
+
+    A rotating device (Apple TV, HomePod) stops using one extended address
+    and starts another within minutes. So: for every named device, the
+    moment its last known address was last heard; an unknown address that
+    first appeared within ``window_s`` of that moment, after which none of
+    the device's known addresses were heard again while the unknown one
+    kept talking, is probably the same device. Returns {unknown addr:
+    {"name", "previous", "delta_s", "rotates"}} with the closest candidate,
+    ``rotates`` meaning the inventory already lists several addresses."""
+    devices: dict[str, list[str]] = {}
+    for a, entry in names.by_addr.items():
+        if entry.get("name"):
+            devices.setdefault(entry["name"], []).append(a)
+    hints = {}
+    for item in unknown:
+        born = item.get("first_seen")
+        if born is None:
+            continue
+        best = None
+        for name, addrs in devices.items():
+            rows = [(table[a]["last_seen"], a) for a in addrs if a in table]
+            if not rows:
+                continue
+            last, prev = max(rows)
+            delta = born - last
+            outlived = item.get("last_seen", born) > last + window_s   # the new address carried on alone
+            if abs(delta) <= window_s and outlived and (best is None or abs(delta) < abs(best["delta_s"])):
+                best = {"name": name, "previous": prev, "delta_s": round(delta), "rotates": len(addrs) > 1}
+        if best:
+            hints[item["addr"]] = best
+    return hints
+
+
+def suggest_entries(unknown: list[dict], observed: dict[str, dict[str, int]],
+                    hints: Optional[dict[str, dict]] = None) -> list[dict]:
     """A devices.json entry per unknown address from a LastSeen report, ready
     to paste. The name is the most-sighted harvested hostname, or blank
     (a blank name keeps the address in the unknown list until filled in);
     the note carries what the recorder knows so the entry can be matched
-    to a real device (power-cycle test, OTBR's device list, ...)."""
+    to a real device (power-cycle test, OTBR's device list, ...), and a
+    rotation hint (rotation_hints) when a named device fell silent as this
+    address appeared."""
     out = []
     for item in unknown:
         addr = item["addr"]
@@ -242,6 +284,13 @@ def suggest_entries(unknown: list[dict], observed: dict[str, dict[str, int]]) ->
                      + (f" ({rssi} dBm)" if rssi is not None else ""))
         if hostnames:
             facts.append("advertised as " + ", ".join(hostnames[:3]))
+        hint = (hints or {}).get(addr)
+        if hint:
+            d = hint["delta_s"]
+            when = "as" if abs(d) < 60 else f"{abs(d) // 60} min {'after' if d > 0 else 'before'}"
+            facts.append(f"possibly a new address of {hint['name']}"
+                         f"{' (which rotates)' if hint['rotates'] else ''}: its previous address "
+                         f"{hint['previous']} fell silent {when} this one appeared")
         out.append({"name": hostnames[0] if hostnames else "",
                     "extendedAddress": addr.upper(),
                     "note": "; ".join(facts)})

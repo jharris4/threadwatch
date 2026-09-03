@@ -79,8 +79,8 @@ class Detector:
             if spread <= 0.25 * mean:
                 self.storm_active = True
                 self._alert(period=mean, onsets=[round(t, 1) for t in recent])
-        else:
-            self.storm_active = False
+        # An off-period onset (an unrelated burst during a storm) does not
+        # end the storm; _close_window clears it after three missed periods.
 
     def _alert(self, **details) -> None:
         # Bookkeeping only. Notification is the Pipeline's job: it emits a

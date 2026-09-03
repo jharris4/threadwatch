@@ -88,6 +88,37 @@ class EpisodeTest(unittest.TestCase):
         self.assertEqual(eps[0]["title"], "24 devices first seen")
 
 
+class LongEpisodeTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name) / "events"
+        self.log = EventLog(self.dir)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_multi_day_silence_shows_on_every_day_and_closes_everywhere(self):
+        self.log.emit("device_quiet", "warning", T0 - 3 * 86400, addr=AQ, name="AQ", silent_for_s=1800)
+        for d in range(-3, 1):
+            eps = day_episodes(self.dir, day_of(T0 + d * 86400), now=T0)
+            self.assertEqual([e["title"] for e in eps], ["AQ quiet for 3d0h (still quiet)"], d)
+            self.assertEqual(eps[0]["carried_over"], d != -3)
+        self.log.emit("device_returned", "notice", T0 - 3600, addr=AQ, name="AQ")
+        for d in range(-3, 1):
+            eps = day_episodes(self.dir, day_of(T0 + d * 86400), now=T0)
+            self.assertEqual([e["title"] for e in eps], ["AQ quiet for 2d23h"], d)
+        self.assertEqual(day_episodes(self.dir, day_of(T0 + 86400), now=T0 + 2 * 86400), [])
+
+    def test_recurring_rows_split_after_a_gap_and_stay_off_empty_days(self):
+        for d in (-1, 1):
+            self.log.emit("mle_rejoin_attempt", "notice", T0 + d * 86400, addr=AQ, name="AQ", command="Parent Request")
+        self.assertEqual(day_episodes(self.dir, day_of(T0), now=T0 + 2 * 86400), [])
+        self.assertEqual(len(device_history(self.dir, AQ)), 2)
+        self.log.emit("mle_rejoin_attempt", "notice", T0 + 86400 + 600, addr=AQ, name="AQ", command="Child ID Request")
+        rows = device_history(self.dir, AQ)
+        self.assertEqual([r["count"] for r in rows], [2, 1])
+
+
 class DayViewTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

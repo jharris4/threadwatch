@@ -134,10 +134,22 @@ def list_days(events_dir: Path) -> list[str]:
     return sorted(p.stem for p in events_dir.glob("*.jsonl") if DAY_RE.match(p.stem))
 
 
+_read_cache: dict[Path, tuple[tuple, list]] = {}   # path -> ((mtime, size), records)
+
+
 def read_day(events_dir: Path, day: str) -> list[dict]:
+    """Records of one day. Parsed files are cached by (mtime, size): the
+    review pages read the whole history per request, and only today's file
+    ever changes."""
     path = events_dir / f"{day}.jsonl"
-    if not path.exists():
+    try:
+        st = path.stat()
+    except OSError:
         return []
+    stamp = (st.st_mtime_ns, st.st_size)
+    hit = _read_cache.get(path)
+    if hit is not None and hit[0] == stamp:
+        return list(hit[1])
     out = []
     for line in path.read_text().splitlines():
         line = line.strip()
@@ -146,7 +158,8 @@ def read_day(events_dir: Path, day: str) -> list[dict]:
                 out.append(json.loads(line))
             except ValueError:
                 continue
-    return out
+    _read_cache[path] = (stamp, out)
+    return list(out)
 
 
 def iter_days(events_dir: Path, first: Optional[str] = None,

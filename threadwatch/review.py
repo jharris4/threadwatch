@@ -15,10 +15,16 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from .events import day_bounds, day_of, iter_days, list_days, read_day
+from .events import day_bounds, day_of, iter_days, list_days, read_all, read_day
 from .names import DeviceNames, LastSeen, reception
 
 SEVERITY_RANK = {"info": 0, "notice": 1, "warning": 2, "critical": 3}
+
+# A recurring thing (the same bad link, the same neighbour's PAN, the same
+# device rejoining) is one row while its records keep coming, and a new row
+# after this much silence; without a limit a device that rejoins once a day
+# would be a single row for the whole history.
+GAP_S = {"retransmissions": 3600.0, "rejoin": 3600.0, "foreign_pan": 86400.0}
 
 
 def _label(rec: dict) -> str:
@@ -109,7 +115,7 @@ def group_episodes(records: list[dict], now: Optional[float] = None) -> list[dic
         elif ev == "retransmission_elevation":
             key = (rec.get("top_sender") or "", rec.get("top_target") or "")
             ep = retrans.get(key)
-            if ep is None:
+            if ep is None or rec["ts"] - ep["end"] > GAP_S["retransmissions"]:
                 who = f"{key[0]} -> {key[1]}" if key[0] else "mesh-wide"
                 ep = retrans[key] = new("retransmissions", rec, f"retransmissions: {who}",
                                         rec.get("note", ""), max_rate=rec.get("rate", 0))
@@ -119,7 +125,7 @@ def group_episodes(records: list[dict], now: Optional[float] = None) -> list[dic
         elif ev == "possible_foreign_pan":
             key = (rec.get("pan"), rec.get("src"))
             ep = foreign.get(key)
-            if ep is None:
+            if ep is None or rec["ts"] - ep["end"] > GAP_S["foreign_pan"]:
                 foreign[key] = new("foreign_pan", rec, f"foreign PAN {rec.get('pan')} from {rec.get('src')}",
                                    f"ours is {rec.get('dominant_pan')}")
             else:
@@ -127,7 +133,7 @@ def group_episodes(records: list[dict], now: Optional[float] = None) -> list[dic
         elif ev == "mle_rejoin_attempt":
             key = _label(rec)
             ep = rejoin.get(key)
-            if ep is None:
+            if ep is None or rec["ts"] - ep["end"] > GAP_S["rejoin"]:
                 rejoin[key] = new("rejoin", rec, f"{key} rejoin attempt", rec.get("command", ""))
             else:
                 bump(ep, rec)
@@ -168,16 +174,13 @@ def group_episodes(records: list[dict], now: Optional[float] = None) -> list[dic
 
 
 def day_episodes(events_dir: Path, day: str, now: Optional[float] = None) -> list[dict]:
-    """Episodes that touch a day. The neighbouring days are read too so a
-    quiet spell that started yesterday and ended today shows on both days
-    with its real duration, and one still open today is not shown as open
-    on yesterday's page once it has closed."""
-    from .events import next_day, prev_day
+    """Episodes that touch a day. Grouping runs over the whole history, so a
+    silence that began days ago and is still open appears on every day it
+    covers with its real duration, and closes everywhere once the device
+    returns. The day files are small and cached (events.read_day)."""
     start, end = day_bounds(day)
-    records = (read_day(events_dir, prev_day(day)) + read_day(events_dir, day)
-               + read_day(events_dir, next_day(day)))
     out = []
-    for ep in group_episodes(records, now):
+    for ep in group_episodes(read_all(events_dir), now):
         ep_end = ep["end"] if ep["end"] is not None else (now or time.time())
         if ep_end >= start and ep["start"] < end:
             ep["carried_over"] = ep["start"] < start   # began on an earlier day

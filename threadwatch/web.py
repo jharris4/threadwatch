@@ -92,7 +92,7 @@ LEGEND = [
      "one later is a genuinely new or newly named device, or a device at the edge of range "
      "heard for the first time."),
     ("returned", "Returned (without a matching quiet)",
-     "A device came back but its quiet record is on an earlier day or predates the log."),
+     "A device came back but its quiet record predates the log."),
     ("foreign_pan", "Foreign PAN",
      "Frames on this channel carrying a PAN id that is not this network's, seen repeatedly. "
      "Another Thread mesh, or a Zigbee network on the same channel. Harmless, but it competes "

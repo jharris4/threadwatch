@@ -257,10 +257,19 @@ class Site:
         now = time.time()
         names = self.names()
         rows = device_rows(self.seen(), names, self.cfg.quiet_min_rssi_dbm, now)
-        st = self.status()
-        dominant = None
+        weight: dict = {}
+        for r in rows:
+            if r["pan"] is not None:
+                weight[r["pan"]] = weight.get(r["pan"], 0) + r["frames"]
+        dominant = max(weight, key=weight.get) if weight else None
         trs = []
         for r in rows:
+            if r["pan"] is None:
+                pan_html = '<span class="muted">?</span>'
+            elif r["pan"] == dominant:
+                pan_html = '<span class="muted">ours</span>'
+            else:
+                pan_html = f'<span class="warn">foreign 0x{r["pan"]:04x}</span>'
             rec = r["reception"]
             rec_html = {"good": '<span class="ok">good</span>', "marginal": '<span class="warn">marginal</span>'}.get(rec, '<span class="muted">?</span>')
             silent = r["silent_for_s"]
@@ -270,13 +279,13 @@ class Site:
                        f'<td class="muted">{esc(r["role"] or "")}</td>'
                        f'<td>{seen_html}</td>'
                        f'<td class="n">{esc(r["rssi_dbm"])}</td><td>{rec_html}</td>'
-                       f'<td class="n">{r["frames"]:,}</td>'
+                       f'<td class="n">{r["frames"]:,}</td><td>{pan_html}</td>'
                        f'<td class="muted"><code>{esc(r["addr"])}</code></td></tr>')
         unknown = sum(1 for r in rows if r["name"] is None)
         note = (f'<p class="muted">{len(rows)} addresses tracked'
                 + (f', <span class="warn">{unknown} not in devices.json</span>' if unknown else "") + '.</p>')
         table = (f'<table><tr><th>device</th><th>role</th><th>last heard</th><th>rssi</th>'
-                 f'<th>reception</th><th>frames</th><th>address</th></tr>{"".join(trs)}</table>')
+                 f'<th>reception</th><th>frames</th><th>pan</th><th>address</th></tr>{"".join(trs)}</table>')
         return self.page("devices", f'<h1>devices</h1>{note}{table}')
 
     def device_page(self, addr: str) -> str:

@@ -182,6 +182,7 @@ class DayViewTest(unittest.TestCase):
             status, body = get("/devices")
             self.assertIn("Basement AQ", body)
             self.assertIn("marginal", body)
+            self.assertIn(">ours<", body)
             status, body = get(f"/device/{AQ}")
             self.assertIn("IKEA ALPSTUGA", body)
             self.assertIn("quiet for 2h00m", body)

@@ -65,6 +65,10 @@ def main(argv=None) -> int:
     p_events.add_argument("--day", help="YYYY-MM-DD: every record from that local day")
     p_events.add_argument("--episodes", action="store_true",
                           help="group into episodes the way the web review page does")
+    p_events.add_argument("--device", help="only records about this device (name, part of one, or address); "
+                                           "every address of a rotating device counts")
+    p_events.add_argument("--severity", choices=("info", "notice", "warning", "critical"),
+                          help="only records at this severity or above")
 
     p_web = sub.add_parser("web", help="serve the review pages (day-by-day events, devices)")
     p_web.add_argument("--bind", help="address to listen on (default: [web] bind, else 0.0.0.0)")
@@ -138,26 +142,49 @@ def main(argv=None) -> int:
 
     if args.cmd == "events":
         from .events import list_days, migrate_legacy, read_day
+        from .review import SEVERITY_RANK
         migrate_legacy(cfg.events_dir)
         days = list_days(cfg.events_dir)
         if not days:
             print("no events yet")
             return 0
+        addrs = None
+        if args.device:
+            from .names import DeviceNames
+            try:
+                addrs = set(DeviceNames(cfg.devices_path).resolve(args.device)[0])
+            except ValueError as exc:
+                parser.error(str(exc))
+        floor = SEVERITY_RANK.get(args.severity or "info", 0)
+
+        def wanted(rec):
+            if SEVERITY_RANK.get(rec.get("severity", "info"), 0) < floor:
+                return False
+            if addrs is not None:
+                who = (rec.get("addr") or rec.get("src") or "").lower()
+                return who in addrs
+            return True
+
+        what = " ".join(filter(None, [f"about {args.device!r}" if args.device else "",
+                                      f"at {args.severity} or above" if args.severity else ""]))
         if args.day:
             from .web import valid_day
             if not valid_day(args.day):
                 parser.error(f"--day wants YYYY-MM-DD, not {args.day!r}")
-            records = read_day(cfg.events_dir, args.day)
+            records = [r for r in read_day(cfg.events_dir, args.day) if wanted(r)]
             if not records:
-                print(f"no events on {args.day}")
+                print(f"no events {what + ' ' if what else ''}on {args.day}")
                 return 0
         else:
             records = []
             for day in reversed(days):
-                records = read_day(cfg.events_dir, day) + records
+                records = [r for r in read_day(cfg.events_dir, day) if wanted(r)] + records
                 if len(records) >= args.n:
                     break
             records = records[-args.n:]
+            if not records:
+                print(f"no events {what}")
+                return 0
         if args.episodes:
             from .review import fmt_episode, group_episodes
             for ep in group_episodes(records):

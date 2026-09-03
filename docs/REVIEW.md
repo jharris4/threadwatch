@@ -66,6 +66,7 @@ The same grouping is available on the command line:
 
     bin/threadwatch events --episodes            # latest records, grouped
     bin/threadwatch events --day 2026-09-02      # one day, raw
+    bin/threadwatch events --device "Apple TV" --severity warning -n 10   # one device, paged things only
     bin/threadwatch why "Office AQ"              # one device: ring narrative, then its episodes
 
 ## Storage

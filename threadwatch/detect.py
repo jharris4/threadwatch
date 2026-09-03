@@ -103,11 +103,17 @@ class Detector:
         self.last_alert_details = details
 
     def snapshot(self) -> dict:
-        recent = list(self.counts)[-6:]
-        return {
-            "baseline_frames_per_window": round(self._baseline(), 1),
-            "recent_windows": recent,
-            "storm_active": self.storm_active,
-            "flood_onsets_recent": [round(t, 1) for t in list(self.onsets)[-5:]],
-            "alerts_sent": self.alerts_sent,
-        }
+        # Called from the status thread while the capture thread appends:
+        # a deque copy can raise 'mutated during iteration'; try again.
+        for _attempt in range(3):
+            try:
+                return {
+                    "baseline_frames_per_window": round(self._baseline(), 1),
+                    "recent_windows": list(self.counts)[-6:],
+                    "storm_active": self.storm_active,
+                    "flood_onsets_recent": [round(t, 1) for t in list(self.onsets)[-5:]],
+                    "alerts_sent": self.alerts_sent,
+                }
+            except RuntimeError:
+                continue
+        return {"storm_active": self.storm_active, "alerts_sent": self.alerts_sent}

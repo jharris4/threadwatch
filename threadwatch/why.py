@@ -62,22 +62,42 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None) -> None:
     prev_frame = None
     mle_events = []
 
+    import time as _t
+
+    def hour_of(ts):
+        return _t.strftime("%m-%d %Hh", _t.localtime(ts))
+
+    def inspect(f, h):
+        """MLE visibility for one of our data frames (credentials only)."""
+        from .crypto import Decryptor, MLE_UDP_PORT
+        ext = f.src if len(f.src) == 16 else None
+        plain = decryptor.decrypt_frame(f.psdu, ext, f.src if len(f.src) == 4 else None)
+        if not plain:
+            return
+        r = Decryptor.udp_ports(plain, mac_src_ext=ext,
+                                mac_dst_ext=f.dst if f.dst and len(f.dst) == 16 else None,
+                                mac_dst_short=f.dst if f.dst and len(f.dst) == 4 else None)
+        if r and MLE_UDP_PORT in (r[0], r[1]):
+            info = decryptor.parse_mle(r[2], ext or decryptor.short_to_ext.get(f.src), r[3], r[4])
+            if info:
+                h["mle"][info.command_name] = h["mle"].get(info.command_name, 0) + 1
+                if info.command_name in ("Parent Request", "Child ID Request", "Announce"):
+                    mle_events.append((f.ts, info.command_name))
+
+    undecodable = 0
     for path in files:
         try:
             with open(path, "rb") as fh:
                 for f in PcapStreamReader(fh):
                     is_ours = (ident(f) if decryptor is not None else f.src) in addr_set
-                    # ACK for our previous transmission
+                    # ACK for our previous unicast transmission
                     if (prev_frame is not None and f.ftype == 2
                             and f.seq == prev_frame.seq and f.ts - prev_frame.ts < 0.05):
-                        import time as _t
-                        hours[_t.strftime("%m-%d %Hh", _t.localtime(prev_frame.ts))]["acked"] += 1
+                        hours[hour_of(prev_frame.ts)]["acked"] += 1
                     prev_frame = f if is_ours and f.dst not in (None, "ffff") else None
                     if not is_ours:
                         continue
-                    import time as _t
-                    hkey = _t.strftime("%m-%d %Hh", _t.localtime(f.ts))
-                    h = hours[hkey]
+                    h = hours[hour_of(f.ts)]
                     h["frames"] += 1
                     if f.ftype in (1, 3) and f.dst not in (None, "ffff"):   # unicast only: broadcasts are never ACKed
                         h["tx"] += 1
@@ -91,23 +111,15 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None) -> None:
                         gaps.append((last_ts, f.ts))
                     last_ts = f.ts
                     if decryptor is not None and f.ftype == 1:
-                        from .crypto import Decryptor, MLE_UDP_PORT
-                        plain = decryptor.decrypt_frame(f.psdu, f.src if len(f.src) == 16 else None,
-                                                        f.src if len(f.src) == 4 else None)
-                        if plain:
-                            r = Decryptor.udp_ports(plain, mac_src_ext=f.src if len(f.src) == 16 else None,
-                                                    mac_dst_ext=f.dst if f.dst and len(f.dst) == 16 else None,
-                                                    mac_dst_short=f.dst if f.dst and len(f.dst) == 4 else None)
-                            if r and MLE_UDP_PORT in (r[0], r[1]):
-                                info = decryptor.parse_mle(r[2], f.src if len(f.src) == 16 else None, r[3], r[4])
-                                if info:
-                                    h["mle"][info.command_name] = h["mle"].get(info.command_name, 0) + 1
-                                    if info.command_name in ("Parent Request", "Child ID Request", "Announce"):
-                                        mle_events.append((f.ts, info.command_name))
+                        try:
+                            inspect(f, h)
+                        except Exception:   # one malformed unsecured payload; keep going
+                            undecodable += 1
         except Exception as exc:
             print(f"(skipping {path}: {exc})")
+    if undecodable:
+        print(f"({undecodable} frames with undecodable payloads skipped)")
 
-    import time as _t
     print(f"=== {display} ({', '.join(addrs)}) ===")
     if first_ts is None:
         print("No frames from this device in the analyzed window.")

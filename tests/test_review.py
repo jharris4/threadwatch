@@ -188,6 +188,23 @@ class DayViewTest(unittest.TestCase):
                         self.cfg.quiet_min_rssi_dbm, day_of(T0), now=T0 + 9 * 3600)
         self.assertEqual(card["summary"]["note"], "last 24 h: fine")
 
+    def test_devices_filter_and_sort(self):
+        from threadwatch.names import DeviceNames, LastSeen
+        from threadwatch.review import device_rows, dominant_pan, select_devices
+        seen = LastSeen(self.cfg.state_dir / "last-seen.json")
+        rows = device_rows(seen, DeviceNames(self.cfg.devices_path), self.cfg.quiet_min_rssi_dbm, T0 + 7200)
+        dom = dominant_pan(seen)
+        pick = lambda **kw: [r["name"] or r["addr"] for r in select_devices(rows, dom, **kw)]
+        self.assertEqual(pick(), ["Basement AQ", "Irrigation", "1afe3b8423f332de", "72d035122fdf06f6"])
+        self.assertEqual(pick(only="unknown"), ["1afe3b8423f332de", "72d035122fdf06f6"])
+        self.assertEqual(pick(only="quiet"), ["Basement AQ"])
+        self.assertEqual(pick(only="down"), ["Irrigation"])
+        self.assertEqual(pick(only="marginal"), ["Basement AQ"])
+        self.assertEqual(pick(only="foreign"), ["1afe3b8423f332de"])
+        self.assertEqual(pick(sort="rssi"), ["Basement AQ", "Irrigation", "72d035122fdf06f6", "1afe3b8423f332de"])   # weakest first, unheard last
+        self.assertEqual(pick(sort="frames"), ["Basement AQ", "Irrigation", "72d035122fdf06f6", "1afe3b8423f332de"])
+        self.assertEqual(pick(only="nonsense", sort="nonsense"), pick())
+
     def test_device_history_is_newest_first(self):
         kinds = [e["kind"] for e in device_history(self.cfg.events_dir, AQ)]
         self.assertEqual(kinds, ["retransmissions", "quiet"])
@@ -216,6 +233,14 @@ class DayViewTest(unittest.TestCase):
             self.assertIn("Basement AQ", body)
             self.assertIn("marginal", body)
             self.assertIn(">ours<", body)
+            status, body = get("/devices?only=unknown&sort=frames")
+            self.assertNotIn("Basement AQ", body)
+            self.assertIn("showing 2 (not in devices.json)", body)
+            self.assertIn('href="/devices?only=unknown">', body)            # sort=name link keeps the filter
+            self.assertIn('href="/devices?only=quiet&sort=frames"', body)  # filter links keep the sort
+            self.assertIn("Basement AQ", get("/devices?only=nothing&sort=zzz")[1])   # unknown parameters: the full page
+            self.assertEqual([d["name"] for d in json.loads(get("/api/devices?only=quiet")[1])["devices"]],
+                             ["Basement AQ"])
             status, body = get(f"/device/{AQ}")
             self.assertIn("IKEA ALPSTUGA", body)
             self.assertIn("quiet for 2h00m", body)

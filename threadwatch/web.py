@@ -13,12 +13,13 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from .events import DAY_RE, day_of, next_day, prev_day
 from .names import DeviceNames, LastSeen
-from .review import (capture_for_day, day_episodes, day_index, days_available,
-                     device_history, device_rows, dominant_pan, fmt_duration, now_card, today)
+from .review import (DEVICE_FILTERS, DEVICE_SORTS, capture_for_day, day_episodes, day_index,
+                     days_available, device_history, device_rows, dominant_pan, fmt_duration,
+                     now_card, select_devices, today)
 
 CSS = """
 :root{--bg:#fff;--fg:#1c1c1e;--muted:#6b6b70;--line:#e3e3e6;--card:#f6f6f8;
@@ -54,6 +55,8 @@ td.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:.7em .9em;margin:.6em 0}
 .card .k{color:var(--muted);font-size:.85em;text-transform:uppercase;letter-spacing:.03em;margin-right:.4em}
 .card .sep{color:var(--line);margin:0 .5em}
+.filters{display:flex;gap:.4em 1.2em;flex-wrap:wrap;margin:.3em 0 .8em;font-size:.9em}
+.filters span.k{color:var(--muted)}.filters a.cur{font-weight:650;color:var(--fg);text-decoration:underline}
 details{margin:1em 0}summary{cursor:pointer;color:var(--muted)}
 pre{font-size:.8em;overflow-x:auto;background:var(--card);padding:.6em;border-radius:6px}
 .empty{color:var(--muted);padding:1em 0}
@@ -302,12 +305,27 @@ class Site:
         return self.page(day, f'<h1>{esc(day)}</h1>{nav}{self.strip(day)}{self.now_html(day, now)}'
                               f'<p class="muted">{pk}</p><h2>episodes</h2>{table}{raw}')
 
-    def devices_page(self) -> str:
+    def devices_page(self, only: str = "", sort: str = "name") -> str:
         now = time.time()
         names = self.names()
         seen = self.seen()
-        rows = device_rows(seen, names, self.cfg.quiet_min_rssi_dbm, now)
+        every = device_rows(seen, names, self.cfg.quiet_min_rssi_dbm, now)
         dominant = dominant_pan(seen)
+        rows = select_devices(every, dominant, only, sort)
+        only = only if only in DEVICE_FILTERS else ""
+        sort = sort if sort in DEVICE_SORTS else "name"
+
+        def link(param, value, label, cur):
+            q = {"only": only, "sort": sort}
+            q[param] = value
+            href = "/devices" + ("?" + "&".join(f"{k}={v}" for k, v in q.items() if v and not (k == "sort" and v == "name")) if any(
+                v and not (k == "sort" and v == "name") for k, v in q.items()) else "")
+            return f'<a href="{href}"{" class=cur" if cur else ""}>{label}</a>'
+
+        filters = ('<div class="filters"><span class="k">show</span>' + link("only", "", "all", not only)
+                   + "".join(link("only", k, f"{v[0]}", only == k) for k, v in DEVICE_FILTERS.items())
+                   + '</div><div class="filters"><span class="k">order</span>'
+                   + "".join(link("sort", k, v[0], sort == k) for k, v in DEVICE_SORTS.items()) + '</div>')
         trs = []
         for r in rows:
             if r["pan"] is None:
@@ -327,12 +345,14 @@ class Site:
                        f'<td class="n">{esc(r["rssi_dbm"])}</td><td>{rec_html}</td>'
                        f'<td class="n">{r["frames"]:,}</td><td>{pan_html}</td>'
                        f'<td class="muted"><code>{esc(r["addr"])}</code></td></tr>')
-        unknown = sum(1 for r in rows if r["name"] is None)
-        note = (f'<p class="muted">{len(rows)} addresses tracked'
-                + (f', <span class="warn">{unknown} not in devices.json</span>' if unknown else "") + '.</p>')
+        unknown = sum(1 for r in every if r["name"] is None)
+        note = (f'<p class="muted">{len(every)} addresses tracked'
+                + (f', <span class="warn">{unknown} not in devices.json</span>' if unknown else "")
+                + (f'; showing {len(rows)} ({DEVICE_FILTERS[only][0]})' if only else "") + '.</p>')
         table = (f'<table><tr><th>device</th><th>role</th><th>last heard</th><th>rssi</th>'
-                 f'<th>reception</th><th>frames</th><th>pan</th><th>address</th></tr>{"".join(trs)}</table>')
-        return self.page("devices", f'<h1>devices</h1>{note}{table}')
+                 f'<th>reception</th><th>frames</th><th>pan</th><th>address</th></tr>{"".join(trs)}</table>'
+                 if trs else f'<p class="empty">no devices {DEVICE_FILTERS[only][0] if only else "tracked"}</p>')
+        return self.page("devices", f'<h1>devices</h1>{note}{filters}{table}')
 
     def device_page(self, addr: str) -> str:
         now = time.time()
@@ -387,7 +407,7 @@ class Site:
 
     # ------------------------------------------------------------ json
 
-    def api(self, path: str):
+    def api(self, path: str, query: dict):
         if path == "/api/status":
             return self.status()
         if path.startswith("/api/day/"):
@@ -401,7 +421,10 @@ class Site:
             return {"day": day, "episodes": eps, "records": read_day(self.cfg.events_dir, day),
                     "capture": capture_for_day(self.cfg.ring_dir, self.cfg.incidents_dir, day)}
         if path == "/api/devices":
-            return {"devices": device_rows(self.seen(), self.names(), self.cfg.quiet_min_rssi_dbm)}
+            seen = self.seen()
+            rows = device_rows(seen, self.names(), self.cfg.quiet_min_rssi_dbm)
+            return {"devices": select_devices(rows, dominant_pan(seen), query.get("only", ""),
+                                              query.get("sort", "name"))}
         if path.startswith("/api/device/"):
             addr = path[len("/api/device/"):].lower()
             eps = device_history(self.cfg.events_dir, addr)
@@ -415,12 +438,13 @@ class Site:
 
     # --------------------------------------------------------- routing
 
-    def respond(self, path: str) -> tuple[int, str, bytes]:
+    def respond(self, path: str, query_string: str = "") -> tuple[int, str, bytes]:
         """(status, content-type, body) for a request path."""
         if len(path) > 1:
             path = path.rstrip("/")   # /devices/ and /day/2026-09-02/ are the same pages
+        query = {k: v[-1] for k, v in parse_qs(query_string).items()}
         if path.startswith("/api/"):
-            data = self.api(path)
+            data = self.api(path, query)
             if data is None:
                 return 404, "application/json", b'{"error": "not found"}'
             return 200, "application/json", json.dumps(data, indent=1).encode()
@@ -432,7 +456,8 @@ class Site:
                 return 404, "text/plain", b"bad day"
             return 200, "text/html; charset=utf-8", self.day_page(day).encode()
         if path == "/devices":
-            return 200, "text/html; charset=utf-8", self.devices_page().encode()
+            return 200, "text/html; charset=utf-8", self.devices_page(
+                query.get("only", ""), query.get("sort", "name")).encode()
         if path == "/help":
             return 200, "text/html; charset=utf-8", self.help_page().encode()
         if path.startswith("/device/"):
@@ -451,7 +476,8 @@ def make_server(cfg, bind: str, port: int) -> ThreadingHTTPServer:
 
         def do_GET(self):
             try:
-                status, ctype, body = site.respond(urlparse(self.path).path)
+                url = urlparse(self.path)
+                status, ctype, body = site.respond(url.path, url.query)
             except Exception as exc:  # a page bug is a 500, never a dead server
                 status, ctype, body = 500, "text/plain", f"error: {type(exc).__name__}: {exc}".encode()
             self.send_response(status)

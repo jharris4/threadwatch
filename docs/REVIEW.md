@@ -23,7 +23,10 @@ is no authentication: keep it on your LAN or behind your own proxy.
   day page carries the same text as a tooltip.
 - **/devices**: every address the recorder tracks, with inventory name and
   role, how well the sniffer hears it, when it was last heard, and whether
-  it is on your PAN.
+  it is on your PAN. `?only=unknown|quiet|marginal|down|foreign` narrows
+  it and `?sort=last|rssi|frames` orders it (longest unheard, weakest,
+  busiest); the links at the top of the page set both. `/api/devices`
+  takes the same parameters.
 - **/device/<addr>**: one device's history across every day, as episodes.
 - **/api/status**, **/api/day/YYYY-MM-DD**, **/api/devices**,
   **/api/device/<addr>**: the same data as JSON, for Home Assistant or

@@ -251,9 +251,36 @@ def device_rows(seen: LastSeen, names: DeviceNames, min_rssi_dbm: float,
             "reception": reception(rssi, min_rssi_dbm),
             "pan": row.get("pan"),
             "polls": row.get("types", {}).get("3", 0),
+            "quiet": bool(row.get("quiet_reported")),
+            "degraded": bool(row.get("rssi_degraded")),
         })
     rows.sort(key=lambda r: ((r["name"] is None), (r["name"] or r["addr"]).lower()))
     return rows
+
+
+DEVICE_FILTERS = {
+    "unknown": ("not in devices.json", lambda r, dom: r["name"] is None),
+    "quiet": ("quiet now", lambda r, dom: r["quiet"]),
+    "marginal": ("heard marginally", lambda r, dom: r["reception"] == "marginal"),
+    "down": ("signal down", lambda r, dom: r["degraded"]),
+    "foreign": ("on another PAN", lambda r, dom: r["pan"] is not None and dom is not None and r["pan"] != dom),
+}
+DEVICE_SORTS = {
+    "name": ("name", lambda r: ((r["name"] is None), (r["name"] or r["addr"]).lower())),
+    "last": ("longest unheard", lambda r: -r["silent_for_s"]),
+    "rssi": ("weakest", lambda r: (r["rssi_dbm"] is None, r["rssi_dbm"] or 0)),
+    "frames": ("busiest", lambda r: -r["frames"]),
+}
+
+
+def select_devices(rows: list[dict], dominant: Optional[int], only: str = "", sort: str = "name") -> list[dict]:
+    """The devices page's subset and order. An unknown filter or sort name
+    is ignored rather than an error: the page still renders."""
+    f = DEVICE_FILTERS.get(only)
+    if f:
+        rows = [r for r in rows if f[1](r, dominant)]
+    s = DEVICE_SORTS.get(sort) or DEVICE_SORTS["name"]
+    return sorted(rows, key=s[1])
 
 
 def dominant_pan(seen: LastSeen) -> Optional[int]:

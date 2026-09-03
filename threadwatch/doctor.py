@@ -198,12 +198,40 @@ def check_services() -> list[Check]:
     return out
 
 
+def load_env(path: Path) -> list[Check]:
+    """Put config/alerts.env into this process's environment the way the
+    systemd unit does (EnvironmentFile), so sinks build the same here.
+    Variables already set win."""
+    if not path.exists():
+        return []
+    out = []
+    mode = stat.S_IMODE(path.stat().st_mode)
+    if mode & 0o077:
+        out.append((WARN, "alerts.env", f"mode {mode:04o}: readable by others; chmod 400 it"))
+    loaded = 0
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        k, v = k.strip().removeprefix("export ").strip(), v.strip().strip("'\"")
+        if k and k not in os.environ:
+            os.environ[k] = v
+            loaded += 1
+    out.append((OK, "alerts.env", f"{loaded} secret(s) loaded for this check"))
+    return out
+
+
 def check_alerts(cfg) -> list[Check]:
     from .alerts import build_heartbeats, build_sinks
     problems = []
     sinks = build_sinks(cfg.alerts_raw, problems.append)
     beats = build_heartbeats(cfg.heartbeats_raw, problems.append)
-    out = []
+    out = load_env(cfg.config_dir / "alerts.env")
+    if out:   # secrets may have arrived just now: build again with them
+        problems.clear()
+        sinks = build_sinks(cfg.alerts_raw, problems.append)
+        beats = build_heartbeats(cfg.heartbeats_raw, problems.append)
     for p in problems:
         out.append((FAIL, "alerts", p))
     if not sinks:

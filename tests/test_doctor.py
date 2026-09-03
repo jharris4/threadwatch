@@ -89,6 +89,19 @@ class DoctorTest(unittest.TestCase):
         self.assertEqual(self.levels(doctor.check_alerts(self.cfg)), [("warn", "alerts"), ("warn", "heartbeats")])
         self.cfg.alerts_raw = {"sinks": [{"name": "x", "type": "http", "url": "http://127.0.0.1:9/hook"}]}
         self.assertEqual(doctor.check_alerts(self.cfg)[0][0], "ok")
+        # A sink that needs a secret builds once alerts.env supplies it.
+        self.cfg.alerts_raw = {"sinks": [{"name": "y", "type": "http", "url": "http://127.0.0.1:9/hook",
+                                          "headers": {"Authorization": "Bearer ${DOCTOR_TEST_TOKEN}"}}]}
+        self.assertEqual(doctor.check_alerts(self.cfg)[0][0], "FAIL")
+        env = self.d / "alerts.env"
+        env.write_text("# secrets\nDOCTOR_TEST_TOKEN=abc\n")
+        os.chmod(env, 0o600)
+        try:
+            checks = doctor.check_alerts(self.cfg)
+            self.assertEqual(self.levels(checks)[:2], [("ok", "alerts.env"), ("ok", "alerts")])
+            self.assertEqual(os.environ.get("DOCTOR_TEST_TOKEN"), "abc")
+        finally:
+            os.environ.pop("DOCTOR_TEST_TOKEN", None)
         self.assertEqual(doctor.check_writable(self.cfg)[0][0], "ok")
         checks = doctor.run_doctor(self.cfg, find_port=lambda: "/dev/x", now=time.time())
         subjects = [c[1] for c in checks]

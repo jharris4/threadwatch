@@ -26,6 +26,13 @@ class TruncatedRingTest(unittest.TestCase):
         self.assertEqual(len(list(PcapStreamReader(io.BytesIO(cut)))), 1)
         self.assertEqual(complete_length_of(cut), 24 + 16 + 9)   # header + one whole record
 
+    def test_microseconds_never_round_to_a_full_second(self):
+        buf = io.BytesIO()
+        PcapWriter(buf, DLT_NOFCS).write(frame(1700000000.9999996))
+        f = next(iter(PcapStreamReader(io.BytesIO(buf.getvalue()))))
+        self.assertEqual(f.ts, 1700000001.0)
+        self.assertLess(int.from_bytes(buf.getvalue()[28:32], "little"), 1_000_000)
+
     def test_resumed_hour_file_drops_the_fragment_before_appending(self):
         with tempfile.TemporaryDirectory() as d:
             ring = RingWriter(Path(d), keep_files=5, dlt=DLT_NOFCS)

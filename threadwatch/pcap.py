@@ -115,6 +115,8 @@ class PcapWriter:
     def write(self, frame: Frame) -> None:
         ts_sec = int(frame.ts)
         ts_usec = int(round((frame.ts - ts_sec) * 1e6))
+        if ts_usec >= 1_000_000:   # rounding carried into the next second
+            ts_sec, ts_usec = ts_sec + 1, ts_usec - 1_000_000
         self.stream.write(struct.pack("<LLLL", ts_sec, ts_usec, len(frame.raw), len(frame.raw)))
         self.stream.write(frame.raw)
 

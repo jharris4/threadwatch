@@ -55,7 +55,9 @@ for unit in threadwatch threadwatch-web; do
       "$REPO/systemd/$unit.service" > "/etc/systemd/system/$unit.service"
 done
 systemctl daemon-reload
-systemctl enable --now threadwatch threadwatch-web
+systemctl enable threadwatch threadwatch-web
+# restart, not enable --now: an already-running unit must pick up the new code
+systemctl restart threadwatch threadwatch-web
 sleep 3
 systemctl --no-pager --lines=5 status threadwatch || true
 systemctl --no-pager --lines=3 status threadwatch-web || true

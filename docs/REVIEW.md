@@ -51,4 +51,5 @@ The same grouping is available on the command line:
 `data/state/events/YYYY-MM-DD.jsonl`, one small file per local day, kept
 forever (a busy day is a few kilobytes). `threadwatch freeze` copies the
 whole directory into the incident. A single `events.jsonl` from before
-day rolling is split into day files automatically on first start.
+day rolling is split into day files automatically the first time the
+capture daemon (or `threadwatch events`) runs; the web process only reads.

@@ -139,6 +139,7 @@ class LastSeen:
                 "name": name,
                 "role": names.role(addr),
                 "frames": row["frames"],
+                "first_seen": row.get("first_seen"),
                 "last_seen": row["last_seen"],
                 "silent_for_s": round(silent_for, 1),
                 "rssi_dbm": rssi,

@@ -15,14 +15,15 @@ question: *why did this device go offline?*
 
 - **Continuous capture** on your Thread channel into hourly pcap files,
   keeping a rolling week (configurable). ~30 MB/hour for a ~45-node mesh.
-- **A health event log** (one JSON-lines file per day) fed by many detectors, all
-  from cleartext MAC headers:
-  - devices going quiet / returning / silent-without-rejoin;
-  - per-device RSSI trend, ACK-success rate, poll cadence (catches slow
-    link degradation *before* a drop);
+- **A health event log** (one JSON-lines file per day) fed by several detectors,
+  all from cleartext MAC headers:
+  - devices going quiet / returning (a quiet without a rejoin points at the
+    device rather than the radio);
   - foreign-PAN frames and join-scan bursts;
   - traffic floods and phase-locked periodicity (the storm signature);
-  - MAC retransmission-rate elevation.
+  - MAC retransmission-rate elevation, attributed to the sender and target.
+  Per-device RSSI trend, ACK-success rate and poll cadence are tracked too
+  and shown by `threadwatch why`, not logged as events.
   Warning/critical events go to any number of alert sinks (plain HTTP with
   headers and a body template, or a local command), so Home Assistant,
   ntfy, Gotify, Discord and friends all work; heartbeats let Gatus,

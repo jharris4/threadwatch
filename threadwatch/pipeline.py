@@ -101,15 +101,36 @@ class Pipeline:
                 self.observed_names = json.loads(self.mle_names_path.read_text())
             except (json.JSONDecodeError, OSError):
                 pass
-        # Devices already past their quiet threshold in persisted state are
-        # marked as reported at startup, so a daemon restart does not
-        # re-announce every one of them; they still produce device_returned
-        # when they next transmit. Devices inside their threshold are left
-        # alone and get a normal device_quiet if the silence continues.
-        now = time.time()
-        for addr, row in self.seen.table.items():
-            if now - row.get("last_seen", now) > self.quiet_threshold_s(addr):
-                self.quiet_reported.add(addr)
+        # Silences that crossed their threshold while the recorder was down
+        # (or while it sat in the no-frames watchdog restart loop, where
+        # periodic() never runs) are announced now, once: the row carries a
+        # persisted "announced" flag, so a restart neither re-announces every
+        # quiet device nor swallows a silence nobody has heard about. Rows
+        # inside their threshold are left alone for periodic() to judge.
+        if not ephemeral:
+            now = time.time()
+            dominant = self._persisted_dominant_pan()
+            announced = 0
+            for addr, row in self.seen.table.items():
+                if now - row.get("last_seen", now) <= self.quiet_threshold_s(addr):
+                    row.pop("quiet_reported", None)
+                    continue
+                if row.get("quiet_reported"):
+                    self.quiet_reported.add(addr)
+                elif dominant is None or row.get("pan") in (None, dominant):
+                    self._report_quiet(addr, row, now)
+                    announced += 1
+            if announced:
+                self.seen.save()
+
+    def _persisted_dominant_pan(self) -> Optional[int]:
+        """Best guess at this network's PAN before any frame arrives: the one
+        the persisted rows have sent the most frames on."""
+        weight: dict[int, int] = {}
+        for row in self.seen.table.values():
+            if row.get("pan") is not None:
+                weight[row["pan"]] = weight.get(row["pan"], 0) + row.get("frames", 0)
+        return max(weight, key=weight.get) if weight else None
 
     # ------------------------------------------------------- quiet policy
 
@@ -200,6 +221,7 @@ class Pipeline:
                                  name=self.names.name(who))
             if who in self.quiet_reported:
                 self.quiet_reported.discard(who)
+                self.seen.table[who].pop("quiet_reported", None)
                 self.events.emit("device_returned", "notice", ts, addr=who,
                                  name=self.names.name(who))
 
@@ -359,26 +381,33 @@ class Pipeline:
             pan = row.get("pan")
             if dominant is not None and pan is not None and pan != dominant:
                 continue
-            silent = now - row["last_seen"]
-            if silent > self.quiet_threshold_s(addr):
-                self.quiet_reported.add(addr)
-                # A device the sniffer barely hears goes "quiet" whenever the
-                # link fades; log it, but do not page for it.
-                rssi = row.get("rssi")
-                marginal = reception(rssi, self.cfg.quiet_min_rssi_dbm) == "marginal"
-                self.events.emit(
-                    "device_quiet", "notice" if marginal else "warning", now, addr=addr,
-                    name=self.names.name(addr), silent_for_s=round(silent),
-                    profile="router" if self.is_router(addr) else "end-device",
-                    rssi_dbm=rssi, reception="marginal" if marginal else "good",
-                    note=("sniffer hears this device at the edge of its range; "
-                          "silence is more likely reception than failure" if marginal else
-                          "no frames heard; if no mle_rejoin_attempt follows, "
-                          "suspect device-internal failure rather than RF"))
+            if now - row["last_seen"] > self.quiet_threshold_s(addr):
+                self._report_quiet(addr, row, now)
         if self.observed_names and not self.ephemeral:
             tmp = self.mle_names_path.with_suffix(".tmp")
             tmp.write_text(json.dumps(self.observed_names, indent=1))
             tmp.replace(self.mle_names_path)
+
+    def _report_quiet(self, addr: str, row: dict, now: float) -> None:
+        """Emit device_quiet once and remember, in memory and in the row
+        (persisted with last-seen.json), that it has been announced."""
+        self.quiet_reported.add(addr)
+        row["quiet_reported"] = True
+        self.seen._dirty = True
+        silent = now - row["last_seen"]
+        # A device the sniffer barely hears goes "quiet" whenever the link
+        # fades; log it, but do not page for it.
+        rssi = row.get("rssi")
+        marginal = reception(rssi, self.cfg.quiet_min_rssi_dbm) == "marginal"
+        self.events.emit(
+            "device_quiet", "notice" if marginal else "warning", now, addr=addr,
+            name=self.names.name(addr), silent_for_s=round(silent),
+            profile="router" if self.is_router(addr) else "end-device",
+            rssi_dbm=rssi, reception="marginal" if marginal else "good",
+            note=("sniffer hears this device at the edge of its range; "
+                  "silence is more likely reception than failure" if marginal else
+                  "no frames heard; if no mle_rejoin_attempt follows, "
+                  "suspect device-internal failure rather than RF"))
 
     def device_summary(self) -> dict:
         out = {}

@@ -154,6 +154,12 @@ def run_capture(cfg: Config) -> None:
                 print(f"[threadwatch] no frames for {age:.0f}s - capture "
                       "stalled (host slept? dongle gone?); exiting for "
                       "supervisor restart", flush=True)
+                # The main thread is blocked in the FIFO read, so the table
+                # is not being written; keep what the last frames taught us.
+                try:
+                    pipe.seen.save()
+                except Exception:
+                    pass
                 os._exit(2)
 
     threading.Thread(target=_watchdog, daemon=True).start()

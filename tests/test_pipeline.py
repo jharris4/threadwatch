@@ -160,16 +160,37 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual(self._quiet(pipe), [(SENSOR, "end-device")])
         self.assertEqual(pipe.seen.table[STRANGER]["pan"], OTHER_PAN)
 
-    def test_restart_seeds_only_devices_past_their_threshold(self):
+    def test_restart_announces_a_silence_nobody_reported(self):
+        # The recorder was down (or in the no-frames restart loop, where
+        # periodic never runs) while the router crossed its window.
         now = time.time()
         pipe = self._pipe()
-        pipe.ingest(frame(now - 40 * 60, ROUTER))   # past router window: already "reported"
+        pipe.ingest(frame(now - 40 * 60, ROUTER))   # past router window, never announced
         pipe.ingest(frame(now - 40 * 60, SENSOR))   # inside end-device window: still eligible
         pipe.seen.save()
         pipe2 = self._pipe()
+        self.assertEqual(self._quiet(pipe2), [(ROUTER, "router")])
         self.assertEqual(pipe2.quiet_reported, {ROUTER})
         pipe2.periodic(now + 60 * 60)
-        self.assertEqual(self._quiet(pipe2), [(SENSOR, "end-device")])
+        self.assertEqual(self._quiet(pipe2), [(ROUTER, "router"), (SENSOR, "end-device")])
+        # A third start re-announces nothing: both silences are on record.
+        self.assertEqual(self._quiet(self._pipe()), [])
+
+    def test_restart_does_not_repeat_an_announced_silence_or_a_foreign_one(self):
+        now = time.time()
+        pipe = self._pipe()
+        for i in range(10):
+            pipe.ingest(frame(now - 3 * 3600 + i, SENSOR))
+        pipe.ingest(frame(now - 3 * 3600, STRANGER, pan=OTHER_PAN))
+        pipe.periodic(now - 60 * 60)                # announces the sensor, skips the foreign device
+        self.assertEqual(self._quiet(pipe), [(SENSOR, "end-device")])
+        pipe.seen.save()
+        pipe2 = self._pipe()
+        self.assertEqual(self._quiet(pipe2), [])
+        self.assertEqual(pipe2.quiet_reported, {SENSOR})
+        pipe2.ingest(frame(now, SENSOR))
+        self.assertEqual([r["event"] for r in pipe2.events.records], ["device_returned"])
+        self.assertNotIn("quiet_reported", pipe2.seen.table[SENSOR])
 
     def test_replay_neither_reads_nor_writes_live_state(self):
         now = time.time()

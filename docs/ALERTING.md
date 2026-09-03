@@ -80,10 +80,21 @@ out credentials. `alerts.env` is gitignored; `setup-host.sh` and
 name = "phone"                 # for journal lines and alert-test output
 type = "http"                  # http | command | ntfy (preset)
 min_severity = "warning"       # default warning
-cooldown_s = 300               # per event name, per sink; default 300
+cooldown_s = 300               # per event name, per sink; default 300 (see Digests)
 timeout_s = 10
 enabled = true
 ```
+
+### Digests
+
+The cooldown is per event name: the first `device_quiet` pages at once, and
+further `device_quiet` records inside the window are held back. When the
+window ends, whatever was held back goes out as one **digest** record: the
+same event name, `digest = true`, `count`, `name` = "N more", and the device
+names in `note`. So a second device failing three minutes after the first
+still reaches the phone within the cooldown, and a mesh-wide outage costs two
+messages instead of one per device. The digest opens the next window. A
+Home Assistant automation can key on `digest` to treat them differently.
 
 ### `type = "http"`
 

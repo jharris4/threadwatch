@@ -63,7 +63,7 @@ port = 8080
 # type = "http"
 # url = "http://homeassistant.local:8123/api/webhook/threadwatch-<random>"
 # min_severity = "warning"       # info | notice | warning | critical
-# cooldown_s = 300               # per event name, per sink
+# cooldown_s = 300               # per event name, per sink; held-back events arrive as one digest
 #
 # [[alerts.sinks]]
 # name = "phone"

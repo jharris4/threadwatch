@@ -24,6 +24,13 @@ definition may reference an environment variable as ``${NAME}``; the systemd
 unit loads ``config/alerts.env`` for that purpose. A sink whose variables are
 unset is disabled with a warning rather than crashing the recorder.
 
+A sink's cooldown is per event name: the first device_quiet pages at once,
+and further device_quiet records inside ``cooldown_s`` are held back. When
+the window ends, everything held back goes out as one *digest* record (same
+event name, ``digest = true``, ``count``, the names in ``note``), so a second
+failure never vanishes from the phone and a mesh-wide outage costs two
+messages rather than one per device.
+
 Templates use Python ``str.format`` field syntax over the event record plus a
 few derived fields (see ``TEMPLATE_FIELDS``). Missing fields render as empty
 strings. When the sink's Content-Type is JSON, substituted values are
@@ -61,6 +68,7 @@ TEMPLATE_FIELDS = {
     "summary": "one-line human summary: event, device, note",
     "record_json": "the whole event record as a JSON document",
     "hostname": "capture host name",
+    "count": "digest records only: how many suppressed events it stands for",
 }
 
 _ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
@@ -155,13 +163,31 @@ def _severity_index(name: str, default: int = 2) -> int:
 
 # ------------------------------------------------------------------- sinks
 
+def digest_record(event: str, records: list[dict], cooldown_s: float, now: float) -> dict:
+    """One record standing in for the events a cooldown held back."""
+    labels: list[str] = []
+    for r in records:
+        who = r.get("name") or r.get("addr") or r.get("src")
+        if who and who not in labels:
+            labels.append(who)
+    severity = max((r.get("severity", "info") for r in records), key=_severity_index)
+    shown = ", ".join(labels[:6]) + (f", +{len(labels) - 6} more" if len(labels) > 6 else "")
+    window = f"{cooldown_s / 60:.0f} min" if cooldown_s >= 60 else f"{cooldown_s:.0f} s"
+    n = len(records)
+    return {"ts": now, "event": event, "severity": severity, "digest": True, "count": n,
+            "name": f"{n} more", "addr": None,
+            "note": f"{n} more {event} in the {window} after the last page" + (f": {shown}" if shown else ""),
+            "first_ts": records[0].get("ts"), "last_ts": records[-1].get("ts")}
+
+
 @dataclass
 class Sink:
     name: str
     min_severity: int = 2          # warning
     cooldown_s: float = 300.0      # per event name, per sink
     timeout_s: float = 10.0
-    _last: dict = field(default_factory=dict)
+    _last: dict = field(default_factory=dict)      # event -> start of its current window
+    _pending: dict = field(default_factory=dict)   # event -> records held back this window
 
     def wants(self, record: dict, now: float, ignore_cooldown: bool = False) -> bool:
         if _severity_index(record.get("severity", "info"), 0) < self.min_severity:
@@ -170,9 +196,26 @@ class Sink:
             return True
         ev = record.get("event", "")
         if now - self._last.get(ev, 0.0) < self.cooldown_s:
+            self._pending.setdefault(ev, []).append(record)
             return False
         self._last[ev] = now
         return True
+
+    def next_digest_at(self) -> Optional[float]:
+        """When the earliest window with held-back records ends, or None."""
+        if not self._pending:
+            return None
+        return min(self._last.get(ev, 0.0) + self.cooldown_s for ev in self._pending)
+
+    def due_digests(self, now: float) -> list[dict]:
+        """Digests for windows that have ended; each opens the next window."""
+        out = []
+        for ev in list(self._pending):
+            if now - self._last.get(ev, 0.0) >= self.cooldown_s:
+                records = self._pending.pop(ev)
+                self._last[ev] = now
+                out.append(digest_record(ev, records, self.cooldown_s, now))
+        return out
 
     def send(self, record: dict) -> None:   # raises on failure
         raise NotImplementedError
@@ -358,12 +401,11 @@ class Dispatcher:
         if not self.sinks:
             return
         now = time.time()
-        targets = [s for s in self.sinks if s.wants(record, now)]
-        if not targets:
-            return
         with self._cv:
-            self._queue.append({"record": record, "sinks": targets})
-            self._cv.notify()
+            targets = [s for s in self.sinks if s.wants(record, now)]
+            if targets:
+                self._queue.append({"record": record, "sinks": targets})
+            self._cv.notify()   # a held-back record changes the next digest time
 
     def deliver_now(self, record: dict, ignore_cooldown: bool = True) -> list[tuple[Sink, Optional[str]]]:
         """Synchronous delivery for tests and `threadwatch alert-test`.
@@ -385,11 +427,17 @@ class Dispatcher:
         while True:
             with self._cv:
                 while not self._queue:
-                    self._cv.wait()
-                item = self._queue.pop(0)
-            for s in item["sinks"]:
+                    due = [t for t in (s.next_digest_at() for s in self.sinks) if t is not None]
+                    timeout = max(0.05, min(due) - time.time()) if due else None
+                    if not self._cv.wait(timeout=timeout):
+                        break   # a cooldown window ended: send its digest
+                item = self._queue.pop(0) if self._queue else None
+                now = time.time()
+                digests = [(s, rec) for s in self.sinks for rec in s.due_digests(now)]
+            sends = [(s, item["record"]) for s in item["sinks"]] if item else []
+            for s, record in sends + digests:
                 try:
-                    s.send(item["record"])
+                    s.send(record)
                 except Exception as exc:
                     self.log(f"alert sink '{s.name}' failed: {_describe_error(exc)}")
 

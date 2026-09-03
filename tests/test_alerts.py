@@ -168,6 +168,21 @@ class DeliveryTests(unittest.TestCase):
             self.assertEqual(json.loads(reqs[0]["body"])["event"], "device_quiet")
             self.assertEqual(len(read_all(Path(d) / "events")), 2)
 
+    def test_events_held_back_by_the_cooldown_arrive_as_one_digest(self):
+        sink = alerts.HttpSink(name="t", url=self.srv.url, cooldown_s=0.6,
+                               body='{{"event": "{event}", "who": "{who}", "note": "{note}", "count": "{count}"}}')
+        d = alerts.Dispatcher([sink], print)
+        for i, name in enumerate(["Stove Light", "Freezer Outlet", "Dining AQ"]):
+            d.offer({**REC, "name": name, "addr": "%016x" % i})
+        reqs = self.srv.wait(2)
+        self.assertEqual(len(reqs), 2)
+        first, digest = [json.loads(r["body"]) for r in reqs]
+        self.assertEqual(first["who"], "Stove Light")
+        self.assertEqual((digest["event"], digest["who"], digest["count"]), ("device_quiet", "2 more", "2"))
+        self.assertIn("Freezer Outlet, Dining AQ", digest["note"])
+        time.sleep(0.8)
+        self.assertEqual(len(self.srv.requests), 2)   # no digest without held-back events
+
     def test_failed_sink_is_logged_not_raised(self):
         bad = _Server(status=500)
         try:

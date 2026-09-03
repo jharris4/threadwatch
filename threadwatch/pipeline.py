@@ -271,6 +271,10 @@ class Pipeline:
                 self.seen.table[who].pop("quiet_reported", None)
                 self.events.emit("device_returned", "notice", ts, addr=who,
                                  name=self.names.name(who))
+                # Persist at once: a crash before the next 30 s save would
+                # leave the row flagged and a restart would announce this
+                # return a second time. Returns are rare, saves are cheap.
+                self.seen.save()
 
         # Beacons = someone scanning to join (or beacon requests).
         if f.ftype == 0:

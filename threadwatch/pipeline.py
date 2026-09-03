@@ -436,10 +436,14 @@ class Pipeline:
                                           "or elected a new leader")
                 self.partition = cur
         else:
-            for n in Decryptor.harvest_names(payload):
-                if f.src and len(n) > 8 and not n.startswith("_"):
-                    self.observed_names.setdefault(f.src, {})[n] = \
-                        self.observed_names.get(f.src, {}).get(n, 0) + 1
+            # Keyed by the extended address: a short address is reassigned
+            # when a parent restarts, and device_summary looks up by ext.
+            owner = ext or self.decryptor.short_to_ext.get(short or "")
+            if owner:
+                for n in Decryptor.harvest_names(payload):
+                    if len(n) > 8 and not n.startswith("_"):
+                        self.observed_names.setdefault(owner, {})[n] = \
+                            self.observed_names.get(owner, {}).get(n, 0) + 1
 
     # ------------------------------------------------------- housekeeping
 

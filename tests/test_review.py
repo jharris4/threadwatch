@@ -313,6 +313,13 @@ class DayViewTest(unittest.TestCase):
             self.assertEqual(data["episodes"][0]["kind"], "quiet")
             status, body = get("/")
             self.assertEqual(status, 200)
+            self.assertIn('<meta http-equiv="refresh" content="60">', body)
+            self.assertNotIn('http-equiv="refresh"', get(f"/day/{day}")[1])   # only today reloads
+            _, floored = get(f"/day/{day}?min=warning")
+            self.assertIn("phase-locked storm", floored)
+            self.assertNotIn("rejoin attempt", floored)                     # a notice
+            self.assertIn("3 of 6", floored)                                # quiet x2 (warning), storm
+            self.assertIn(f'href="/day/{day_of(T0 - 86400)}?min=warning"', floored)
             self.assertIn("quiet now", body)
             self.assertIn("signal down", body)
             self.assertIn('href="/devices?only=unknown">1 address</a>', body)

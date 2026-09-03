@@ -20,6 +20,9 @@ from .names import DeviceNames, LastSeen
 from .review import (DEVICE_FILTERS, DEVICE_SORTS, capture_for_day, day_episodes, day_index,
                      days_available, device_history, device_rows, devices_history, dominant_pan,
                      fmt_bytes, fmt_duration, incidents, now_card, select_devices, storage, today)
+from .review import SEVERITY_RANK
+
+REFRESH_S = 60   # today's page reloads itself this often
 
 CSS = """
 :root{--bg:#fff;--fg:#1c1c1e;--muted:#6b6b70;--line:#e3e3e6;--card:#f6f6f8;
@@ -209,9 +212,10 @@ class Site:
                 f'<b>{st.get("frames_total", 0):,}</b> frames &middot; {st.get("devices_tracked", 0)} devices '
                 f'&middot; {crypto} &middot; up {fmt_duration(st.get("uptime_s", 0))}</span></header>')
 
-    def page(self, title: str, body: str) -> str:
+    def page(self, title: str, body: str, refresh: bool = False) -> str:
+        meta = f'<meta http-equiv="refresh" content="{REFRESH_S}">' if refresh else ""
         return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
-                f'<meta name="viewport" content="width=device-width,initial-scale=1">'
+                f'<meta name="viewport" content="width=device-width,initial-scale=1">{meta}'
                 f'<title>{esc(title)} - threadwatch</title><style>{CSS}</style></head>'
                 f'<body>{self.header()}<main>{body}</main></body></html>')
 
@@ -262,15 +266,25 @@ class Site:
                     f'<span class="muted">{hm(s["ts"])}</span> {esc(s.get("note", ""))}</div>')
         return out
 
-    def day_page(self, day: str) -> str:
+    def day_page(self, day: str, min_severity: str = "") -> str:
         now = time.time()
+        floor = SEVERITY_RANK.get(min_severity)
         eps = day_episodes(self.cfg.events_dir, day, now)
+        total = len(eps)
+        if floor:
+            eps = [e for e in eps if SEVERITY_RANK.get(e["severity"], 0) >= floor]
+        q = f"?min={min_severity}" if floor else ""
         cap = capture_for_day(self.cfg.ring_dir, self.cfg.incidents_dir, day)
         avail = days_available(self.cfg.events_dir)
         first = avail[0] if avail else day
-        nav = (f'<div class="daynav"><a href="/day/{prev_day(day)}">&larr; {prev_day(day)}</a>'
-               f'<b>{esc(day)}</b>' + (f'<a href="/day/{next_day(day)}">{next_day(day)} &rarr;</a>'
-                                        if day < today() else '<span class="muted">today</span>') + '</div>')
+        is_today = day == today()
+        nav = (f'<div class="daynav"><a href="/day/{prev_day(day)}{q}">&larr; {prev_day(day)}</a>'
+               f'<b>{esc(day)}</b>' + (f'<a href="/day/{next_day(day)}{q}">{next_day(day)} &rarr;</a>'
+                                        if not is_today else '<span class="muted">today</span>') + '</div>')
+        sev = '<div class="filters"><span class="k">show</span>' + "".join(
+            f'<a href="/day/{day}{"?min=" + s if s else ""}"{" class=cur" if (s or "") == (min_severity if floor else "") else ""}>'
+            f'{label}</a>' for s, label in (("", "everything"), ("notice", "notice and up"), ("warning", "warning and up")))
+        sev += (f' <span class="muted">{len(eps)} of {total}</span>' if floor else "") + '</div>'
         if cap["ring_files"]:
             pk = f'<span class="ok">{len(cap["ring_files"])} hourly capture files still in the ring</span>'
         else:
@@ -301,12 +315,15 @@ class Site:
                         f'<td class="detail muted">{esc(ep["detail"])}</td></tr>')
         table = (f'<table><tr><th>time</th><th></th><th>what</th><th class="detail">detail</th></tr>'
                  f'{"".join(rows)}</table>' if rows else
+                 f'<p class="empty">nothing at {esc(min_severity)} or above this day</p>' if floor and total else
                  '<p class="empty">nothing logged this day</p>' if day >= first else
                  '<p class="empty">before the recorder\'s first day</p>')
         raw = (f'<details><summary>raw records</summary>'
                f'<p><a href="/api/day/{esc(day)}">JSON</a></p></details>')
+        live = f'<span class="muted">reloads every {REFRESH_S} s</span>' if is_today else ""
         return self.page(day, f'<h1>{esc(day)}</h1>{nav}{self.strip(day)}{self.now_html(day, now)}'
-                              f'<p class="muted">{pk}</p><h2>episodes</h2>{table}{raw}')
+                              f'<p class="muted">{pk} {live}</p>{sev}<h2>episodes</h2>{table}{raw}',
+                         refresh=is_today)
 
     def devices_page(self, only: str = "", sort: str = "name") -> str:
         now = time.time()
@@ -558,12 +575,12 @@ class Site:
                 return 404, "application/json", b'{"error": "not found"}'
             return 200, "application/json", json.dumps(data, indent=1).encode()
         if path in ("/", "/day"):
-            return 200, "text/html; charset=utf-8", self.day_page(today()).encode()
+            return 200, "text/html; charset=utf-8", self.day_page(today(), query.get("min", "")).encode()
         if path.startswith("/day/"):
             day = path[len("/day/"):]
             if not valid_day(day):
                 return 404, "text/plain", b"bad day"
-            return 200, "text/html; charset=utf-8", self.day_page(day).encode()
+            return 200, "text/html; charset=utf-8", self.day_page(day, query.get("min", "")).encode()
         if path == "/devices":
             return 200, "text/html; charset=utf-8", self.devices_page(
                 query.get("only", ""), query.get("sort", "name")).encode()

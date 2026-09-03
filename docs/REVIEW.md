@@ -18,7 +18,10 @@ is no authentication: keep it on your LAN or behind your own proxy.
   incidents last forever) is shown at the top. Today's page opens with a
   *right now* card: devices quiet at this moment, devices whose signal
   is down, and unnamed addresses; any day that has a daily summary shows
-  it under that.
+  it under that. Today's page reloads itself every minute.
+  `?min=notice` or `?min=warning` hides the rows below that severity
+  (the first-seen bursts, the marginal quiets) and carries through the
+  previous / next links.
 - **/help**: what every episode kind and severity means; every row on a
   day page carries the same text as a tooltip.
 - **/devices**: every address the recorder tracks, with inventory name and

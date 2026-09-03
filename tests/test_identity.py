@@ -100,6 +100,19 @@ class ResolveShortTest(unittest.TestCase):
             self.assertEqual((pipe.devices[SED].polls, pipe.devices[OTHER].polls), (3, 3))
             self.assertEqual(pipe.seen.table[SED]["last_seen"], t0 + 2)
 
+    def test_truncated_unsecured_plaintext_does_not_crash_ingest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dd = Path(tmp)
+            cfg = Config(data_dir=dd / "data")
+            dec = Decryptor(network_key=KEY)
+            pipe = Pipeline(cfg, NullEventLog(), dec)
+            fcf = 1 | 0x0040 | (2 << 10) | (1 << 12) | (3 << 14)      # unsecured data, ext source
+            for payload in (b"\x7f\x33\xf0", b"\x7f\x33\xf3", b"\x7f\x33\xf1\x12"):
+                psdu = struct.pack("<HBH", fcf, 1, PAN) + bytes.fromhex("00cc")[::-1] \
+                    + bytes.fromhex(SED)[::-1] + payload   # no FCS: the sniffer may strip it
+                pipe.ingest(parse_frame(1.0, psdu, 195))
+            self.assertEqual(dec.stats["parse_failed"], 3)
+
     def test_unresolvable_short_is_retried_only_after_backoff(self):
         with tempfile.TemporaryDirectory() as tmp:
             dd = Path(tmp)

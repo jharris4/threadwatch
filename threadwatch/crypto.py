@@ -62,7 +62,7 @@ class Decryptor:
     stats: dict = field(default_factory=lambda: {
         "mac_decrypted": 0, "mac_failed": 0, "mac_no_ext_addr": 0,
         "mle_decrypted": 0, "mle_failed": 0, "plaintext": 0,
-        "short_resolved": 0, "short_unresolved": 0,
+        "short_resolved": 0, "short_unresolved": 0, "parse_failed": 0,
     })
 
     def _keys_for_index(self, key_index: int):

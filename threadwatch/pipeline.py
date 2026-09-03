@@ -21,6 +21,7 @@ With Thread credentials (optional):
 from __future__ import annotations
 
 import json
+import struct
 import time
 from collections import deque
 from pathlib import Path
@@ -348,13 +349,21 @@ class Pipeline:
         plain = self.decryptor.decrypt_frame(f.psdu, ext, short)
         if plain is None:
             return
-        r = Decryptor.udp_ports(plain, mac_src_ext=ext, mac_dst_ext=dext, mac_dst_short=dshort)
-        if not r:
+        # Unsecured frames are unauthenticated bytes from anyone on the
+        # channel; a parse failure there must not take the capture down.
+        try:
+            r = Decryptor.udp_ports(plain, mac_src_ext=ext, mac_dst_ext=dext, mac_dst_short=dshort)
+            if not r:
+                return
+            sport, dport, payload, sip, dip = r
+            info = None
+            if MLE_UDP_PORT in (sport, dport):
+                src_for_mle = ext or self.decryptor.short_to_ext.get(short or "")
+                info = self.decryptor.parse_mle(payload, src_for_mle, sip, dip)
+        except (struct.error, IndexError, ValueError):
+            self.decryptor.stats["parse_failed"] += 1
             return
-        sport, dport, payload, sip, dip = r
         if MLE_UDP_PORT in (sport, dport):
-            src_for_mle = ext or self.decryptor.short_to_ext.get(short or "")
-            info = self.decryptor.parse_mle(payload, src_for_mle, sip, dip)
             if not info:
                 return
             if info.command_name in MLE_REJOIN_COMMANDS:

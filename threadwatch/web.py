@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
-from .events import DAY_RE, migrate_legacy, next_day, prev_day
+from .events import DAY_RE, next_day, prev_day
 from .names import DeviceNames, LastSeen
 from .review import (capture_for_day, day_episodes, day_index, days_available,
                      device_history, device_rows, fmt_duration, today)
@@ -134,7 +134,6 @@ class Site:
 
     def __init__(self, cfg):
         self.cfg = cfg
-        migrate_legacy(cfg.events_dir)
 
     # ----------------------------------------------------------- data
 

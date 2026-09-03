@@ -76,7 +76,7 @@ def main(argv=None) -> int:
         status = json.loads(path.read_text())
         age = time.time() - status.get("updated", 0)
         status["status_age_s"] = round(age, 1)
-        status["daemon_alive"] = age < 30
+        status["daemon_alive"] = age < 90    # written every 30 s by the watchdog
         print(json.dumps(status, indent=1))
         return 0
 

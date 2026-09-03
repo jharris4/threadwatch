@@ -254,6 +254,13 @@ class DeliveryTests(unittest.TestCase):
             self.assertNotIn("SECRET", text)
         self.assertIn("https://discord.com/...", sink.describe())
 
+    def test_partial_severity_table_never_yields_a_bare_name(self):
+        table = {"warning": 5, "critical": 8}
+        got = {sev: alerts.template_fields({**REC, "severity": sev}, table)["severity_value"]
+               for sev in alerts.SEVERITIES}
+        self.assertEqual(got, {"info": 5, "notice": 5, "warning": 5, "critical": 8})
+        self.assertEqual(alerts.template_fields({**REC, "severity": "notice"})["severity_value"], "notice")
+
     def test_build_heartbeats_validates(self):
         with self.assertRaises(alerts.ConfigError):
             alerts.build_heartbeats([{"url": "http://x", "interval_s": 1}], print)

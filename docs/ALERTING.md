@@ -117,7 +117,7 @@ these derived fields:
 | --- | --- |
 | `{event}` `{severity}` `{ts}` | as in the record |
 | `{severity_index}` | 0..3 |
-| `{severity_value}` | severity looked up in the sink's `severity_values`, else the name |
+| `{severity_value}` | severity looked up in the sink's `severity_values`; a severity missing from a partial table takes the nearest lower listed value (else the lowest listed); with no table, the name |
 | `{time}` | local `YYYY-MM-DD HH:MM:SS` |
 | `{name}` `{addr}` `{note}` | empty string when absent (`addr` falls back to `src`) |
 | `{who}` | `name`, else `addr`, else empty |

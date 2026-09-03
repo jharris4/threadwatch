@@ -139,7 +139,7 @@ def template_fields(record: dict, severity_values: Optional[dict] = None) -> dic
     out = dict(record)
     out.update({
         "severity_index": idx,
-        "severity_value": (severity_values or {}).get(sev, sev),
+        "severity_value": _severity_value(sev, idx, severity_values or {}),
         "time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(record.get("ts", time.time()))),
         "name": name,
         "addr": addr,
@@ -150,6 +150,19 @@ def template_fields(record: dict, severity_values: Optional[dict] = None) -> dic
         "hostname": os.uname().nodename if hasattr(os, "uname") else "",
     })
     return out
+
+
+def _severity_value(sev: str, idx: int, table: dict):
+    """The sink's value for a severity. One missing from a partial table takes
+    the value of the nearest lower severity listed, else the lowest listed:
+    templates splice this unquoted, so falling back to the name would make
+    invalid JSON (the Gotify recipe with a lowered floor)."""
+    if sev in table:
+        return table[sev]
+    if not table:
+        return sev
+    lower = [s for s in SEVERITIES[:idx] if s in table]
+    return table[lower[-1]] if lower else table[min(table, key=_severity_index)]
 
 
 def render(template: str, record: dict, json_escape: bool,

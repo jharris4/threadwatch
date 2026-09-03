@@ -80,6 +80,7 @@ bin/threadwatch status          # daemon alive? frames flowing? storm state?
 bin/threadwatch report          # who's gone quiet; unknown addresses to name
 bin/threadwatch adopt <addr> "<name>"   # ...and name one (report --suggest drafts entries)
 bin/threadwatch events --episodes   # what happened lately, grouped
+bin/threadwatch why "<name>" --hours 6  # one device's story from the recent ring files
 # ...or open http://<pi>:8080/ for the same thing day by day (docs/REVIEW.md)
 bin/threadwatch freeze mylabel  # preserve the ring buffer NOW (incident!)
 bin/threadwatch replay f.pcap   # run detection over any pcap

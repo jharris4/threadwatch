@@ -57,6 +57,8 @@ def main(argv=None) -> int:
     p_why = sub.add_parser("why", help="reconstruct one device's story from the ring buffer")
     p_why.add_argument("device", help="device name (from devices.json) or 16-hex extended address")
     p_why.add_argument("--pcap", type=Path, help="analyze this file instead of the ring")
+    p_why.add_argument("--hours", type=float,
+                       help="only the ring files covering the last N hours (default: the whole ring)")
 
     p_events = sub.add_parser("events", help="show recent events, or one day's")
     p_events.add_argument("-n", type=_positive_int, default=30, help="how many of the latest records")
@@ -120,7 +122,11 @@ def main(argv=None) -> int:
 
     if args.cmd == "why":
         from .why import run_why
-        run_why(cfg, args.device, args.pcap)
+        if args.pcap and args.hours is not None:
+            parser.error("--hours selects ring files; it does not apply with --pcap")
+        if args.hours is not None and args.hours <= 0:
+            parser.error("--hours must be positive")
+        run_why(cfg, args.device, args.pcap, hours=args.hours)
         return 0
 
     if args.cmd == "events":

@@ -42,7 +42,32 @@ def resolve_target(cfg: Config, target: str) -> tuple[list[str], str]:
     raise SystemExit(f"'{target}' is neither a 16-hex-char address nor a known device name")
 
 
-def run_why(cfg: Config, target: str, pcap_file: Path | None = None) -> None:
+RING_NAME = "threadwatch-%Y%m%d-%H.pcap"
+
+
+def select_recent(files: list[Path], hours: float | None, now: float | None = None) -> list[Path]:
+    """The ring files that cover any of the last ``hours``: a file is named
+    for the local hour it starts, so it is kept when that hour ends after
+    the window opens. ``hours`` None keeps everything. A name that does not
+    parse is kept: better to read too much than to skip evidence."""
+    if hours is None:
+        return list(files)
+    import time as _t
+    cutoff = (now or _t.time()) - hours * 3600
+    keep = []
+    for path in files:
+        try:
+            start = _t.mktime(_t.strptime(path.name, RING_NAME))
+        except ValueError:
+            keep.append(path)
+            continue
+        if start + 3600 > cutoff:
+            keep.append(path)
+    return keep
+
+
+def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
+            hours: float | None = None) -> None:
     addrs, display = resolve_target(cfg, target)
     addr_set = set(addrs)
     decryptor = load_decryptor(cfg)
@@ -53,12 +78,19 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None) -> None:
     pipe.extra_candidates = addrs      # the device asked about need not be in devices.json
     ident = pipe.identity
 
-    files = [pcap_file] if pcap_file else sorted(cfg.ring_dir.glob("threadwatch-*.pcap"))
-    if not files:
-        raise SystemExit("no ring files; is the capture daemon running?")
+    if pcap_file:
+        files = [pcap_file]
+    else:
+        ring = sorted(cfg.ring_dir.glob("threadwatch-*.pcap"))
+        if not ring:
+            raise SystemExit("no ring files; is the capture daemon running?")
+        files = select_recent(ring, hours)
+        if not files:
+            raise SystemExit(f"no ring files in the last {hours:g} h (the ring spans "
+                             f"{ring[0].name[12:23]} to {ring[-1].name[12:23]})")
 
     from collections import defaultdict
-    hours = defaultdict(lambda: {"frames": 0, "polls": 0, "rssi": [], "acked": 0,
+    per_hour = defaultdict(lambda: {"frames": 0, "polls": 0, "rssi": [], "acked": 0,
                                  "tx": 0, "mle": {}})
     last_ts = None
     first_ts = None
@@ -97,11 +129,11 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None) -> None:
                     # ACK for our previous unicast transmission
                     if (prev_frame is not None and f.ftype == 2
                             and f.seq == prev_frame.seq and f.ts - prev_frame.ts < 0.05):
-                        hours[hour_of(prev_frame.ts)]["acked"] += 1
+                        per_hour[hour_of(prev_frame.ts)]["acked"] += 1
                     prev_frame = f if is_ours and f.dst not in (None, "ffff") else None
                     if not is_ours:
                         continue
-                    h = hours[hour_of(f.ts)]
+                    h = per_hour[hour_of(f.ts)]
                     h["frames"] += 1
                     if f.ftype in (1, 3) and f.dst not in (None, "ffff"):   # unicast only: broadcasts are never ACKed
                         h["tx"] += 1
@@ -125,6 +157,9 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None) -> None:
         print(f"({undecodable} frames with undecodable payloads skipped)")
 
     print(f"=== {display} ({', '.join(addrs)}) ===")
+    if not pcap_file:
+        window = f"last {hours:g} h: " if hours is not None else ""
+        print(f"analyzed {window}{len(files)} ring file(s), {files[0].name[12:23]} to {files[-1].name[12:23]}")
     if first_ts is None:
         print("No frames from this device in the analyzed window.")
         print("Interpretation: either out of range of the dongle, silent (dead "
@@ -135,8 +170,8 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None) -> None:
     print(f"last seen:  {_t.strftime('%Y-%m-%d %H:%M:%S', _t.localtime(last_ts))}"
           f"  ({round((_t.time() - last_ts) / 60, 1)} min ago)")
     print(f"\n{'hour':12s} {'frames':>6s} {'polls':>6s} {'tx':>5s} {'acked':>6s} {'rssi med':>9s}  mle")
-    for hkey in sorted(hours):
-        h = hours[hkey]
+    for hkey in sorted(per_hour):
+        h = per_hour[hkey]
         if h["frames"] == 0 and h["acked"] == 0:
             continue
         rssi = sorted(h["rssi"])

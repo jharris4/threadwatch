@@ -95,6 +95,7 @@ class DayViewTest(unittest.TestCase):
         log.emit("retransmission_elevation", "notice", T0, rate=0.31, baseline=0.08, addr=AQ, name="Basement AQ",
                  top_sender="Basement AQ", top_target="Irrigation", top_share=0.62, note="failing link")
         log.emit("phase_locked_storm", "critical", T0 + 3600, period_s=60, onsets=3, baseline_frames_per_window=400)
+        log.emit("mle_rejoin_attempt", "notice", T0 + 7200, command="Parent Request", src="8001")  # pre-addr record
         (self.cfg.state_dir / "last-seen.json").write_text(json.dumps({
             AQ: {"first_seen": T0 - 86400, "last_seen": T0 + 3600, "frames": 1000, "types": {"1": 1000}, "rssi": -87.0, "pan": 0x4e21},
         }))
@@ -131,6 +132,8 @@ class DayViewTest(unittest.TestCase):
             self.assertIn("phase-locked storm", body)
             self.assertIn("retransmissions: Basement AQ -&gt; Irrigation", body)
             self.assertIn("capturing", body)
+            self.assertIn("8001 rejoin attempt", body)
+            self.assertNotIn('href="/device/8001"', body)   # a short address has no device page
             status, body = get("/devices")
             self.assertIn("Basement AQ", body)
             self.assertIn("marginal", body)
@@ -139,7 +142,7 @@ class DayViewTest(unittest.TestCase):
             self.assertIn("quiet for 2h00m", body)
             status, body = get(f"/api/day/{day}")
             data = json.loads(body)
-            self.assertEqual(len(data["records"]), 3)
+            self.assertEqual(len(data["records"]), 4)
             self.assertEqual(data["episodes"][0]["kind"], "quiet")
             self.assertEqual(get("/")[0], 200)
             status, body = get("/help")

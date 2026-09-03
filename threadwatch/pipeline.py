@@ -348,9 +348,11 @@ class Pipeline:
             if not info:
                 return
             if info.command_name in MLE_REJOIN_COMMANDS:
+                # addr is the extended address (the review pages key on it);
+                # src is whatever the frame carried, often a short address.
                 self.events.emit("mle_rejoin_attempt", "notice", f.ts,
-                                 command=info.command_name, src=f.src,
-                                 name=self.names.name(f.src) if f.src else None)
+                                 command=info.command_name, src=f.src, addr=src_for_mle,
+                                 name=self.names.name(src_for_mle) if src_for_mle else None)
             if info.partition_id is not None:
                 cur = (info.partition_id, info.leader_router_id)
                 if self.partition is not None and cur != self.partition:

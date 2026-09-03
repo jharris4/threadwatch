@@ -218,7 +218,7 @@ class Site:
             elif ep["kind"] == "quiet" and ep["end"]:
                 span = f' <span class="muted">back {hm(ep["end"])}</span>'
             who = ""
-            if ep.get("addr"):
+            if ep.get("addr") and len(ep["addr"]) == 16:   # older rejoin rows carry a short src
                 who = f' <a class="muted" href="/device/{esc(ep["addr"])}">&#9656;</a>'
             tip = esc(LEGEND_BY_KIND.get(ep["kind"], ""))
             rows.append(f'<tr title="{tip}"><td class="t">{hm(ep["start"])}</td>'

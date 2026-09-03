@@ -46,6 +46,10 @@ class DeviceNames:
         entry = self.by_addr.get(_norm(addr))
         return entry.get("name") if entry else None
 
+    def role(self, addr: str) -> Optional[str]:
+        entry = self.by_addr.get(_norm(addr))
+        return entry.get("role") if entry else None
+
 
 class LastSeen:
     """Tracks when each source address (extended, 16-hex-char) last transmitted."""
@@ -61,7 +65,8 @@ class LastSeen:
         self._dirty = False
         self._last_save = 0.0
 
-    def touch(self, addr: Optional[str], ts: float, ftype: Optional[int]) -> None:
+    def touch(self, addr: Optional[str], ts: float, ftype: Optional[int],
+              pan: Optional[int] = None) -> None:
         if not addr or len(addr) != 16:  # extended addresses only
             return
         row = self.table.setdefault(addr, {"first_seen": ts, "frames": 0, "types": {}})
@@ -70,6 +75,8 @@ class LastSeen:
         if ftype is not None:
             key = str(ftype)
             row["types"][key] = row["types"].get(key, 0) + 1
+        if pan is not None:
+            row["pan"] = pan   # last source PAN; lets quiet checks skip foreign meshes
         self._dirty = True
 
     def maybe_save(self, interval: float = 30.0) -> None:

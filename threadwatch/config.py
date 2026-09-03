@@ -22,6 +22,15 @@ class Config:
     detector: DetectorConfig = field(default_factory=DetectorConfig)
     config_dir: Path = REPO_ROOT / "config"
     credentials_path: Optional[Path] = None
+    # Silence (seconds) before a device_quiet event. Routers keep advertising
+    # every few seconds, so a short window is meaningful for them; end devices
+    # legitimately sleep for long stretches (battery air-quality sensors were
+    # seen going 70+ min between frames at night). A device counts as a
+    # router only when its devices.json entry says so (role = "router" or
+    # "border-router"): polling cannot be attributed from cleartext, because
+    # data requests carry the short address.
+    quiet_end_device_s: float = 90 * 60
+    quiet_router_s: float = 30 * 60
     alerts_raw: dict = field(default_factory=dict)      # [alerts] table, verbatim
     heartbeats_raw: list = field(default_factory=list)  # [[heartbeats]] tables, verbatim
 
@@ -62,6 +71,9 @@ def load(path: Optional[Path]) -> Config:
                     "period_max_s", "period_onsets", "alert_cooldown_s"):
             if key in det:
                 setattr(cfg.detector, key, det[key])
+        quiet = raw.get("quiet", {})
+        cfg.quiet_end_device_s = float(quiet.get("end_device_s", cfg.quiet_end_device_s))
+        cfg.quiet_router_s = float(quiet.get("router_s", cfg.quiet_router_s))
         # Sinks and heartbeats are built lazily (alerts.build_sinks /
         # build_heartbeats) so ${ENV} expansion and validation happen where
         # a disabled sink can be logged rather than crash config loading.

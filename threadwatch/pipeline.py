@@ -92,13 +92,33 @@ class Pipeline:
                 self.observed_names = json.loads(self.mle_names_path.read_text())
             except (json.JSONDecodeError, OSError):
                 pass
-        # Devices already long-quiet in persisted state are marked as reported
-        # at startup, so a daemon restart does not re-announce every one of
-        # them; they still produce device_returned when they next transmit.
+        # Devices already past their quiet threshold in persisted state are
+        # marked as reported at startup, so a daemon restart does not
+        # re-announce every one of them; they still produce device_returned
+        # when they next transmit. Devices inside their threshold are left
+        # alone and get a normal device_quiet if the silence continues.
         now = time.time()
         for addr, row in self.seen.table.items():
-            if now - row.get("last_seen", now) > 10 * 60:
+            if now - row.get("last_seen", now) > self.quiet_threshold_s(addr):
                 self.quiet_reported.add(addr)
+
+    # ------------------------------------------------------- quiet policy
+
+    def is_router(self, addr: str) -> bool:
+        """True when the inventory tags the address as a (border) router.
+
+        Cleartext headers cannot tell a router from a busy end device: data
+        requests (polls) are sent from the short address, so per-extended-
+        address poll counts are always zero, and end devices that report
+        every few seconds by day may sleep for over an hour at night.
+        """
+        return (self.names.role(addr) or "").lower() in ("router", "border-router")
+
+    def quiet_threshold_s(self, addr: str) -> float:
+        return self.cfg.quiet_router_s if self.is_router(addr) else self.cfg.quiet_end_device_s
+
+    def dominant_pan(self) -> Optional[int]:
+        return max(self.own_pans, key=self.own_pans.get) if self.own_pans else None
 
     # ------------------------------------------------------------ ingest
 
@@ -132,7 +152,7 @@ class Pipeline:
                 stats.last_poll_ts = ts
                 stats.polls += 1
             was_new = f.src not in self.seen.table
-            self.seen.touch(f.src, ts, f.ftype)
+            self.seen.touch(f.src, ts, f.ftype, pan=f.src_pan)
             if was_new and len(f.src) == 16:
                 self.events.emit("device_first_seen", "info", ts, addr=f.src,
                                  name=self.names.name(f.src))
@@ -247,23 +267,23 @@ class Pipeline:
     def periodic(self, now: float) -> None:
         """Run every ~30 s in live capture: quiet checks, persistence."""
         self.seen.maybe_save()
-        # Thresholds: sleepy devices legitimately sleep for long stretches;
-        # data-heavy (router-ish) devices going quiet for half an hour is
-        # notable. Overnight soak 2026-09-02 showed 10 min was too tight
-        # for battery air-quality sensors at night.
-        quiet_sleepy = getattr(self.cfg, "quiet_sleepy_s", 90 * 60)
-        quiet_data_heavy = getattr(self.cfg, "quiet_data_heavy_s", 30 * 60)
+        # Devices on another PAN (a neighbour's mesh, an unpaired device
+        # announcing itself) are tracked for the report but never alerted on:
+        # their absence says nothing about this network.
+        dominant = self.dominant_pan()
         for addr, row in self.seen.table.items():
+            if addr in self.quiet_reported:
+                continue
+            pan = row.get("pan")
+            if dominant is not None and pan is not None and pan != dominant:
+                continue
             silent = now - row["last_seen"]
-            stats = self.devices.get(addr)
-            data_heavy = stats and stats.tx > stats.polls
-            threshold = quiet_data_heavy if data_heavy else quiet_sleepy
-            if silent > threshold and addr not in self.quiet_reported:
+            if silent > self.quiet_threshold_s(addr):
                 self.quiet_reported.add(addr)
                 self.events.emit(
                     "device_quiet", "warning", now, addr=addr,
                     name=self.names.name(addr), silent_for_s=round(silent),
-                    profile="data-heavy" if data_heavy else "sleepy/polling",
+                    profile="router" if self.is_router(addr) else "end-device",
                     note="no frames heard; if no mle_rejoin_attempt follows, "
                          "suspect device-internal failure rather than RF")
         if self.observed_names:

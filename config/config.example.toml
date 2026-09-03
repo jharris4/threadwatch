@@ -21,6 +21,14 @@ keep_files = 168                  # hourly ring files to retain (168 = 1 week)
 # Inventory that maps extended addresses to human names (see names.py docstring).
 inventory = "devices.json"
 
+[quiet]
+# Silence before a device_quiet alert. Only devices whose devices.json entry
+# has role = "router" or "border-router" use the short window: cleartext
+# frames cannot tell a router from a busy end device, and end devices that
+# report every few seconds by day can sleep for over an hour at night.
+end_device_s = 5400        # 90 min
+router_s = 1800            # 30 min
+
 [detect]
 flood_multiplier = 3.0     # a 10 s window this many times the baseline is a flood
 flood_min_frames = 400     # absolute floor so small meshes don't false-alarm

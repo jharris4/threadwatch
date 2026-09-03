@@ -11,9 +11,10 @@ import json
 from pathlib import Path
 
 from .config import Config
+from .events import NullEventLog
 from .names import DeviceNames
 from .pcap import PcapStreamReader
-from .pipeline import load_decryptor
+from .pipeline import Pipeline, load_decryptor
 
 
 def resolve_target(cfg: Config, target: str) -> tuple[list[str], str]:
@@ -43,6 +44,10 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None) -> None:
     addrs, display = resolve_target(cfg, target)
     addr_set = set(addrs)
     decryptor = load_decryptor(cfg)
+    # With credentials, frames sent from a short address (everything a
+    # sleepy end device sends once attached, polls included) are attributed
+    # by the same MIC search the live pipeline uses.
+    ident = Pipeline(cfg, NullEventLog(), decryptor, ephemeral=True).identity
 
     files = [pcap_file] if pcap_file else sorted(cfg.ring_dir.glob("threadwatch-*.pcap"))
     if not files:
@@ -61,7 +66,7 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None) -> None:
         try:
             with open(path, "rb") as fh:
                 for f in PcapStreamReader(fh):
-                    is_ours = f.src in addr_set
+                    is_ours = (ident(f) if decryptor is not None else f.src) in addr_set
                     # ACK for our previous transmission
                     if (prev_frame is not None and f.ftype == 2
                             and f.seq == prev_frame.seq and f.ts - prev_frame.ts < 0.05):

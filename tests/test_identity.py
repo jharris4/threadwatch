@@ -113,6 +113,14 @@ class ResolveShortTest(unittest.TestCase):
                 pipe.ingest(parse_frame(1.0, psdu, 195))
             self.assertEqual(dec.stats["parse_failed"], 3)
 
+    def test_extra_candidates_resolve_a_device_missing_from_the_inventory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(data_dir=Path(tmp) / "data")          # no devices.json at all
+            pipe = Pipeline(cfg, NullEventLog(), Decryptor(network_key=KEY), ephemeral=True)
+            pipe.extra_candidates = [SED]
+            f = parse_frame(1.0, secured_frame(SED, "c829", 3, ftype=3), 195)
+            self.assertEqual(pipe.identity(f), SED)
+
     def test_unresolvable_short_is_retried_only_after_backoff(self):
         with tempfile.TemporaryDirectory() as tmp:
             dd = Path(tmp)

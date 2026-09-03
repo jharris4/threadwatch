@@ -47,7 +47,9 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None) -> None:
     # With credentials, frames sent from a short address (everything a
     # sleepy end device sends once attached, polls included) are attributed
     # by the same MIC search the live pipeline uses.
-    ident = Pipeline(cfg, NullEventLog(), decryptor, ephemeral=True).identity
+    pipe = Pipeline(cfg, NullEventLog(), decryptor, ephemeral=True)
+    pipe.extra_candidates = addrs      # the device asked about need not be in devices.json
+    ident = pipe.identity
 
     files = [pcap_file] if pcap_file else sorted(cfg.ring_dir.glob("threadwatch-*.pcap"))
     if not files:

@@ -96,6 +96,7 @@ class Pipeline:
         self.quiet_reported: set[str] = set()
         self._resolve_after: dict[str, float] = {}   # short addr -> next attempt ts
         self._verify_after: dict[str, float] = {}    # short addr -> next re-check of its mapping
+        self.extra_candidates: list[str] = []        # ext addrs to try first in the nonce search (why)
         self.mle_names_path = cfg.state_dir / "observed-names.json"
         self.observed_names = {}
         if not ephemeral and self.mle_names_path.exists():
@@ -224,7 +225,7 @@ class Pipeline:
         if f.ts < self._resolve_after.get(src, 0.0) or not self.decryptor.resolvable(f.psdu):
             return None
         self._resolve_after[src] = f.ts + self.RESOLVE_RETRY_S
-        candidates = dict.fromkeys([*self.names.by_addr, *self.seen.table])  # ordered, unique
+        candidates = dict.fromkeys([*self.extra_candidates, *self.names.by_addr, *self.seen.table])
         return self.decryptor.resolve_short(f.psdu, src, candidates)
 
     # ------------------------------------------------------------ ingest

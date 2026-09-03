@@ -247,7 +247,10 @@ class Pipeline:
 
         if who:
             stats = self.devices.setdefault(who, DeviceStats())
-            if f.ftype in (1, 3):
+            if f.ftype in (1, 3) and f.dst not in (None, "ffff"):
+                # Broadcasts (MLE advertisements every few seconds) are
+                # never acknowledged; counting them made every router's
+                # ACK rate look broken.
                 stats.tx += 1
                 stats.ack_pending_seq = f.seq
                 stats.ack_pending_ts = ts

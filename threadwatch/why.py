@@ -72,14 +72,14 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None) -> None:
                             and f.seq == prev_frame.seq and f.ts - prev_frame.ts < 0.05):
                         import time as _t
                         hours[_t.strftime("%m-%d %Hh", _t.localtime(prev_frame.ts))]["acked"] += 1
-                    prev_frame = f if is_ours else None
+                    prev_frame = f if is_ours and f.dst not in (None, "ffff") else None
                     if not is_ours:
                         continue
                     import time as _t
                     hkey = _t.strftime("%m-%d %Hh", _t.localtime(f.ts))
                     h = hours[hkey]
                     h["frames"] += 1
-                    if f.ftype in (1, 3):
+                    if f.ftype in (1, 3) and f.dst not in (None, "ffff"):   # unicast only: broadcasts are never ACKed
                         h["tx"] += 1
                     if f.ftype == 3:
                         h["polls"] += 1

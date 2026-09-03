@@ -109,12 +109,20 @@ class Pipeline:
         # persisted "announced" flag, so a restart neither re-announces every
         # quiet device nor swallows a silence nobody has heard about. Rows
         # inside their threshold are left alone for periodic() to judge.
+        # The recorder only witnessed silence while it was hearing frames:
+        # the gap between its last frame and now (a reboot, a dead dongle,
+        # the stall restart loop) is its own blindness, not the devices',
+        # and is not counted towards any silence that spans it.
+        self._blind_from, self._blind_s = time.time(), 0.0
         if not ephemeral:
             now = time.time()
+            last_alive = self._last_frame_heard()
+            if last_alive is not None:
+                self._blind_from, self._blind_s = last_alive, max(0.0, now - last_alive)
             dominant = self._persisted_dominant_pan()
             announced = 0
             for addr, row in self.seen.table.items():
-                if now - row.get("last_seen", now) <= self.quiet_threshold_s(addr):
+                if self.silence_s(row, now) <= self.quiet_threshold_s(addr):
                     if row.pop("quiet_reported", None):
                         # Heard again after its announced silence, but the
                         # recorder died before saying so: close the silence
@@ -130,6 +138,28 @@ class Pipeline:
                     announced += 1
             if announced:
                 self.seen.save()
+
+    def _last_frame_heard(self) -> Optional[float]:
+        """When the previous run last heard a frame: from status.json (which
+        records the frame age at each write), else the last-seen save time."""
+        stamps = []
+        try:
+            st = json.loads((self.cfg.state_dir / "status.json").read_text())
+            stamps.append(float(st["updated"]) - float(st.get("last_frame_age_s", 0)))
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        try:
+            stamps.append(self.seen.state_path.stat().st_mtime)
+        except (OSError, AttributeError):
+            pass
+        return max(stamps) if stamps else None
+
+    def silence_s(self, row: dict, now: float) -> float:
+        """How long the recorder has actually heard nothing from a device."""
+        silent = now - row["last_seen"]
+        if self._blind_s and row["last_seen"] <= self._blind_from:
+            silent -= self._blind_s
+        return silent
 
     def _persisted_dominant_pan(self) -> Optional[int]:
         """Best guess at this network's PAN before any frame arrives: the one
@@ -422,7 +452,7 @@ class Pipeline:
             pan = row.get("pan")
             if dominant is not None and pan is not None and pan != dominant:
                 continue
-            if now - row["last_seen"] > self.quiet_threshold_s(addr):
+            if self.silence_s(row, now) > self.quiet_threshold_s(addr):
                 self._report_quiet(addr, row, now)
         if self.observed_names and not self.ephemeral:
             tmp = self.mle_names_path.with_suffix(".tmp")
@@ -435,7 +465,7 @@ class Pipeline:
         self.quiet_reported.add(addr)
         row["quiet_reported"] = True
         self.seen._dirty = True
-        silent = now - row["last_seen"]
+        silent = self.silence_s(row, now)
         # A device the sniffer barely hears goes "quiet" whenever the link
         # fades; log it, but do not page for it.
         rssi = row.get("rssi")

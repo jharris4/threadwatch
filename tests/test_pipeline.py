@@ -187,6 +187,24 @@ class QuietPolicyTest(unittest.TestCase):
         # A third start re-announces nothing: both silences are on record.
         self.assertEqual(self._quiet(self._pipe()), [])
 
+    def test_recorder_downtime_is_not_counted_as_device_silence(self):
+        import os
+        now = time.time()
+        pipe = self._pipe()
+        pipe.ingest(frame(now - 40 * 60, ROUTER))
+        pipe.seen.save()
+        # The recorder last heard anything 38 min ago (rebooted 2 min after that frame).
+        path = self.cfg.state_dir / "last-seen.json"
+        os.utime(path, (now - 38 * 60, now - 38 * 60))
+        pipe2 = self._pipe()
+        self.assertEqual(self._quiet(pipe2), [])          # only 2 min of witnessed silence
+        pipe2.periodic(now + 60)
+        self.assertEqual(self._quiet(pipe2), [])
+        pipe2.periodic(now + 29 * 60)                     # 2 + 29 min > the 30 min window
+        self.assertEqual(self._quiet(pipe2), [(ROUTER, "router")])
+        rec = [r for r in pipe2.events.records if r["event"] == "device_quiet"][0]
+        self.assertAlmostEqual(rec["silent_for_s"], 31 * 60, delta=5)
+
     def test_restart_does_not_repeat_an_announced_silence_or_a_foreign_one(self):
         now = time.time()
         pipe = self._pipe()

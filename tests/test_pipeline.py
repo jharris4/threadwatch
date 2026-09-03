@@ -335,6 +335,74 @@ if __name__ == "__main__":
     unittest.main()
 
 
+def poll(ts, src, seq):
+    return Frame(ts=ts, raw=b"", psdu=b"", rssi=-60.0, channel=None, lqi=None,
+                 ftype=3, cmd=4, seq=seq, dst_pan=OWN_PAN, dst="0000", src_pan=OWN_PAN, src=src)
+
+
+def ack(ts, seq):
+    return Frame(ts=ts, raw=b"", psdu=b"", rssi=-40.0, channel=None, lqi=None, ftype=2, seq=seq)
+
+
+class PollStarvationTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        (d / "devices.json").write_text(json.dumps([{"name": "Porch Sensor", "extendedAddress": SENSOR}]))
+        self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    @staticmethod
+    def _events(pipe, name):
+        return [r for r in pipe.events.records if r["event"] == name]
+
+    def _answered_polls(self, pipe, t, n, seq0=0):
+        for i in range(n):
+            pipe.ingest(poll(t + 5 * i, SENSOR, (seq0 + i) & 0xFF))
+            pipe.ingest(ack(t + 5 * i + 0.001, (seq0 + i) & 0xFF))
+        return t + 5 * n
+
+    def test_unanswered_polls_after_answered_ones_are_starvation_then_recovery(self):
+        pipe = Pipeline(self.cfg, NullEventLog())
+        t = self._answered_polls(pipe, 1_700_000_000.0, 5)
+        for i in range(12):                                # 12 distinct polls, nobody answers
+            pipe.ingest(poll(t + 10 * i, SENSOR, 100 + i))
+            pipe.ingest(poll(t + 10 * i + 0.3, SENSOR, 100 + i))   # a MAC retry: same seq, counts once
+        evs = self._events(pipe, "poll_starvation")
+        self.assertEqual(len(evs), 1)
+        ev = evs[0]
+        self.assertEqual((ev["severity"], ev["name"], ev["acked_polls"]), ("warning", "Porch Sensor", 5))
+        self.assertEqual(ev["unanswered_polls"], 10)      # fired at the tenth, not later
+        self.assertGreaterEqual(ev["starved_for_s"], 60)
+        self.assertIn("no device_quiet will follow", ev["note"])
+        pipe.ingest(poll(t + 200, SENSOR, 200))
+        pipe.ingest(ack(t + 200.001, 200))
+        rec = self._events(pipe, "poll_answered")
+        self.assertEqual(len(rec), 1)
+        self.assertFalse(pipe.devices[SENSOR].starved)
+        self.assertEqual(pipe.devices[SENSOR].unanswered_polls, 0)
+        self.assertEqual(pipe.devices[SENSOR].acked_polls, 6)
+
+    def test_a_device_never_answered_is_not_starving(self):
+        # The sniffer may simply not hear that parent's ACKs.
+        pipe = Pipeline(self.cfg, NullEventLog())
+        t = 1_700_000_000.0
+        for i in range(40):
+            pipe.ingest(poll(t + 10 * i, SENSOR, i))
+        self.assertEqual(self._events(pipe, "poll_starvation"), [])
+
+    def test_ten_quick_polls_are_not_enough_without_the_minute(self):
+        pipe = Pipeline(self.cfg, NullEventLog())
+        t = self._answered_polls(pipe, 1_700_000_000.0, 3)
+        for i in range(11):
+            pipe.ingest(poll(t + 0.5 * i, SENSOR, 50 + i))   # 11 polls in 5 s: fast-poll burst
+        self.assertEqual(self._events(pipe, "poll_starvation"), [])
+        pipe.ingest(poll(t + 90, SENSOR, 70))                # ...and one more, past the minute
+        self.assertEqual(len(self._events(pipe, "poll_starvation")), 1)
+
+
 class LinkDegradationTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

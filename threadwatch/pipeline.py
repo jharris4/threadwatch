@@ -19,6 +19,9 @@ With Thread credentials (optional):
   - MLE visibility: rejoin attempts (Parent/Child ID Request), partition and
     leader changes, per-device RLOC learning
   - SRP/DNS-SD name harvesting for auto-naming hints
+  - sleepy-device starvation: a child polling its parent with no
+    acknowledgement, after its polls used to be answered (its parent died
+    or the link to it broke, and it has not noticed yet)
 """
 
 from __future__ import annotations
@@ -39,13 +42,19 @@ from .pcap import Frame
 
 MLE_REJOIN_COMMANDS = {"Parent Request", "Child ID Request", "Announce"}
 
+# Starvation: this many distinct polls (MAC retries of one poll share a
+# sequence number and count once) with no ACK, spanning at least this long.
+STARVED_POLLS = 10
+STARVED_MIN_S = 60.0
+
 
 class DeviceStats:
     """Rolling per-device health from cleartext headers only."""
 
     __slots__ = ("rssi_ewma", "rssi_min", "rssi_max", "polls", "last_poll_ts",
                  "poll_intervals", "tx", "acked", "ack_pending_seq",
-                 "ack_pending_ts", "beacons")
+                 "ack_pending_ts", "beacons", "poll_pending_seq", "poll_pending_ts",
+                 "acked_polls", "unanswered_polls", "unanswered_since", "starved")
 
     def __init__(self):
         self.rssi_ewma = None
@@ -59,6 +68,12 @@ class DeviceStats:
         self.ack_pending_seq = None
         self.ack_pending_ts = 0.0
         self.beacons = 0
+        self.poll_pending_seq = None      # the last poll's seq until its ACK arrives
+        self.poll_pending_ts = 0.0
+        self.acked_polls = 0
+        self.unanswered_polls = 0         # distinct polls since the last answered one
+        self.unanswered_since = None
+        self.starved = False
 
     def as_dict(self):
         ivals = sorted(self.poll_intervals)
@@ -69,6 +84,8 @@ class DeviceStats:
             "ack_rate": round(self.acked / self.tx, 3) if self.tx else None,
             "polls": self.polls,
             "median_poll_interval_s": round(ivals[len(ivals) // 2], 1) if ivals else None,
+            "acked_polls": self.acked_polls, "unanswered_polls": self.unanswered_polls,
+            "starved": self.starved,
             "beacons": self.beacons,
         }
 
@@ -260,6 +277,8 @@ class Pipeline:
             if stats and stats.ack_pending_seq == f.seq:
                 stats.acked += 1
                 stats.ack_pending_seq = None
+                if stats.poll_pending_seq == f.seq:
+                    self._poll_answered(self._last_who or prev.src, stats, ts)
         self._last_who = who
 
         if who:
@@ -281,6 +300,7 @@ class Pipeline:
                     stats.poll_intervals.append(ts - stats.last_poll_ts)
                 stats.last_poll_ts = ts
                 stats.polls += 1
+                self._poll_sent(who, stats, f.seq, ts)
             was_new = who not in self.seen.table
             self.seen.touch(who, ts, f.ftype, pan=f.src_pan, rssi=f.rssi)
             if was_new:
@@ -382,6 +402,42 @@ class Pipeline:
             self._deep_inspect(f)
 
         self.last_frame = f
+
+    # -------------------------------------------------- poll starvation
+
+    def _poll_sent(self, who: str, stats: DeviceStats, seq: Optional[int], ts: float) -> None:
+        """A poll went out. If the previous one is still waiting for its ACK
+        and this is not a MAC retry of it (same seq), that one went
+        unanswered; enough of those in a row, from a device whose polls
+        used to be answered, is starvation."""
+        if stats.poll_pending_seq is not None and seq != stats.poll_pending_seq:
+            stats.unanswered_polls += 1
+            if stats.unanswered_since is None:
+                stats.unanswered_since = stats.poll_pending_ts
+            if (not stats.starved and stats.acked_polls > 0
+                    and stats.unanswered_polls >= STARVED_POLLS
+                    and ts - stats.unanswered_since >= STARVED_MIN_S):
+                stats.starved = True
+                span = round(ts - stats.unanswered_since)
+                self.events.emit(
+                    "poll_starvation", "warning", ts, addr=who, name=self.names.name(who),
+                    unanswered_polls=stats.unanswered_polls, since=stats.unanswered_since,
+                    starved_for_s=span, acked_polls=stats.acked_polls,
+                    note=(f"polled its parent {stats.unanswered_polls} times over {span} s with no "
+                          f"acknowledgement, after {stats.acked_polls} answered polls: the parent is gone "
+                          "or the link to it broke and the device has not noticed; it still looks alive, "
+                          "so no device_quiet will follow, and a rejoin attempt should. (If it just moved "
+                          "to a parent the sniffer cannot hear, the ACKs are missing here, not on air.)"))
+        stats.poll_pending_seq, stats.poll_pending_ts = seq, ts
+
+    def _poll_answered(self, who: str, stats: DeviceStats, ts: float) -> None:
+        stats.poll_pending_seq = None
+        stats.acked_polls += 1
+        stats.unanswered_polls, stats.unanswered_since = 0, None
+        if stats.starved:
+            stats.starved = False
+            self.events.emit("poll_answered", "notice", ts, addr=who, name=self.names.name(who),
+                             note="its polls are acknowledged again")
 
     def _label(self, addr: Optional[str]) -> Optional[str]:
         """Name for any address form: extended, or a short one the decryptor

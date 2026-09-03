@@ -64,6 +64,7 @@ def group_episodes(records: list[dict], now: Optional[float] = None) -> list[dic
     foreign: dict[tuple, dict] = {}
     rejoin: dict[str, dict] = {}
     open_link: dict[str, dict] = {}
+    open_starved: dict[str, dict] = {}
     first_seen: Optional[dict] = None
     join_scan: Optional[dict] = None
 
@@ -113,6 +114,24 @@ def group_episodes(records: list[dict], now: Optional[float] = None) -> list[dic
             else:
                 new("returned", rec, f"{_label(rec)} returned",
                     "was quiet before this day's log starts")
+        elif ev == "poll_starvation":
+            addr = _addr(rec) or ""
+            ep = open_starved.get(addr)
+            if ep is not None:
+                bump(ep, rec)
+                continue
+            open_starved[addr] = new("starved", rec, f"{_label(rec)} polls unanswered",
+                                     f"{rec.get('unanswered_polls')} polls, {rec.get('acked_polls')} answered before",
+                                     end=None, starved_since=rec.get("since", rec["ts"]))
+        elif ev == "poll_answered":
+            addr = _addr(rec) or ""
+            ep = open_starved.pop(addr, None)
+            if ep is not None:
+                ep["end"] = rec["ts"]
+                ep["events"].append(rec)
+                ep["title"] += f" for {fmt_duration(rec['ts'] - ep['starved_since'])}"
+            else:
+                new("starved", rec, f"{_label(rec)} polls answered again", rec.get("note", ""))
         elif ev == "rssi_degradation":
             addr = _addr(rec) or ""
             ep = open_link.get(addr)
@@ -198,6 +217,8 @@ def group_episodes(records: list[dict], now: Optional[float] = None) -> list[dic
             ep["title"] = f"{ep['name'] or ep['addr']} quiet for {fmt_duration(now - ep['silent_since'])} (still quiet)"
         elif ep["kind"] == "link" and ep["end"] is None:
             ep["title"] += f" for {fmt_duration(now - ep['low_since'])} (still down)"
+        elif ep["kind"] == "starved" and ep["end"] is None:
+            ep["title"] += f" for {fmt_duration(now - ep['starved_since'])} (still unanswered)"
     return sorted(episodes, key=lambda e: e["start"])
 
 

@@ -40,6 +40,8 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `possible_foreign_pan` | notice | `pan`, `src`, `dominant_pan`, `note` |
 | `mle_rejoin_attempt` | notice | `command`, `src`, `name` (credentials only) |
 | `device_quiet` | warning, or notice when `reception` is `marginal` | `addr`, `name`, `silent_for_s`, `profile` (`router` / `end-device`), `rssi_dbm`, `reception`, `note` |
+| `poll_starvation` | warning | `addr`, `name`, `unanswered_polls`, `since`, `starved_for_s`, `acked_polls`, `note` (credentials only) |
+| `poll_answered` | notice | `addr`, `name`, `note` |
 | `rssi_degradation` | notice | `addr`, `name`, `rssi_dbm`, `reference_dbm`, `drop_db`, `since`, `low_for_s`, `note` |
 | `rssi_recovered` | info | `addr`, `name`, `rssi_dbm`, `reference_dbm` |
 | `retransmission_elevation` | warning, or notice when one sender-target pair is `top_share` >= 0.5 of the retries (a chronic bad link, not a storm precursor) | `rate`, `baseline`, `addr`, `name`, `top_sender`, `top_target`, `top_share`, `note` |
@@ -66,6 +68,15 @@ out for tens of minutes whenever the link fades.
 
 Sleepy end devices are covered only when credentials are configured; see
 docs/CREDENTIALS.md for why their frames are otherwise anonymous.
+
+`poll_starvation` is the sleepy-device failure the quiet detector cannot
+see: the device keeps polling, so it never goes quiet, but nothing
+acknowledges its polls. Ten distinct polls (MAC retries of one poll
+share a sequence number and count once) over at least a minute with no
+ACK, from a device whose polls were answered before, fire the warning;
+the first acknowledged poll after that logs `poll_answered`. A device
+that just moved to a parent the sniffer cannot hear looks the same from
+the sniffer's chair: a `mle_rejoin_attempt` right before it is the tell.
 
 `daily_summary` goes out once per local day, the first time `periodic`
 runs at or after `[summary] hour` (default 8; -1 disables). The event log

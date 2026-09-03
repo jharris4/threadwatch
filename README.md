@@ -23,7 +23,9 @@ question: *why did this device go offline?*
   - traffic floods and phase-locked periodicity (the storm signature);
   - MAC retransmission-rate elevation, attributed to the sender and target;
   - slow link degradation: a device still talking but heard well below
-    its usual level, the precursor of a silence with no rejoin.
+    its usual level, the precursor of a silence with no rejoin;
+  - (with credentials) sleepy-device starvation: a child polling a parent
+    that no longer answers, which never shows up as a silence.
   A daily summary event (frames, devices heard, quiet and unknown ones,
   event counts) says the recorder is still watching.
   Per-device RSSI trend, ACK-success rate and poll cadence are tracked too

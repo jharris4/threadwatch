@@ -399,6 +399,21 @@ class LinkEpisodeTest(unittest.TestCase):
         self.assertIsNone(eps[0]["end"])
 
 
+class StarvedEpisodeTest(unittest.TestCase):
+    def test_starvation_and_answer_are_one_row(self):
+        eps = group_episodes([
+            rec("poll_starvation", "warning", T0, addr=AQ, name="AQ", unanswered_polls=10, acked_polls=200,
+                since=T0 - 90),
+            rec("poll_answered", "notice", T0 + 600, addr=AQ, name="AQ", note="its polls are acknowledged again"),
+        ])
+        self.assertEqual(len(eps), 1)
+        self.assertEqual((eps[0]["kind"], eps[0]["title"], eps[0]["detail"]),
+                         ("starved", "AQ polls unanswered for 11m", "10 polls, 200 answered before"))
+        still = group_episodes([rec("poll_starvation", "warning", T0, addr=AQ, name="AQ", unanswered_polls=10,
+                                    acked_polls=200, since=T0 - 90)], now=T0 + 1800)
+        self.assertEqual(still[0]["title"], "AQ polls unanswered for 31m (still unanswered)")
+
+
 class SummaryEpisodeTest(unittest.TestCase):
     def test_each_summary_is_its_own_row(self):
         eps = group_episodes([

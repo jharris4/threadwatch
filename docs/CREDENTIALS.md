@@ -13,11 +13,20 @@ enrichment; the ring-buffer capture never needs it.
 | Capture, ring buffer | ✅ | ✅ |
 | Traffic-storm / phase-lock detection | ✅ | ✅ |
 | Per-device RSSI, ACK rate, poll cadence | ✅ | ✅ |
-| Device quiet / returned / offline | ✅ | ✅ |
+| Device quiet / returned / offline | routers and REEDs | ✅ all devices, incl. sleepy end devices |
 | Rejoin attempts (Parent/Child ID Request) | infer from beacons | ✅ named, by device |
 | Partition / leader changes | ✗ | ✅ |
 | SRP / DNS-SD auto-naming | ✗ | ✅ (hints) |
 | True packet destinations (inside 6LoWPAN) | next-hop only | ✅ |
+
+Sleepy end devices poll and talk from their 16-bit short address and only
+use the extended address while attaching, so without the key their frames
+cannot be tied to a device: the 2026-09-02 soak saw 22 sleepy devices send
+~250k frames in 9 h with zero extended-address frames among them. With the
+key, the recorder identifies a short address by trying every known
+extended address as the MAC nonce (a 32-bit MIC check per candidate,
+rate-limited per short address) and from then on attributes polls, RSSI
+and quiet/returned events to the device.
 
 Note: even with the Thread key, Matter *application* payloads (e.g. sensor
 readings) stay encrypted — Matter has its own layer above Thread. You get

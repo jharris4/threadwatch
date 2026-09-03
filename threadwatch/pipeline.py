@@ -10,6 +10,9 @@ Key-free (always on):
   - MAC retransmission-rate elevation
 
 With Thread credentials (optional):
+  - short-address identity: sleepy end devices (which never use their
+    extended address once attached) get their polls, RSSI and quiet /
+    returned events attributed to them
   - MLE visibility: rejoin attempts (Parent/Child ID Request), partition and
     leader changes, per-device RLOC learning
   - SRP/DNS-SD name harvesting for auto-naming hints
@@ -76,6 +79,7 @@ class Pipeline:
         self.own_pans: dict[int, int] = {}
         self.partition: Optional[tuple] = None
         self.last_frame: Optional[Frame] = None
+        self._last_who: Optional[str] = None
         self.beacon_times = deque(maxlen=16)
         self._join_scan_evt = 0.0
         self.dup_recent = {}                    # (src, seq) -> ts
@@ -85,6 +89,7 @@ class Pipeline:
         self._win_start = 0.0
         self._retrans_alerted = 0.0
         self.quiet_reported: set[str] = set()
+        self._resolve_after: dict[str, float] = {}   # short addr -> next attempt ts
         self.mle_names_path = cfg.state_dir / "observed-names.json"
         self.observed_names = {}
         if self.mle_names_path.exists():
@@ -119,23 +124,57 @@ class Pipeline:
     def dominant_pan(self) -> Optional[int]:
         return max(self.own_pans, key=self.own_pans.get) if self.own_pans else None
 
+    # ---------------------------------------------------------- identity
+
+    RESOLVE_RETRY_S = 30.0
+
+    def identity(self, f: Frame) -> Optional[str]:
+        """The extended address a frame came from, when we can know it.
+
+        Frames with an extended source answer themselves. Short-source
+        frames are the bulk of traffic and the only kind sleepy end devices
+        send outside of attaching; with credentials the decryptor maps them
+        by trying every known extended address as the MAC nonce (see
+        Decryptor.resolve_short), rate-limited per short address so a storm
+        of unmapped frames cannot burn the CPU. Without credentials they
+        stay anonymous.
+        """
+        src = f.src
+        if not src:
+            return None
+        if len(src) == 16:
+            return src
+        if self.decryptor is None or f.ftype not in (1, 3):
+            return None
+        ext = self.decryptor.short_to_ext.get(src)
+        if ext:
+            return ext
+        if f.ts < self._resolve_after.get(src, 0.0) or not self.decryptor.resolvable(f.psdu):
+            return None
+        self._resolve_after[src] = f.ts + self.RESOLVE_RETRY_S
+        candidates = dict.fromkeys([*self.names.by_addr, *self.seen.table])  # ordered, unique
+        return self.decryptor.resolve_short(f.psdu, src, candidates)
+
     # ------------------------------------------------------------ ingest
 
     def ingest(self, f: Frame) -> None:
         ts = f.ts
         self.detector.add_frame(ts)
 
+        who = self.identity(f)
+
         # ACK pairing: an ACK within 10 ms bearing the pending seq.
         prev = self.last_frame
         if (f.ftype == 2 and prev is not None and prev.src
                 and prev.seq == f.seq and ts - prev.ts < 0.05):
-            stats = self.devices.get(prev.src)
+            stats = self.devices.get(self._last_who or prev.src)
             if stats and stats.ack_pending_seq == f.seq:
                 stats.acked += 1
                 stats.ack_pending_seq = None
+        self._last_who = who
 
-        if f.src:
-            stats = self.devices.setdefault(f.src, DeviceStats())
+        if who:
+            stats = self.devices.setdefault(who, DeviceStats())
             if f.ftype in (1, 3):
                 stats.tx += 1
                 stats.ack_pending_seq = f.seq
@@ -150,15 +189,15 @@ class Pipeline:
                     stats.poll_intervals.append(ts - stats.last_poll_ts)
                 stats.last_poll_ts = ts
                 stats.polls += 1
-            was_new = f.src not in self.seen.table
-            self.seen.touch(f.src, ts, f.ftype, pan=f.src_pan, rssi=f.rssi)
-            if was_new and len(f.src) == 16:
-                self.events.emit("device_first_seen", "info", ts, addr=f.src,
-                                 name=self.names.name(f.src))
-            if f.src in self.quiet_reported:
-                self.quiet_reported.discard(f.src)
-                self.events.emit("device_returned", "notice", ts, addr=f.src,
-                                 name=self.names.name(f.src))
+            was_new = who not in self.seen.table
+            self.seen.touch(who, ts, f.ftype, pan=f.src_pan, rssi=f.rssi)
+            if was_new:
+                self.events.emit("device_first_seen", "info", ts, addr=who,
+                                 name=self.names.name(who))
+            if who in self.quiet_reported:
+                self.quiet_reported.discard(who)
+                self.events.emit("device_returned", "notice", ts, addr=who,
+                                 name=self.names.name(who))
 
         # Beacons = someone scanning to join (or beacon requests).
         if f.ftype == 0:

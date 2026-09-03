@@ -62,6 +62,7 @@ class Decryptor:
     stats: dict = field(default_factory=lambda: {
         "mac_decrypted": 0, "mac_failed": 0, "mac_no_ext_addr": 0,
         "mle_decrypted": 0, "mle_failed": 0, "plaintext": 0,
+        "short_resolved": 0, "short_unresolved": 0,
     })
 
     def _keys_for_index(self, key_index: int):
@@ -80,16 +81,51 @@ class Decryptor:
         """Return the decrypted MAC payload of a secured data frame, or the
         plaintext payload for unsecured frames, or None when undecryptable.
         The returned bytes start at the MAC payload (after aux header)."""
+        sec = self._secured_parts(psdu)
+        if sec is None:
+            return None
+        if sec is False:
+            self.stats["plaintext"] += 1
+            return psdu[self._mac_header_len(psdu):]
+        ext_hex = src_ext_hex or (self.short_to_ext.get(src_short_hex or "") if src_short_hex else None)
+        if not ext_hex:
+            self.stats["mac_no_ext_addr"] += 1
+            return None
+        plain = self._decrypt_with_ext(sec, ext_hex)
+        self.stats["mac_decrypted" if plain is not None else "mac_failed"] += 1
+        return plain
+
+    def resolve_short(self, psdu: bytes, short_hex: str, candidates) -> Optional[str]:
+        """Learn which extended address a short-source secured frame came from.
+
+        The MAC nonce is the sender's extended address, so trying each
+        candidate against the 32-bit MIC identifies the sender with no
+        MLE traffic at all. This is how sleepy end devices get an identity:
+        they poll and talk from their short address for days and only ever
+        use the extended one while attaching.
+        """
+        sec = self._secured_parts(psdu)
+        if not sec:
+            return None
+        for ext_hex in candidates:
+            if self._decrypt_with_ext(sec, ext_hex) is not None:
+                self.short_to_ext[short_hex] = ext_hex
+                self.stats["short_resolved"] += 1
+                return ext_hex
+        self.stats["short_unresolved"] += 1
+        return None
+
+    def _secured_parts(self, psdu: bytes):
+        """None: not decryptable. False: unsecured. Else a tuple for
+        _decrypt_with_ext: (key_index, counter, sec_level, open_part, secret)."""
         if len(psdu) < 3:
             return None
         fcf = struct.unpack("<H", psdu[0:2])[0]
-        security = bool(fcf & 0x0008)
         hdr_len = self._mac_header_len(psdu)
         if hdr_len is None:
             return None
-        if not security:
-            self.stats["plaintext"] += 1
-            return psdu[hdr_len:]
+        if not (fcf & 0x0008):
+            return False
         if hdr_len + 5 > len(psdu):
             return None
         sec_ctl = psdu[hdr_len]
@@ -99,29 +135,36 @@ class Decryptor:
         aux_len = 5 + (1 if key_mode == 1 else 5 if key_mode == 2 else 9 if key_mode == 3 else 0)
         if key_mode != 1 or sec_level != 5:   # Thread uses ENC-MIC-32, key index mode
             return None
-        key_index = psdu[hdr_len + 5]
-        ext_hex = src_ext_hex or (self.short_to_ext.get(src_short_hex or "") if src_short_hex else None)
-        if not ext_hex:
-            self.stats["mac_no_ext_addr"] += 1
+        open_len = hdr_len + aux_len
+        # 802.15.4-2006 7.5.8.2.3: for MAC command frames the command
+        # identifier is authenticated but not encrypted, so it belongs to
+        # the a-data and a data request's encrypted payload is empty (just
+        # the MIC follows). Polls are the bulk of what a sleepy end device
+        # sends, so getting this right is what identifies those devices.
+        if (fcf & 0x7) == 3:
+            open_len += 1
+        secret = psdu[open_len:]
+        if len(secret) < 4:
             return None
+        return psdu[hdr_len + 5], counter, sec_level, psdu[:open_len], secret
+
+    def resolvable(self, psdu: bytes) -> bool:
+        """True when the frame is secured the Thread way and worth a nonce search."""
+        return bool(self._secured_parts(psdu))
+
+    def _decrypt_with_ext(self, sec, ext_hex: str) -> Optional[bytes]:
+        key_index, counter, sec_level, open_part, secret = sec
         nonce = bytes.fromhex(ext_hex) + struct.pack(">L", counter) + bytes([sec_level])
-        open_part = psdu[:hdr_len + aux_len]
-        secret = psdu[hdr_len + aux_len:]
-        if len(secret) <= 4 + 2:  # MIC + FCS at least
-            return None
         # The capture may retain the 2-byte FCS at the tail; try both.
         for trim in (2, 0):
             body = secret[:len(secret) - trim]
-            if len(body) <= 4:
+            if len(body) < 4:
                 continue
             for _seq, _mle, mac_key in self._keys_for_index(key_index):
                 try:
-                    plain = AESCCM(mac_key, tag_length=4).decrypt(nonce, body, open_part)
-                    self.stats["mac_decrypted"] += 1
-                    return plain
+                    return AESCCM(mac_key, tag_length=4).decrypt(nonce, body, open_part)
                 except InvalidTag:
                     continue
-        self.stats["mac_failed"] += 1
         return None
 
     @staticmethod

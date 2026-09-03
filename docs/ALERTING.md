@@ -56,6 +56,9 @@ at the sniffer is below `[quiet] min_rssi_dbm` (default -82) are logged at
 notice severity, because a device at the edge of the sniffer's range drops
 out for tens of minutes whenever the link fades.
 
+Sleepy end devices are covered only when credentials are configured; see
+docs/CREDENTIALS.md for why their frames are otherwise anonymous.
+
 ## Secrets
 
 `config/alerts.env` is a `NAME=value` file (see `config/alerts.example.env`).

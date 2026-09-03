@@ -18,6 +18,11 @@ def _positive_int(text: str) -> int:
     return n
 
 
+def _inventory_path(cfg) -> Path:
+    """Where devices.json lives, whether or not it exists yet."""
+    return cfg.devices_path or cfg.config_dir / "devices.json"
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="threadwatch",
@@ -39,6 +44,15 @@ def main(argv=None) -> int:
     p_report = sub.add_parser("report", help="device last-seen / quiet / unknown-address report")
     p_report.add_argument("--quiet-minutes", type=float, default=90.0,
                           help="minutes of silence before a device is listed as quiet")
+    p_report.add_argument("--suggest", action="store_true",
+                          help="print a ready-to-paste devices.json entry per unknown address "
+                               "instead of the report (names prefilled from harvested SRP hostnames)")
+
+    p_adopt = sub.add_parser("adopt", help="name an address: add it to devices.json")
+    p_adopt.add_argument("addr", help="16-hex extended address (from 'report')")
+    p_adopt.add_argument("name", help="device name; an existing name gains the address (rotation)")
+    p_adopt.add_argument("--role", help="router, reed, border-router, border-router-leader "
+                                        "(always-on: short quiet window) or sleepy-end-device")
 
     p_why = sub.add_parser("why", help="reconstruct one device's story from the ring buffer")
     p_why.add_argument("device", help="device name (from devices.json) or 16-hex extended address")
@@ -176,17 +190,36 @@ def main(argv=None) -> int:
         return 1 if failures else 0
 
     if args.cmd == "report":
-        from .names import DeviceNames, LastSeen
+        import sys
+        from .names import DeviceNames, LastSeen, load_observed_names, suggest_entries
         names = DeviceNames(cfg.devices_path)
         seen = LastSeen(cfg.state_dir / "last-seen.json")
         report = seen.report(names, quiet_after_s=args.quiet_minutes * 60,
                              min_rssi_dbm=cfg.quiet_min_rssi_dbm)
+        if args.suggest:
+            entries = suggest_entries(report["unknown"], load_observed_names(cfg.state_dir))
+            print(json.dumps(entries, indent=2, ensure_ascii=False))
+            if entries:
+                print(f"{len(entries)} entr{'y' if len(entries) == 1 else 'ies'} to fill in and "
+                      f"paste into {_inventory_path(cfg).name}, or name one directly with: "
+                      f"threadwatch adopt <addr> '<name>'", file=sys.stderr)
+            return 0
         print(json.dumps(report, indent=1))
         if report["unknown"]:
-            import sys
-            print(f"{len(report['unknown'])} unknown address(es) seen. Add them to "
-                  f"config/devices.json to name them (see docs in threadwatch/names.py).",
+            print(f"{len(report['unknown'])} unknown address(es) seen. Name them with "
+                  f"'threadwatch adopt <addr> <name>', or 'threadwatch report --suggest' "
+                  f"for ready-to-paste entries (format: threadwatch/names.py).",
                   file=sys.stderr)
+        return 0
+
+    if args.cmd == "adopt":
+        from .names import adopt
+        path = _inventory_path(cfg)
+        try:
+            print(f"{adopt(path, args.addr, args.name, args.role)} -> {path}")
+        except ValueError as exc:
+            parser.exit(1, f"threadwatch adopt: {exc}\n")
+        print("(the capture daemon reads the inventory at start: restart it to use the name)")
         return 0
 
     return 1

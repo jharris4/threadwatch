@@ -82,7 +82,8 @@ gives every `extAddress` the border router knows; cross-reference with
 the HA UI (Settings → Devices → your Thread devices) and write
 `config/devices.json` entries. Do this once, then let
 `threadwatch report`'s unknown-address list catch newcomers and address
-rotations (Apple TVs rotate; append, never replace, addresses).
+rotations (Apple TVs rotate; append, never replace, addresses:
+`threadwatch adopt <new-addr> "Living Room Apple TV"` does exactly that).
 
 HomeKit-only Thread devices never appear in HA — name those with the
 power-cycle method in docs/ANALYSIS.md.

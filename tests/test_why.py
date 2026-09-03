@@ -42,3 +42,24 @@ class SelectRecentTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EventHistoryTest(unittest.TestCase):
+    def test_merges_every_address_of_a_device_newest_first(self):
+        import tempfile
+        from threadwatch.events import EventLog
+        from threadwatch.why import event_history
+        a1, a2, other = "b62c32bf669272db", "e6c279e8f0c70298", "26976e7f7d20964a"
+        with tempfile.TemporaryDirectory() as d:
+            log = EventLog(Path(d) / "events")
+            log.emit("device_quiet", "warning", NOW - 7200, addr=a1, name="TV", silent_for_s=1800)
+            log.emit("device_returned", "notice", NOW - 5400, addr=a1, name="TV")
+            log.emit("device_quiet", "warning", NOW - 3000, addr=other, name="AQ", silent_for_s=1800)
+            log.emit("mle_rejoin_attempt", "notice", NOW - 600, addr=a2, name="TV", command="Parent Request")
+            eps = event_history(log.dir, [a1, a2.upper(), a1], NOW)
+        self.assertEqual([e["kind"] for e in eps], ["rejoin", "quiet"])
+        self.assertEqual(eps[1]["title"], "TV quiet for 60m")
+
+    def test_empty_without_an_event_log(self):
+        from threadwatch.why import event_history
+        self.assertEqual(event_history(Path("/nonexistent/events"), ["b62c32bf669272db"], NOW), [])

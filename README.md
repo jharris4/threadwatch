@@ -33,7 +33,9 @@ question: *why did this device go offline?*
   the ring: hour-by-hour cadence, RSSI, ACKs, silences, and (with
   credentials) rejoin attempts. This is the "why did X go offline"
   command; `--hours 6` reads only the recent ring files, which on a Pi is
-  the difference between seconds and minutes.
+  the difference between seconds and minutes. The device's episodes from
+  the event log (kept long after the packets roll off) follow, so a
+  repeat offender shows as one.
 - **Device tracking without a controller** — including HomeKit-only
   Thread devices that never appear in Home Assistant. `threadwatch
   report` lists quiet devices and unknown addresses to label.

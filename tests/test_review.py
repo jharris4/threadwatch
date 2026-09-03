@@ -220,3 +220,20 @@ class DayViewTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FmtEpisodeTest(unittest.TestCase):
+    def test_single_and_recurring_rows(self):
+        from threadwatch.review import fmt_episode
+        eps = group_episodes([
+            rec("device_quiet", "warning", T0, addr=AQ, name="AQ", silent_for_s=1800),
+            rec("device_returned", "notice", T0 + 600, addr=AQ, name="AQ"),
+            rec("retransmission_elevation", "notice", T0, top_sender="AQ", top_target="broadcast",
+                rate=0.3, note="chatter"),
+            rec("retransmission_elevation", "notice", T0 + 900, top_sender="AQ", top_target="broadcast",
+                rate=0.4, note="chatter"),
+        ])
+        lines = [fmt_episode(e) for e in eps]
+        self.assertEqual(lines[0], "09-02 12:00 [warning ] AQ quiet for 40m  no frames heard")
+        self.assertEqual(lines[1], "09-02 12:00 [notice  ] retransmissions: AQ -> broadcast x2 over 15m  chatter")
+        self.assertTrue(fmt_episode(eps[0], "%Y-%m-%d %H:%M").startswith("2026-09-02 12:00 "))

@@ -152,11 +152,9 @@ def main(argv=None) -> int:
                     break
             records = records[-args.n:]
         if args.episodes:
-            from .review import group_episodes, fmt_duration
+            from .review import fmt_episode, group_episodes
             for ep in group_episodes(records):
-                stamp = time.strftime("%m-%d %H:%M", time.localtime(ep["start"]))
-                span = "" if ep["count"] == 1 else f" x{ep['count']} over {fmt_duration((ep['end'] or ep['start']) - ep['start'])}"
-                print(f"{stamp} [{ep['severity']:8s}] {ep['title']}{span}  {ep['detail']}")
+                print(fmt_episode(ep))
             return 0
         for e in records:
             e = dict(e)

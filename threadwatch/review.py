@@ -173,6 +173,14 @@ def group_episodes(records: list[dict], now: Optional[float] = None) -> list[dic
     return sorted(episodes, key=lambda e: e["start"])
 
 
+def fmt_episode(ep: dict, stamp_fmt: str = "%m-%d %H:%M") -> str:
+    """One terminal line per episode, the way the CLI prints them."""
+    stamp = time.strftime(stamp_fmt, time.localtime(ep["start"]))
+    span = "" if ep["count"] == 1 else \
+        f" x{ep['count']} over {fmt_duration((ep['end'] or ep['start']) - ep['start'])}"
+    return f"{stamp} [{ep['severity']:8s}] {ep['title']}{span}  {ep['detail']}"
+
+
 def day_episodes(events_dir: Path, day: str, now: Optional[float] = None) -> list[dict]:
     """Episodes that touch a day. Grouping runs over the whole history, so a
     silence that began days ago and is still open appears on every day it

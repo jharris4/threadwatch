@@ -2,7 +2,10 @@
 
 Walks the ring pcaps (or a given file) and produces a per-hour narrative for
 one device: cadence, RSSI trend, ACK health, MLE activity (with credentials),
-silences — the questions you ask when something went offline.
+silences — the questions you ask when something went offline. The packets
+last a week; the event log is kept forever, so the device's episodes from
+it (quiet spells, rejoins, bad links) follow, newest first, to answer
+"has this happened before?".
 """
 
 from __future__ import annotations
@@ -15,6 +18,9 @@ from .events import NullEventLog
 from .names import DeviceNames
 from .pcap import PcapStreamReader
 from .pipeline import Pipeline, load_decryptor
+from .review import device_history, fmt_episode
+
+HISTORY_ROWS = 20
 
 
 def resolve_target(cfg: Config, target: str) -> tuple[list[str], str]:
@@ -64,6 +70,31 @@ def select_recent(files: list[Path], hours: float | None, now: float | None = No
         if start + 3600 > cutoff:
             keep.append(path)
     return keep
+
+
+def event_history(events_dir: Path, addrs: list[str], now: float | None = None) -> list[dict]:
+    """Every episode from the event log involving any of a device's
+    addresses, newest first. Rotating devices are several addresses with
+    one story, so the per-address histories are merged."""
+    episodes = []
+    for addr in dict.fromkeys(a.lower() for a in addrs):
+        episodes.extend(device_history(events_dir, addr, now))
+    return sorted(episodes, key=lambda e: e["start"], reverse=True)
+
+
+def print_history(events_dir: Path, addrs: list[str], now: float | None = None) -> None:
+    episodes = event_history(events_dir, addrs, now)
+    if not episodes:
+        print("\nevent log: nothing recorded for this device.")
+        return
+    shown = episodes[:HISTORY_ROWS]
+    days = len({e["start"] // 86400 for e in episodes})
+    print(f"\nevent log ({len(episodes)} episode(s) across {days} day(s), newest first"
+          + (f", latest {len(shown)}" if len(shown) < len(episodes) else "") + "):")
+    for ep in shown:
+        print("  " + fmt_episode(ep, "%Y-%m-%d %H:%M"))
+    if len(shown) < len(episodes):
+        print(f"  ... {len(episodes) - len(shown)} more: threadwatch web, /device/{addrs[0]}")
 
 
 def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
@@ -165,6 +196,7 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
         print("Interpretation: either out of range of the dongle, silent (dead "
               "battery / crashed radio), or transmitting under an unknown "
               "rotated address — check `threadwatch report` for unknowns.")
+        print_history(cfg.events_dir, addrs)
         return
     print(f"first seen: {_t.strftime('%Y-%m-%d %H:%M:%S', _t.localtime(first_ts))}")
     print(f"last seen:  {_t.strftime('%Y-%m-%d %H:%M:%S', _t.localtime(last_ts))}"
@@ -189,3 +221,4 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
             print(f"  {_t.strftime('%m-%d %H:%M:%S', _t.localtime(ts))}  {cmd}")
     elif decryptor is not None:
         print("\nno rejoin-related MLE seen from this device in the window.")
+    print_history(cfg.events_dir, addrs)

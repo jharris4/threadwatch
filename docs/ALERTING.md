@@ -45,10 +45,11 @@ record is what sinks receive. Fields common to all: `ts` (unix seconds),
 
 `name` is null for addresses not in `devices.json`.
 
-`device_quiet` fires after `[quiet] end_device_s` of silence (default 90
-min), or `[quiet] router_s` (default 30 min) for entries whose `role` /
-`threadRole` in `devices.json` is `router`, `reed`, `border-router` or
-`border-router-leader`. Cleartext headers cannot tell the two apart (polls
+`device_quiet` fires after `[quiet] end_device_s` of silence, or
+`[quiet] router_s` for entries whose `role` / `threadRole` in
+`devices.json` is `router`, `reed`, `border-router` or
+`border-router-leader` (both default 30 min; sleepy end devices poll every
+few seconds, so they are not quiet from the sniffer's point of view). Cleartext headers cannot tell the two apart (polls
 are sent from the short address), so the inventory decides. Two silences
 are deliberately not paged: addresses whose frames carry a foreign PAN id
 (someone else's mesh) are never reported, and devices whose average RSSI

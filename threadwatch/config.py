@@ -22,14 +22,13 @@ class Config:
     detector: DetectorConfig = field(default_factory=DetectorConfig)
     config_dir: Path = REPO_ROOT / "config"
     credentials_path: Optional[Path] = None
-    # Silence (seconds) before a device_quiet event. Routers keep advertising
-    # every few seconds, so a short window is meaningful for them; end devices
-    # legitimately sleep for long stretches (battery air-quality sensors were
-    # seen going 70+ min between frames at night). A device counts as a
-    # router only when its devices.json entry says so (role = "router" or
-    # "border-router"): polling cannot be attributed from cleartext, because
-    # data requests carry the short address.
-    quiet_end_device_s: float = 90 * 60
+    # Silence (seconds) before a device_quiet event, by inventory role. Both
+    # default to 30 min: the 2026-09-02 soak (9.8 h, 22 sleepy end devices)
+    # showed 19 of them never silent for 3 min and the rest under 30 min once
+    # marginal-reception devices are excluded, so end devices are not quiet
+    # from the sniffer's point of view. The split is kept for meshes where a
+    # class of device genuinely sleeps for long stretches.
+    quiet_end_device_s: float = 30 * 60
     quiet_router_s: float = 30 * 60
     # Below this average RSSI the sniffer is at the edge of its range and a
     # silence is logged at notice severity (kept, not paged): the 2026-09-02

@@ -31,7 +31,9 @@ def resolve_target(cfg: Config, target: str) -> tuple[list[str], str]:
                 addrs = entry.get("extendedAddresses") or []
                 if entry.get("extendedAddress"):
                     addrs = addrs + [entry["extendedAddress"]]
-                matches[name] = [a.replace(":", "").lower() for a in addrs]
+                # Rotating devices (Apple TVs) may appear as several entries
+                # under one name; every address belongs to the story.
+                matches.setdefault(name, []).extend(a.replace(":", "").lower() for a in addrs)
     if len(matches) == 1:
         name, addrs = next(iter(matches.items()))
         return addrs, name

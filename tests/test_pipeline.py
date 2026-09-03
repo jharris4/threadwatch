@@ -271,6 +271,16 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual(len(ev), 1)
         self.assertEqual(ev[0]["count_60s"], 5)
 
+    def test_why_resolves_every_address_of_a_name_listed_twice(self):
+        from threadwatch.why import resolve_target
+        d = Path(self.tmp.name)
+        (d / "devices.json").write_text(json.dumps([
+            {"name": "Living Room Apple TV", "extendedAddress": ROUTER.upper()},
+            {"name": "Living Room Apple TV", "extendedAddress": SENSOR},
+        ]))
+        addrs, name = resolve_target(self.cfg, "apple tv")
+        self.assertEqual((sorted(addrs), name), (sorted([ROUTER, SENSOR]), "Living Room Apple TV"))
+
     def test_returned_device_can_go_quiet_again(self):
         pipe = self._pipe()
         t0 = 1_700_000_000.0

@@ -135,7 +135,8 @@ def main(argv=None) -> int:
         from .names import DeviceNames, LastSeen
         names = DeviceNames(cfg.devices_path)
         seen = LastSeen(cfg.state_dir / "last-seen.json")
-        report = seen.report(names, quiet_after_s=args.quiet_minutes * 60)
+        report = seen.report(names, quiet_after_s=args.quiet_minutes * 60,
+                             min_rssi_dbm=cfg.quiet_min_rssi_dbm)
         print(json.dumps(report, indent=1))
         if report["unknown"]:
             import sys

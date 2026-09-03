@@ -78,8 +78,8 @@ question: *why did this device go offline?*
 802.15.4 frames carry extended addresses, not names, and Thread devices
 use randomized addresses (Apple TVs rotate them over time — record every
 address you've seen per device, the inventory format supports it).
-`threadwatch report` surfaces unknown addresses with behavioural hints
-(sleepy/polling vs data-heavy) and first/last-seen times; identify a
+`threadwatch report` surfaces unknown addresses with their inventory
+role, how well the sniffer hears them, and first/last-seen times; identify a
 device by power-cycling it and watching which address disappears and
 returns, then add it to `config/devices.json`. If you run Home
 Assistant + OTBR, its Thread panel and the OTBR REST API map most

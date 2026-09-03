@@ -25,7 +25,7 @@ from typing import Optional
 
 from .detect import Detector
 from .events import EventLog
-from .names import DeviceNames, LastSeen
+from .names import DeviceNames, LastSeen, reception
 from .pcap import Frame
 
 MLE_REJOIN_COMMANDS = {"Parent Request", "Child ID Request", "Announce"}
@@ -105,14 +105,13 @@ class Pipeline:
     # ------------------------------------------------------- quiet policy
 
     def is_router(self, addr: str) -> bool:
-        """True when the inventory tags the address as a (border) router.
+        """True when the inventory tags the address as an always-on device.
 
         Cleartext headers cannot tell a router from a busy end device: data
         requests (polls) are sent from the short address, so per-extended-
-        address poll counts are always zero, and end devices that report
-        every few seconds by day may sleep for over an hour at night.
+        address poll counts are always zero.
         """
-        return (self.names.role(addr) or "").lower() in ("router", "border-router")
+        return self.names.is_router(addr)
 
     def quiet_threshold_s(self, addr: str) -> float:
         return self.cfg.quiet_router_s if self.is_router(addr) else self.cfg.quiet_end_device_s
@@ -152,7 +151,7 @@ class Pipeline:
                 stats.last_poll_ts = ts
                 stats.polls += 1
             was_new = f.src not in self.seen.table
-            self.seen.touch(f.src, ts, f.ftype, pan=f.src_pan)
+            self.seen.touch(f.src, ts, f.ftype, pan=f.src_pan, rssi=f.rssi)
             if was_new and len(f.src) == 16:
                 self.events.emit("device_first_seen", "info", ts, addr=f.src,
                                  name=self.names.name(f.src))
@@ -280,12 +279,19 @@ class Pipeline:
             silent = now - row["last_seen"]
             if silent > self.quiet_threshold_s(addr):
                 self.quiet_reported.add(addr)
+                # A device the sniffer barely hears goes "quiet" whenever the
+                # link fades; log it, but do not page for it.
+                rssi = row.get("rssi")
+                marginal = reception(rssi, self.cfg.quiet_min_rssi_dbm) == "marginal"
                 self.events.emit(
-                    "device_quiet", "warning", now, addr=addr,
+                    "device_quiet", "notice" if marginal else "warning", now, addr=addr,
                     name=self.names.name(addr), silent_for_s=round(silent),
                     profile="router" if self.is_router(addr) else "end-device",
-                    note="no frames heard; if no mle_rejoin_attempt follows, "
-                         "suspect device-internal failure rather than RF")
+                    rssi_dbm=rssi, reception="marginal" if marginal else "good",
+                    note=("sniffer hears this device at the edge of its range; "
+                          "silence is more likely reception than failure" if marginal else
+                          "no frames heard; if no mle_rejoin_attempt follows, "
+                          "suspect device-internal failure rather than RF"))
         if self.observed_names:
             tmp = self.mle_names_path.with_suffix(".tmp")
             tmp.write_text(json.dumps(self.observed_names, indent=1))

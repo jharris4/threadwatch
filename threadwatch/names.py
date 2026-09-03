@@ -16,6 +16,12 @@ ever observed):
        "extendedAddresses": ["B62C32BF669272DB", "E6C279E8F0C70298"],
        "role": "border-router"}
     ]
+
+`role` (or `threadRole`, as exported from Home Assistant's Thread panel)
+is optional: router, reed, border-router and border-router-leader are
+always-on devices that advertise every few seconds, so a short silence is
+meaningful; anything else (sleepy-end-device, or untagged) gets the long
+quiet window.
 """
 
 from __future__ import annotations
@@ -24,6 +30,9 @@ import json
 import time
 from pathlib import Path
 from typing import Optional
+
+
+ROUTER_ROLES = {"router", "reed", "border-router", "border-router-leader"}
 
 
 def _norm(addr: str) -> str:
@@ -48,7 +57,12 @@ class DeviceNames:
 
     def role(self, addr: str) -> Optional[str]:
         entry = self.by_addr.get(_norm(addr))
-        return entry.get("role") if entry else None
+        if not entry:
+            return None
+        return entry.get("role") or entry.get("threadRole")
+
+    def is_router(self, addr: str) -> bool:
+        return (self.role(addr) or "").lower() in ROUTER_ROLES
 
 
 class LastSeen:
@@ -66,7 +80,7 @@ class LastSeen:
         self._last_save = 0.0
 
     def touch(self, addr: Optional[str], ts: float, ftype: Optional[int],
-              pan: Optional[int] = None) -> None:
+              pan: Optional[int] = None, rssi: Optional[float] = None) -> None:
         if not addr or len(addr) != 16:  # extended addresses only
             return
         row = self.table.setdefault(addr, {"first_seen": ts, "frames": 0, "types": {}})
@@ -77,6 +91,12 @@ class LastSeen:
             row["types"][key] = row["types"].get(key, 0) + 1
         if pan is not None:
             row["pan"] = pan   # last source PAN; lets quiet checks skip foreign meshes
+        if rssi is not None:
+            # Slow EWMA of received signal strength at the sniffer. Devices
+            # near the receiver's floor (-85 dBm and below) drop out for tens
+            # of minutes at a time; that is reception, not device silence.
+            prev = row.get("rssi")
+            row["rssi"] = round(rssi if prev is None else 0.95 * prev + 0.05 * rssi, 1)
         self._dirty = True
 
     def maybe_save(self, interval: float = 30.0) -> None:
@@ -91,24 +111,23 @@ class LastSeen:
         self._dirty = False
         self._last_save = time.time()
 
-    def report(self, names: DeviceNames, quiet_after_s: float, now: Optional[float] = None) -> dict:
+    def report(self, names: DeviceNames, quiet_after_s: float, now: Optional[float] = None,
+               min_rssi_dbm: float = -82.0) -> dict:
         now = now or time.time()
         quiet, active, unknown = [], [], []
         for addr, row in sorted(self.table.items(), key=lambda kv: kv[1]["last_seen"]):
             silent_for = now - row["last_seen"]
             name = names.name(addr)
-            types = row.get("types", {})
-            # Behavioural hint for identifying unlabelled devices:
-            # command frames (type 3) = data-request polling = sleepy child;
-            # steady data (type 1) at volume = router or busy end device.
-            hint = "sleepy/polling" if types.get("3", 0) > types.get("1", 0) else "data-heavy"
+            rssi = row.get("rssi")
             item = {
                 "addr": addr,
                 "name": name,
+                "role": names.role(addr),
                 "frames": row["frames"],
                 "last_seen": row["last_seen"],
                 "silent_for_s": round(silent_for, 1),
-                "hint": hint,
+                "rssi_dbm": rssi,
+                "reception": reception(rssi, min_rssi_dbm),
             }
             if name is None:
                 unknown.append(item)
@@ -117,3 +136,10 @@ class LastSeen:
             else:
                 active.append(item)
         return {"quiet": quiet, "active_count": len(active), "unknown": unknown}
+
+
+def reception(rssi: Optional[float], min_rssi_dbm: float) -> str:
+    """How much a silence from this address means, given how well we hear it."""
+    if rssi is None:
+        return "unknown"
+    return "good" if rssi >= min_rssi_dbm else "marginal"

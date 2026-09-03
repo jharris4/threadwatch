@@ -259,7 +259,7 @@ class Pipeline:
                     else 0.95 * stats.rssi_ewma + 0.05 * f.rssi
                 stats.rssi_min = f.rssi if stats.rssi_min is None else min(stats.rssi_min, f.rssi)
                 stats.rssi_max = f.rssi if stats.rssi_max is None else max(stats.rssi_max, f.rssi)
-            if f.ftype == 3:   # MAC command = data request (poll) in practice
+            if f.ftype == 3 and f.cmd in (None, 4):   # data request (poll); secured ones carry no cmd
                 if stats.last_poll_ts is not None:
                     stats.poll_intervals.append(ts - stats.last_poll_ts)
                 stats.last_poll_ts = ts
@@ -279,8 +279,10 @@ class Pipeline:
                 # return a second time. Returns are rare, saves are cheap.
                 self.seen.save()
 
-        # Beacons = someone scanning to join (or beacon requests).
-        if f.ftype == 0:
+        # Beacons, or beacon requests (an unsecured MAC command, id 7):
+        # someone scanning to join. Thread itself discovers over MLE, so
+        # these are Zigbee or factory-reset devices sweeping the channel.
+        if f.ftype == 0 or (f.ftype == 3 and f.cmd == 7):
             if f.src:
                 self.devices.setdefault(f.src, DeviceStats()).beacons += 1
             self.beacon_times.append(ts)

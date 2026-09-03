@@ -256,6 +256,21 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual((rec["period_s"], rec["onsets"]), (80.5, 3))
         self.assertIn("every 80 s", rec["note"])
 
+    def test_beacon_requests_count_as_join_scanning(self):
+        import struct
+        from threadwatch.pcap import parse_frame
+        pipe = self._pipe()
+        t0 = 1_700_000_000.0
+        fcf = 3 | (2 << 10)                                   # command frame, short dst, no source
+        req = struct.pack("<HBH", fcf, 1, 0xFFFF) + b"\xff\xff" + b"\x07"
+        for i in range(5):
+            f = parse_frame(t0 + i * 5, req, 230)
+            self.assertEqual((f.ftype, f.cmd, f.src), (3, 7, None))
+            pipe.ingest(f)
+        ev = [r for r in pipe.events.records if r["event"] == "join_scan_activity"]
+        self.assertEqual(len(ev), 1)
+        self.assertEqual(ev[0]["count_60s"], 5)
+
     def test_returned_device_can_go_quiet_again(self):
         pipe = self._pipe()
         t0 = 1_700_000_000.0

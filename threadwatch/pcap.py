@@ -36,6 +36,7 @@ class Frame:
     dst: Optional[str] = None        # hex string, 4 chars (short) or 16 (extended)
     src_pan: Optional[int] = None
     src: Optional[str] = None
+    cmd: Optional[int] = None        # MAC command id, unsecured command frames only
 
 
 def _read_exact(stream: BinaryIO, n: int) -> bytes:
@@ -174,6 +175,8 @@ def _parse_mac(f: Frame) -> None:
             n = 2 if src_mode == 2 else 8
             f.src = _addr_hex(p[off:off + n])
             off += n
+        if f.ftype == 3 and not (fcf & 0x0008) and off < len(p):
+            f.cmd = p[off]   # 0x04 data request (poll), 0x07 beacon request
     except struct.error:
         # Truncated or non-standard header; keep what we have.
         pass

@@ -76,6 +76,7 @@ journalctl -u threadwatch -f  # live log incl. storm alerts
 ## 6. Day-2 operations
 
 ```bash
+bin/threadwatch doctor          # dongle, key file, disk, clock, services, ring, sinks: ok/warn/FAIL
 bin/threadwatch status          # daemon alive? frames flowing? storm state?
 bin/threadwatch report          # who's gone quiet; unknown addresses to name
 bin/threadwatch adopt <addr> "<name>"   # ...and name one (report --suggest drafts entries)

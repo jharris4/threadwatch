@@ -78,7 +78,8 @@ question: *why did this device go offline?*
 3. `cp config/config.example.toml config/config.toml` and set your
    channel; optionally seed `config/devices.json` with your device names.
 4. `bin/threadwatch capture` (or enable the systemd unit).
-5. When something feels wrong: `bin/threadwatch status`, and
+5. `bin/threadwatch doctor` says whether the box is fit to record.
+6. When something feels wrong: `bin/threadwatch status`, and
    `bin/threadwatch freeze` before the evidence rolls off.
 
 ## Naming devices (the human-readable problem)
@@ -115,6 +116,7 @@ addresses to names for you (see docs/HOME-ASSISTANT.md).
       alerts.py    alert sinks (http/command/ntfy preset) + heartbeats
       names.py     address->name inventory, last-seen tracking
       why.py       per-device history reconstruction
+      doctor.py    preflight checks (threadwatch doctor)
       capture.py   live daemon (ring buffer) + replay
       cli.py       command-line interface
     vendor/        Nordic's sniffer extcap module (BSD, unmodified)

@@ -70,6 +70,9 @@ def main(argv=None) -> int:
     p_web.add_argument("--bind", help="address to listen on (default: [web] bind, else 0.0.0.0)")
     p_web.add_argument("--port", type=int, help="port (default: [web] port, else 8080)")
 
+    sub.add_parser("doctor", help="check this box is fit to record: dongle, config, key file, disk, "
+                                  "clock, services, ring, sinks (read-only)")
+
     p_test = sub.add_parser("alert-test",
                             help="send a synthetic event through every alert sink and "
                                  "push every heartbeat once (cooldowns ignored)")
@@ -168,6 +171,10 @@ def main(argv=None) -> int:
         from .web import serve
         serve(cfg, bind=args.bind or cfg.web_bind, port=args.port or cfg.web_port)
         return 0
+
+    if args.cmd == "doctor":
+        from .doctor import print_report, run_doctor
+        return print_report(run_doctor(cfg))
 
     if args.cmd == "alert-test":
         from .alerts import Dispatcher, HeartbeatRunner, build_heartbeats, build_sinks

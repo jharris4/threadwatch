@@ -68,10 +68,12 @@ class DeviceNames:
 class LastSeen:
     """Tracks when each source address (extended, 16-hex-char) last transmitted."""
 
-    def __init__(self, state_path: Path):
+    def __init__(self, state_path: Optional[Path]):
+        """``state_path`` None: an in-memory table that is never saved
+        (replay must not touch the live recorder's state)."""
         self.state_path = state_path
         self.table: dict[str, dict] = {}
-        if state_path.exists():
+        if state_path is not None and state_path.exists():
             try:
                 self.table = json.loads(state_path.read_text())
             except (json.JSONDecodeError, OSError):
@@ -105,6 +107,9 @@ class LastSeen:
             self.save()
 
     def save(self) -> None:
+        if self.state_path is None:
+            self._dirty = False
+            return
         tmp = self.state_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(self.table))
         tmp.replace(self.state_path)

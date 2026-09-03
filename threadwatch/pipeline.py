@@ -68,11 +68,14 @@ class DeviceStats:
 
 
 class Pipeline:
-    def __init__(self, cfg, events: EventLog, decryptor=None):
+    def __init__(self, cfg, events: EventLog, decryptor=None, ephemeral: bool = False):
+        """``ephemeral``: judge frames on their own (replay), starting from
+        an empty last-seen table and persisting nothing to the state dir."""
         self.cfg = cfg
         self.events = events
+        self.ephemeral = ephemeral
         self.names = DeviceNames(cfg.devices_path)
-        self.seen = LastSeen(cfg.state_dir / "last-seen.json")
+        self.seen = LastSeen(None if ephemeral else cfg.state_dir / "last-seen.json")
         self.detector = Detector(cfg.detector)
         self.decryptor = decryptor
         self.devices: dict[str, DeviceStats] = {}
@@ -93,7 +96,7 @@ class Pipeline:
         self._resolve_after: dict[str, float] = {}   # short addr -> next attempt ts
         self.mle_names_path = cfg.state_dir / "observed-names.json"
         self.observed_names = {}
-        if self.mle_names_path.exists():
+        if not ephemeral and self.mle_names_path.exists():
             try:
                 self.observed_names = json.loads(self.mle_names_path.read_text())
             except (json.JSONDecodeError, OSError):
@@ -372,7 +375,7 @@ class Pipeline:
                           "silence is more likely reception than failure" if marginal else
                           "no frames heard; if no mle_rejoin_attempt follows, "
                           "suspect device-internal failure rather than RF"))
-        if self.observed_names:
+        if self.observed_names and not self.ephemeral:
             tmp = self.mle_names_path.with_suffix(".tmp")
             tmp.write_text(json.dumps(self.observed_names, indent=1))
             tmp.replace(self.mle_names_path)

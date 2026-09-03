@@ -171,6 +171,19 @@ class QuietPolicyTest(unittest.TestCase):
         pipe2.periodic(now + 60 * 60)
         self.assertEqual(self._quiet(pipe2), [(SENSOR, "end-device")])
 
+    def test_replay_neither_reads_nor_writes_live_state(self):
+        now = time.time()
+        live = self._pipe()
+        live.ingest(frame(now - 2 * 3600, ROUTER))
+        live.seen.save()
+        before = (self.cfg.state_dir / "last-seen.json").read_text()
+        replay = Pipeline(self.cfg, NullEventLog(), ephemeral=True)
+        replay.ingest(frame(100.0, ROUTER))
+        replay.periodic(100.0)
+        replay.seen.save()
+        self.assertEqual([r["event"] for r in replay.events.records], ["device_first_seen"])
+        self.assertEqual((self.cfg.state_dir / "last-seen.json").read_text(), before)
+
     def test_returned_device_can_go_quiet_again(self):
         pipe = self._pipe()
         t0 = 1_700_000_000.0

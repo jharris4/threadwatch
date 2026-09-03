@@ -29,6 +29,8 @@ class DetectorConfig:
 class Detector:
     cfg: DetectorConfig
     counts: deque = field(default_factory=lambda: deque(maxlen=360))
+    calm: deque = field(default_factory=lambda: deque(maxlen=360))   # windows outside storms: the baseline
+    last_flood: float = 0.0
     window_start: float = 0.0
     window_count: int = 0
     in_flood: bool = False
@@ -47,7 +49,10 @@ class Detector:
         self.window_count += 1
 
     def _baseline(self) -> float:
-        history = [c for c in self.counts][-self.cfg.baseline_windows:]
+        # Windows seen during a storm are left out: a storm whose bursts
+        # merge into a continuous flood would otherwise become the new
+        # normal within the baseline span and stop looking like a flood.
+        history = [c for c in self.calm][-self.cfg.baseline_windows:]
         calm = sorted(history)[: max(1, len(history) * 3 // 4)]  # ignore top quartile (floods)
         return statistics.median(calm) if calm else 0.0
 
@@ -60,12 +65,15 @@ class Detector:
         if flood and not self.in_flood:
             self.onsets.append(self.window_start)
             self._check_periodicity()
-        # A storm that stops flooding is over: clear after 3 missed periods.
-        if (self.storm_active and self.onsets
-                and self.window_start - self.onsets[-1] > 3 * self.cfg.period_max_s):
+        if flood:
+            self.last_flood = self.window_start
+        # A storm is over once flooding has stopped for 3 periods.
+        if self.storm_active and self.window_start - self.last_flood > 3 * self.cfg.period_max_s:
             self.storm_active = False
         self.in_flood = flood
         self.counts.append(count)
+        if not self.storm_active:
+            self.calm.append(count)
 
     def _check_periodicity(self) -> None:
         need = self.cfg.period_onsets

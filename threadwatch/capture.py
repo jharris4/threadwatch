@@ -10,6 +10,7 @@ import threading
 import time
 import traceback
 from pathlib import Path
+from typing import Optional
 
 from .alerts import HeartbeatRunner, build_heartbeats, build_sinks
 from .config import Config
@@ -39,11 +40,14 @@ def find_sniffer_port() -> str:
 
 
 class RingWriter:
-    """Hourly pcap files in a ring directory, oldest pruned beyond keep_files."""
+    """Hourly pcap files in a ring directory, oldest pruned beyond
+    keep_files, and beyond keep_bytes of total size when that is set (a
+    small SD card is a harder limit than a week)."""
 
-    def __init__(self, ring_dir: Path, keep_files: int, dlt: int):
+    def __init__(self, ring_dir: Path, keep_files: int, dlt: int, keep_bytes: Optional[int] = None):
         self.ring_dir = ring_dir
         self.keep_files = keep_files
+        self.keep_bytes = keep_bytes
         self.dlt = dlt
         self.current_hour = None
         self.fh = None
@@ -84,7 +88,14 @@ class RingWriter:
 
     def _prune(self) -> None:
         files = sorted(self.ring_dir.glob("threadwatch-*.pcap"))
-        for old in files[: max(0, len(files) - self.keep_files)]:
+        drop = max(0, len(files) - self.keep_files)
+        if self.keep_bytes is not None:
+            sizes = [f.stat().st_size if f.exists() else 0 for f in files]
+            total = sum(sizes)
+            while total > self.keep_bytes and drop < len(files) - 1:   # never the file being written
+                total -= sizes[drop]
+                drop += 1
+        for old in files[:drop]:
             old.unlink(missing_ok=True)
 
     def close(self) -> None:
@@ -206,7 +217,7 @@ def run_capture(cfg: Config) -> None:
     try:
         with open(fifo_path, "rb") as fifo:
             reader = PcapStreamReader(fifo)
-            ring = RingWriter(cfg.ring_dir, cfg.keep_files, reader.dlt)
+            ring = RingWriter(cfg.ring_dir, cfg.keep_files, reader.dlt, cfg.keep_bytes)
             beat["ring"] = ring
             for frame in reader:
                 frame.ts = time.time()   # host wall clock, NTP-aligned

@@ -70,6 +70,10 @@ def main(argv=None) -> int:
     p_web.add_argument("--bind", help="address to listen on (default: [web] bind, else 0.0.0.0)")
     p_web.add_argument("--port", type=int, help="port (default: [web] port, else 8080)")
 
+    p_inc = sub.add_parser("incidents", help="list frozen incidents, or delete one")
+    p_inc.add_argument("--delete", metavar="NAME", help="remove this incident (its directory name, or a "
+                                                          "label that names exactly one)")
+
     sub.add_parser("doctor", help="check this box is fit to record: dongle, config, key file, disk, "
                                   "clock, services, ring, sinks (read-only)")
 
@@ -170,6 +174,34 @@ def main(argv=None) -> int:
     if args.cmd == "web":
         from .web import serve
         serve(cfg, bind=args.bind or cfg.web_bind, port=args.port or cfg.web_port)
+        return 0
+
+    if args.cmd == "incidents":
+        import sys
+        from .review import fmt_bytes, incidents
+        items = incidents(cfg.incidents_dir)
+        if args.delete:
+            want = args.delete.strip().rstrip("/")
+            hits = [i for i in items if i["name"] == want] or [i for i in items if i["label"] == want]
+            if not hits:
+                parser.exit(1, f"threadwatch incidents: no incident named {want!r}\n")
+            if len(hits) > 1:
+                parser.exit(1, f"threadwatch incidents: {want!r} names {len(hits)} incidents; "
+                               f"use the full name: {', '.join(i['name'] for i in hits)}\n")
+            target = cfg.incidents_dir / hits[0]["name"]
+            shutil.rmtree(target)
+            print(f"deleted {target} ({fmt_bytes(hits[0]['bytes'])})")
+            return 0
+        if not items:
+            print("no frozen incidents (threadwatch freeze <label> makes one)")
+            return 0
+        for i in items:
+            span = f"{i['span'][0]} to {i['span'][1]}" if i["span"] else "no ring files"
+            print(f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(i['frozen']))}  {i['name']:36s} "
+                  f"{fmt_bytes(i['bytes']):>9s}  {i['pcaps']:3d} pcaps  {span}"
+                  + ("  +events" if i["events"] else ""))
+        total = sum(i["bytes"] for i in items)
+        print(f"{len(items)} incident(s), {fmt_bytes(total)} in {cfg.incidents_dir}", file=sys.stderr)
         return 0
 
     if args.cmd == "doctor":

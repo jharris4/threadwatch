@@ -67,7 +67,8 @@ journalctl -u threadwatch -f  # live log incl. storm alerts
 - Put the Pi + dongle **near your Thread border router** — the capture
   should represent what the border router's radio hears.
 - Storage: ~30 MB/hour ≈ 5 GB/week for a mid-sized mesh, pruned
-  automatically (`keep_files`). That write rate is fine for a good SD
+  automatically (`keep_files`; `keep_gb` caps the total size when the
+  card is the harder limit). That write rate is fine for a good SD
   card; a small USB SSD is nicer if you have one. Set
   `data_dir` in config.toml to point at it.
 - Time sync (NTP) is on by default in Raspberry Pi OS — leave it; pcap
@@ -84,5 +85,6 @@ bin/threadwatch events --episodes   # what happened lately, grouped
 bin/threadwatch why "<name>" --hours 6  # one device's story from the recent ring files
 # ...or open http://<pi>:8080/ for the same thing day by day (docs/REVIEW.md)
 bin/threadwatch freeze mylabel  # preserve the ring buffer NOW (incident!)
+bin/threadwatch incidents       # what is frozen and how big; --delete <name> when done with one
 bin/threadwatch replay f.pcap   # run detection over any pcap
 ```

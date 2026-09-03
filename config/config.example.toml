@@ -16,6 +16,7 @@ channel = 25
 # serial_port = "/dev/ttyACM0"   # leave unset to auto-detect the dongle
 # data_dir = "~/threadwatch-data"  # default: <repo>/data
 keep_files = 168                  # hourly ring files to retain (168 = 1 week)
+# keep_gb = 4                     # ...and never more than this much on disk (oldest go first)
 
 [devices]
 # Inventory that maps extended addresses to human names (see names.py docstring).

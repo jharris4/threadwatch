@@ -9,6 +9,25 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from threadwatch.capture import RingWriter  # noqa: E402
+import unittest as _ut  # noqa: E402
+
+
+class RingSizeCapTest(_ut.TestCase):
+    def test_oldest_go_until_under_the_byte_cap_but_never_the_current_file(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            ring = RingWriter(Path(d), keep_files=10, dlt=0, keep_bytes=2500)
+            for h in ("00", "01", "02", "03"):
+                (Path(d) / f"threadwatch-20260903-{h}.pcap").write_bytes(b"x" * 1000)
+            ring._prune()
+            self.assertEqual(sorted(p.name[-7:-5] for p in Path(d).glob("*.pcap")), ["02", "03"])
+            (Path(d) / "threadwatch-20260903-03.pcap").write_bytes(b"x" * 9000)   # one huge current file
+            ring._prune()
+            self.assertEqual(sorted(p.name[-7:-5] for p in Path(d).glob("*.pcap")), ["03"])
+            ring = RingWriter(Path(d), keep_files=10, dlt=0)                        # no cap: files only
+            (Path(d) / "threadwatch-20260903-04.pcap").write_bytes(b"x" * 9000)
+            ring._prune()
+            self.assertEqual(len(list(Path(d).glob("*.pcap"))), 2)
 from threadwatch.pcap import DLT_NOFCS, Frame, PcapStreamReader, PcapWriter, complete_length  # noqa: E402
 
 

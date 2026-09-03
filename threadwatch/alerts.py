@@ -416,8 +416,16 @@ class Heartbeat:
     failure_url: Optional[str] = None     # hit instead of url when unhealthy
     timeout_s: float = 10.0
 
-    def push(self, healthy: bool) -> None:
-        url = self.url if healthy or not self.failure_url else self.failure_url
+    def push(self, healthy: bool) -> bool:
+        """Beat, or report the stall. Returns False when nothing was sent:
+        an unhealthy capture with no failure_url stays silent, so the
+        monitor's own timeout fires instead of a reassuring beat."""
+        if healthy:
+            url = self.url
+        elif self.failure_url:
+            url = self.failure_url
+        else:
+            return False
         data = self.body.encode() if self.body is not None else None
         headers = dict(self.headers)
         if data is not None and not any(k.lower() == "content-type" for k in headers):
@@ -425,6 +433,7 @@ class Heartbeat:
         req = urllib.request.Request(url, data=data, headers=headers, method=self.method)
         with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
             resp.read()
+        return True
 
     def describe(self) -> str:
         return f"{self.name}: {self.method} {_redact_url(self.url)} every {self.interval_s:.0f}s"

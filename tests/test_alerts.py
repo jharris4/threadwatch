@@ -203,6 +203,12 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual([r["path"] for r in reqs], ["/ok?success=true", "/ok?success=false"])
         self.assertEqual(reqs[0]["headers"]["authorization"], "Bearer t")
 
+    def test_heartbeat_without_failure_url_stays_silent_when_unhealthy(self):
+        hb = alerts.Heartbeat(name="hc", url=self.srv.url + "/ping")
+        self.assertFalse(hb.push(False))
+        self.assertTrue(hb.push(True))
+        self.assertEqual([r["path"] for r in self.srv.wait(1)], ["/ping"])
+
     def test_build_heartbeats_validates(self):
         with self.assertRaises(alerts.ConfigError):
             alerts.build_heartbeats([{"url": "http://x", "interval_s": 1}], print)

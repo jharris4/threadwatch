@@ -247,6 +247,13 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(len(runner.push_all(healthy=True)), 1)
         self.assertEqual([r["path"] for r in self.srv.wait(1)], ["/ping"])
 
+    def test_described_urls_hide_path_and_query_secrets(self):
+        sink = alerts.HttpSink(name="d", url="https://discord.com/api/webhooks/123/SECRETTOKEN")
+        beat = alerts.Heartbeat(name="hc", url="https://hc-ping.com/UUIDSECRET?rid=1")
+        for text in (sink.describe(), beat.describe()):
+            self.assertNotIn("SECRET", text)
+        self.assertIn("https://discord.com/...", sink.describe())
+
     def test_build_heartbeats_validates(self):
         with self.assertRaises(alerts.ConfigError):
             alerts.build_heartbeats([{"url": "http://x", "interval_s": 1}], print)

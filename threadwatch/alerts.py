@@ -48,6 +48,7 @@ import subprocess
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
@@ -279,8 +280,13 @@ class CommandSink(Sink):
 
 
 def _redact_url(url: str) -> str:
-    """Hide query strings (some services carry tokens there) in log output."""
-    return url.split("?", 1)[0] + ("?..." if "?" in url else "")
+    """Scheme and host only for log output: Discord, Healthchecks, Uptime
+    Kuma, Cronitor and Home Assistant all carry the secret in the path."""
+    parts = urllib.parse.urlsplit(url)
+    if not parts.netloc:
+        return "<url>"
+    tail = "/..." if (parts.path not in ("", "/") or parts.query) else ""
+    return f"{parts.scheme}://{parts.netloc}{tail}"
 
 
 # ----------------------------------------------------------------- presets

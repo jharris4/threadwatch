@@ -19,7 +19,7 @@ from .events import DAY_RE, day_of, next_day, prev_day
 from .names import DeviceNames, LastSeen
 from .review import (DEVICE_FILTERS, DEVICE_SORTS, capture_for_day, day_episodes, day_index,
                      days_available, device_history, device_rows, devices_history, dominant_pan,
-                     fmt_duration, now_card, select_devices, today)
+                     fmt_bytes, fmt_duration, incidents, now_card, select_devices, storage, today)
 
 CSS = """
 :root{--bg:#fff;--fg:#1c1c1e;--muted:#6b6b70;--line:#e3e3e6;--card:#f6f6f8;
@@ -43,6 +43,7 @@ h1{font-size:1.35em;margin:.4em 0 .5em}h2{font-size:1.05em;margin:1.4em 0 .5em;c
 .strip a small{display:block;color:var(--muted)}
 .strip a .w{color:var(--warning)}.strip a .c{color:var(--critical)}
 table{border-collapse:collapse;width:100%;font-size:.94em}
+table.facts th{width:11em;text-transform:none;letter-spacing:0;font-size:.94em}
 th,td{text-align:left;padding:.45em .6em;border-bottom:1px solid var(--line);vertical-align:top}
 th{color:var(--muted);font-weight:600;font-size:.85em;text-transform:uppercase;letter-spacing:.03em}
 td.t{white-space:nowrap;color:var(--muted);font-variant-numeric:tabular-nums}
@@ -202,6 +203,7 @@ class Site:
         crypto = "deep inspection on" if st.get("deep_inspection") else "header-level only"
         return (f'<header><a class="brand" href="/">threadwatch</a>'
                 f'<nav><a href="/">today</a> &nbsp; <a href="/devices">devices</a> &nbsp; '
+                f'<a href="/incidents">incidents</a> &nbsp; <a href="/status">status</a> &nbsp; '
                 f'<a href="/help">what these mean</a></nav>'
                 f'<span class="status">{live}{storm} &middot; ch {esc(st.get("channel"))} &middot; '
                 f'<b>{st.get("frames_total", 0):,}</b> frames &middot; {st.get("devices_tracked", 0)} devices '
@@ -274,7 +276,8 @@ class Site:
         else:
             pk = '<span class="muted">packets for this day are gone from the ring</span>'
         if cap["incidents"]:
-            pk += " &middot; frozen incidents: " + ", ".join(esc(i) for i in cap["incidents"])
+            pk += ' &middot; frozen incidents: ' + ", ".join(
+                f'<a href="/incidents#{esc(i)}">{esc(i)}</a>' for i in cap["incidents"])
         rows = []
         for ep in eps:
             span = ""
@@ -416,6 +419,75 @@ class Site:
         return self.page(title, f'<h1>{esc(title)}</h1>{card}<h2>history</h2>{table}'
                                 f'<p><a class="muted" href="/api/device/{esc(addrs[0])}">JSON</a></p>')
 
+    def status_page(self) -> str:
+        st = self.status()
+        now = time.time()
+        sto = storage(self.cfg)
+        dl = []
+
+        def row(k, v):
+            dl.append(f'<tr><th>{esc(k)}</th><td>{v}</td></tr>')
+
+        if not st:
+            row("capture", '<span class="bad">no status file: the capture daemon has not run here</span>')
+        else:
+            age = now - st.get("updated", 0)
+            alive = age < 90
+            row("capture", (f'<span class="ok">running</span>' if alive else
+                            f'<span class="bad">not running</span>') + f' <span class="muted">(status written '
+                                                                        f'{fmt_duration(age)} ago; every 30 s while alive)</span>')
+            fa = st.get("last_frame_age_s", 0)
+            row("last frame", (f'<span class="{"warn" if fa > 120 else "ok"}">{fmt_duration(fa)} ago</span>'
+                               if alive else f'<span class="muted">{fmt_duration(age + fa)} ago</span>'))
+            row("channel / port", f'{esc(st.get("channel"))} &middot; <code>{esc(st.get("port"))}</code>')
+            row("this run", f'{st.get("frames_total", 0):,} frames in {fmt_duration(st.get("uptime_s", 0))}, '
+                            f'{st.get("devices_tracked", 0)} devices with stats')
+            row("current file", f'<code>{esc(Path(st.get("current_file", "")).name)}</code>')
+            row("inspection", "deep (credentials loaded: MLE, identity, names)" if st.get("deep_inspection")
+                else "header-level only (no credentials)")
+            part = st.get("partition")
+            if part:
+                row("partition", f'{esc(part.get("id"))} &middot; leader router {esc(part.get("leader_router"))}')
+            det = st.get("detector") or {}
+            if det:
+                storm = '<span class="bad">STORM ACTIVE</span>' if det.get("storm_active") else '<span class="ok">quiet</span>'
+                extra = ", ".join(f"{esc(k)} {esc(v)}" for k, v in det.items()
+                                  if k != "storm_active" and not isinstance(v, (list, dict)))
+                row("storm detector", f'{storm} <span class="muted">{extra}</span>')
+            cr = st.get("crypto")
+            if cr:
+                row("crypto", '<span class="muted">' + ", ".join(f"{esc(k)} {esc(v)}" for k, v in cr.items()) + '</span>')
+        span = f' <span class="muted">({sto["ring_span"][0]} to {sto["ring_span"][1]})</span>' if sto["ring_span"] else ""
+        rate = f', about {fmt_bytes(sto["bytes_per_hour"])}/hour' if sto.get("bytes_per_hour") else ""
+        row("ring", f'{sto["ring_files"]} of {sto["keep_files"]} hourly files, {fmt_bytes(sto["ring_bytes"])}{rate}{span}')
+        row("incidents", f'{fmt_bytes(sto["incidents_bytes"])} &middot; <a href="/incidents">list</a>')
+        row("event log", fmt_bytes(sto["events_bytes"]))
+        if sto.get("disk_total"):
+            free = sto["disk_free"]
+            need = sto.get("bytes_per_hour", 0) * max(0, sto["keep_files"] - sto["ring_files"])
+            cls = "bad" if free < max(need, 512 * 1024 * 1024) else "ok"
+            row("disk", f'<span class="{cls}">{fmt_bytes(free)} free</span> of {fmt_bytes(sto["disk_total"])}'
+                        + (f' <span class="muted">(a full ring needs about {fmt_bytes(need)} more)</span>' if need else ""))
+        row("state dir", f'<code>{esc(self.cfg.state_dir)}</code>')
+        return self.page("status", f'<h1>status</h1><table class="facts">{"".join(dl)}</table>'
+                                   f'<p><a class="muted" href="/api/status">JSON</a></p>')
+
+    def incidents_page(self) -> str:
+        items = incidents(self.cfg.incidents_dir)
+        trs = []
+        for i in items:
+            span = f'{i["span"][0]} to {i["span"][1]}' if i["span"] else '<span class="muted">no ring files</span>'
+            trs.append(f'<tr id="{esc(i["name"])}"><td class="t"><a href="/day/{i["day"]}">{i["day"]}</a> {hm(i["frozen"])}</td>'
+                       f'<td><b>{esc(i["label"])}</b></td><td>{i["pcaps"]} pcaps, {span}</td>'
+                       f'<td class="n">{fmt_bytes(i["bytes"])}</td>'
+                       f'<td class="muted">{"events included" if i["events"] else ""}</td></tr>')
+        table = (f'<table><tr><th>frozen</th><th>label</th><th>packets</th><th>size</th><th></th></tr>{"".join(trs)}</table>'
+                 if trs else '<p class="empty">no frozen incidents</p>')
+        intro = (f'<p class="muted">Snapshots of the ring buffer taken with <code>threadwatch freeze &lt;label&gt;</code>, '
+                 f'kept forever under <code>{esc(self.cfg.incidents_dir)}</code>. Open them in Wireshark or with '
+                 f'<code>threadwatch why --pcap</code> / <code>replay</code>.</p>')
+        return self.page("incidents", f'<h1>incidents</h1>{intro}{table}')
+
     def help_page(self) -> str:
         sev = ('<div class="card"><b>Severities.</b> '
                '<span class="sev info">info</span> bookkeeping &middot; '
@@ -438,7 +510,9 @@ class Site:
 
     def api(self, path: str, query: dict):
         if path == "/api/status":
-            return self.status()
+            return {**self.status(), "storage": storage(self.cfg)}
+        if path == "/api/incidents":
+            return {"incidents": incidents(self.cfg.incidents_dir)}
         if path.startswith("/api/day/"):
             day = path[len("/api/day/"):]
             if not valid_day(day):
@@ -495,6 +569,10 @@ class Site:
                 query.get("only", ""), query.get("sort", "name")).encode()
         if path == "/help":
             return 200, "text/html; charset=utf-8", self.help_page().encode()
+        if path == "/status":
+            return 200, "text/html; charset=utf-8", self.status_page().encode()
+        if path == "/incidents":
+            return 200, "text/html; charset=utf-8", self.incidents_page().encode()
         if path.startswith("/device/"):
             from urllib.parse import unquote
             target = unquote(path[len("/device/"):]).strip()

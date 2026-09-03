@@ -230,6 +230,30 @@ class DayViewTest(unittest.TestCase):
         kinds = [(e["kind"], e["addr"]) for e in devices_history(self.cfg.events_dir, [TV1, TV2])]
         self.assertEqual(kinds, [("rejoin", TV2), ("quiet", TV1)])
 
+    def test_incidents_and_storage(self):
+        from threadwatch.review import fmt_bytes, incidents, storage
+        inc = self.cfg.incidents_dir / "20260902T141500_storm"
+        inc.mkdir(parents=True)
+        (inc / "threadwatch-20260902-12.pcap").write_bytes(b"x" * 2048)
+        (inc / "threadwatch-20260902-14.pcap").write_bytes(b"x" * 1024)
+        (inc / "events").mkdir()
+        (self.cfg.incidents_dir / "20260901T080000_older").mkdir()
+        (self.cfg.incidents_dir / "notes.txt").write_text("not an incident")
+        items = incidents(self.cfg.incidents_dir)
+        self.assertEqual([i["label"] for i in items], ["storm", "older"])
+        self.assertEqual((items[0]["pcaps"], items[0]["span"], items[0]["bytes"], items[0]["events"], items[0]["day"]),
+                         (2, ("20260902-12", "20260902-14"), 3072, True, "2026-09-02"))
+        self.assertEqual((items[1]["pcaps"], items[1]["span"]), (0, None))
+        self.cfg.ring_dir.mkdir(parents=True)
+        for h in ("20260903-08", "20260903-09"):
+            (self.cfg.ring_dir / f"threadwatch-{h}.pcap").write_bytes(b"y" * 4096)
+        sto = storage(self.cfg)
+        self.assertEqual((sto["ring_files"], sto["ring_span"], sto["ring_bytes"], sto["bytes_per_hour"]),
+                         (2, ("20260903-08", "20260903-09"), 8192, 4096))
+        self.assertEqual(sto["incidents_bytes"], 3072 + 15)   # notes.txt is disk usage too
+        self.assertGreater(sto["disk_free"], 0)
+        self.assertEqual((fmt_bytes(512), fmt_bytes(2048), fmt_bytes(5 * 1024 ** 3)), ("512 B", "2 KB", "5.0 GB"))
+
     def test_device_history_is_newest_first(self):
         kinds = [e["kind"] for e in device_history(self.cfg.events_dir, AQ)]
         self.assertEqual(kinds, ["retransmissions", "quiet"])
@@ -297,6 +321,20 @@ class DayViewTest(unittest.TestCase):
             self.assertEqual(get(f"/day/{day}/")[0], 200)
             status, body = get("/help")
             self.assertIn("Phase-locked storm", body)
+            inc = self.cfg.incidents_dir / f"{day.replace('-', '')}T141500_storm"
+            inc.mkdir(parents=True)
+            (inc / "threadwatch-20260902-12.pcap").write_bytes(b"x" * 100)
+            status, body = get("/incidents")
+            self.assertIn("<b>storm</b>", body)
+            self.assertIn("1 pcaps, 20260902-12 to 20260902-12", body)
+            self.assertIn(f'href="/incidents#{inc.name}"', get(f"/day/{day}")[1])
+            status, body = get("/status")
+            self.assertIn(">running<", body)
+            self.assertIn("deep (credentials loaded", body)
+            self.assertIn("free</span> of", body)
+            self.assertIn("12,345 frames", body)
+            self.assertIn("storage", json.loads(get("/api/status")[1]))
+            self.assertEqual(json.loads(get("/api/incidents")[1])["incidents"][0]["label"], "storm")
             self.assertIn('title="', get(f"/day/{day}")[1])   # rows carry the legend as tooltips
             with self.assertRaises(urllib.error.HTTPError) as ctx:
                 get("/device/zzz")

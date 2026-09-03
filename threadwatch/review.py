@@ -344,6 +344,69 @@ def devices_history(events_dir: Path, addrs: list[str], now: Optional[float] = N
     return sorted(episodes, key=lambda e: e["start"], reverse=True)
 
 
+def _dir_size(path: Path) -> int:
+    try:
+        return sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
+    except OSError:
+        return 0
+
+
+def _span(pcaps: list[str]) -> Optional[tuple[str, str]]:
+    """First and last hour covered by ring-named pcaps, as YYYYMMDD-HH."""
+    hours = sorted(n[12:23] for n in pcaps if n.startswith("threadwatch-") and n.endswith(".pcap") and len(n) == 28)
+    return (hours[0], hours[-1]) if hours else None
+
+
+def storage(cfg) -> dict:
+    """What the recorder keeps on disk and how much room is left there."""
+    import shutil
+    ring = sorted(p.name for p in cfg.ring_dir.glob("threadwatch-*.pcap")) if cfg.ring_dir.exists() else []
+    out = {"ring_files": len(ring), "ring_span": _span(ring), "ring_bytes": _dir_size(cfg.ring_dir),
+           "keep_files": cfg.keep_files,
+           "incidents_bytes": _dir_size(cfg.incidents_dir) if cfg.incidents_dir.exists() else 0,
+           "events_bytes": _dir_size(cfg.events_dir) if cfg.events_dir.exists() else 0}
+    try:
+        usage = shutil.disk_usage(cfg.data_dir if cfg.data_dir.exists() else cfg.data_dir.parent)
+        out.update({"disk_total": usage.total, "disk_free": usage.free})
+    except OSError:
+        out.update({"disk_total": None, "disk_free": None})
+    if ring and len(ring) > 1:
+        out["bytes_per_hour"] = out["ring_bytes"] // len(ring)
+    return out
+
+
+def incidents(incidents_dir: Path) -> list[dict]:
+    """Frozen incidents (threadwatch freeze), newest first: label, when
+    frozen, the hours their pcaps cover, size, whether events came along."""
+    if not incidents_dir.exists():
+        return []
+    out = []
+    for d in incidents_dir.iterdir():
+        if not d.is_dir():
+            continue
+        stamp, _, label = d.name.partition("_")
+        try:
+            frozen = time.mktime(time.strptime(stamp, "%Y%m%dT%H%M%S"))
+        except ValueError:
+            frozen = d.stat().st_mtime
+        pcaps = sorted(p.name for p in d.glob("*.pcap"))
+        out.append({"name": d.name, "label": label or d.name, "frozen": frozen,
+                    "pcaps": len(pcaps), "span": _span(pcaps), "bytes": _dir_size(d),
+                    "events": (d / "events").is_dir(), "day": day_of(frozen)})
+    out.sort(key=lambda i: -i["frozen"])
+    return out
+
+
+def fmt_bytes(n: Optional[int]) -> str:
+    if n is None:
+        return "?"
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{n:.0f} {unit}" if unit in ("B", "KB") else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
+
+
 def capture_for_day(ring_dir: Path, incidents_dir: Path, day: str) -> dict:
     """Whether packets for a day still exist: ring files (one week) and any
     frozen incidents dated that day."""

@@ -32,9 +32,16 @@ is no authentication: keep it on your LAN or behind your own proxy.
   rotating device is several addresses with one story), with a card per
   address: last heard, signal level against its usual, frames. Part of a
   name works; a text that matches several names offers the choice.
-- **/api/status**, **/api/day/YYYY-MM-DD**, **/api/devices**,
-  **/api/device/<addr>**: the same data as JSON, for Home Assistant or
-  anything else.
+- **/status**: the daemon's status file in prose (alive, last frame,
+  channel and port, this run's frames, inspection level, partition,
+  storm detector, crypto counters) plus storage: ring size and hourly
+  rate, incidents and event log size, and free disk against what a full
+  ring still needs.
+- **/incidents**: every frozen incident with when it was frozen, the
+  hours its packets cover, and its size. Day pages link to it.
+- **/api/status** (with a `storage` block), **/api/incidents**,
+  **/api/day/YYYY-MM-DD**, **/api/devices**, **/api/device/<addr>**: the
+  same data as JSON, for Home Assistant or anything else.
 
 ## Episodes, not records
 

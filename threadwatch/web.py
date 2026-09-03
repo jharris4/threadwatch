@@ -229,10 +229,13 @@ class Site:
         rows = []
         for ep in eps:
             span = ""
-            if ep["count"] > 1:
+            if ep["kind"] == "quiet":
+                if ep["end"]:
+                    span = f' <span class="muted">back {when(ep["end"], day)}</span>'
+                elif ep["count"] > 1:   # announced again before it returned
+                    span = f' <span class="muted">x{ep["count"]}</span>'
+            elif ep["count"] > 1:
                 span = f' <span class="muted">x{ep["count"]}, {when(ep["start"], day)}-{when(ep["end"], day)}</span>'
-            elif ep["kind"] == "quiet" and ep["end"]:
-                span = f' <span class="muted">back {when(ep["end"], day)}</span>'
             who = ""
             if ep.get("addr") and len(ep["addr"]) == 16:   # older rejoin rows carry a short src
                 who = f' <a class="muted" href="/device/{esc(ep["addr"])}">&#9656;</a>'

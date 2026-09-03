@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
-from .events import DAY_RE, next_day, prev_day
+from .events import DAY_RE, day_of, next_day, prev_day
 from .names import DeviceNames, LastSeen
 from .review import (capture_for_day, day_episodes, day_index, days_available,
                      device_history, device_rows, fmt_duration, today)
@@ -122,6 +122,18 @@ def hm(ts: Optional[float]) -> str:
     return time.strftime("%H:%M", time.localtime(ts)) if ts else ""
 
 
+def when(ts: Optional[float], day: str) -> str:
+    """HH:MM, prefixed with the day when it is not the page's own day, so a
+    row carried over from an earlier day says so."""
+    if not ts:
+        return ""
+    d = day_of(ts)
+    if d == day:
+        return hm(ts)
+    label = "yesterday" if d == prev_day(day) else "tomorrow" if d == next_day(day) else d[5:]
+    return f'<span class="muted">{label}</span> {hm(ts)}'
+
+
 def ago(ts: Optional[float], now: Optional[float] = None) -> str:
     if not ts:
         return "never"
@@ -213,14 +225,17 @@ class Site:
         for ep in eps:
             span = ""
             if ep["count"] > 1:
-                span = f' <span class="muted">x{ep["count"]}, {hm(ep["start"])}-{hm(ep["end"])}</span>'
+                span = f' <span class="muted">x{ep["count"]}, {when(ep["start"], day)}-{when(ep["end"], day)}</span>'
             elif ep["kind"] == "quiet" and ep["end"]:
-                span = f' <span class="muted">back {hm(ep["end"])}</span>'
+                span = f' <span class="muted">back {when(ep["end"], day)}</span>'
             who = ""
             if ep.get("addr") and len(ep["addr"]) == 16:   # older rejoin rows carry a short src
                 who = f' <a class="muted" href="/device/{esc(ep["addr"])}">&#9656;</a>'
-            tip = esc(LEGEND_BY_KIND.get(ep["kind"], ""))
-            rows.append(f'<tr title="{tip}"><td class="t">{hm(ep["start"])}</td>'
+            tip = LEGEND_BY_KIND.get(ep["kind"], "")
+            if ep.get("carried_over"):
+                tip = "Carried over: this began on an earlier day and was still going on this one. " + tip
+            tip = esc(tip)
+            rows.append(f'<tr title="{tip}"><td class="t">{when(ep["start"], day)}</td>'
                         f'<td><span class="sev {esc(ep["severity"])}">{esc(ep["severity"])}</span></td>'
                         f'<td>{esc(ep["title"])}{span}{who}</td>'
                         f'<td class="detail muted">{esc(ep["detail"])}</td></tr>')
@@ -300,8 +315,10 @@ class Site:
                '<span class="sev critical">critical</span> paged, and the ring buffer is worth freezing.</div>')
         items = "".join(f'<h2>{esc(title)}</h2><p>{esc(text)}</p>' for _k, title, text in LEGEND)
         conv = ('<h2>How the pages read</h2><p>Each row is an <i>episode</i>, not a log line: repeated '
-                'records about the same thing are one row with a count and a time span. A quiet spell '
-                'that crosses midnight appears on both days. The strip of days shows how many events '
+                'records about the same thing are one row with a count and a time span. An episode that '
+                'crosses midnight appears on both days; on the later day its time reads '
+                '<i>yesterday 23:01</i>, and a silence not yet over keeps carrying forward until the '
+                'device returns. The strip of days shows how many events '
                 'each day had, with warnings in amber and criticals in red. Packets are kept for a '
                 'week in the ring buffer and forever in frozen incidents; the top of a day page says '
                 'which still exist. The devices page shows how well the sniffer hears each device: '

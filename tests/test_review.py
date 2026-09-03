@@ -119,8 +119,9 @@ class DayViewTest(unittest.TestCase):
     def test_cross_midnight_quiet_shows_on_both_days_with_real_duration(self):
         yesterday, todayish = day_of(T0 - 86400), day_of(T0)
         for day in (yesterday, todayish):
-            titles = [e["title"] for e in day_episodes(self.cfg.events_dir, day)]
-            self.assertIn("Basement AQ quiet for 2h00m", titles, day)
+            eps = {e["title"]: e for e in day_episodes(self.cfg.events_dir, day)}
+            self.assertIn("Basement AQ quiet for 2h00m", eps, day)
+            self.assertEqual(eps["Basement AQ quiet for 2h00m"]["carried_over"], day == todayish)
         self.assertEqual([r["day"] for r in day_index(self.cfg.events_dir)], [todayish, yesterday])
 
     def test_device_history_is_newest_first(self):
@@ -139,6 +140,9 @@ class DayViewTest(unittest.TestCase):
             status, body = get(f"/day/{day}")
             self.assertEqual(status, 200)
             self.assertIn("quiet for 2h00m", body)
+            self.assertIn('<span class="muted">yesterday</span> 23:00', body)   # carried over from the day before
+            self.assertIn("Carried over", body)
+            self.assertNotIn("yesterday", get(f"/day/{day_of(T0 - 86400)}")[1])
             self.assertIn("phase-locked storm", body)
             self.assertIn("retransmissions: Basement AQ -&gt; Irrigation", body)
             self.assertIn("capturing", body)

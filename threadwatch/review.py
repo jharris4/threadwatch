@@ -180,6 +180,7 @@ def day_episodes(events_dir: Path, day: str, now: Optional[float] = None) -> lis
     for ep in group_episodes(records, now):
         ep_end = ep["end"] if ep["end"] is not None else (now or time.time())
         if ep_end >= start and ep["start"] < end:
+            ep["carried_over"] = ep["start"] < start   # began on an earlier day
             out.append(ep)
     return out
 

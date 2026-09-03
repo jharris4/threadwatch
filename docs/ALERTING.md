@@ -38,7 +38,7 @@ record is what sinks receive. Fields common to all: `ts` (unix seconds),
 | `possible_foreign_pan` | notice | `pan`, `src`, `dominant_pan`, `note` |
 | `mle_rejoin_attempt` | notice | `command`, `src`, `name` (credentials only) |
 | `device_quiet` | warning, or notice when `reception` is `marginal` | `addr`, `name`, `silent_for_s`, `profile` (`router` / `end-device`), `rssi_dbm`, `reception`, `note` |
-| `retransmission_elevation` | warning | `rate`, `baseline` |
+| `retransmission_elevation` | warning | `rate`, `baseline`, `addr`, `name`, `top_sender`, `top_target`, `top_share`, `note` |
 | `partition_or_leader_change` | warning | `previous`, `current` (credentials only) |
 | `phase_locked_storm` | critical | detector snapshot (`period_s`, `onsets`, ...) |
 | `alert_test` | as requested | `name`, `addr`, `note` (from `alert-test`) |

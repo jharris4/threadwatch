@@ -97,6 +97,35 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual((rows[STRANGER]["role"], rows[STRANGER]["reception"]), (None, "good"))
         self.assertEqual([r["addr"] for r in rep["unknown"]], [STRANGER])
 
+    def test_retransmission_alert_names_the_sender_and_target(self):
+        d = Path(self.tmp.name)
+        (d / "devices.json").write_text(json.dumps([
+            {"name": "Basement AQ", "extendedAddress": SENSOR},
+            {"name": "Irrigation", "extendedAddress": ROUTER},
+        ]))
+        pipe = self._pipe()
+        t = 1_700_000_000.0
+        def send(src, dst, seq, ts):
+            pipe.ingest(Frame(ts=ts, raw=b"", psdu=b"", rssi=-60.0, channel=None, lqi=None,
+                              ftype=1, seq=seq, dst_pan=OWN_PAN, dst=dst, src_pan=OWN_PAN, src=src))
+        # Ten quiet minutes to establish a baseline of no retransmissions.
+        for m in range(10):
+            for i in range(120):
+                send(STRANGER, "0000", i, t + m * 60 + i * 0.4)
+        # Then one minute where the sensor repeats each of 20 frames four times.
+        base = t + 10 * 60
+        for i in range(100):
+            send(STRANGER, "0000", i, base + i * 0.3)
+        for i in range(20):
+            for rep in range(4):
+                send(SENSOR, ROUTER, i, base + i * 2.5 + rep * 0.2)
+        send(STRANGER, "0000", 200, base + 61)   # closes the window
+        ev = [r for r in pipe.events.records if r["event"] == "retransmission_elevation"]
+        self.assertEqual(len(ev), 1)
+        self.assertEqual((ev[0]["addr"], ev[0]["name"], ev[0]["top_target"]), (SENSOR, "Basement AQ", "Irrigation"))
+        self.assertEqual(ev[0]["top_share"], 1.0)
+        self.assertIn("Basement AQ repeated frames to Irrigation", ev[0]["note"])
+
     def test_foreign_pan_devices_are_never_reported_quiet(self):
         pipe = self._pipe()
         t0 = 1_700_000_000.0

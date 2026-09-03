@@ -86,6 +86,7 @@ class Pipeline:
         self.retrans_counts = deque(maxlen=30)  # per-window (dups, frames)
         self._win_dups = 0
         self._win_frames = 0
+        self._win_dup_by: dict[tuple, int] = {}  # (sender identity, dst) -> dups this window
         self._win_start = 0.0
         self._retrans_alerted = 0.0
         self.quiet_reported: set[str] = set()
@@ -231,6 +232,8 @@ class Pipeline:
             last = self.dup_recent.get(key)
             if last is not None and ts - last < 2.0:
                 self._win_dups += 1
+                pair = (who or f.src, f.dst)
+                self._win_dup_by[pair] = self._win_dup_by.get(pair, 0) + 1
             self.dup_recent[key] = ts
             self._win_frames += 1
             if len(self.dup_recent) > 8192:
@@ -244,9 +247,11 @@ class Pipeline:
                 if rate > 0.2 and rate > 2 * base and ts - self._retrans_alerted > 900:
                     self._retrans_alerted = ts
                     self.events.emit("retransmission_elevation", "warning", ts,
-                                     rate=round(rate, 3), baseline=round(base, 3))
+                                     rate=round(rate, 3), baseline=round(base, 3),
+                                     **self._retrans_attribution())
             self._win_start = ts
             self._win_dups = self._win_frames = 0
+            self._win_dup_by = {}
 
         # Storm detector escalation to the event log (own cooldown, never
         # per-frame even when the detector's alert cooldown is zeroed).
@@ -260,6 +265,35 @@ class Pipeline:
             self._deep_inspect(f)
 
         self.last_frame = f
+
+    def _label(self, addr: Optional[str]) -> Optional[str]:
+        """Name for any address form: extended, or a short one the decryptor
+        has mapped; falls back to the address itself."""
+        if not addr:
+            return None
+        ext = addr if len(addr) == 16 else (self.decryptor.short_to_ext.get(addr) if self.decryptor else None)
+        return (self.names.name(ext) if ext else None) or addr
+
+    def _retrans_attribution(self) -> dict:
+        """Who did the repeating this window, and to whom. One sender hammering
+        one neighbour (a failing link between two devices at the RF edge)
+        reads very differently from everyone retrying a little (channel
+        contention), and the phone message should say which."""
+        if not self._win_dup_by or not self._win_dups:
+            return {}
+        (sender, dst), n = max(self._win_dup_by.items(), key=lambda kv: kv[1])
+        share = n / self._win_dups
+        sender_ext = sender if len(sender) == 16 else None
+        target = self._label(dst) or "broadcast"
+        who = self._label(sender)
+        if share >= 0.5:
+            note = (f"{who} repeated frames to {target} ({share:.0%} of this minute's "
+                    f"retransmissions): a failing link between those two, not channel-wide")
+        else:
+            note = (f"retries spread across devices (top: {who} -> {target}, {share:.0%}): "
+                    f"channel contention or interference rather than one bad link")
+        return {"addr": sender_ext, "name": self.names.name(sender_ext) if sender_ext else None,
+                "top_sender": who, "top_target": target, "top_share": round(share, 2), "note": note}
 
     # ------------------------------------------------- credentialed layer
 

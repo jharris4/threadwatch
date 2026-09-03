@@ -17,6 +17,10 @@ channel = 25
 # data_dir = "~/threadwatch-data"  # default: <repo>/data
 keep_files = 168                  # hourly ring files to retain (168 = 1 week)
 # keep_gb = 4                     # ...and never more than this much on disk (oldest go first)
+# Copy the ring into data/incidents/ by itself when a critical event
+# (phase_locked_storm) fires, at most once per six hours. Off by default:
+# an incident is the size of the ring. 'threadwatch incidents' lists them.
+# freeze_on_critical = true
 
 [devices]
 # Inventory that maps extended addresses to human names (see names.py docstring).

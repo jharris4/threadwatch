@@ -19,6 +19,7 @@ class Config:
     data_dir: Path = REPO_ROOT / "data"
     keep_files: int = 168                      # ring: hourly files, one week
     keep_bytes: Optional[int] = None           # ring: total size cap ([capture] keep_gb), None = files only
+    freeze_on_critical: bool = False           # snapshot the ring when a critical event fires
     devices_path: Optional[Path] = None
     detector: DetectorConfig = field(default_factory=DetectorConfig)
     config_dir: Path = REPO_ROOT / "config"
@@ -85,6 +86,7 @@ def load(path: Optional[Path]) -> Config:
         cfg.keep_files = cap.get("keep_files", cfg.keep_files)
         if cap.get("keep_gb"):
             cfg.keep_bytes = int(float(cap["keep_gb"]) * 1024 ** 3)
+        cfg.freeze_on_critical = bool(cap.get("freeze_on_critical", cfg.freeze_on_critical))
         if raw.get("devices", {}).get("inventory"):
             cfg.devices_path = (Path(path).parent / raw["devices"]["inventory"]).resolve()
         det = raw.get("detect", {})

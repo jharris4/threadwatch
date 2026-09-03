@@ -115,6 +115,10 @@ LEGEND = [
     ("join_scan", "Join-scan beacons",
      "Beacon requests or beacons in a burst: something is scanning to join a network. Normal "
      "while commissioning a device; otherwise a neighbour's device or a factory-reset one."),
+    ("frozen", "Incident frozen",
+     "The recorder copied the ring buffer into an incident directory by itself, because a critical "
+     "event fired and [capture] freeze_on_critical is on. One per six hours at most. A failure "
+     "(disk full, usually) is logged as a warning instead."),
     ("summary", "Daily summary",
      "Once a day (at [summary] hour in config.toml, 08:00 by default): frames captured in the "
      "last 24 hours, devices heard out of those tracked, who is quiet, unknown addresses still "

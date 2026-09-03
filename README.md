@@ -49,7 +49,9 @@ question: *why did this device go offline?*
   needs the key; it's an analysis-side upgrade, applicable to old pcaps
   too.
 - **Incident freeze**: `threadwatch freeze my-label` snapshots the ring
-  buffer before it rolls over.
+  buffer before it rolls over; with `freeze_on_critical` in config.toml
+  the recorder does it by itself when a storm fires. `threadwatch
+  incidents` lists and deletes them.
 - **Offline analysis**: `threadwatch replay file.pcap` runs the whole
   pipeline over any capture; pcaps also open in Wireshark (see
   docs/ANALYSIS.md for a filter cookbook and the storm case study).

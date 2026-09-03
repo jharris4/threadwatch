@@ -256,6 +256,45 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual((rec["period_s"], rec["onsets"]), (80.5, 3))
         self.assertIn("every 80 s", rec["note"])
 
+    def test_critical_event_freezes_the_ring_once_per_cooldown(self):
+        self.cfg.freeze_on_critical = True
+        pipe = self._pipe()
+        frozen = []
+        pipe.freezer = frozen.append
+        pipe.detector.storm_active = True
+        pipe.detector.last_alert_details = {"period": 80.5, "onsets": [1.0, 2.0, 3.0]}
+        # The detector ends a storm when flooding stops; hold it on regardless.
+        pipe.detector.add_frame = lambda ts: setattr(pipe.detector, "storm_active", True)
+        t0 = 1_700_000_000.0
+        for dt in (0, 2 * 3600, 7 * 3600):                 # storm on; still on; past the six-hour cooldown
+            pipe.ingest(frame(t0 + dt, ROUTER))
+        storms = [r for r in pipe.events.records if r["event"] == "phase_locked_storm"]
+        self.assertEqual([r["auto_freeze"] for r in storms], ["auto-storm", None, "auto-storm"])
+        self.assertIn("being frozen as auto-storm", storms[0]["note"])
+        self.assertIn("run 'threadwatch freeze'", storms[1]["note"])
+        self.assertEqual(frozen, ["auto-storm", "auto-storm"])
+
+    def test_freeze_off_by_default_and_never_in_replay(self):
+        for ephemeral in (False, True):
+            self.cfg.freeze_on_critical = ephemeral        # on only for the replay case
+            pipe = Pipeline(self.cfg, NullEventLog(), ephemeral=ephemeral)
+            pipe.freezer = lambda label: self.fail("froze")
+            pipe.detector.storm_active = True
+            pipe.detector.last_alert_details = {"period": 60.0, "onsets": [1.0, 2.0, 3.0]}
+            pipe.ingest(frame(1_700_000_000.0, ROUTER))
+            rec = [r for r in pipe.events.records if r["event"] == "phase_locked_storm"][0]
+            self.assertIsNone(rec["auto_freeze"])
+
+    def test_the_background_freeze_logs_the_incident(self):
+        pipe = self._pipe()
+        self.cfg.ring_dir.mkdir(parents=True, exist_ok=True)
+        (self.cfg.ring_dir / "threadwatch-20231114-22.pcap").write_bytes(b"ring")
+        pipe._freeze_now("auto-storm")
+        rec = [r for r in pipe.events.records if r["event"] == "incident_frozen"][0]
+        self.assertEqual(rec["ring_files"], 1)
+        self.assertTrue(rec["path"].endswith("_auto-storm"))
+        self.assertTrue((Path(rec["path"]) / "threadwatch-20231114-22.pcap").exists())
+
     def test_beacon_requests_count_as_join_scanning(self):
         import struct
         from threadwatch.pcap import parse_frame

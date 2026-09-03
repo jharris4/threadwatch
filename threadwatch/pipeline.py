@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import struct
+import threading
 import time
 from collections import deque
 from pathlib import Path
@@ -99,6 +100,10 @@ class Pipeline:
         self._retrans_alerted = 0.0
         self.quiet_reported: set[str] = set()
         self._frames_by_hour: dict[int, int] = {}    # hour bucket -> frames, last ~25 h
+        self._last_auto_freeze = 0.0
+        # How a critical event freezes the ring: in the background, so the
+        # copy (gigabytes on a Pi) never stalls capture. Tests swap it.
+        self.freezer = self._freeze_in_background
         self._summary_day: Optional[str] = None      # local day whose summary is settled
         self._resolve_after: dict[str, float] = {}   # short addr -> next attempt ts
         self._verify_after: dict[str, float] = {}    # short addr -> next re-check of its mapping
@@ -361,11 +366,14 @@ class Pipeline:
             details = self.detector.last_alert_details
             period = details.get("period")
             onsets = details.get("onsets") or []
+            label = self._auto_freeze(ts, "storm")
+            keep = (f"the ring is being frozen as {label}" if label
+                    else "run 'threadwatch freeze' to keep the packets")
             self.events.emit("phase_locked_storm", "critical", ts,
                              period_s=round(period, 1) if period else None, onsets=len(onsets),
-                             onset_times=onsets,
+                             onset_times=onsets, auto_freeze=label,
                              note=(f"traffic floods recurring every {period:.0f} s ({len(onsets)} onsets): "
-                                   "the broadcast-storm signature; run 'threadwatch freeze' to keep the packets"
+                                   f"the broadcast-storm signature; {keep}"
                                    if period else "phase-locked traffic floods"),
                              **self.detector.snapshot())
 
@@ -513,6 +521,37 @@ class Pipeline:
             else:
                 self.events.emit("rssi_recovered", "info", now, addr=addr, name=name,
                                  rssi_dbm=rssi, reference_dbm=ref)
+
+    # -------------------------------------------------- freeze on critical
+
+    AUTO_FREEZE_COOLDOWN_S = 6 * 3600
+
+    def _auto_freeze(self, ts: float, reason: str) -> Optional[str]:
+        """Snapshot the ring for a critical event, at most once per cooldown
+        (one storm is one incident, however long it rumbles). Returns the
+        incident label, or None when off, replaying, or inside the cooldown."""
+        if not self.cfg.freeze_on_critical or self.ephemeral:
+            return None
+        if ts - self._last_auto_freeze < self.AUTO_FREEZE_COOLDOWN_S:
+            return None
+        self._last_auto_freeze = ts
+        label = f"auto-{reason}"
+        self.freezer(label)
+        return label
+
+    def _freeze_in_background(self, label: str) -> None:
+        threading.Thread(target=self._freeze_now, args=(label,), daemon=True).start()
+
+    def _freeze_now(self, label: str) -> None:
+        from .freeze import freeze_ring
+        try:
+            dest, count = freeze_ring(self.cfg, label)
+        except Exception as exc:
+            self.events.emit("incident_freeze_failed", "warning", time.time(), label=label,
+                             note=f"could not freeze the ring for {label}: {exc}")
+            return
+        self.events.emit("incident_frozen", "info", time.time(), label=label, path=str(dest),
+                         ring_files=count, note=f"{count} ring files kept as {dest.name}")
 
     # ------------------------------------------------------ daily summary
 

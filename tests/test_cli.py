@@ -59,6 +59,26 @@ class IncidentsTest(CliCase):
         self.assertIn("no incident named", err)
 
 
+class FreezeTest(CliCase):
+    def test_freeze_copies_ring_state_and_events(self):
+        from threadwatch.config import load
+        cfg = load(Path(self.cfg))
+        cfg.ring_dir.mkdir(parents=True)
+        (cfg.ring_dir / "threadwatch-20260903-08.pcap").write_bytes(b"a")
+        (cfg.ring_dir / "threadwatch-20260903-09.pcap").write_bytes(b"b")
+        (cfg.state_dir / "last-seen.json").write_text("{}")
+        cfg.events_dir.mkdir(parents=True)
+        (cfg.events_dir / "2026-09-03.jsonl").write_text("")
+        code, out, _ = self.run_cli("freeze", "my label/with junk")
+        self.assertEqual(code, 0)
+        self.assertIn("froze 2 ring files", out)
+        inc = next(cfg.incidents_dir.iterdir())
+        self.assertTrue(inc.name.endswith("_my-label-with-junk"))
+        self.assertEqual(sorted(p.name for p in inc.iterdir()),
+                         ["events", "last-seen.json", "threadwatch-20260903-08.pcap", "threadwatch-20260903-09.pcap"])
+        self.assertEqual(self.run_cli("incidents")[1].count("my-label-with-junk"), 1)
+
+
 class EventsFilterTest(CliCase):
     def setUp(self):
         super().setUp()

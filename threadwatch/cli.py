@@ -115,19 +115,8 @@ def main(argv=None) -> int:
         return 0
 
     if args.cmd == "freeze":
-        ts = time.strftime("%Y%m%dT%H%M%S")
-        dest = cfg.incidents_dir / f"{ts}_{args.label}"
-        dest.mkdir(parents=True, exist_ok=False)
-        count = 0
-        for f in sorted(cfg.ring_dir.glob("threadwatch-*.pcap")):
-            shutil.copy2(f, dest / f.name)
-            count += 1
-        for extra in ("status.json", "last-seen.json", "observed-names.json"):
-            src = cfg.state_dir / extra
-            if src.exists():
-                shutil.copy2(src, dest / extra)
-        if cfg.events_dir.exists():
-            shutil.copytree(cfg.events_dir, dest / "events", dirs_exist_ok=True)
+        from .freeze import freeze_ring
+        dest, count = freeze_ring(cfg, args.label)
         print(f"froze {count} ring files -> {dest}")
         return 0
 

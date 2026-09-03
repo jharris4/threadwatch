@@ -45,6 +45,8 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `retransmission_elevation` | warning, or notice when one sender-target pair is `top_share` >= 0.5 of the retries (a chronic bad link, not a storm precursor) | `rate`, `baseline`, `addr`, `name`, `top_sender`, `top_target`, `top_share`, `note` |
 | `partition_or_leader_change` | warning | `previous`, `current` (credentials only) |
 | `phase_locked_storm` | critical | detector snapshot (`period_s`, `onsets`, ...) |
+| `incident_frozen` | info | `label`, `path`, `ring_files`, `note` (with `[capture] freeze_on_critical`) |
+| `incident_freeze_failed` | warning | `label`, `note` |
 | `daily_summary` | `[summary] severity` (notice) | `frames_24h`, `devices_heard_24h`, `devices_tracked`, `quiet`, `unknown`, `marginal`, `degraded`, `storm_active`, `events_24h`, `note` |
 | `alert_test` | as requested | `name`, `addr`, `note` (from `alert-test`) |
 

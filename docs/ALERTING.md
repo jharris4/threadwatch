@@ -37,13 +37,21 @@ record is what sinks receive. Fields common to all: `ts` (unix seconds),
 | `join_scan_activity` | notice | `count_60s`, `src` |
 | `possible_foreign_pan` | notice | `pan`, `src`, `dominant_pan`, `note` |
 | `mle_rejoin_attempt` | notice | `command`, `src`, `name` (credentials only) |
-| `device_quiet` | warning | `addr`, `name`, `silent_for_s`, `profile`, `note` |
+| `device_quiet` | warning | `addr`, `name`, `silent_for_s`, `profile` (`router` / `end-device`), `note` |
 | `retransmission_elevation` | warning | `rate`, `baseline` |
 | `partition_or_leader_change` | warning | `previous`, `current` (credentials only) |
 | `phase_locked_storm` | critical | detector snapshot (`period_s`, `onsets`, ...) |
 | `alert_test` | as requested | `name`, `addr`, `note` (from `alert-test`) |
 
 `name` is null for addresses not in `devices.json`.
+
+`device_quiet` fires after `[quiet] end_device_s` of silence (default 90
+min), or `[quiet] router_s` (default 30 min) for entries whose `role` in
+`devices.json` is `router` or `border-router`. Cleartext headers cannot tell
+the two apart (polls are sent from the short address, and busy end devices
+sleep for an hour at night), so tag your routers if you want the short
+window. Addresses whose frames carry a foreign PAN id are never reported
+quiet; they belong to someone else's mesh.
 
 ## Secrets
 
@@ -92,6 +100,7 @@ these derived fields:
 | `{severity_value}` | severity looked up in the sink's `severity_values`, else the name |
 | `{time}` | local `YYYY-MM-DD HH:MM:SS` |
 | `{name}` `{addr}` `{note}` | empty string when absent (`addr` falls back to `src`) |
+| `{who}` | `name`, else `addr`, else empty |
 | `{summary}` | `event - name-or-addr - note`, the one-liner for chat channels |
 | `{record_json}` | the whole record, as a JSON string |
 | `{hostname}` | capture host |
@@ -114,7 +123,7 @@ type = "ntfy"
 url = "https://ntfy.example.net"      # server root, not the topic URL
 topic = "alerts"
 token = "${NTFY_TOKEN}"               # omit for servers that allow anonymous publish
-# title = "{event}: {name}"           # defaults shown
+# title = "{event}: {who}"            # defaults shown; {who} = name, else address
 # message = "{note}"
 # tags = ["{event}"]
 # priority = { info = 2, notice = 3, warning = 4, critical = 5 }

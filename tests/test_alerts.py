@@ -113,6 +113,12 @@ class SinkBuildTests(unittest.TestCase):
         self.assertEqual(doc["priority"], 4)
         self.assertEqual(doc["tags"], ["device_quiet"])
 
+    def test_ntfy_title_falls_back_to_address_when_unnamed(self):
+        sinks = alerts.build_sinks({"sinks": [{"type": "ntfy", "url": "https://n.example",
+                                               "topic": "alerts"}]}, print)
+        doc = json.loads(sinks[0].payload({**REC, "name": None}))
+        self.assertEqual(doc["title"], "device_quiet: 1669674dd15cf0fa")
+
     def test_unknown_type_is_config_error(self):
         with self.assertRaises(alerts.ConfigError):
             alerts.build_sinks({"sinks": [{"type": "carrier-pigeon"}]}, print)

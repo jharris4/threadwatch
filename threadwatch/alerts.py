@@ -56,6 +56,7 @@ TEMPLATE_FIELDS = {
     "time": "local time, YYYY-MM-DD HH:MM:SS",
     "name": "device name when the event concerns one device, else empty",
     "addr": "device extended address when present, else empty",
+    "who": "name when known, else addr, else empty",
     "note": "detector's free-text hint when present, else empty",
     "summary": "one-line human summary: event, device, note",
     "record_json": "the whole event record as a JSON document",
@@ -133,6 +134,7 @@ def template_fields(record: dict, severity_values: Optional[dict] = None) -> dic
         "time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(record.get("ts", time.time()))),
         "name": name,
         "addr": addr,
+        "who": who,
         "note": record.get("note") or "",
         "summary": " - ".join(str(p) for p in parts),
         "record_json": json.dumps(record),
@@ -251,7 +253,7 @@ def _ntfy_preset(raw: dict) -> dict:
         headers["Authorization"] = f"Bearer {raw['token']}"
     body = {
         "topic": topic,
-        "title": raw.get("title", "{event}: {name}"),
+        "title": raw.get("title", "{event}: {who}"),
         "message": raw.get("message", "{note}"),
         "priority": "__PRIORITY__",
         "tags": raw.get("tags", ["{event}"]),

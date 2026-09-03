@@ -99,30 +99,40 @@ def migrate_legacy(events_dir: Path) -> int:
     """Split a pre-day-rolling ``events.jsonl`` (sibling of the events
     directory) into day files. Returns the number of records moved."""
     legacy = events_dir.parent / "events.jsonl"
-    if not legacy.exists():
+    working = legacy.with_suffix(".jsonl.migrating")
+    # Renamed before the split, so a run killed part-way leaves the
+    # .migrating file for the next start; lines already copied are
+    # recognised and skipped, so nothing is duplicated.
+    if legacy.exists():
+        legacy.rename(working)
+    if not working.exists():
         return 0
     events_dir.mkdir(parents=True, exist_ok=True)
     moved = 0
     handles: dict[str, object] = {}
+    present: dict[str, set] = {}
     try:
-        for line in legacy.read_text().splitlines():
+        for line in working.read_text().splitlines():
             line = line.strip()
             if not line:
                 continue
             try:
-                ts = json.loads(line)["ts"]
-            except (ValueError, KeyError, TypeError):
+                day = day_of(float(json.loads(line)["ts"]))
+            except (ValueError, KeyError, TypeError, OverflowError):
                 continue
-            path = events_dir / f"{day_of(ts)}.jsonl"
-            fh = handles.get(path.name)
-            if fh is None:
-                fh = handles[path.name] = open(path, "a")
-            fh.write(line + "\n")
+            path = events_dir / f"{day}.jsonl"
+            if day not in present:
+                present[day] = set(path.read_text().splitlines()) if path.exists() else set()
+                handles[day] = open(path, "a")
+            if line in present[day]:
+                continue
+            handles[day].write(line + "\n")
+            present[day].add(line)
             moved += 1
     finally:
         for fh in handles.values():
             fh.close()
-    legacy.rename(legacy.with_suffix(".jsonl.migrated"))
+    working.rename(legacy.with_suffix(".jsonl.migrated"))
     _log(f"event log: split {moved} legacy records into {len(handles)} day file(s)")
     return moved
 

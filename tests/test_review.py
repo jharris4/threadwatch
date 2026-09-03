@@ -34,6 +34,17 @@ class DayRollingTest(unittest.TestCase):
             self.assertEqual(list_days(log.dir), [day_of(T0), day_of(T0 + 20 * 3600)])
             self.assertEqual([r["event"] for r in read_day(log.dir, day_of(T0))], ["a"])
 
+    def test_interrupted_migration_resumes_without_duplicates(self):
+        with tempfile.TemporaryDirectory() as d:
+            state = Path(d)
+            lines = [json.dumps({"ts": T0 + i, "event": "e%d" % i, "severity": "info"}) for i in range(4)]
+            (state / "events.jsonl.migrating").write_text("\n".join(lines) + "\n")
+            (state / "events").mkdir()
+            (state / "events" / f"{day_of(T0)}.jsonl").write_text("\n".join(lines[:2]) + "\n")   # copied before the kill
+            self.assertEqual(migrate_legacy(state / "events"), 2)
+            self.assertEqual([r["event"] for r in read_day(state / "events", day_of(T0))], ["e0", "e1", "e2", "e3"])
+            self.assertTrue((state / "events.jsonl.migrated").exists())
+
     def test_legacy_single_file_is_split_once(self):
         with tempfile.TemporaryDirectory() as d:
             state = Path(d)

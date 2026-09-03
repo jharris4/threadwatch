@@ -16,6 +16,8 @@ is no authentication: keep it on your LAN or behind your own proxy.
   links and a strip of recent days with their event counts. Whether the
   packets for that day still exist (ring files last a week; frozen
   incidents last forever) is shown at the top.
+- **/help**: what every episode kind and severity means; every row on a
+  day page carries the same text as a tooltip.
 - **/devices**: every address the recorder tracks, with inventory name and
   role, how well the sniffer hears it, when it was last heard, and whether
   it is on your PAN.

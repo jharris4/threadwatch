@@ -142,6 +142,9 @@ class DayViewTest(unittest.TestCase):
             self.assertEqual(len(data["records"]), 3)
             self.assertEqual(data["episodes"][0]["kind"], "quiet")
             self.assertEqual(get("/")[0], 200)
+            status, body = get("/help")
+            self.assertIn("Phase-locked storm", body)
+            self.assertIn('title="', get(f"/day/{day}")[1])   # rows carry the legend as tooltips
             with self.assertRaises(urllib.error.HTTPError) as ctx:
                 get("/device/zzz")
             self.assertEqual(ctx.exception.code, 404)

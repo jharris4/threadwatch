@@ -59,6 +59,51 @@ pre{font-size:.8em;overflow-x:auto;background:var(--card);padding:.6em;border-ra
 """
 
 
+# Plain-language meaning of each episode kind: the help page, and the
+# tooltip on every row.
+LEGEND = [
+    ("quiet", "Device quiet / returned",
+     "The recorder heard nothing from the device for longer than its window (30 min by default, "
+     "set per role in config.toml), then later heard it again. One row, with the real duration "
+     "measured from the device's last frame. 'Still quiet' means it has not come back. A warning "
+     "when the sniffer hears the device well; only a notice when its signal is marginal, because "
+     "a device at the edge of the sniffer's range fades in and out without anything being wrong."),
+    ("retransmissions", "Retransmissions elevated",
+     "In one minute, more than 20% of data frames were repeats (same sender and sequence number "
+     "within 2 s), and more than double the recent baseline. A repeat means the sender got no "
+     "acknowledgement. One sender hammering one target is a bad link between those two (notice, "
+     "logged only); retries spread across many devices is channel-wide contention or "
+     "interference (warning), which is the early sign of a storm."),
+    ("storm", "Phase-locked storm",
+     "Traffic floods recurring with a stable period: the signature of the mesh-wide broadcast "
+     "storm that took the network down before. Critical. This is what the ring buffer is for: "
+     "run 'threadwatch freeze' to keep the packets."),
+    ("partition", "Partition or leader change",
+     "The Thread mesh split, merged, or elected a new leader (credentials needed to see this). "
+     "Routine after a border router reboots; a problem if it keeps happening."),
+    ("rejoin", "Rejoin attempt",
+     "A device sent MLE Parent Request, Child ID Request or Announce: it lost its parent or its "
+     "network and is trying to get back (credentials needed). Expected after a device or router "
+     "restarts; a device doing this repeatedly has a bad link to every parent it can hear."),
+    ("first_seen", "Device first seen",
+     "An address the recorder has never tracked before. Happens once per device, ever. Bursts "
+     "of these mark the recorder's first start or a new way of identifying devices; a single "
+     "one later is a genuinely new or newly named device, or a device at the edge of range "
+     "heard for the first time."),
+    ("returned", "Returned (without a matching quiet)",
+     "A device came back but its quiet record is on an earlier day or predates the log."),
+    ("foreign_pan", "Foreign PAN",
+     "Frames on this channel carrying a PAN id that is not this network's, seen repeatedly. "
+     "Another Thread mesh, or a Zigbee network on the same channel. Harmless, but it competes "
+     "for airtime. Devices on a foreign PAN are never reported quiet."),
+    ("join_scan", "Join-scan beacons",
+     "Beacon requests or beacons in a burst: something is scanning to join a network. Normal "
+     "while commissioning a device; otherwise a neighbour's device or a factory-reset one."),
+    ("test", "Alert test", "A synthetic event from 'threadwatch alert-test'."),
+]
+LEGEND_BY_KIND = {k: one for k, _t, one in LEGEND}
+
+
 def valid_day(day: str) -> bool:
     if not DAY_RE.match(day):
         return False
@@ -124,7 +169,8 @@ class Site:
         storm = ' <span class="bad">STORM ACTIVE</span>' if det.get("storm_active") else ""
         crypto = "deep inspection on" if st.get("deep_inspection") else "header-level only"
         return (f'<header><a class="brand" href="/">threadwatch</a>'
-                f'<nav><a href="/">today</a> &nbsp; <a href="/devices">devices</a></nav>'
+                f'<nav><a href="/">today</a> &nbsp; <a href="/devices">devices</a> &nbsp; '
+                f'<a href="/help">what these mean</a></nav>'
                 f'<span class="status">{live}{storm} &middot; ch {esc(st.get("channel"))} &middot; '
                 f'<b>{st.get("frames_total", 0):,}</b> frames &middot; {st.get("devices_tracked", 0)} devices '
                 f'&middot; {crypto} &middot; up {fmt_duration(st.get("uptime_s", 0))}</span></header>')
@@ -174,7 +220,8 @@ class Site:
             who = ""
             if ep.get("addr"):
                 who = f' <a class="muted" href="/device/{esc(ep["addr"])}">&#9656;</a>'
-            rows.append(f'<tr><td class="t">{hm(ep["start"])}</td>'
+            tip = esc(LEGEND_BY_KIND.get(ep["kind"], ""))
+            rows.append(f'<tr title="{tip}"><td class="t">{hm(ep["start"])}</td>'
                         f'<td><span class="sev {esc(ep["severity"])}">{esc(ep["severity"])}</span></td>'
                         f'<td>{esc(ep["title"])}{span}{who}</td>'
                         f'<td class="detail muted">{esc(ep["detail"])}</td></tr>')
@@ -246,6 +293,22 @@ class Site:
         return self.page(name, f'<h1>{esc(name)}</h1>{card}<h2>history</h2>{table}'
                                f'<p><a class="muted" href="/api/device/{esc(addr)}">JSON</a></p>')
 
+    def help_page(self) -> str:
+        sev = ('<div class="card"><b>Severities.</b> '
+               '<span class="sev info">info</span> bookkeeping &middot; '
+               '<span class="sev notice">notice</span> worth a glance here, never paged &middot; '
+               '<span class="sev warning">warning</span> paged to the phone &middot; '
+               '<span class="sev critical">critical</span> paged, and the ring buffer is worth freezing.</div>')
+        items = "".join(f'<h2>{esc(title)}</h2><p>{esc(text)}</p>' for _k, title, text in LEGEND)
+        conv = ('<h2>How the pages read</h2><p>Each row is an <i>episode</i>, not a log line: repeated '
+                'records about the same thing are one row with a count and a time span. A quiet spell '
+                'that crosses midnight appears on both days. The strip of days shows how many events '
+                'each day had, with warnings in amber and criticals in red. Packets are kept for a '
+                'week in the ring buffer and forever in frozen incidents; the top of a day page says '
+                'which still exist. The devices page shows how well the sniffer hears each device: '
+                '<i>marginal</i> means its silences are more likely fading than failure.</p>')
+        return self.page("what these mean", f'<h1>What these events mean</h1>{sev}{conv}{items}')
+
     # ------------------------------------------------------------ json
 
     def api(self, path: str):
@@ -292,6 +355,8 @@ class Site:
             return 200, "text/html; charset=utf-8", self.day_page(day).encode()
         if path == "/devices":
             return 200, "text/html; charset=utf-8", self.devices_page().encode()
+        if path == "/help":
+            return 200, "text/html; charset=utf-8", self.help_page().encode()
         if path.startswith("/device/"):
             addr = path[len("/device/"):]
             if not (len(addr) == 16 and all(c in "0123456789abcdefABCDEF" for c in addr)):

@@ -10,7 +10,6 @@ it (quiet spells, rejoins, bad links) follow, newest first, to answer
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from .config import Config
@@ -18,34 +17,18 @@ from .events import NullEventLog
 from .names import DeviceNames
 from .pcap import PcapStreamReader
 from .pipeline import Pipeline, load_decryptor
-from .review import device_history, fmt_episode
+from .review import devices_history, fmt_episode
 
 HISTORY_ROWS = 20
 
 
 def resolve_target(cfg: Config, target: str) -> tuple[list[str], str]:
-    """Resolve a name or address into the set of extended addresses to track."""
-    names = DeviceNames(cfg.devices_path)
-    t = target.replace(":", "").lower()
-    if len(t) == 16 and all(c in "0123456789abcdef" for c in t):
-        return [t], names.name(t) or t
-    matches = {}
-    if cfg.devices_path and cfg.devices_path.exists():
-        for entry in json.loads(cfg.devices_path.read_text()):
-            name = entry.get("name", "")
-            if target.lower() in name.lower():
-                addrs = entry.get("extendedAddresses") or []
-                if entry.get("extendedAddress"):
-                    addrs = addrs + [entry["extendedAddress"]]
-                # Rotating devices (Apple TVs) may appear as several entries
-                # under one name; every address belongs to the story.
-                matches.setdefault(name, []).extend(a.replace(":", "").lower() for a in addrs)
-    if len(matches) == 1:
-        name, addrs = next(iter(matches.items()))
-        return addrs, name
-    if len(matches) > 1:
-        raise SystemExit(f"ambiguous name '{target}': {sorted(matches)}")
-    raise SystemExit(f"'{target}' is neither a 16-hex-char address nor a known device name")
+    """Resolve a name or address into the set of extended addresses to track
+    (every address of a rotating device belongs to the story)."""
+    try:
+        return DeviceNames(cfg.devices_path).resolve(target)
+    except ValueError as exc:
+        raise SystemExit(str(exc))
 
 
 RING_NAME = "threadwatch-%Y%m%d-%H.pcap"
@@ -72,14 +55,7 @@ def select_recent(files: list[Path], hours: float | None, now: float | None = No
     return keep
 
 
-def event_history(events_dir: Path, addrs: list[str], now: float | None = None) -> list[dict]:
-    """Every episode from the event log involving any of a device's
-    addresses, newest first. Rotating devices are several addresses with
-    one story, so the per-address histories are merged."""
-    episodes = []
-    for addr in dict.fromkeys(a.lower() for a in addrs):
-        episodes.extend(device_history(events_dir, addr, now))
-    return sorted(episodes, key=lambda e: e["start"], reverse=True)
+event_history = devices_history   # every address of a rotating device, newest first
 
 
 def print_history(events_dir: Path, addrs: list[str], now: float | None = None) -> None:

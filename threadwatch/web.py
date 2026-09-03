@@ -18,8 +18,8 @@ from urllib.parse import parse_qs, urlparse
 from .events import DAY_RE, day_of, next_day, prev_day
 from .names import DeviceNames, LastSeen
 from .review import (DEVICE_FILTERS, DEVICE_SORTS, capture_for_day, day_episodes, day_index,
-                     days_available, device_history, device_rows, dominant_pan, fmt_duration,
-                     now_card, select_devices, today)
+                     days_available, device_history, device_rows, devices_history, dominant_pan,
+                     fmt_duration, now_card, select_devices, today)
 
 CSS = """
 :root{--bg:#fff;--fg:#1c1c1e;--muted:#6b6b70;--line:#e3e3e6;--card:#f6f6f8;
@@ -354,27 +354,55 @@ class Site:
                  if trs else f'<p class="empty">no devices {DEVICE_FILTERS[only][0] if only else "tracked"}</p>')
         return self.page("devices", f'<h1>devices</h1>{note}{filters}{table}')
 
-    def device_page(self, addr: str) -> str:
+    def device_page(self, target: str) -> str:
+        """One device: every address it has used, what the recorder knows
+        about each, and its history across all of them. ``target`` is an
+        address or (part of) an inventory name."""
         now = time.time()
-        addr = addr.lower()
         names = self.names()
+        try:
+            addrs, name = names.resolve(target)
+        except ValueError as exc:
+            msg = str(exc)
+            if msg.startswith("ambiguous"):
+                choices = sorted({e.get("name") for e in names.by_addr.values()
+                                  if e.get("name") and target.strip().lower() in e["name"].lower()})
+                items = "".join(f'<li><a href="/device/{esc(c)}">{esc(c)}</a></li>' for c in choices)
+                return self.page("which device?", f'<h1>which device?</h1><p class="muted">{esc(target)} '
+                                                  f'matches several names.</p><ul>{items}</ul>')
+            return self.page("no such device", f'<h1>no such device</h1><p class="muted">{esc(msg)}</p>'
+                                               f'<p><a href="/devices">all devices</a></p>')
         seen = self.seen()
-        row = seen.table.get(addr)
-        name = names.name(addr) or "unknown device"
-        entry = names.by_addr.get(addr, {})
-        facts = []
+        from .names import reception
+        entry = names.by_addr.get(addrs[0], {})
+        head = []
         if entry.get("model"):
-            facts.append(esc(entry["model"]))
-        if names.role(addr):
-            facts.append(esc(names.role(addr)))
-        if row:
-            from .names import reception
-            rec = reception(row.get("rssi"), self.cfg.quiet_min_rssi_dbm)
-            facts.append(f'last heard {ago(row.get("last_seen"), now)}')
-            facts.append(f'rssi {esc(row.get("rssi"))} dBm ({rec})')
-            facts.append(f'{row.get("frames", 0):,} frames since {time.strftime("%Y-%m-%d", time.localtime(row.get("first_seen", now)))}')
-        card = f'<div class="card"><code>{esc(addr)}</code><br>{" &middot; ".join(facts) if facts else "<span class=muted>never heard</span>"}</div>'
-        eps = device_history(self.cfg.events_dir, addr, now)
+            head.append(esc(entry["model"]))
+        if names.role(addrs[0]):
+            head.append(esc(names.role(addrs[0])))
+        if len(addrs) > 1:
+            head.append(f'{len(addrs)} addresses (rotates)')
+        cards = []
+        for addr in sorted(addrs, key=lambda a: -(seen.table.get(a) or {}).get("last_seen", 0)):
+            row = seen.table.get(addr)
+            facts = []
+            if row:
+                rec = reception(row.get("rssi"), self.cfg.quiet_min_rssi_dbm)
+                heard = ago(row.get("last_seen"), now)
+                facts.append(f'<span class="bad">quiet</span>, last heard {heard}' if row.get("quiet_reported")
+                             else f'last heard {heard}')
+                level = f'rssi {esc(row.get("rssi"))} dBm ({rec})'
+                if row.get("rssi_ref") is not None:
+                    level += f', usually {esc(row.get("rssi_ref"))}'
+                    if row.get("rssi_degraded"):
+                        level += ' <span class="warn">signal down</span>'
+                facts.append(level)
+                facts.append(f'{row.get("frames", 0):,} frames since '
+                             f'{time.strftime("%Y-%m-%d", time.localtime(row.get("first_seen", now)))}')
+            cards.append(f'<div class="card"><code>{esc(addr)}</code><br>'
+                         f'{" &middot; ".join(facts) if facts else "<span class=muted>never heard</span>"}</div>')
+        card = (f'<p class="muted">{" &middot; ".join(head)}</p>' if head else "") + "".join(cards)
+        eps = devices_history(self.cfg.events_dir, addrs, now)
         trs = []
         for ep in eps:
             day = time.strftime("%Y-%m-%d", time.localtime(ep["start"]))
@@ -384,8 +412,9 @@ class Site:
                        f'<td>{esc(ep["title"])}{span}</td><td class="detail muted">{esc(ep["detail"])}</td></tr>')
         table = (f'<table><tr><th>when</th><th></th><th>what</th><th class="detail">detail</th></tr>{"".join(trs)}</table>'
                  if trs else '<p class="empty">no events for this device</p>')
-        return self.page(name, f'<h1>{esc(name)}</h1>{card}<h2>history</h2>{table}'
-                               f'<p><a class="muted" href="/api/device/{esc(addr)}">JSON</a></p>')
+        title = name if name != addrs[0] else "unknown device"
+        return self.page(title, f'<h1>{esc(title)}</h1>{card}<h2>history</h2>{table}'
+                                f'<p><a class="muted" href="/api/device/{esc(addrs[0])}">JSON</a></p>')
 
     def help_page(self) -> str:
         sev = ('<div class="card"><b>Severities.</b> '
@@ -426,12 +455,18 @@ class Site:
             return {"devices": select_devices(rows, dominant_pan(seen), query.get("only", ""),
                                               query.get("sort", "name"))}
         if path.startswith("/api/device/"):
-            addr = path[len("/api/device/"):].lower()
-            eps = device_history(self.cfg.events_dir, addr)
+            names = self.names()
+            try:
+                addrs, name = names.resolve(path[len("/api/device/"):])
+            except ValueError as exc:
+                return {"error": str(exc)}
+            eps = devices_history(self.cfg.events_dir, addrs)
             for ep in eps:
                 ep.pop("events", None)
-            return {"addr": addr, "name": self.names().name(addr), "role": self.names().role(addr),
-                    "last_seen": self.seen().table.get(addr), "episodes": eps}
+            table = self.seen().table
+            return {"addr": addrs[0], "addresses": addrs, "name": name if name != addrs[0] else None,
+                    "role": names.role(addrs[0]),
+                    "last_seen": {a: table.get(a) for a in addrs}, "episodes": eps}
         if path == "/api/days":
             return {"days": day_index(self.cfg.events_dir)}
         return None
@@ -461,10 +496,12 @@ class Site:
         if path == "/help":
             return 200, "text/html; charset=utf-8", self.help_page().encode()
         if path.startswith("/device/"):
-            addr = path[len("/device/"):]
-            if not (len(addr) == 16 and all(c in "0123456789abcdefABCDEF" for c in addr)):
-                return 404, "text/plain", b"bad address"
-            return 200, "text/html; charset=utf-8", self.device_page(addr).encode()
+            from urllib.parse import unquote
+            target = unquote(path[len("/device/"):]).strip()
+            if not target or len(target) > 100:
+                return 404, "text/plain", b"bad device"
+            body = self.device_page(target)
+            return (404 if "<h1>no such device</h1>" in body else 200), "text/html; charset=utf-8", body.encode()
         return 404, "text/plain", b"not found"
 
 

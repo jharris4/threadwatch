@@ -50,9 +50,11 @@ def _norm(addr: str) -> str:
 class DeviceNames:
     def __init__(self, inventory_path: Optional[Path]):
         self.by_addr: dict[str, dict] = {}
+        self.entries: list[dict] = []
         self.inventory_path = inventory_path
         if inventory_path and inventory_path.exists():
-            for entry in json.loads(inventory_path.read_text()):
+            self.entries = json.loads(inventory_path.read_text())
+            for entry in self.entries:
                 addrs = entry.get("extendedAddresses") or []
                 if entry.get("extendedAddress"):
                     addrs = addrs + [entry["extendedAddress"]]
@@ -79,6 +81,44 @@ class DeviceNames:
 
     def is_router(self, addr: str) -> bool:
         return (self.role(addr) or "").lower() in ROUTER_ROLES
+
+    def addresses_of(self, addr: str) -> list[str]:
+        """Every inventory address that belongs to the same device as
+        ``addr``: the entry's own list, plus any other entry under the same
+        name (a rotating device is sometimes listed once per address). The
+        address itself comes first; an address not in the inventory is a
+        device of one."""
+        addr = _norm(addr)
+        name = self.name(addr)
+        out = [addr]
+        if name:
+            for a, entry in self.by_addr.items():
+                if (entry.get("name") or "").lower() == name.lower() and a not in out:
+                    out.append(a)
+        return out
+
+    def resolve(self, target: str) -> tuple[list[str], str]:
+        """A 16-hex address, or a case-insensitive substring of one
+        inventory name, to (every address of that device, display name).
+        Raises ValueError with the candidates when the text matches several
+        names, and when it matches nothing."""
+        t = _norm(target)
+        if _EXT_ADDR.match(t):
+            return self.addresses_of(t), self.name(t) or t
+        matches: dict[str, list[str]] = {}
+        for a, entry in self.by_addr.items():
+            name = entry.get("name") or ""
+            if name and target.strip().lower() in name.lower():
+                matches.setdefault(name, []).append(a)
+        exact = [n for n in matches if n.lower() == target.strip().lower()]
+        if exact:
+            matches = {exact[0]: matches[exact[0]]}
+        if len(matches) == 1:
+            name, addrs = next(iter(matches.items()))
+            return addrs, name
+        if matches:
+            raise ValueError(f"ambiguous name {target!r}: {sorted(matches)}")
+        raise ValueError(f"{target!r} is neither a 16-hex-char address nor a known device name")
 
 
 class LastSeen:

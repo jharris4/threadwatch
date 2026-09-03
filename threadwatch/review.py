@@ -335,6 +335,15 @@ def device_history(events_dir: Path, addr: str, now: Optional[float] = None) -> 
     return list(reversed(group_episodes(records, now)))
 
 
+def devices_history(events_dir: Path, addrs: list[str], now: Optional[float] = None) -> list[dict]:
+    """device_history over every address of one device (a rotating device
+    is several addresses with one story), newest first."""
+    episodes = []
+    for addr in dict.fromkeys(a.lower() for a in addrs):
+        episodes.extend(device_history(events_dir, addr, now))
+    return sorted(episodes, key=lambda e: e["start"], reverse=True)
+
+
 def capture_for_day(ring_dir: Path, incidents_dir: Path, day: str) -> dict:
     """Whether packets for a day still exist: ring files (one week) and any
     frozen incidents dated that day."""

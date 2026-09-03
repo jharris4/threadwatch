@@ -27,7 +27,11 @@ is no authentication: keep it on your LAN or behind your own proxy.
   it and `?sort=last|rssi|frames` orders it (longest unheard, weakest,
   busiest); the links at the top of the page set both. `/api/devices`
   takes the same parameters.
-- **/device/<addr>**: one device's history across every day, as episodes.
+- **/device/<addr>** or **/device/<name>**: one device's history across
+  every day, as episodes, merged over every address it has used (a
+  rotating device is several addresses with one story), with a card per
+  address: last heard, signal level against its usual, frames. Part of a
+  name works; a text that matches several names offers the choice.
 - **/api/status**, **/api/day/YYYY-MM-DD**, **/api/devices**,
   **/api/device/<addr>**: the same data as JSON, for Home Assistant or
   anything else.

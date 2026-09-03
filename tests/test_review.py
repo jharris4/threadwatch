@@ -56,6 +56,16 @@ class EpisodeTest(unittest.TestCase):
         self.assertEqual(eps[0]["title"], "Basement AQ quiet for 42m")   # 30 min before noticed + 12 after
         self.assertEqual((eps[0]["start"], eps[0]["end"]), (T0, T0 + 12 * 60))
 
+    def test_repeated_quiet_before_a_return_is_one_row(self):
+        recs = [
+            {"ts": T0, "event": "device_quiet", "severity": "warning", "addr": AQ, "name": "AQ", "silent_for_s": 1800},
+            {"ts": T0 + 600, "event": "device_quiet", "severity": "warning", "addr": AQ, "name": "AQ", "silent_for_s": 2400},
+            {"ts": T0 + 1800, "event": "device_returned", "severity": "notice", "addr": AQ, "name": "AQ"},
+        ]
+        eps = group_episodes(recs, now=T0 + 7200)
+        self.assertEqual([(e["kind"], e["end"], e["count"]) for e in eps], [("quiet", T0 + 1800, 2)])
+        self.assertEqual(eps[0]["title"], "AQ quiet for 60m")
+
     def test_open_quiet_says_still_quiet(self):
         eps = group_episodes([rec("device_quiet", "warning", T0, addr=AQ, name="Basement AQ")], now=T0 + 3600)
         self.assertIn("still quiet", eps[0]["title"])

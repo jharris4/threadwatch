@@ -80,6 +80,15 @@ def group_episodes(records: list[dict], now: Optional[float] = None) -> list[dic
         if ev == "device_quiet":
             addr = _addr(rec) or ""
             marginal = rec.get("reception") == "marginal"
+            ep = open_quiet.get(addr)
+            if ep is not None:
+                # Announced again before it returned (the recorder died
+                # between announcing and saving): same silence, one row.
+                ep["count"] += 1
+                ep["events"].append(rec)
+                if SEVERITY_RANK.get(rec["severity"], 0) > SEVERITY_RANK.get(ep["severity"], 0):
+                    ep["severity"] = rec["severity"]
+                continue
             # The record is written when the silence crosses the threshold;
             # the silence itself began silent_for_s earlier.
             ep = new("quiet", rec, f"{_label(rec)} went quiet",

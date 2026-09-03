@@ -168,6 +168,13 @@ def run_capture(cfg: Config) -> None:
                                   beat["ring"], decryptor, last_frame_age=age)
                 except Exception as exc:   # a full disk must not take the stall check with it
                     _log(f"status.json not written: {exc}")
+            if beat["ring"] is None and not sniffer.thread.is_alive():
+                # The serial open failed (port held by a stale process, gone
+                # after enumeration): the main thread would sit in the FIFO
+                # open for the whole stall timeout with a misleading message.
+                _log("sniffer thread died before delivering any data (serial port busy or gone? "
+                     "see the traceback above); exiting for supervisor restart")
+                os._exit(4)
             if age > stall_timeout:
                 _log(f"no frames for {age:.0f}s - capture stalled (host slept? "
                      "dongle gone?); exiting for supervisor restart")

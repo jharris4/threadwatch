@@ -94,6 +94,7 @@ class Pipeline:
         self._retrans_alerted = 0.0
         self.quiet_reported: set[str] = set()
         self._resolve_after: dict[str, float] = {}   # short addr -> next attempt ts
+        self._verify_after: dict[str, float] = {}    # short addr -> next re-check of its mapping
         self.mle_names_path = cfg.state_dir / "observed-names.json"
         self.observed_names = {}
         if not ephemeral and self.mle_names_path.exists():
@@ -173,7 +174,16 @@ class Pipeline:
             return None
         ext = self.decryptor.short_to_ext.get(src)
         if ext:
-            return ext
+            # A short address is reassigned when a parent restarts, so the
+            # cached mapping is re-checked against the MIC now and then and
+            # dropped when it no longer fits; the new holder then resolves.
+            if f.ts < self._verify_after.get(src, 0.0) or not self.decryptor.resolvable(f.psdu):
+                return ext
+            self._verify_after[src] = f.ts + self.RESOLVE_RETRY_S
+            if self.decryptor.verify_short(f.psdu, ext):
+                return ext
+            del self.decryptor.short_to_ext[src]
+            self._resolve_after.pop(src, None)
         if f.ts < self._resolve_after.get(src, 0.0) or not self.decryptor.resolvable(f.psdu):
             return None
         self._resolve_after[src] = f.ts + self.RESOLVE_RETRY_S

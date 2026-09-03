@@ -82,6 +82,24 @@ class ResolveShortTest(unittest.TestCase):
             pipe.ingest(parse_frame(t0 + 92 * 60, secured_frame(SED, "c829", 200, ftype=3), 195))
             self.assertEqual(pipe.events.records[-1]["event"], "device_returned")
 
+    def test_reassigned_short_address_moves_to_its_new_holder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dd = Path(tmp)
+            (dd / "devices.json").write_text(json.dumps([
+                {"name": "A", "extendedAddress": SED}, {"name": "B", "extendedAddress": OTHER},
+            ]))
+            cfg = Config(data_dir=dd / "data", devices_path=dd / "devices.json")
+            pipe = Pipeline(cfg, NullEventLog(), Decryptor(network_key=KEY))
+            t0 = 1_700_000_000.0
+            for i in range(3):
+                pipe.ingest(parse_frame(t0 + i, secured_frame(SED, "c829", i, ftype=3), 195))
+            # A dies; its parent restarts and hands c829 to B.
+            for i in range(3):
+                pipe.ingest(parse_frame(t0 + 40 + i, secured_frame(OTHER, "c829", 500 + i, ftype=3), 195))
+            self.assertEqual(pipe.decryptor.short_to_ext["c829"], OTHER)
+            self.assertEqual((pipe.devices[SED].polls, pipe.devices[OTHER].polls), (3, 3))
+            self.assertEqual(pipe.seen.table[SED]["last_seen"], t0 + 2)
+
     def test_unresolvable_short_is_retried_only_after_backoff(self):
         with tempfile.TemporaryDirectory() as tmp:
             dd = Path(tmp)

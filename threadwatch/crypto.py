@@ -95,6 +95,11 @@ class Decryptor:
         self.stats["mac_decrypted" if plain is not None else "mac_failed"] += 1
         return plain
 
+    def verify_short(self, psdu: bytes, ext_hex: str) -> bool:
+        """Does this secured frame really come from ext_hex (MIC check)?"""
+        sec = self._secured_parts(psdu)
+        return bool(sec) and self._decrypt_with_ext(sec, ext_hex) is not None
+
     def resolve_short(self, psdu: bytes, short_hex: str, candidates) -> Optional[str]:
         """Learn which extended address a short-source secured frame came from.
 

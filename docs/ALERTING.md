@@ -180,7 +180,9 @@ headers = { Authorization = "Bearer ${GATUS_THREADWATCH_TOKEN}" }
 # body = "..."                 # optional, sent verbatim (text/plain)
 ```
 
-"Healthy" means a frame arrived within the last three minutes. After that the
+"Healthy" means a frame arrived within the last three minutes; until a run has
+heard its first frame nothing is sent at all, so a daemon stuck restarting
+without a working dongle cannot keep the monitor reassured. After that the
 built-in watchdog exits the process for systemd to restart, so a monitor sees
 either a `failure_url` hit or silence, never a reassuring beat from a stalled
 capture. Each heartbeat runs on its own timer in one daemon thread; failures

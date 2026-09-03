@@ -240,6 +240,13 @@ class DeliveryTests(unittest.TestCase):
         self.assertTrue(hb.push(True))
         self.assertEqual([r["path"] for r in self.srv.wait(1)], ["/ping"])
 
+    def test_heartbeats_send_nothing_while_health_is_unknown(self):
+        hb = alerts.Heartbeat(name="hc", url=self.srv.url + "/ping")
+        runner = alerts.HeartbeatRunner([hb], healthy=lambda: None, log=print, start=False)
+        self.assertEqual(runner.push_all(), [])
+        self.assertEqual(len(runner.push_all(healthy=True)), 1)
+        self.assertEqual([r["path"] for r in self.srv.wait(1)], ["/ping"])
+
     def test_build_heartbeats_validates(self):
         with self.assertRaises(alerts.ConfigError):
             alerts.build_heartbeats([{"url": "http://x", "interval_s": 1}], print)

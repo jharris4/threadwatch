@@ -540,7 +540,8 @@ class HeartbeatRunner:
 
     ``healthy`` is polled at each push; it should be cheap and reflect whether
     frames are actually flowing, so a stalled capture stops (or flips) the
-    heartbeat instead of lying to the monitor.
+    heartbeat instead of lying to the monitor. None means "not known yet"
+    (no frame heard this run): nothing is sent and the check repeats soon.
     """
 
     def __init__(self, beats: list[Heartbeat], healthy: Callable[[], bool],
@@ -555,6 +556,8 @@ class HeartbeatRunner:
     def push_all(self, healthy: Optional[bool] = None) -> list[tuple[Heartbeat, Optional[str]]]:
         state = self.healthy() if healthy is None else healthy
         out = []
+        if state is None:
+            return out
         for b in self.beats:
             try:
                 b.push(state)
@@ -567,12 +570,15 @@ class HeartbeatRunner:
         due = {b.name: 0.0 for b in self.beats}
         while True:
             now = time.time()
+            state = self.healthy()
             for b in self.beats:
                 if now < due[b.name]:
                     continue
+                if state is None:      # nothing known yet: keep checking, send nothing
+                    continue
                 due[b.name] = now + b.interval_s
                 try:
-                    b.push(self.healthy())
+                    b.push(state)
                     if b.name in self._failing:
                         self._failing.discard(b.name)
                         self.log(f"heartbeat '{b.name}' recovered")

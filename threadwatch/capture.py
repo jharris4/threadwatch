@@ -150,7 +150,7 @@ def run_capture(cfg: Config) -> None:
     last_tick = 0.0
     ring = None
     # Shared with the watchdog thread; benign races (status snapshot only).
-    beat = {"last_frame": time.time(), "total": 0, "ring": None}
+    beat = {"last_frame": None, "total": 0, "ring": None}   # last_frame: None until the first frame
 
     def _watchdog():
         # The main loop blocks reading the FIFO, so a stalled stream (host
@@ -161,7 +161,7 @@ def run_capture(cfg: Config) -> None:
         while True:
             time.sleep(30)
             now = time.time()
-            age = now - beat["last_frame"]
+            age = now - (beat["last_frame"] or started)
             if beat["ring"] is not None:
                 try:
                     _write_status(cfg, port, beat["total"], started, pipe,
@@ -190,11 +190,13 @@ def run_capture(cfg: Config) -> None:
 
     threading.Thread(target=_watchdog, daemon=True).start()
 
-    # Liveness heartbeats: "healthy" means frames are still flowing. Once the
-    # stall timeout passes the watchdog exits anyway; until then the monitor
-    # is told the truth rather than a reassuring beat.
+    # Liveness heartbeats: "healthy" means frames are still flowing, and
+    # unknown (nothing sent) until this run has heard its first frame, so a
+    # restart loop that never hears one cannot keep a monitor reassured.
+    # Once the stall timeout passes the watchdog exits anyway.
     HeartbeatRunner(heartbeats,
-                    healthy=lambda: time.time() - beat["last_frame"] < 180.0,
+                    healthy=lambda: None if beat["last_frame"] is None
+                    else time.time() - beat["last_frame"] < 180.0,
                     log=_log)
 
     # Exit status: 0 for a requested stop, otherwise non-zero so the journal

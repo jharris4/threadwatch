@@ -13,7 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from threadwatch import alerts  # noqa: E402
-from threadwatch.events import EventLog  # noqa: E402
+from threadwatch.events import EventLog, read_all  # noqa: E402
 
 
 class _Server:
@@ -158,7 +158,7 @@ class DeliveryTests(unittest.TestCase):
 
     def test_event_log_dispatches_in_background_and_respects_floor(self):
         with tempfile.TemporaryDirectory() as d:
-            log = EventLog(Path(d) / "events.jsonl",
+            log = EventLog(Path(d) / "events",
                            [alerts.HttpSink(name="t", url=self.srv.url, min_severity=2)])
             log.emit("device_first_seen", "info", addr="x")
             log.emit("device_quiet", "warning", addr="x", name="n")
@@ -166,7 +166,7 @@ class DeliveryTests(unittest.TestCase):
             time.sleep(0.2)
             self.assertEqual(len(reqs), 1)
             self.assertEqual(json.loads(reqs[0]["body"])["event"], "device_quiet")
-            self.assertEqual(len((Path(d) / "events.jsonl").read_text().splitlines()), 2)
+            self.assertEqual(len(read_all(Path(d) / "events")), 2)
 
     def test_failed_sink_is_logged_not_raised(self):
         bad = _Server(status=500)

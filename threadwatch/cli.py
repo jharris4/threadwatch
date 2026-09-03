@@ -37,8 +37,15 @@ def main(argv=None) -> int:
     p_why.add_argument("device", help="device name (from devices.json) or 16-hex extended address")
     p_why.add_argument("--pcap", type=Path, help="analyze this file instead of the ring")
 
-    p_events = sub.add_parser("events", help="show recent events")
-    p_events.add_argument("-n", type=int, default=30)
+    p_events = sub.add_parser("events", help="show recent events, or one day's")
+    p_events.add_argument("-n", type=int, default=30, help="how many of the latest records")
+    p_events.add_argument("--day", help="YYYY-MM-DD: every record from that local day")
+    p_events.add_argument("--episodes", action="store_true",
+                          help="group into episodes the way the web review page does")
+
+    p_web = sub.add_parser("web", help="serve the review pages (day-by-day events, devices)")
+    p_web.add_argument("--bind", help="address to listen on (default: [web] bind, else 0.0.0.0)")
+    p_web.add_argument("--port", type=int, help="port (default: [web] port, else 8080)")
 
     p_test = sub.add_parser("alert-test",
                             help="send a synthetic event through every alert sink and "
@@ -81,10 +88,12 @@ def main(argv=None) -> int:
         for f in sorted(cfg.ring_dir.glob("threadwatch-*.pcap")):
             shutil.copy2(f, dest / f.name)
             count += 1
-        for extra in ("status.json", "last-seen.json", "events.jsonl", "observed-names.json"):
+        for extra in ("status.json", "last-seen.json", "observed-names.json"):
             src = cfg.state_dir / extra
             if src.exists():
                 shutil.copy2(src, dest / extra)
+        if cfg.events_dir.exists():
+            shutil.copytree(cfg.events_dir, dest / "events", dirs_exist_ok=True)
         print(f"froze {count} ring files -> {dest}")
         return 0
 
@@ -94,17 +103,39 @@ def main(argv=None) -> int:
         return 0
 
     if args.cmd == "events":
-        path = cfg.state_dir / "events.jsonl"
-        if not path.exists():
+        from .events import list_days, migrate_legacy, read_day
+        migrate_legacy(cfg.events_dir)
+        days = list_days(cfg.events_dir)
+        if not days:
             print("no events yet")
             return 0
-        lines = path.read_text().splitlines()[-args.n:]
-        for line in lines:
-            e = json.loads(line)
+        if args.day:
+            records = read_day(cfg.events_dir, args.day)
+        else:
+            records = []
+            for day in reversed(days):
+                records = read_day(cfg.events_dir, day) + records
+                if len(records) >= args.n:
+                    break
+            records = records[-args.n:]
+        if args.episodes:
+            from .review import group_episodes, fmt_duration
+            for ep in group_episodes(records):
+                stamp = time.strftime("%m-%d %H:%M", time.localtime(ep["start"]))
+                span = "" if ep["count"] == 1 else f" x{ep['count']} over {fmt_duration((ep['end'] or ep['start']) - ep['start'])}"
+                print(f"{stamp} [{ep['severity']:8s}] {ep['title']}{span}  {ep['detail']}")
+            return 0
+        for e in records:
+            e = dict(e)
             stamp = time.strftime("%m-%d %H:%M:%S", time.localtime(e.pop("ts")))
             sev = e.pop("severity")
             name = e.pop("event")
             print(f"{stamp} [{sev:8s}] {name}  {json.dumps(e)}")
+        return 0
+
+    if args.cmd == "web":
+        from .web import serve
+        serve(cfg, bind=args.bind or cfg.web_bind, port=args.port or cfg.web_port)
         return 0
 
     if args.cmd == "alert-test":

@@ -98,11 +98,11 @@ def run_capture(cfg: Config) -> None:
         print(f"[threadwatch] {msg}", flush=True)
 
     sinks = build_sinks(cfg.alerts_raw, _log)
-    events = EventLog(cfg.state_dir / "events.jsonl", sinks)
+    events = EventLog(cfg.events_dir, sinks)
     for s in sinks:
         _log(f"alert sink {s.describe()} (min {['info', 'notice', 'warning', 'critical'][s.min_severity]})")
     if not sinks:
-        _log("no alert sinks configured (events go to events.jsonl only; see docs/ALERTING.md)")
+        _log("no alert sinks configured (events go to the event log only; see docs/ALERTING.md)")
     decryptor = load_decryptor(cfg)
     print(f"[threadwatch] credentials: {'loaded (deep inspection on)' if decryptor else 'none (header-level only)'}",
           flush=True)

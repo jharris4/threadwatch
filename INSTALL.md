@@ -78,6 +78,8 @@ journalctl -u threadwatch -f  # live log incl. storm alerts
 ```bash
 bin/threadwatch status          # daemon alive? frames flowing? storm state?
 bin/threadwatch report          # who's gone quiet; unknown addresses to name
+bin/threadwatch events --episodes   # what happened lately, grouped
+# ...or open http://<pi>:8080/ for the same thing day by day (docs/REVIEW.md)
 bin/threadwatch freeze mylabel  # preserve the ring buffer NOW (incident!)
 bin/threadwatch replay f.pcap   # run detection over any pcap
 ```

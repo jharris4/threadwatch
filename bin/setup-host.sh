@@ -48,14 +48,17 @@ else
   echo "    no alerts.env (fine unless a sink references \${VARS}; see docs/ALERTING.md)"
 fi
 
-echo "==> systemd service"
-sed -e "s|^User=.*|User=$RUN_USER|" \
-    -e "s|/home/pi/thread-debugger|$REPO|g" \
-    "$REPO/systemd/threadwatch.service" > /etc/systemd/system/threadwatch.service
+echo "==> systemd services"
+for unit in threadwatch threadwatch-web; do
+  sed -e "s|^User=.*|User=$RUN_USER|" \
+      -e "s|/home/pi/thread-debugger|$REPO|g" \
+      "$REPO/systemd/$unit.service" > "/etc/systemd/system/$unit.service"
+done
 systemctl daemon-reload
-systemctl enable --now threadwatch
+systemctl enable --now threadwatch threadwatch-web
 sleep 3
 systemctl --no-pager --lines=5 status threadwatch || true
+systemctl --no-pager --lines=3 status threadwatch-web || true
 
 cat <<EOF
 

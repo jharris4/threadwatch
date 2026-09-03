@@ -1,0 +1,18 @@
+[Unit]
+Description=threadwatch web: day-by-day event review pages
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust if you cloned elsewhere or use a different user.
+User=pi
+WorkingDirectory=/home/pi/thread-debugger
+# Read-only over the state directory; a separate process so a page bug can
+# never touch capture. Listen address and port: [web] in config.toml.
+ExecStart=/home/pi/thread-debugger/bin/threadwatch web
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

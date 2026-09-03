@@ -36,6 +36,8 @@ class Config:
     # 20-70 min at a time while everything at -80 dBm or better never went
     # 2 min without a frame.
     quiet_min_rssi_dbm: float = -82.0
+    web_bind: str = "0.0.0.0"                  # [web] review pages (threadwatch web)
+    web_port: int = 8080
     alerts_raw: dict = field(default_factory=dict)      # [alerts] table, verbatim
     heartbeats_raw: list = field(default_factory=list)  # [[heartbeats]] tables, verbatim
 
@@ -52,6 +54,10 @@ class Config:
     @property
     def incidents_dir(self) -> Path:
         return self.data_dir / "incidents"
+
+    @property
+    def events_dir(self) -> Path:
+        return self.state_dir / "events"
 
 
 def load(path: Optional[Path]) -> Config:
@@ -80,6 +86,9 @@ def load(path: Optional[Path]) -> Config:
         cfg.quiet_end_device_s = float(quiet.get("end_device_s", cfg.quiet_end_device_s))
         cfg.quiet_router_s = float(quiet.get("router_s", cfg.quiet_router_s))
         cfg.quiet_min_rssi_dbm = float(quiet.get("min_rssi_dbm", cfg.quiet_min_rssi_dbm))
+        web = raw.get("web", {})
+        cfg.web_bind = str(web.get("bind", cfg.web_bind))
+        cfg.web_port = int(web.get("port", cfg.web_port))
         # Sinks and heartbeats are built lazily (alerts.build_sinks /
         # build_heartbeats) so ${ENV} expansion and validation happen where
         # a disabled sink can be logged rather than crash config loading.

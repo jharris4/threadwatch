@@ -15,7 +15,7 @@ question: *why did this device go offline?*
 
 - **Continuous capture** on your Thread channel into hourly pcap files,
   keeping a rolling week (configurable). ~30 MB/hour for a ~45-node mesh.
-- **A health event log** (`events.jsonl`) fed by many detectors, all
+- **A health event log** (one JSON-lines file per day) fed by many detectors, all
   from cleartext MAC headers:
   - devices going quiet / returning / silent-without-rejoin;
   - per-device RSSI trend, ACK-success rate, poll cadence (catches slow
@@ -92,7 +92,9 @@ addresses to names for you (see docs/HOME-ASSISTANT.md).
       pipeline.py  the shared per-frame health pipeline (detectors, stats)
       detect.py    flood / phase-lock storm detector
       crypto.py    optional Thread decryption (MLE, 6LoWPAN, SRP names)
-      events.py    append-only event log
+      events.py    append-only event log, one file per day
+      review.py    events -> episodes, day index, device summaries
+      web.py       read-only review pages (threadwatch web)
       alerts.py    alert sinks (http/command/ntfy preset) + heartbeats
       names.py     address->name inventory, last-seen tracking
       why.py       per-device history reconstruction
@@ -101,6 +103,6 @@ addresses to names for you (see docs/HOME-ASSISTANT.md).
     vendor/        Nordic's sniffer extcap module (BSD, unmodified)
     firmware/      sniffer firmware hex + prebuilt DFU package
     bin/           threadwatch CLI shim, flash-dongle.sh
-    systemd/       service unit for the Pi
+    systemd/       service units for the Pi (capture, web review)
     config/        examples for config.toml and devices.json
     docs/          analysis cookbook, Home Assistant extension

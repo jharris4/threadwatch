@@ -26,8 +26,10 @@ a dead endpoint costs one journal line per failure (`alert sink 'x' failed:
 
 ## Events
 
-Every event is one JSON record in `data/state/events.jsonl`, and the same
-record is what sinks receive. Fields common to all: `ts` (unix seconds),
+Every event is one JSON record in `data/state/events/YYYY-MM-DD.jsonl`
+(one file per local day), and the same record is what sinks receive.
+`bin/threadwatch events --day 2026-09-02 --episodes` or the web review
+pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts` (unix seconds),
 `event`, `severity` (`info` < `notice` < `warning` < `critical`).
 
 | event | severity | extra fields |
@@ -94,7 +96,7 @@ enabled = true
 | `severity_values` | `{}` | table mapping severity name to `{severity_value}` |
 
 Without `body`, the sink POSTs the event record as JSON, exactly as
-`events.jsonl` has it. That is what Home Assistant's webhook trigger and most
+the event log has it. That is what Home Assistant's webhook trigger and most
 "generic webhook" receivers expect.
 
 With `body`, the text is a Python `str.format` template over the record plus

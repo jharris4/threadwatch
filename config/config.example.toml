@@ -41,6 +41,12 @@ period_max_s = 180.0       #   with a stable period in this range
 period_onsets = 3          # consecutive periodic onsets before alerting
 alert_cooldown_s = 1800.0
 
+[web]
+# Review pages: bin/threadwatch web (systemd/threadwatch-web.service).
+# Read-only, no authentication: keep it on your LAN or behind your proxy.
+bind = "0.0.0.0"
+port = 8080
+
 [alerts]
 # Where warning/critical events go. Any number of sinks; each has its own
 # severity floor and per-event cooldown. Secrets go in config/alerts.env as

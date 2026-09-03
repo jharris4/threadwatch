@@ -131,7 +131,15 @@ def run_capture(cfg: Config) -> None:
     # block below closes files. The watchdog's os._exit path flushes the
     # ring but can still leave a partial record: readers stop cleanly there
     # and RingWriter trims it before appending.
+    main_pid = os.getpid()
+
     def _sig(_signo, _frame):
+        # The sniffer forks a serial-reader child that inherits this handler
+        # and wraps its read loop in a bare except: a SystemExit raised there
+        # is swallowed and the child keeps the port, so systemd waits 90 s
+        # and SIGKILLs. In a child, just leave.
+        if os.getpid() != main_pid:
+            os._exit(0)
         raise SystemExit(0)
 
     signal.signal(signal.SIGTERM, _sig)
@@ -164,8 +172,9 @@ def run_capture(cfg: Config) -> None:
                 _log(f"no frames for {age:.0f}s - capture stalled (host slept? "
                      "dongle gone?); exiting for supervisor restart")
                 # The main thread is blocked in the FIFO read, so nothing is
-                # being written: keep the last frames and what they taught us.
-                for step in (lambda: beat["ring"].fh.flush(), pipe.seen.save):
+                # being written: keep the last frames and what they taught us,
+                # and take the sniffer's child (which holds the port) with us.
+                for step in (lambda: beat["ring"].fh.flush(), pipe.seen.save, sniffer._stop):
                     try:
                         step()
                     except Exception:

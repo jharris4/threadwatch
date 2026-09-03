@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 from .events import DAY_RE, day_of, next_day, prev_day
 from .names import DeviceNames, LastSeen
 from .review import (capture_for_day, day_episodes, day_index, days_available,
-                     device_history, device_rows, fmt_duration, today)
+                     device_history, device_rows, dominant_pan, fmt_duration, now_card, today)
 
 CSS = """
 :root{--bg:#fff;--fg:#1c1c1e;--muted:#6b6b70;--line:#e3e3e6;--card:#f6f6f8;
@@ -52,6 +52,8 @@ td.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .sev.notice{background:var(--notice)}.sev.warning{background:var(--warning)}.sev.critical{background:var(--critical)}
 .muted{color:var(--muted)}.ok{color:var(--ok)}.bad{color:var(--critical)}.warn{color:var(--warning)}
 .card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:.7em .9em;margin:.6em 0}
+.card .k{color:var(--muted);font-size:.85em;text-transform:uppercase;letter-spacing:.03em;margin-right:.4em}
+.card .sep{color:var(--line);margin:0 .5em}
 details{margin:1em 0}summary{cursor:pointer;color:var(--muted)}
 pre{font-size:.8em;overflow-x:auto;background:var(--card);padding:.6em;border-radius:6px}
 .empty{color:var(--muted);padding:1em 0}
@@ -222,6 +224,39 @@ class Site:
             parts.append(f'<a href="/day/{r["day"]}"{cls}>{r["day"][5:]}<small>{" / ".join(counts)}</small></a>')
         return f'<div class="strip">{"".join(parts)}</div>' if parts else ""
 
+    def now_html(self, day: str, now: float) -> str:
+        """The headline card: live facts on today's page, the day's summary
+        on any day that has one."""
+        card = now_card(self.seen(), self.names(), self.cfg.events_dir,
+                        self.cfg.quiet_min_rssi_dbm, day, now)
+        out = ""
+        if day == today():
+            parts = []
+            if card["quiet"]:
+                who = ", ".join(f'<a href="/device/{esc(i["addr"])}">{esc(i["name"] or i["addr"])}</a> '
+                                f'<span class="muted">({fmt_duration(i["silent_for_s"])}'
+                                f'{", marginal" if i["reception"] == "marginal" else ""})</span>'
+                                for i in card["quiet"])
+                parts.append(f'<span class="k">quiet now</span><span class="bad">{len(card["quiet"])}</span>: {who}')
+            if card["degraded"]:
+                who = ", ".join(f'<a href="/device/{esc(i["addr"])}">{esc(i["name"] or i["addr"])}</a> '
+                                f'<span class="muted">({esc(i["rssi_dbm"])} dBm, usually {esc(i["reference_dbm"])})</span>'
+                                for i in card["degraded"])
+                parts.append(f'<span class="k">signal down</span>{who}')
+            if card["unknown"]:
+                n = len(card["unknown"])
+                parts.append(f'<span class="k">unnamed</span><a href="/devices?only=unknown">'
+                             f'{n} address{"es" if n != 1 else ""}</a> <span class="muted">to add to devices.json</span>')
+            if not parts:
+                parts.append('<span class="k">right now</span><span class="ok">nothing quiet, nothing fading, '
+                             'every address named</span>')
+            out += f'<div class="card">{"<span class=sep>&middot;</span>".join(parts)}</div>'
+        if card["summary"]:
+            s = card["summary"]
+            out += (f'<div class="card"><span class="k">daily summary</span>'
+                    f'<span class="muted">{hm(s["ts"])}</span> {esc(s.get("note", ""))}</div>')
+        return out
+
     def day_page(self, day: str) -> str:
         now = time.time()
         eps = day_episodes(self.cfg.events_dir, day, now)
@@ -264,18 +299,15 @@ class Site:
                  '<p class="empty">before the recorder\'s first day</p>')
         raw = (f'<details><summary>raw records</summary>'
                f'<p><a href="/api/day/{esc(day)}">JSON</a></p></details>')
-        return self.page(day, f'<h1>{esc(day)}</h1>{nav}{self.strip(day)}'
+        return self.page(day, f'<h1>{esc(day)}</h1>{nav}{self.strip(day)}{self.now_html(day, now)}'
                               f'<p class="muted">{pk}</p><h2>episodes</h2>{table}{raw}')
 
     def devices_page(self) -> str:
         now = time.time()
         names = self.names()
-        rows = device_rows(self.seen(), names, self.cfg.quiet_min_rssi_dbm, now)
-        weight: dict = {}
-        for r in rows:
-            if r["pan"] is not None:
-                weight[r["pan"]] = weight.get(r["pan"], 0) + r["frames"]
-        dominant = max(weight, key=weight.get) if weight else None
+        seen = self.seen()
+        rows = device_rows(seen, names, self.cfg.quiet_min_rssi_dbm, now)
+        dominant = dominant_pan(seen)
         trs = []
         for r in rows:
             if r["pan"] is None:

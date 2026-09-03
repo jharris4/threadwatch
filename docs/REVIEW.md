@@ -15,7 +15,10 @@ is no authentication: keep it on your LAN or behind your own proxy.
 - **/** and **/day/YYYY-MM-DD**: the day's *episodes* with previous / next
   links and a strip of recent days with their event counts. Whether the
   packets for that day still exist (ring files last a week; frozen
-  incidents last forever) is shown at the top.
+  incidents last forever) is shown at the top. Today's page opens with a
+  *right now* card: devices quiet at this moment, devices whose signal
+  is down, and unnamed addresses; any day that has a daily summary shows
+  it under that.
 - **/help**: what every episode kind and severity means; every row on a
   day page carries the same text as a tooltip.
 - **/devices**: every address the recorder tracks, with inventory name and

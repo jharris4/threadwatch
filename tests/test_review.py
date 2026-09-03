@@ -149,7 +149,12 @@ class DayViewTest(unittest.TestCase):
         log.emit("phase_locked_storm", "critical", T0 + 3600, period_s=60, onsets=3, baseline_frames_per_window=400)
         log.emit("mle_rejoin_attempt", "notice", T0 + 7200, command="Parent Request", src="8001")  # pre-addr record
         (self.cfg.state_dir / "last-seen.json").write_text(json.dumps({
-            AQ: {"first_seen": T0 - 86400, "last_seen": T0 + 3600, "frames": 1000, "types": {"1": 1000}, "rssi": -87.0, "pan": 0x4e21},
+            AQ: {"first_seen": T0 - 86400, "last_seen": T0 + 3600, "frames": 1000, "types": {"1": 1000}, "rssi": -87.0, "pan": 0x4e21,
+                 "quiet_reported": True},
+            PLUG: {"first_seen": T0 - 86400, "last_seen": T0 + 3600, "frames": 500, "types": {"1": 500}, "rssi": -70.0, "pan": 0x4e21,
+                   "rssi_degraded": True, "rssi_ref": -58.0},
+            "72d035122fdf06f6": {"first_seen": T0, "last_seen": T0 + 3600, "frames": 50, "types": {"1": 50}, "rssi": -60.0, "pan": 0x4e21},
+            "1afe3b8423f332de": {"first_seen": T0, "last_seen": T0 + 3600, "frames": 5, "types": {"1": 5}, "pan": 0x58bc},
         }))
         (self.cfg.state_dir / "status.json").write_text(json.dumps({
             "updated": time.time(), "last_frame_age_s": 1, "channel": 25, "frames_total": 12345,
@@ -165,6 +170,23 @@ class DayViewTest(unittest.TestCase):
             self.assertIn("Basement AQ quiet for 2h00m", eps, day)
             self.assertEqual(eps["Basement AQ quiet for 2h00m"]["carried_over"], day == todayish)
         self.assertEqual([r["day"] for r in day_index(self.cfg.events_dir)], [todayish, yesterday])
+
+    def test_now_card_lists_quiet_degraded_and_unknown_on_our_pan(self):
+        from threadwatch.names import DeviceNames, LastSeen
+        from threadwatch.review import now_card
+        seen = LastSeen(self.cfg.state_dir / "last-seen.json")
+        card = now_card(seen, DeviceNames(self.cfg.devices_path), self.cfg.events_dir,
+                        self.cfg.quiet_min_rssi_dbm, day_of(T0), now=T0 + 7200)
+        self.assertEqual([(i["name"], i["silent_for_s"], i["reception"]) for i in card["quiet"]],
+                         [("Basement AQ", 3600, "marginal")])
+        self.assertEqual([(i["name"], i["rssi_dbm"], i["reference_dbm"]) for i in card["degraded"]],
+                         [("Irrigation", -70.0, -58.0)])
+        self.assertEqual([i["addr"] for i in card["unknown"]], ["72d035122fdf06f6"])   # the foreign one is not ours
+        self.assertIsNone(card["summary"])
+        EventLog(self.cfg.events_dir).emit("daily_summary", "notice", T0 + 8 * 3600, note="last 24 h: fine")
+        card = now_card(seen, DeviceNames(self.cfg.devices_path), self.cfg.events_dir,
+                        self.cfg.quiet_min_rssi_dbm, day_of(T0), now=T0 + 9 * 3600)
+        self.assertEqual(card["summary"]["note"], "last 24 h: fine")
 
     def test_device_history_is_newest_first(self):
         kinds = [e["kind"] for e in device_history(self.cfg.events_dir, AQ)]
@@ -201,7 +223,12 @@ class DayViewTest(unittest.TestCase):
             data = json.loads(body)
             self.assertEqual(len(data["records"]), 4)
             self.assertEqual(data["episodes"][0]["kind"], "quiet")
-            self.assertEqual(get("/")[0], 200)
+            status, body = get("/")
+            self.assertEqual(status, 200)
+            self.assertIn("quiet now", body)
+            self.assertIn("signal down", body)
+            self.assertIn('href="/devices?only=unknown">1 address</a>', body)
+            self.assertNotIn("quiet now", get(f"/day/{day}")[1])   # live facts only on today's page
             self.assertEqual(get("/devices/")[0], 200)
             self.assertEqual(get(f"/day/{day}/")[0], 200)
             status, body = get("/help")

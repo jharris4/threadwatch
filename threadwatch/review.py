@@ -256,6 +256,46 @@ def device_rows(seen: LastSeen, names: DeviceNames, min_rssi_dbm: float,
     return rows
 
 
+def dominant_pan(seen: LastSeen) -> Optional[int]:
+    """This network's PAN: the one the tracked addresses send most frames on."""
+    weight: dict = {}
+    for row in seen.table.values():
+        if row.get("pan") is not None:
+            weight[row["pan"]] = weight.get(row["pan"], 0) + row.get("frames", 0)
+    return max(weight, key=weight.get) if weight else None
+
+
+def now_card(seen: LastSeen, names: DeviceNames, events_dir: Path, min_rssi_dbm: float,
+             day: str, now: Optional[float] = None) -> dict:
+    """What matters at this moment, for the top of today's page: devices
+    quiet right now (as the recorder announced them), devices whose signal
+    is down, unknown addresses still to name, and the day's daily_summary
+    record if one has gone out. Devices on a foreign PAN are left out."""
+    now = now or time.time()
+    dominant = dominant_pan(seen)
+    quiet, degraded, unknown = [], [], []
+    for addr, row in seen.table.items():
+        pan = row.get("pan")
+        if dominant is not None and pan is not None and pan != dominant:
+            continue
+        item = {"addr": addr, "name": names.name(addr), "last_seen": row.get("last_seen"),
+                "silent_for_s": round(now - row.get("last_seen", now)),
+                "rssi_dbm": row.get("rssi"), "reception": reception(row.get("rssi"), min_rssi_dbm)}
+        if row.get("quiet_reported"):
+            quiet.append(item)
+        if row.get("rssi_degraded"):
+            degraded.append({**item, "reference_dbm": row.get("rssi_ref")})
+        if item["name"] is None:
+            unknown.append(item)
+    quiet.sort(key=lambda i: -i["silent_for_s"])
+    unknown.sort(key=lambda i: i["silent_for_s"])
+    summary = None
+    for rec in read_day(events_dir, day):
+        if rec.get("event") == "daily_summary":
+            summary = rec
+    return {"quiet": quiet, "degraded": degraded, "unknown": unknown, "summary": summary}
+
+
 def device_history(events_dir: Path, addr: str, now: Optional[float] = None) -> list[dict]:
     """Every episode involving one device, across all days, newest first."""
     addr = addr.lower()

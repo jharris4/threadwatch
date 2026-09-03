@@ -71,6 +71,16 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertTrue(pipe.is_router(SENSOR))
         self.assertFalse(pipe.is_router(STRANGER))
 
+    def test_malformed_inventory_address_is_skipped_not_fatal(self):
+        d = Path(self.tmp.name)
+        (d / "devices.json").write_text(json.dumps([
+            {"name": "Typo", "extendedAddress": "0x" + ROUTER},
+            {"name": "Dashed", "extendedAddresses": ["b6-2c-32-bf-66-92-72-db", SENSOR]},
+        ]))
+        pipe = self._pipe()
+        self.assertEqual(sorted(pipe.names.by_addr), [SENSOR])
+        self.assertEqual(pipe.names.name(SENSOR), "Dashed")
+
     def test_marginal_reception_is_logged_at_notice_not_warning(self):
         pipe = self._pipe()
         t0 = 1_700_000_000.0

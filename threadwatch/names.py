@@ -27,12 +27,14 @@ quiet window.
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 from typing import Optional
 
 
 ROUTER_ROLES = {"router", "reed", "border-router", "border-router-leader"}
+_EXT_ADDR = re.compile(r"^[0-9a-f]{16}$")
 
 
 def _norm(addr: str) -> str:
@@ -49,7 +51,15 @@ class DeviceNames:
                 if entry.get("extendedAddress"):
                     addrs = addrs + [entry["extendedAddress"]]
                 for a in addrs:
-                    self.by_addr[_norm(a)] = entry
+                    n = _norm(str(a))
+                    # Every inventory address is fed to the decryptor's nonce
+                    # search as raw hex; a stray 0x prefix or dash would
+                    # raise there, in the capture loop, on every frame.
+                    if not _EXT_ADDR.match(n):
+                        print(f"[threadwatch] {inventory_path.name}: ignoring address {a!r} of "
+                              f"{entry.get('name')!r}: not 16 hex digits", flush=True)
+                        continue
+                    self.by_addr[n] = entry
 
     def name(self, addr: str) -> Optional[str]:
         entry = self.by_addr.get(_norm(addr))

@@ -148,8 +148,11 @@ def run_capture(cfg: Config) -> None:
             now = time.time()
             age = now - beat["last_frame"]
             if beat["ring"] is not None:
-                _write_status(cfg, port, beat["total"], started, pipe,
-                              beat["ring"], decryptor, last_frame_age=age)
+                try:
+                    _write_status(cfg, port, beat["total"], started, pipe,
+                                  beat["ring"], decryptor, last_frame_age=age)
+                except Exception as exc:   # a full disk must not take the stall check with it
+                    print(f"[threadwatch] status.json not written: {exc}", flush=True)
             if age > stall_timeout:
                 print(f"[threadwatch] no frames for {age:.0f}s - capture "
                       "stalled (host slept? dongle gone?); exiting for "

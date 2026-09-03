@@ -152,6 +152,22 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(r["headers"]["authorization"], "Bearer x")
         self.assertEqual(json.loads(r["body"]), {"text": 'device_quiet - Living "Room" AQ - no frames heard'})
 
+    def test_ntfy_partial_priority_table_still_renders_valid_json(self):
+        raw = alerts._ntfy_preset({"url": "http://x", "topic": "t", "priority": {"warning": 4, "critical": 5}})
+        sink = alerts.HttpSink(name="n", url=raw["url"], body=raw["body"], severity_values=raw["severity_values"])
+        body = json.loads(sink.payload({**REC, "severity": "notice"}))
+        self.assertEqual(body["priority"], 3)
+
+    def test_legacy_webhook_url_expands_env_or_is_disabled(self):
+        msgs = []
+        self.assertEqual(alerts.build_sinks({"webhook_url": "${TW_NOPE_HOOK}"}, msgs.append), [])
+        self.assertIn("TW_NOPE_HOOK", msgs[0])
+        os.environ["TW_HOOK"] = "http://hook"
+        try:
+            self.assertEqual(alerts.build_sinks({"webhook_url": "${TW_HOOK}"}, print)[0].url, "http://hook")
+        finally:
+            del os.environ["TW_HOOK"]
+
     def test_raw_record_when_no_template(self):
         alerts.HttpSink(name="t", url=self.srv.url).send(REC)
         self.assertEqual(json.loads(self.srv.wait(1)[0]["body"]), REC)
@@ -227,6 +243,8 @@ class DeliveryTests(unittest.TestCase):
     def test_build_heartbeats_validates(self):
         with self.assertRaises(alerts.ConfigError):
             alerts.build_heartbeats([{"url": "http://x", "interval_s": 1}], print)
+        with self.assertRaises(alerts.ConfigError):   # same name: only one timer would run
+            alerts.build_heartbeats([{"name": "gatus", "url": "http://a"}, {"name": "gatus", "url": "http://b"}], print)
         msgs = []
         self.assertEqual(alerts.build_heartbeats([{"url": "${TW_NOPE}"}], msgs.append), [])
         self.assertIn("TW_NOPE", msgs[0])

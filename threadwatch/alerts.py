@@ -309,14 +309,18 @@ def _ntfy_preset(raw: dict) -> dict:
     text = text.replace('"__PRIORITY__"', "{severity_value}")
     out = {k: v for k, v in raw.items()
            if k in ("name", "min_severity", "cooldown_s", "timeout_s")}
+    # A partial priority table falls back to the defaults for the rest;
+    # the template splices the value unquoted, so an unmapped severity
+    # would otherwise produce invalid JSON and a rejected publish.
+    priority = {"info": 2, "notice": 3, "warning": 4, "critical": 5}
+    priority.update(raw.get("priority", {}))
     out.update({
         "type": "http",
         "url": server,           # JSON publish goes to the server root
         "method": "POST",
         "headers": headers,
         "body": text,
-        "severity_values": raw.get("priority",
-                                   {"info": 2, "notice": 3, "warning": 4, "critical": 5}),
+        "severity_values": priority,
     })
     return out
 
@@ -364,16 +368,31 @@ def build_sink(raw: dict, index: int, log: Callable[[str], None]) -> Optional[Si
     raise ConfigError(f"alert sink '{name}': unknown type '{kind}'")
 
 
+def _check_unique_names(kind: str, items) -> None:
+    seen: set[str] = set()
+    for it in items:
+        if it.name in seen:
+            raise ConfigError(f"two {kind}s are named '{it.name}'; give each its own name")
+        seen.add(it.name)
+
+
 def build_sinks(alerts_raw: dict, log: Callable[[str], None]) -> list[Sink]:
     sinks: list[Sink] = []
     # Legacy single-webhook form, kept working as a shorthand.
     if alerts_raw.get("webhook_url"):
-        sinks.append(HttpSink(name="webhook", url=str(alerts_raw["webhook_url"]),
-                              min_severity=_severity_index(str(alerts_raw.get("min_severity", "warning")))))
+        missing: set[str] = set()
+        url = expand_env(str(alerts_raw["webhook_url"]), missing)
+        if missing:
+            log(f"alert sink 'webhook' disabled: environment variable(s) not set: "
+                f"{', '.join(sorted(missing))} (see config/alerts.env)")
+        else:
+            sinks.append(HttpSink(name="webhook", url=url,
+                                  min_severity=_severity_index(str(alerts_raw.get("min_severity", "warning")))))
     for i, raw in enumerate(alerts_raw.get("sinks", []) or []):
         s = build_sink(raw, i, log)
         if s is not None:
             sinks.append(s)
+    _check_unique_names("alert sink", sinks)
     return sinks
 
 
@@ -510,6 +529,9 @@ def build_heartbeats(raw_list: list, log: Callable[[str], None]) -> list[Heartbe
                              headers={str(k): str(v) for k, v in raw.get("headers", {}).items()},
                              body=raw.get("body"), failure_url=raw.get("failure_url"),
                              timeout_s=float(raw.get("timeout_s", 10.0))))
+    # The runner schedules and reports by name; two beats sharing one
+    # would collapse into a single timer and the second would never fire.
+    _check_unique_names("heartbeat", out)
     return out
 
 

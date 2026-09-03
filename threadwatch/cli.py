@@ -11,6 +11,13 @@ from pathlib import Path
 from . import config as config_mod
 
 
+def _positive_int(text: str) -> int:
+    n = int(text)
+    if n < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return n
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="threadwatch",
@@ -38,7 +45,7 @@ def main(argv=None) -> int:
     p_why.add_argument("--pcap", type=Path, help="analyze this file instead of the ring")
 
     p_events = sub.add_parser("events", help="show recent events, or one day's")
-    p_events.add_argument("-n", type=int, default=30, help="how many of the latest records")
+    p_events.add_argument("-n", type=_positive_int, default=30, help="how many of the latest records")
     p_events.add_argument("--day", help="YYYY-MM-DD: every record from that local day")
     p_events.add_argument("--episodes", action="store_true",
                           help="group into episodes the way the web review page does")
@@ -110,7 +117,13 @@ def main(argv=None) -> int:
             print("no events yet")
             return 0
         if args.day:
+            from .web import valid_day
+            if not valid_day(args.day):
+                parser.error(f"--day wants YYYY-MM-DD, not {args.day!r}")
             records = read_day(cfg.events_dir, args.day)
+            if not records:
+                print(f"no events on {args.day}")
+                return 0
         else:
             records = []
             for day in reversed(days):

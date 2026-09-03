@@ -202,6 +202,8 @@ class DayViewTest(unittest.TestCase):
             self.assertEqual(len(data["records"]), 4)
             self.assertEqual(data["episodes"][0]["kind"], "quiet")
             self.assertEqual(get("/")[0], 200)
+            self.assertEqual(get("/devices/")[0], 200)
+            self.assertEqual(get(f"/day/{day}/")[0], 200)
             status, body = get("/help")
             self.assertIn("Phase-locked storm", body)
             self.assertIn('title="', get(f"/day/{day}")[1])   # rows carry the legend as tooltips

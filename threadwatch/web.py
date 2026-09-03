@@ -374,12 +374,14 @@ class Site:
 
     def respond(self, path: str) -> tuple[int, str, bytes]:
         """(status, content-type, body) for a request path."""
+        if len(path) > 1:
+            path = path.rstrip("/")   # /devices/ and /day/2026-09-02/ are the same pages
         if path.startswith("/api/"):
             data = self.api(path)
             if data is None:
                 return 404, "application/json", b'{"error": "not found"}'
             return 200, "application/json", json.dumps(data, indent=1).encode()
-        if path in ("/", "/day", "/day/"):
+        if path in ("/", "/day"):
             return 200, "text/html; charset=utf-8", self.day_page(today()).encode()
         if path.startswith("/day/"):
             day = path[len("/day/"):]

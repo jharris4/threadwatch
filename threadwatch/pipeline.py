@@ -316,7 +316,7 @@ class Pipeline:
         (sender, dst), n = max(self._win_dup_by.items(), key=lambda kv: kv[1])
         share = n / self._win_dups
         sender_ext = sender if len(sender) == 16 else None
-        target = self._label(dst) or "broadcast"
+        target = "broadcast" if dst in (None, "ffff") else self._label(dst)
         who = self._label(sender)
         if share >= 0.5:
             note = (f"{who} repeated frames to {target} ({share:.0%} of this minute's "

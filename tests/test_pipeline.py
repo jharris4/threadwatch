@@ -140,13 +140,14 @@ class QuietPolicyTest(unittest.TestCase):
         senders = ["%016x" % (0x1000 + k) for k in range(8)]
         for i in range(20):
             for k, src in enumerate(senders):   # every device retrying a little
-                send(src, "0000", i, base + i * 2.5 + k * 0.05)
-                send(src, "0000", i, base + i * 2.5 + k * 0.05 + 0.3)
+                send(src, "ffff", i, base + i * 2.5 + k * 0.05)
+                send(src, "ffff", i, base + i * 2.5 + k * 0.05 + 0.3)
         send(STRANGER, "0000", 200, base + 61)
         ev = [r for r in pipe.events.records if r["event"] == "retransmission_elevation"]
         self.assertEqual(len(ev), 1)
         self.assertEqual(ev[0]["severity"], "warning")
         self.assertLess(ev[0]["top_share"], 0.5)
+        self.assertEqual(ev[0]["top_target"], "broadcast")
         self.assertIn("channel contention", ev[0]["note"])
 
     def test_foreign_pan_devices_are_never_reported_quiet(self):

@@ -40,6 +40,9 @@ class Config:
     # device's daily reference for this long is logged (notice). 0 disables.
     link_drop_db: float = 8.0
     link_hold_s: float = 30 * 60
+    # [summary] one daily_summary event per local day, at this hour (-1 off).
+    summary_hour: int = 8
+    summary_severity: str = "notice"
     web_bind: str = "0.0.0.0"                  # [web] review pages (threadwatch web)
     web_port: int = 8080
     alerts_raw: dict = field(default_factory=dict)      # [alerts] table, verbatim
@@ -93,6 +96,14 @@ def load(path: Optional[Path]) -> Config:
         link = raw.get("link", {})
         cfg.link_drop_db = float(link.get("drop_db", cfg.link_drop_db))
         cfg.link_hold_s = float(link.get("hold_s", cfg.link_hold_s))
+        summary = raw.get("summary", {})
+        cfg.summary_hour = int(summary.get("hour", cfg.summary_hour))
+        if not -1 <= cfg.summary_hour <= 23:
+            raise ValueError(f"[summary] hour must be 0-23, or -1 to disable, not {cfg.summary_hour}")
+        cfg.summary_severity = str(summary.get("severity", cfg.summary_severity))
+        if cfg.summary_severity not in ("info", "notice", "warning", "critical"):
+            raise ValueError(f"[summary] severity must be info, notice, warning or critical, "
+                             f"not {cfg.summary_severity!r}")
         web = raw.get("web", {})
         cfg.web_bind = str(web.get("bind", cfg.web_bind))
         cfg.web_port = int(web.get("port", cfg.web_port))

@@ -106,6 +106,11 @@ LEGEND = [
     ("join_scan", "Join-scan beacons",
      "Beacon requests or beacons in a burst: something is scanning to join a network. Normal "
      "while commissioning a device; otherwise a neighbour's device or a factory-reset one."),
+    ("summary", "Daily summary",
+     "Once a day (at [summary] hour in config.toml, 08:00 by default): frames captured in the "
+     "last 24 hours, devices heard out of those tracked, who is quiet, unknown addresses still "
+     "to name, devices heard marginally or with their signal down, and the day's event counts. "
+     "A quiet way to know the recorder is still watching and nothing is slowly going wrong."),
     ("test", "Alert test", "A synthetic event from 'threadwatch alert-test'."),
 ]
 LEGEND_BY_KIND = {k: one for k, _t, one in LEGEND}

@@ -24,6 +24,8 @@ question: *why did this device go offline?*
   - MAC retransmission-rate elevation, attributed to the sender and target;
   - slow link degradation: a device still talking but heard well below
     its usual level, the precursor of a silence with no rejoin.
+  A daily summary event (frames, devices heard, quiet and unknown ones,
+  event counts) says the recorder is still watching.
   Per-device RSSI trend, ACK-success rate and poll cadence are tracked too
   and shown by `threadwatch why`, not logged as events.
   Warning/critical events go to any number of alert sinks (plain HTTP with

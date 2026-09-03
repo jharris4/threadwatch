@@ -288,7 +288,7 @@ class QuietPolicyTest(unittest.TestCase):
         pipe.periodic(t0 + 31 * 60)
         pipe.ingest(frame(t0 + 32 * 60, ROUTER))
         pipe.periodic(t0 + 70 * 60)
-        events = [r["event"] for r in pipe.events.records if r["addr"] == ROUTER]
+        events = [r["event"] for r in pipe.events.records if r.get("addr") == ROUTER]
         self.assertEqual(events, ["device_first_seen", "device_quiet", "device_returned", "device_quiet"])
 
 
@@ -366,3 +366,73 @@ class LinkDegradationTest(unittest.TestCase):
         pipe.periodic(t0 + 300)
         self.assertIn("rssi_ref", pipe.seen.table[ROUTER])
         self.assertNotIn("rssi_ref", pipe.seen.table[STRANGER])
+
+
+class DailySummaryTest(unittest.TestCase):
+    DAY = time.mktime(time.strptime("2026-09-02 00:00", "%Y-%m-%d %H:%M"))
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        (d / "devices.json").write_text(json.dumps([
+            {"name": "Hall Router", "extendedAddress": ROUTER, "role": "router"}]))
+        self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json",
+                          summary_hour=8, quiet_router_s=30 * 60)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    @staticmethod
+    def _summaries(log):
+        return [r for r in log.records if r["event"] == "daily_summary"]
+
+    def test_once_per_day_at_the_hour_with_the_days_facts(self):
+        pipe = Pipeline(self.cfg, NullEventLog())
+        t = self.DAY + 7 * 3600
+        for i in range(100):
+            pipe.ingest(frame(t + i, ROUTER, rssi=-60.0))
+            pipe.ingest(frame(t + i, SENSOR, rssi=-88.0))
+            pipe.ingest(frame(t + i, STRANGER, pan=OTHER_PAN))
+        pipe.periodic(self.DAY + 7 * 3600 + 200)            # 07:03
+        self.assertEqual(self._summaries(pipe.events), [])
+        pipe.periodic(self.DAY + 8 * 3600)                  # 08:00: both silent 57 min, past the 30 min window
+        s = self._summaries(pipe.events)
+        self.assertEqual(len(s), 1)
+        s = s[0]
+        self.assertEqual(s["severity"], "notice")
+        self.assertEqual((s["frames_24h"], s["devices_heard_24h"], s["devices_tracked"]), (300, 2, 2))
+        self.assertEqual(s["quiet"], [SENSOR, "Hall Router"])
+        self.assertEqual(s["unknown"], [SENSOR])
+        self.assertEqual(s["marginal"], [SENSOR])
+        self.assertEqual((s["events_24h"]["warning"], s["events_24h"]["notice"]), (1, 2))   # router quiet; sensor marginal quiet, foreign PAN
+        self.assertIn(f"300 frames from 2 of 2 devices; quiet: {SENSOR}, Hall Router;", s["note"])
+        self.assertIn("1 unknown address; 1 heard marginally; events: 1 warning, 2 notice", s["note"])
+        pipe.periodic(self.DAY + 9 * 3600)                  # later the same day: no repeat
+        pipe.periodic(self.DAY + 23 * 3600)
+        self.assertEqual(len(self._summaries(pipe.events)), 1)
+        pipe.periodic(self.DAY + 24 * 3600 + 8 * 3600)      # next day 08:00
+        self.assertEqual(len(self._summaries(pipe.events)), 2)
+
+    def test_restart_neither_repeats_nor_loses_a_summary(self):
+        from threadwatch.events import EventLog
+        log = EventLog(self.cfg.events_dir)
+        pipe = Pipeline(self.cfg, log)
+        pipe.periodic(self.DAY + 8 * 3600)
+        pipe2 = Pipeline(self.cfg, EventLog(self.cfg.events_dir))
+        pipe2.periodic(self.DAY + 8 * 3600 + 900)
+        from threadwatch.events import read_day
+        self.assertEqual(sum(r["event"] == "daily_summary" for r in read_day(self.cfg.events_dir, "2026-09-02")), 1)
+        # Down through the hour: sent late, once.
+        pipe3 = Pipeline(self.cfg, EventLog(self.cfg.events_dir))
+        pipe3.periodic(self.DAY + 24 * 3600 + 15 * 3600)
+        self.assertEqual(sum(r["event"] == "daily_summary" for r in read_day(self.cfg.events_dir, "2026-09-03")), 1)
+
+    def test_disabled_and_ephemeral(self):
+        self.cfg.summary_hour = -1
+        pipe = Pipeline(self.cfg, NullEventLog())
+        pipe.periodic(self.DAY + 9 * 3600)
+        self.assertEqual(self._summaries(pipe.events), [])
+        self.cfg.summary_hour = 8
+        replay = Pipeline(self.cfg, NullEventLog(), ephemeral=True)
+        replay.periodic(self.DAY + 9 * 3600)
+        self.assertEqual(self._summaries(replay.events), [])

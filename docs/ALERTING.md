@@ -45,6 +45,7 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `retransmission_elevation` | warning, or notice when one sender-target pair is `top_share` >= 0.5 of the retries (a chronic bad link, not a storm precursor) | `rate`, `baseline`, `addr`, `name`, `top_sender`, `top_target`, `top_share`, `note` |
 | `partition_or_leader_change` | warning | `previous`, `current` (credentials only) |
 | `phase_locked_storm` | critical | detector snapshot (`period_s`, `onsets`, ...) |
+| `daily_summary` | `[summary] severity` (notice) | `frames_24h`, `devices_heard_24h`, `devices_tracked`, `quiet`, `unknown`, `marginal`, `degraded`, `storm_active`, `events_24h`, `note` |
 | `alert_test` | as requested | `name`, `addr`, `note` (from `alert-test`) |
 
 `name` is null for addresses not in `devices.json`.
@@ -63,6 +64,14 @@ out for tens of minutes whenever the link fades.
 
 Sleepy end devices are covered only when credentials are configured; see
 docs/CREDENTIALS.md for why their frames are otherwise anonymous.
+
+`daily_summary` goes out once per local day, the first time `periodic`
+runs at or after `[summary] hour` (default 8; -1 disables). The event log
+is the record of whether today's went out: a restart neither repeats it
+nor loses it, and a recorder that was down at the hour sends it late. It
+is a notice by default, so it lands in the log and the review pages; set
+`[summary] severity = "warning"` to have it delivered by the sinks that
+page you, or give it a sink of its own with `min_severity = "notice"`.
 
 `rssi_degradation` is the slow version of the same story: the device is
 still heard, but its average RSSI at the sniffer has sat more than

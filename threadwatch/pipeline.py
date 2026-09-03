@@ -9,6 +9,8 @@ Key-free (always on):
   - traffic floods and phase-locked periodicity (storm signature)
   - MAC retransmission-rate elevation
   - slow link degradation: RSSI at the sniffer well below the device's usual
+  - a daily summary event: frames, devices heard, quiet, unknown, degraded,
+    and the day's event counts, once per local day
 
 With Thread credentials (optional):
   - short-address identity: sleepy end devices (which never use their
@@ -29,7 +31,7 @@ from pathlib import Path
 from typing import Optional
 
 from .detect import Detector
-from .events import EventLog
+from .events import EventLog, day_of, read_day
 from .link import assess as assess_link
 from .names import DeviceNames, LastSeen, reception
 from .pcap import Frame
@@ -96,6 +98,8 @@ class Pipeline:
         self._win_start = 0.0
         self._retrans_alerted = 0.0
         self.quiet_reported: set[str] = set()
+        self._frames_by_hour: dict[int, int] = {}    # hour bucket -> frames, last ~25 h
+        self._summary_day: Optional[str] = None      # local day whose summary is settled
         self._resolve_after: dict[str, float] = {}   # short addr -> next attempt ts
         self._verify_after: dict[str, float] = {}    # short addr -> next re-check of its mapping
         self.extra_candidates: list[str] = []        # ext addrs to try first in the nonce search (why)
@@ -235,6 +239,11 @@ class Pipeline:
     def ingest(self, f: Frame) -> None:
         ts = f.ts
         self.detector.add_frame(ts)
+        bucket = int(ts // 3600)
+        self._frames_by_hour[bucket] = self._frames_by_hour.get(bucket, 0) + 1
+        if len(self._frames_by_hour) > 26:
+            for old in [b for b in self._frames_by_hour if b < bucket - 25]:
+                del self._frames_by_hour[old]
 
         who = self.identity(f)
 
@@ -471,6 +480,8 @@ class Pipeline:
             if self.silence_s(row, now) > self.quiet_threshold_s(addr):
                 self._report_quiet(addr, row, now)
         self._check_links(now, dominant)
+        if not self.ephemeral:
+            self._maybe_summarize(now, dominant)
         if self.observed_names and not self.ephemeral:
             tmp = self.mle_names_path.with_suffix(".tmp")
             tmp.write_text(json.dumps(self.observed_names, indent=1))
@@ -502,6 +513,67 @@ class Pipeline:
             else:
                 self.events.emit("rssi_recovered", "info", now, addr=addr, name=name,
                                  rssi_dbm=rssi, reference_dbm=ref)
+
+    # ------------------------------------------------------ daily summary
+
+    def _maybe_summarize(self, now: float, dominant: Optional[int]) -> None:
+        """One daily_summary per local day, at [summary] hour. The event log
+        is the record of whether today's went out, so a restart neither
+        repeats it nor loses it; a recorder that was down at the hour
+        sends it late rather than not at all."""
+        if self.cfg.summary_hour < 0:
+            return
+        day = day_of(now)
+        if day == self._summary_day or time.localtime(now).tm_hour < self.cfg.summary_hour:
+            return
+        self._summary_day = day
+        if any(r.get("event") == "daily_summary" for r in self._records_of(day)):
+            return
+        self.events.emit("daily_summary", self.cfg.summary_severity, now,
+                         **self.summary(now, dominant))
+
+    def _records_of(self, day: str) -> list[dict]:
+        events_dir = getattr(self.events, "dir", None)
+        if events_dir is not None:
+            return read_day(events_dir, day)
+        return [r for r in getattr(self.events, "records", []) if day_of(r["ts"]) == day]
+
+    def summary(self, now: float, dominant: Optional[int] = None) -> dict:
+        """The last 24 hours in one record: what the recorder saw, who it
+        has lost track of, and what it logged. Devices on a foreign PAN
+        are left out, as everywhere else."""
+        since = now - 86400
+        ours = {a: r for a, r in self.seen.table.items()
+                if dominant is None or r.get("pan") in (None, dominant)}
+        heard = {a: r for a, r in ours.items() if r["last_seen"] >= since}
+        label = lambda a: self.names.name(a) or a
+        quiet = sorted(label(a) for a in ours if a in self.quiet_reported)
+        unknown = sorted(a for a in ours if self.names.name(a) is None)
+        marginal = sorted(label(a) for a, r in heard.items()
+                          if reception(r.get("rssi"), self.cfg.quiet_min_rssi_dbm) == "marginal")
+        degraded = sorted(label(a) for a, r in ours.items() if r.get("rssi_degraded"))
+        counts = {"critical": 0, "warning": 0, "notice": 0, "info": 0}
+        for day in dict.fromkeys((day_of(since), day_of(now))):
+            for r in self._records_of(day):
+                if r["ts"] >= since and r.get("event") != "daily_summary":
+                    counts[r.get("severity", "info")] = counts.get(r.get("severity", "info"), 0) + 1
+        frames = sum(n for b, n in self._frames_by_hour.items() if (b + 1) * 3600 > since)
+        parts = [f"{frames:,} frames from {len(heard)} of {len(ours)} devices"]
+        parts.append("quiet: " + ", ".join(quiet) if quiet else "nothing quiet")
+        if unknown:
+            parts.append(f"{len(unknown)} unknown address{'es' if len(unknown) != 1 else ''}")
+        if marginal:
+            parts.append(f"{len(marginal)} heard marginally")
+        if degraded:
+            parts.append("signal down: " + ", ".join(degraded))
+        if self.detector.storm_active:
+            parts.append("STORM ACTIVE")
+        logged = ", ".join(f"{n} {sev}" for sev, n in counts.items() if n and sev != "info")
+        parts.append("events: " + (logged or "none above info"))
+        return {"frames_24h": frames, "devices_heard_24h": len(heard), "devices_tracked": len(ours),
+                "quiet": quiet, "unknown": unknown, "marginal": marginal, "degraded": degraded,
+                "storm_active": bool(self.detector.storm_active), "events_24h": counts,
+                "note": "last 24 h: " + "; ".join(parts)}
 
     def _report_quiet(self, addr: str, row: dict, now: float) -> None:
         """Emit device_quiet once and remember, in memory and in the row

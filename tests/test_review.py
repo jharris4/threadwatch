@@ -260,3 +260,14 @@ class LinkEpisodeTest(unittest.TestCase):
         ], now=T0 + 1800)
         self.assertEqual(eps[0]["title"], "AQ signal down 10 dB for 60m (still down)")
         self.assertIsNone(eps[0]["end"])
+
+
+class SummaryEpisodeTest(unittest.TestCase):
+    def test_each_summary_is_its_own_row(self):
+        eps = group_episodes([
+            rec("daily_summary", "notice", T0, note="last 24 h: 1 frame"),
+            rec("daily_summary", "notice", T0 + 86400, note="last 24 h: 2 frames"),
+        ])
+        self.assertEqual([(e["kind"], e["title"], e["detail"]) for e in eps],
+                         [("summary", "daily summary", "last 24 h: 1 frame"),
+                          ("summary", "daily summary", "last 24 h: 2 frames")])

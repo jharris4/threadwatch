@@ -37,7 +37,8 @@ The raw log is the wrong unit for people, so the pages group it:
 | `possible_foreign_pan` x N, same PAN and source | one row with the count |
 | `mle_rejoin_attempt` x N, same device | one row listing the MLE commands seen |
 | `device_first_seen` burst (daemon start) | one row: *24 devices first seen* |
-| `partition_or_leader_change`, `phase_locked_storm` | one row each, always |
+| `rssi_degradation` ... `rssi_recovered` | one row: *X signal down 9 dB for 2h10m* (or *still down*) |
+| `partition_or_leader_change`, `phase_locked_storm`, `daily_summary` | one row each, always |
 
 A quiet spell that started yesterday and ended today appears on both days
 with its real duration, because the day page reads the previous day too.

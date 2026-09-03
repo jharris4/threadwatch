@@ -41,6 +41,14 @@ min_rssi_dbm = -82
 drop_db = 8
 hold_s = 1800              # 30 min
 
+[summary]
+# One daily_summary event per local day at this hour (0-23; -1 disables):
+# frames, devices heard, quiet / unknown / degraded devices, event counts.
+# notice lands in the log and review pages only; "warning" sends it to
+# whatever pages you.
+hour = 8
+severity = "notice"
+
 [detect]
 flood_multiplier = 3.0     # a 10 s window this many times the baseline is a flood
 flood_min_frames = 400     # absolute floor so small meshes don't false-alarm

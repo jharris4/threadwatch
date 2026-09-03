@@ -183,6 +183,8 @@ def group_episodes(records: list[dict], now: Optional[float] = None) -> list[dic
             new("storm", rec, "phase-locked storm",
                 f"period {rec.get('period_s')}s, onsets {rec.get('onsets')}, "
                 f"baseline {rec.get('baseline_frames_per_window')} frames/window")
+        elif ev == "daily_summary":
+            new("summary", rec, "daily summary", rec.get("note", ""))
         elif ev == "alert_test":
             new("test", rec, "alert test", rec.get("note", ""))
         else:

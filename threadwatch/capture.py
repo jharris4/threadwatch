@@ -13,7 +13,7 @@ from pathlib import Path
 from .alerts import HeartbeatRunner, build_heartbeats, build_sinks
 from .config import Config
 from .events import EventLog, NullEventLog
-from .pcap import PcapStreamReader, PcapWriter, Frame
+from .pcap import PcapStreamReader, PcapWriter, Frame, complete_length
 from .pipeline import Pipeline, load_decryptor
 
 
@@ -61,14 +61,24 @@ class RingWriter:
             self.fh.close()
         self.current_hour = hour
         self.current_path = self.ring_dir / f"threadwatch-{hour}.pcap"
-        fresh = not self.current_path.exists()
-        self.fh = open(self.current_path, "wb" if fresh else "ab")
-        if fresh:
-            self.writer = PcapWriter(self.fh, self.dlt)
-        else:
+        # Resuming an hour file after a restart: a previous run killed
+        # mid-write leaves a partial record at the tail, and appending after
+        # it would make every later frame unreadable. Drop the fragment.
+        good = complete_length(self.current_path) if self.current_path.exists() else 0
+        if good:
+            size = self.current_path.stat().st_size
+            if size > good:
+                print(f"[threadwatch] {self.current_path.name}: dropping {size - good} "
+                      "trailing bytes of a record cut short by the last run", flush=True)
+                with open(self.current_path, "r+b") as fh:
+                    fh.truncate(good)
+            self.fh = open(self.current_path, "ab")
             self.writer = PcapWriter.__new__(PcapWriter)
             self.writer.stream = self.fh
             self.writer.dlt = self.dlt
+        else:
+            self.fh = open(self.current_path, "wb")
+            self.writer = PcapWriter(self.fh, self.dlt)
         self._prune()
 
     def _prune(self) -> None:
@@ -110,8 +120,9 @@ def run_capture(cfg: Config) -> None:
 
     # Raising from the handler interrupts the blocking FIFO read, so
     # `systemctl stop` works even when the channel is silent. The finally
-    # block below closes files; a truncated final pcap record is tolerated
-    # by readers.
+    # block below closes files. The watchdog's os._exit path does not, so
+    # a ring file can end in a partial record: readers stop cleanly there
+    # and RingWriter trims it before appending.
     def _sig(_signo, _frame):
         raise SystemExit(0)
 

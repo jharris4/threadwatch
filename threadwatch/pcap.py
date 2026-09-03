@@ -39,15 +39,42 @@ class Frame:
 
 
 def _read_exact(stream: BinaryIO, n: int) -> bytes:
+    """Read n bytes; fewer only at EOF (a truncated tail record)."""
     buf = b""
     while len(buf) < n:
         chunk = stream.read(n - len(buf))
         if not chunk:
-            if buf:
-                raise PcapFormatError("truncated pcap record")
-            return b""  # clean EOF at record boundary
+            break
         buf += chunk
     return buf
+
+
+def complete_length(path) -> int:
+    """Bytes of a pcap file up to its last complete record.
+
+    A capture killed mid-write leaves a partial record at the tail; a
+    writer that appends after it would bury every later frame behind bytes
+    no reader can get past. 0 means there is no usable global header."""
+    with open(path, "rb") as fh:
+        header = fh.read(24)
+        if len(header) < 24:
+            return 0
+        magic = struct.unpack("<L", header[:4])[0]
+        if magic == PCAP_MAGIC_LE_US:
+            endian = "<"
+        elif struct.unpack(">L", header[:4])[0] == PCAP_MAGIC_LE_US:
+            endian = ">"
+        else:
+            return 0
+        good = 24
+        while True:
+            rec = fh.read(16)
+            if len(rec) < 16:
+                return good
+            incl = struct.unpack(endian + "LLLL", rec)[2]
+            if len(fh.read(incl)) < incl:
+                return good
+            good += 16 + incl
 
 
 class PcapStreamReader:
@@ -70,8 +97,8 @@ class PcapStreamReader:
     def __iter__(self) -> Iterator[Frame]:
         while True:
             rec = _read_exact(self.stream, 16)
-            if not rec:
-                return
+            if len(rec) < 16:
+                return   # EOF, or a record cut short by a crash mid-write
             ts_sec, ts_usec, incl, _orig = struct.unpack(self.endian + "LLLL", rec)
             data = _read_exact(self.stream, incl)
             if len(data) < incl:

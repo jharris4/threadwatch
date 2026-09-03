@@ -125,6 +125,29 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual((ev[0]["addr"], ev[0]["name"], ev[0]["top_target"]), (SENSOR, "Basement AQ", "Irrigation"))
         self.assertEqual(ev[0]["top_share"], 1.0)
         self.assertIn("Basement AQ repeated frames to Irrigation", ev[0]["note"])
+        self.assertEqual(ev[0]["severity"], "notice")   # one bad link: logged, not paged
+
+    def test_mesh_wide_retransmissions_page(self):
+        pipe = self._pipe()
+        t = 1_700_000_000.0
+        def send(src, dst, seq, ts):
+            pipe.ingest(Frame(ts=ts, raw=b"", psdu=b"", rssi=-60.0, channel=None, lqi=None,
+                              ftype=1, seq=seq, dst_pan=OWN_PAN, dst=dst, src_pan=OWN_PAN, src=src))
+        for m in range(10):
+            for i in range(120):
+                send(STRANGER, "0000", i, t + m * 60 + i * 0.4)
+        base = t + 10 * 60
+        senders = ["%016x" % (0x1000 + k) for k in range(8)]
+        for i in range(20):
+            for k, src in enumerate(senders):   # every device retrying a little
+                send(src, "0000", i, base + i * 2.5 + k * 0.05)
+                send(src, "0000", i, base + i * 2.5 + k * 0.05 + 0.3)
+        send(STRANGER, "0000", 200, base + 61)
+        ev = [r for r in pipe.events.records if r["event"] == "retransmission_elevation"]
+        self.assertEqual(len(ev), 1)
+        self.assertEqual(ev[0]["severity"], "warning")
+        self.assertLess(ev[0]["top_share"], 0.5)
+        self.assertIn("channel contention", ev[0]["note"])
 
     def test_foreign_pan_devices_are_never_reported_quiet(self):
         pipe = self._pipe()

@@ -246,9 +246,16 @@ class Pipeline:
                 base = sorted(self.retrans_counts)[len(self.retrans_counts) // 2]
                 if rate > 0.2 and rate > 2 * base and ts - self._retrans_alerted > 900:
                     self._retrans_alerted = ts
-                    self.events.emit("retransmission_elevation", "warning", ts,
+                    attribution = self._retrans_attribution()
+                    # One pair hammering each other is a chronic bad link
+                    # between two devices at the RF edge: worth a log line,
+                    # not a page. Retries spread across the mesh are the
+                    # storm precursor this detector exists for.
+                    one_link = attribution.get("top_share", 0) >= 0.5
+                    self.events.emit("retransmission_elevation",
+                                     "notice" if one_link else "warning", ts,
                                      rate=round(rate, 3), baseline=round(base, 3),
-                                     **self._retrans_attribution())
+                                     **attribution)
             self._win_start = ts
             self._win_dups = self._win_frames = 0
             self._win_dup_by = {}

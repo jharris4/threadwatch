@@ -71,8 +71,9 @@ question: *why did this device go offline?*
 ## Hardware
 
 - Nordic nRF52840 Dongle (PCA10059) — the radio.
-- Any always-on Linux box for the recorder; a Raspberry Pi 4 is plenty
-  (macOS works too, for portable/desk use).
+- Any always-on Linux box for the recorder: a Raspberry Pi 4 is plenty, so
+  is a NAS or mini PC via Docker (docs/DOCKER.md); macOS works for
+  portable/desk use.
 - Placement matters: put the dongle near your border router so captures
   reflect what *its* radio hears.
 
@@ -80,7 +81,8 @@ question: *why did this device go offline?*
 
 1. `SETUP.md` — flash the dongle with the sniffer firmware (any OS, no
    Nordic desktop apps needed).
-2. `INSTALL.md` — set up the recorder host (Raspberry Pi walkthrough).
+2. `INSTALL.md` — set up the recorder host: clone, one setup script,
+   systemd units; Docker and Raspberry-Pi-from-scratch variants included.
 3. `cp config/config.example.toml config/config.toml` and set your
    channel; optionally seed `config/devices.json` with your device names.
 4. `bin/threadwatch capture` (or enable the systemd unit).
@@ -128,6 +130,7 @@ addresses to names for you (see docs/HOME-ASSISTANT.md).
     vendor/        Nordic's sniffer extcap module (BSD, unmodified)
     firmware/      sniffer firmware hex + prebuilt DFU package
     bin/           threadwatch CLI shim, flash-dongle.sh
-    systemd/       service units for the Pi (capture, web review)
+    systemd/       service unit templates (capture, web review)
+    Dockerfile, compose.yaml   the container alternative (docs/DOCKER.md)
     config/        examples for config.toml and devices.json
-    docs/          analysis cookbook, Home Assistant extension
+    docs/          analysis cookbook, alerting, Docker, Home Assistant extension

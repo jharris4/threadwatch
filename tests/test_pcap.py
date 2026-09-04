@@ -29,6 +29,29 @@ class RingSizeCapTest(_ut.TestCase):
             ring._prune()
             self.assertEqual(len(list(Path(d).glob("*.pcap"))), 2)
 
+    def test_current_file_survives_a_clock_step_back(self):
+        import tempfile
+        import time
+        from threadwatch.pcap import Frame
+        with tempfile.TemporaryDirectory() as d:
+            for h in ("12", "13", "14", "15"):
+                (Path(d) / f"threadwatch-20260904-{h}.pcap").write_bytes(b"x" * 1000)
+            ring = RingWriter(Path(d), keep_files=4, dlt=0)
+            ts = time.mktime(time.strptime("2026-09-04 09:30:00", "%Y-%m-%d %H:%M:%S"))
+            ring.write(Frame(ts=ts, raw=b"\x00" * 20, psdu=b"", rssi=None, channel=None, lqi=None))
+            self.assertTrue(ring.current_path.exists())
+            self.assertEqual(len(list(Path(d).glob("*.pcap"))), 4)
+
+    def test_keep_files_zero_does_not_delete_the_file_being_written(self):
+        import tempfile
+        import time
+        from threadwatch.pcap import Frame
+        with tempfile.TemporaryDirectory() as d:
+            ring = RingWriter(Path(d), keep_files=0, dlt=0)
+            ts = time.mktime(time.strptime("2026-09-04 10:00:00", "%Y-%m-%d %H:%M:%S"))
+            ring.write(Frame(ts=ts, raw=b"\x00" * 20, psdu=b"", rssi=None, channel=None, lqi=None))
+            self.assertTrue(ring.current_path.exists())
+
     def test_byte_cap_counts_only_what_the_file_cap_keeps(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:

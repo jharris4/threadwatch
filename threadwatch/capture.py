@@ -87,15 +87,21 @@ class RingWriter:
         self._prune()
 
     def _prune(self) -> None:
+        # The file being written is never a candidate: it does not always sort
+        # last, since a clock step back names it before the ring's oldest.
         files = sorted(self.ring_dir.glob("threadwatch-*.pcap"))
-        drop = max(0, len(files) - self.keep_files)
+        current = self.current_path if self.current_path in files else None
+        candidates = [f for f in files if f != current]
+        drop = min(max(0, len(files) - self.keep_files), len(candidates))
         if self.keep_bytes is not None:
-            sizes = [f.stat().st_size if f.exists() else 0 for f in files]
-            total = sum(sizes[drop:])       # only what the count cap is keeping
-            while total > self.keep_bytes and drop < len(files) - 1:   # never the file being written
+            sizes = [f.stat().st_size if f.exists() else 0 for f in candidates]
+            held = current.stat().st_size if current and current.exists() else 0
+            total = sum(sizes[drop:]) + held       # only what the count cap is keeping
+            floor = len(candidates) if current else len(candidates) - 1
+            while total > self.keep_bytes and drop < floor:
                 total -= sizes[drop]
                 drop += 1
-        for old in files[:drop]:
+        for old in candidates[:drop]:
             old.unlink(missing_ok=True)
 
     def close(self) -> None:

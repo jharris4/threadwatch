@@ -689,6 +689,28 @@ class BorderRouterTest(unittest.TestCase):
         self.assertEqual([r["event"] for r in pipe2.events.records if r["event"] == "device_quiet"], [])
         self.assertEqual(pipe2.routers[self.HOST]["addr"], self.NEW)
 
+    def test_a_rotation_closes_the_silence_announced_for_the_old_address(self):
+        from threadwatch.review import group_episodes
+        pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
+        t = time.time() - 7200
+        pipe.ingest(frame(t, self.OLD))
+        pipe._apply_border_routers([self.router(self.HOST, self.OLD)], t)
+        pipe.periodic(t + 31 * 60)                          # the hub rebooted: its old address went quiet
+        self.assertEqual([r["addr"] for r in pipe.events.records if r["event"] == "device_quiet"], [self.OLD])
+        pipe.ingest(frame(t + 32 * 60, self.NEW))           # ...and it is back under a new one
+        pipe._apply_border_routers([self.router(self.HOST, self.NEW)], t + 40 * 60)
+        back = [r for r in pipe.events.records if r["event"] == "device_returned"]
+        self.assertEqual([(r["addr"], r["name"]) for r in back], [(self.OLD, "Living Room Apple TV")])
+        self.assertIn(self.NEW, back[0]["note"])
+        self.assertEqual(pipe.quiet_reported, set())
+        self.assertNotIn("quiet_reported", pipe.seen.table[self.OLD])
+        quiet = [e for e in group_episodes(pipe.events.records, now=t + 86400) if e["kind"] == "quiet"]
+        self.assertEqual([(e["addr"], e["end"]) for e in quiet], [(self.OLD, t + 40 * 60)])
+        self.assertNotIn("still quiet", quiet[0]["title"])
+        pipe.periodic(t + 86400)                            # the retired address is never judged again
+        about_old = [r["event"] for r in pipe.events.records if r.get("addr") == self.OLD]
+        self.assertEqual(about_old, ["device_first_seen", "device_quiet", "device_returned"])
+
     def test_a_router_matching_no_entry_is_announced_once(self):
         pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
         t = 1_700_000_000.0

@@ -898,9 +898,16 @@ class Pipeline:
                 old_row = self.seen.table.get(prev)
                 if old_row is not None:
                     old_row["rotated_to"] = ext
-                    old_row.pop("quiet_reported", None)
+                    was_quiet = old_row.pop("quiet_reported", None) or prev in self.quiet_reported
                     self.quiet_reported.discard(prev)
                     self.seen._dirty = True
+                    if was_quiet:
+                        # The silence announced for the old address is over:
+                        # the device is back under the new one. A retired row
+                        # is never judged again, so nothing else could close
+                        # the episode, and every day page would carry it open.
+                        self.events.emit("device_returned", "notice", now, addr=prev, name=name,
+                                         note=f"back under a new address, {ext}")
                 who = name or r.get("instance") or host
                 self.events.emit("border_router_address_changed", "notice", now, addr=ext, name=name,
                                  previous=prev, hostname=host,

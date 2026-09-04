@@ -195,6 +195,26 @@ class Site:
     def names(self) -> DeviceNames:
         return DeviceNames(self.cfg.devices_path)
 
+    def leader_router(self) -> Optional[int]:
+        part = self.status().get("partition") or {}
+        return part.get("leader_router")
+
+    @staticmethod
+    def role_html(r: dict, now: float) -> str:
+        """'leader · router 60', 'router 33', 'child of Mudroom Air Quality',
+        each with its RLOC16 and how long ago the recorder last saw it in
+        use; the mapping lives in the recorder's memory and its state file,
+        so it can lag a re-attach."""
+        if not r.get("role"):
+            return '<span class="muted">?</span>'
+        if r["role"] == "router":
+            text = ("<b>leader</b> &middot; " if r.get("leader") else "") + f'router {r["router_id"]}'
+        elif r.get("parent_addr"):
+            text = f'child of <a href="/device/{esc(r["parent_addr"])}">{esc(r["parent"])}</a>'
+        else:
+            text = f'child of router {r["router_id"]}'
+        return f'{text} <span class="muted">{esc(r["rloc16"])}, {ago(r.get("rloc16_ts"), now)}</span>'
+
     def seen(self) -> LastSeen:
         return LastSeen(self.cfg.state_dir / "last-seen.json")
 
@@ -340,7 +360,7 @@ class Site:
         now = time.time()
         names = self.names()
         seen = self.seen()
-        every = device_rows(seen, names, self.cfg.quiet_min_rssi_dbm, now)
+        every = device_rows(seen, names, self.cfg.quiet_min_rssi_dbm, now, leader_router=self.leader_router())
         dominant = dominant_pan(seen)
         rows = select_devices(every, dominant, only, sort)
         only = only if only in DEVICE_FILTERS else ""
@@ -371,6 +391,7 @@ class Site:
             seen_html = f'<span class="{"bad" if silent > 1800 else ""}">{ago(r["last_seen"], now)}</span>'
             nm = esc(r["name"]) if r["name"] else f'<span class="warn">unknown</span>'
             trs.append(f'<tr><td><a href="/device/{esc(r["addr"])}">{nm}</a></td>'
+                       f'<td>{self.role_html(r, now)}</td>'
                        f'<td>{seen_html}</td>'
                        f'<td class="n">{esc(r["rssi_dbm"])}</td><td>{rec_html}</td>'
                        f'<td class="n">{r["frames"]:,}</td><td>{pan_html}</td>'
@@ -379,7 +400,7 @@ class Site:
         note = (f'<p class="muted">{len(every)} addresses tracked'
                 + (f', <span class="warn">{unknown} not in devices.json</span>' if unknown else "")
                 + (f'; showing {len(rows)} ({DEVICE_FILTERS[only][0]})' if only else "") + '.</p>')
-        table = (f'<table><tr><th>device</th><th>last heard</th><th>rssi</th>'
+        table = (f'<table><tr><th>device</th><th>role (live)</th><th>last heard</th><th>rssi</th>'
                  f'<th>reception</th><th>frames</th><th>pan</th><th>address</th></tr>{"".join(trs)}</table>'
                  if trs else f'<p class="empty">no devices {DEVICE_FILTERS[only][0] if only else "tracked"}</p>')
         return self.page("devices", f'<h1>devices</h1>{note}{filters}{table}')
@@ -409,6 +430,11 @@ class Site:
             head.append(esc(entry["model"]))
         if len(addrs) > 1:
             head.append(f'{len(addrs)} addresses (rotates)')
+        live = next((r for r in device_rows(seen, names, self.cfg.quiet_min_rssi_dbm, now,
+                                            leader_router=self.leader_router())
+                     if r["addr"] == addrs[0]), None)
+        if live and live["role"]:
+            head.append(self.role_html(live, now))
         cards = []
         for addr in sorted(addrs, key=lambda a: -(seen.table.get(a) or {}).get("last_seen", 0)):
             row = seen.table.get(addr)
@@ -558,7 +584,7 @@ class Site:
                     "capture": capture_for_day(self.cfg.ring_dir, self.cfg.incidents_dir, day)}
         if path == "/api/devices":
             seen = self.seen()
-            rows = device_rows(seen, self.names(), self.cfg.quiet_min_rssi_dbm)
+            rows = device_rows(seen, self.names(), self.cfg.quiet_min_rssi_dbm, leader_router=self.leader_router())
             return {"devices": select_devices(rows, dominant_pan(seen), query.get("only", ""),
                                               query.get("sort", "name"))}
         if path.startswith("/api/device/"):
@@ -574,7 +600,12 @@ class Site:
             # last_seen stays the primary address's row (the shape sensors
             # were written against); the per-address rows of a device whose
             # address rotates are beside it.
+            live = next((r for r in device_rows(self.seen(), names, self.cfg.quiet_min_rssi_dbm,
+                                                leader_router=self.leader_router())
+                         if r["addr"] == addrs[0]), {})
             return {"addr": addrs[0], "addresses": addrs, "name": name if name != addrs[0] else None,
+                    "live": {k: live.get(k) for k in ("role", "rloc16", "rloc16_ts", "router_id",
+                                                      "leader", "parent", "parent_addr")},
                     "last_seen": table.get(addrs[0]),
                     "addresses_seen": {a: table.get(a) for a in addrs}, "episodes": eps}
         if path == "/api/days":

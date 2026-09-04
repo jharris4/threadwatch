@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 from .events import day_bounds, day_of, iter_days, list_days, read_all, read_day
-from .names import DeviceNames, LastSeen, reception
+from .names import DeviceNames, LastSeen, reception, rloc16_role
 
 SEVERITY_RANK = {"info": 0, "notice": 1, "warning": 2, "critical": 3}
 
@@ -258,12 +258,31 @@ def day_index(events_dir: Path) -> list[dict]:
 
 
 def device_rows(seen: LastSeen, names: DeviceNames, min_rssi_dbm: float,
-                now: Optional[float] = None) -> list[dict]:
+                now: Optional[float] = None, leader_router: Optional[int] = None) -> list[dict]:
+    """One dict per tracked address. The live role comes from the RLOC16 the
+    recorder last saw the device use: router or child, which router it is
+    or hangs off, and whether it holds the partition's leader id."""
     now = now or time.time()
+    # Who holds each router address, newest confirmation winning.
+    holder: dict[int, str] = {}
+    for addr, row in sorted(seen.table.items(), key=lambda kv: kv[1].get("rloc16_ts") or 0):
+        r = rloc16_role(row.get("rloc16"))
+        if r and r["role"] == "router":
+            holder[r["router_id"]] = addr
     rows = []
     for addr, row in seen.table.items():
         rssi = row.get("rssi")
+        live = rloc16_role(row.get("rloc16")) or {}
+        parent_addr = holder.get(live["router_id"]) if live.get("role") == "child" else None
         rows.append({
+            "rloc16": row.get("rloc16"),
+            "rloc16_ts": row.get("rloc16_ts"),
+            "role": live.get("role"),
+            "router_id": live.get("router_id"),
+            "leader": bool(live) and live["role"] == "router" and leader_router is not None
+                      and live["router_id"] == leader_router,
+            "parent_addr": parent_addr,
+            "parent": (names.name(parent_addr) or parent_addr) if parent_addr else None,
             "addr": addr,
             "name": names.name(addr),
             "frames": row.get("frames", 0),
@@ -287,6 +306,8 @@ DEVICE_FILTERS = {
     "marginal": ("heard marginally", lambda r, dom: r["reception"] == "marginal"),
     "down": ("signal down", lambda r, dom: r["degraded"]),
     "foreign": ("on another PAN", lambda r, dom: r["pan"] is not None and dom is not None and r["pan"] != dom),
+    "routers": ("routers", lambda r, dom: r["role"] == "router"),
+    "children": ("children", lambda r, dom: r["role"] == "child"),
 }
 DEVICE_SORTS = {
     "name": ("name", lambda r: ((r["name"] is None), (r["name"] or r["addr"]).lower())),

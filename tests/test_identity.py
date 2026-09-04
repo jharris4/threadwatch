@@ -81,6 +81,15 @@ class ResolveShortTest(unittest.TestCase):
             self.assertEqual(quiet, [(SED, "Front Door")])
             pipe.ingest(parse_frame(t0 + 92 * 60, secured_frame(SED, "c829", 200, ftype=3), 195))
             self.assertEqual(pipe.events.records[-1]["event"], "device_returned")
+            # The short address is remembered with the row, and seeds the next run.
+            self.assertEqual(pipe.seen.table[SED]["rloc16"], "c829")
+            self.assertEqual(pipe.seen.table[SED]["rloc16_ts"], t0 + 92 * 60)
+            pipe.seen.save()
+            pipe2 = Pipeline(cfg, NullEventLog(), Decryptor(network_key=KEY))
+            self.assertEqual(pipe2.decryptor.short_to_ext, {"c829": SED})
+            pipe2.ingest(parse_frame(t0 + 93 * 60, secured_frame(SED, "c829", 201, ftype=3), 195))
+            self.assertEqual(pipe2.decryptor.stats["short_resolved"], 0)   # no search needed
+            self.assertEqual(pipe2.devices[SED].polls, 1)
 
     def test_reassigned_short_address_moves_to_its_new_holder(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -98,6 +107,8 @@ class ResolveShortTest(unittest.TestCase):
                 pipe.ingest(parse_frame(t0 + 40 + i, secured_frame(OTHER, "c829", 500 + i, ftype=3), 195))
             self.assertEqual(pipe.decryptor.short_to_ext["c829"], OTHER)
             self.assertEqual((pipe.devices[SED].polls, pipe.devices[OTHER].polls), (3, 3))
+            self.assertEqual((pipe.seen.table[SED]["rloc16"], pipe.seen.table[OTHER]["rloc16"]), ("c829", "c829"))
+            self.assertLess(pipe.seen.table[SED]["rloc16_ts"], pipe.seen.table[OTHER]["rloc16_ts"])
             self.assertEqual(pipe.seen.table[SED]["last_seen"], t0 + 2)
 
     def test_truncated_unsecured_plaintext_does_not_crash_ingest(self):

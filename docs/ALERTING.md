@@ -40,7 +40,7 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `possible_foreign_pan` | notice | `pan`, `src`, `dominant_pan`, `note` |
 | `mle_rejoin_attempt` | notice | `command`, `src`, `name` |
 | `device_quiet` | warning, or notice when `reception` is `marginal` | `addr`, `name`, `silent_for_s`, `rssi_dbm`, `reception`, `note` |
-| `poll_starvation` | warning, or notice when `reception` is `marginal` or `episode` > 1 | `addr`, `name`, `unanswered_polls`, `since`, `starved_for_s`, `acked_polls`, `rssi_dbm`, `reception`, `episode`, `since_previous_s`, `note` |
+| `poll_starvation` | warning, or notice when `reception` is `marginal` or `episode` > 1 | `addr`, `name`, `unanswered_polls`, `since`, `starved_for_s`, `acked_polls`, `rssi_dbm`, `reception`, `episode`, `since_previous_s`, `parent`, `parent_rloc16`, `parent_addr`, `note` |
 | `poll_answered` | notice | `addr`, `name`, `note` |
 | `rssi_degradation` | notice | `addr`, `name`, `rssi_dbm`, `reference_dbm`, `drop_db`, `since`, `low_for_s`, `note` |
 | `rssi_recovered` | info | `addr`, `name`, `rssi_dbm`, `reference_dbm`, `note` |
@@ -87,7 +87,11 @@ rejoins, while one that recovers every few minutes with an ordinary ACK is
 sitting where the sniffer only sometimes hears its parent. The record
 carries `episode` (1 for the page, counting up through the notices) and
 `since_previous_s`; the first episode after the device has stayed answered
-for `rearm_s` pages again. The close time is kept with the last-seen rows,
+for `rearm_s` pages again. The poll's destination is the parent's RLOC16,
+so the record names the parent (`parent`, with its address when the
+recorder has matched that short address to a device), which is the first
+thing to look at: is it the parent that died, or a link the sniffer
+cannot hear? The close time is kept with the last-seen rows,
 so a restart does not re-page a flapping device.
 
 `daily_summary` goes out once per local day, the first time `periodic`

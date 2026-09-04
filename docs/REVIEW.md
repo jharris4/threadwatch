@@ -25,8 +25,14 @@ is no authentication: keep it on your LAN or behind your own proxy.
 - **/help**: what every episode kind and severity means; every row on a
   day page carries the same text as a tooltip.
 - **/devices**: every address the recorder tracks, with its inventory
-  name, how well the sniffer hears it, when it was last heard, and whether
-  it is on your PAN. `?only=unknown|quiet|marginal|down|foreign` narrows
+  name, its live role, how well the sniffer hears it, when it was last
+  heard, and whether it is on your PAN. The role comes from the RLOC16 the
+  device was last seen using (the top six bits are a router id; the low
+  ten, when non-zero, a child id): *router 33*, *leader · router 60*, or
+  *child of Mudroom Air Quality*, each with the address and how long ago
+  it was confirmed, since a re-attach changes it and a sleepy child only
+  refreshes it when it next talks.
+  `?only=unknown|quiet|marginal|down|foreign|routers|children` narrows
   it and `?sort=last|rssi|frames` orders it (longest unheard, weakest,
   busiest); the links at the top of the page set both. `/api/devices`
   takes the same parameters.
@@ -49,8 +55,9 @@ is no authentication: keep it on your LAN or behind your own proxy.
   the same data as JSON, for Home Assistant or anything else. The device
   response carries `addr` and `last_seen` (the primary address and its
   last-seen row, as before), `addresses` (every address the name has had),
-  `addresses_seen` (a last-seen row per address), `name` and
-  `episodes`. An address or name that resolves to nothing is a 404 with an
+  `addresses_seen` (a last-seen row per address), `name`, `live` (`role`,
+  `rloc16`, `rloc16_ts`, `router_id`, `leader`, `parent`, `parent_addr`)
+  and `episodes`. An address or name that resolves to nothing is a 404 with an
   `error` field, as is an ambiguous name.
 
 ## Episodes, not records

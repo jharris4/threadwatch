@@ -490,6 +490,27 @@ class PollStarvationTest(unittest.TestCase):
         self.assertNotIn("Episode", evs[3]["note"])
         self.assertEqual(len(self._events(pipe, "poll_answered")), 3)   # every close still logged
 
+    def test_the_parent_is_named_from_the_polls_destination(self):
+        pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
+        (Path(self.tmp.name) / "devices.json").write_text(json.dumps([
+            {"name": "Porch Sensor", "extendedAddress": SENSOR},
+            {"name": "Hall Router", "extendedAddress": ROUTER}]))
+        pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
+        t = self._answered_polls(pipe, 1_700_000_000.0, 5)
+        self._starve(pipe, t, 100)                           # polls go to dst "0000": router 0
+        ev = self._events(pipe, "poll_starvation")[0]
+        self.assertEqual((ev["parent"], ev["parent_rloc16"], ev["parent_addr"]), ("router 0", "0000", None))
+        self.assertIn("polled its parent router 0 (0000)", ev["note"])
+        pipe.decryptor.short_to_ext["0000"] = ROUTER          # once the router's address is matched
+        t = self._answered_polls(pipe, t, 3, seq0=120)
+        self._starve(pipe, t + 4000, 130)
+        ev = self._events(pipe, "poll_starvation")[-1]
+        self.assertEqual((ev["parent"], ev["parent_addr"]), ("Hall Router", ROUTER))
+        self.assertIn("polled its parent Hall Router (0000)", ev["note"])
+        self.assertEqual(pipe.parent_of(SENSOR), None)        # the sensor has no RLOC16 on record yet
+        pipe.seen.table[SENSOR]["rloc16"] = "0007"
+        self.assertEqual(pipe.parent_of(SENSOR), {"router_id": 0, "rloc16": "0000", "addr": ROUTER, "name": "Hall Router"})
+
     def test_rearm_zero_pages_every_episode(self):
         self.cfg.poll_rearm_s = 0
         pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())

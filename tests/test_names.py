@@ -53,6 +53,32 @@ class SuggestTest(unittest.TestCase):
             self.assertEqual(load_observed_names(Path(d)), {AQ: {"x": 1}})
 
 
+class RssiSmoothingTest(unittest.TestCase):
+    """The stored RSSI is a slow EWMA, not the last sample. A device at the
+    edge drops a frame or two to the floor all the time; if that moved the
+    stored value, `reception()` would flip between good and marginal frame
+    by frame and every fade alert would fire and clear on single frames."""
+
+    def _seen(self, samples, ts0=1_756_800_000.0):
+        seen = LastSeen(None)
+        for i, rssi in enumerate(samples):
+            seen.touch(AQ, ts0 + i, 1, pan=0x4e21, rssi=rssi)
+        return seen.table[AQ]["rssi"]
+
+    def test_one_deep_sample_barely_moves_a_steady_reading(self):
+        from threadwatch.names import reception
+        self.assertEqual(self._seen([-60.0] * 50), -60.0)
+        smoothed = self._seen([-60.0] * 50 + [-95.0])
+        self.assertEqual(smoothed, -61.8)                        # 0.95 * -60 + 0.05 * -95
+        self.assertEqual(reception(smoothed, -82.0), "good")
+
+    def test_a_sustained_fade_does_move_it(self):
+        from threadwatch.names import reception
+        faded = self._seen([-60.0] * 50 + [-95.0] * 40)
+        self.assertLess(faded, -82.0)
+        self.assertEqual(reception(faded, -82.0), "marginal")
+
+
 class RotationHintTest(unittest.TestCase):
     T = 1_756_800_000.0
     NEW, LATER, OTHER = "0011223344556677", "8899aabbccddeeff", "1234567890abcdef"

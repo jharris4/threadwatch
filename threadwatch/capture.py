@@ -272,8 +272,7 @@ def _write_status(cfg, port, total, started, pipe: Pipeline, ring, decryptor,
         "current_file": str(ring.current_path),
         "devices_tracked": len(pipe.devices),
         "deep_inspection": decryptor is not None,
-        "partition": {"id": pipe.partition[0], "leader_router": pipe.partition[1]}
-        if pipe.partition else None,
+        "partition": pipe.partition_status(),
         "detector": pipe.detector.snapshot(),
     }
     if decryptor:
@@ -305,8 +304,7 @@ def run_replay(cfg: Config, pcap_path: Path) -> None:
         "frames": total,
         "duration_s": round(last - first, 1) if first else 0,
         "deep_inspection": decryptor is not None,
-        "partition": {"id": pipe.partition[0], "leader_router": pipe.partition[1]}
-        if pipe.partition else None,
+        "partition": pipe.partition_status(),
         "detector": pipe.detector.snapshot(),
         "events": events.records,
     }

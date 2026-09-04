@@ -520,6 +520,32 @@ class Pipeline:
             self.events.emit("poll_answered", "notice", ts, addr=who, name=self.names.name(who),
                              note="its polls are acknowledged again")
 
+    def leader_device(self, router_id: Optional[int] = None) -> dict:
+        """Which device holds a router id (the leader's, by default), as far
+        as the sniffer knows. A router id is the top six bits of an RLOC16,
+        so router 60 answers to short address 0xF000; the MLE layer learns
+        which extended address that is the first time the device itself
+        sends an MLE frame (its advertisements carry its RLOC16)."""
+        rid = router_id if router_id is not None else (self.partition[1] if self.partition else None)
+        if rid is None:
+            return {}
+        short = f"{rid << 10:04x}"
+        ext = self.decryptor.short_to_ext.get(short) if self.decryptor else None
+        return {"leader_rloc16": short, "leader_addr": ext,
+                "leader_name": self.names.name(ext) if ext else None}
+
+    def leader_label(self, router_id: int) -> str:
+        """'r60 (Living Room Apple TV)', or just 'r60' until it is known."""
+        who = self.leader_device(router_id)
+        label = who.get("leader_name") or who.get("leader_addr")
+        return f"r{router_id} ({label})" if label else f"r{router_id}"
+
+    def partition_status(self) -> Optional[dict]:
+        """The 'partition' entry of status.json and the replay summary."""
+        if not self.partition:
+            return None
+        return {"id": self.partition[0], "leader_router": self.partition[1], **self.leader_device()}
+
     def _label(self, addr: Optional[str]) -> Optional[str]:
         """Name for any address form: extended, or a short one the decryptor
         has mapped; falls back to the address itself."""
@@ -588,13 +614,14 @@ class Pipeline:
             if info.partition_id is not None:
                 cur = (info.partition_id, info.leader_router_id)
                 if self.partition is not None and cur != self.partition:
+                    before, after = self.leader_label(self.partition[1]), self.leader_label(cur[1])
                     self.events.emit("partition_or_leader_change", "warning", f.ts,
                                      previous={"partition": self.partition[0],
-                                               "leader_router": self.partition[1]},
+                                               "leader_router": self.partition[1], "leader": before},
                                      current={"partition": cur[0],
-                                              "leader_router": cur[1]},
-                                     note=f"partition {self.partition[0]} leader r{self.partition[1]} -> "
-                                          f"partition {cur[0]} leader r{cur[1]}: the mesh split, merged "
+                                              "leader_router": cur[1], "leader": after},
+                                     note=f"partition {self.partition[0]} leader {before} -> "
+                                          f"partition {cur[0]} leader {after}: the mesh split, merged "
                                           "or elected a new leader")
                 self.partition = cur
         else:

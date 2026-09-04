@@ -44,3 +44,18 @@ class StormLatchTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DegeneratePeriodOnsetsTest(unittest.TestCase):
+    def test_period_onsets_below_two_does_not_divide_by_zero(self):
+        for n in (0, 1):
+            det = Detector(DetectorConfig(period_onsets=n, flood_min_frames=10))
+            t = 0.0
+            for _ in range(7):
+                for _ in range(2):
+                    det.add_frame(t); t += 1.0
+                t += 60.0
+            for _ in range(6):
+                for _ in range(40):
+                    det.add_frame(t); t += 0.1
+                t += 60.0

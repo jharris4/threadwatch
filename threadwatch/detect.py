@@ -76,7 +76,7 @@ class Detector:
             self.calm.append(count)
 
     def _check_periodicity(self) -> None:
-        need = self.cfg.period_onsets
+        need = max(2, self.cfg.period_onsets)   # a period needs two onsets to measure
         if len(self.onsets) < need:
             return
         recent = list(self.onsets)[-need:]

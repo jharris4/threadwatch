@@ -234,6 +234,39 @@ class PlanInventoryTest(unittest.TestCase):
         again, changes = plan_inventory(planned, found)
         self.assertEqual((again, changes), (planned, []))               # idempotent
 
+    def test_devices_sharing_a_name_stay_separate_devices(self):
+        # Three contact sensors all named "Contact Sensor" in HA, one of
+        # them already in the file: not one rotating device with three
+        # addresses, but three entries, each with the address it has.
+        existing = [{"name": "Contact Sensor", "extendedAddress": "1111111111111111", "note": "front door"},
+                    {"name": "Living Room Apple TV", "extendedAddress": "B62C32BF669272DB"}]
+        found = [{"name": "Contact Sensor", "model": "Eve Door", "addr": a}
+                 for a in ("1111111111111111", "2222222222222222", "3333333333333333")]
+        found.append({"name": "Living Room Apple TV", "model": "Apple TV", "addr": "E6C279E8F0C70298"})
+        planned, changes = plan_inventory(existing, found)
+        self.assertEqual([e["name"] for e in planned],
+                         ["Contact Sensor (1111)", "Living Room Apple TV", "Contact Sensor (2222)", "Contact Sensor (3333)"])
+        self.assertEqual([len(_addrs(e)) for e in planned], [1, 2, 1, 1])   # only the TV rotates
+        self.assertEqual(planned[0]["note"], "front door")
+        self.assertIn("'Contact Sensor' names 3 devices in Home Assistant", changes[0])
+        self.assertIn("rename them there", changes[0])
+        self.assertIn("rename 'Contact Sensor' -> 'Contact Sensor (1111)'", changes[1])
+        self.assertIn("add 'Contact Sensor (2222)' = 2222222222222222", changes)
+        self.assertIn("Living Room Apple TV: new address E6C279E8F0C70298 (now 2 addresses)", changes)
+        again, changes = plan_inventory(planned, found)
+        self.assertEqual(again, planned)
+        self.assertEqual(len(changes), 1)                              # only the reminder to rename in HA
+        # Renamed apart in HA: the entries follow, by address.
+        found[1]["name"], found[2]["name"] = "Back Door", "Garage Door"
+        renamed, changes = plan_inventory(planned, found)
+        self.assertEqual([e["name"] for e in renamed],
+                         ["Contact Sensor", "Living Room Apple TV", "Back Door", "Garage Door"])
+
+
+def _addrs(entry):
+    from threadwatch.names import entry_addresses
+    return entry_addresses(entry)
+
 
 class WritePrivateTest(unittest.TestCase):
     def test_file_is_owner_read_only_and_replaced_atomically(self):

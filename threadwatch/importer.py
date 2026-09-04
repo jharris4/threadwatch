@@ -49,9 +49,25 @@ def _add_address(entry: dict, addr: str) -> int:
 def plan_inventory(entries: list[dict], found: list[dict]) -> tuple[list[dict], list[str]]:
     """Merge Home Assistant's Matter-over-Thread devices into the
     inventory. HA is the authority on their names. Returns the new list
-    and one line per change."""
+    and one line per change.
+
+    HA does not keep names unique. Devices sharing one are told apart here
+    by the tail of their address ("Contact Sensor (6950)"): the name is
+    the inventory's identity, and two addresses live at the same moment
+    are two devices, never one that rotates. The address-by-name fallback
+    below (an Apple TV known under an old address) therefore only ever
+    matches a name that is unique in HA."""
     entries = copy.deepcopy(entries)
     changes: list[str] = []
+    holders: dict[str, list[dict]] = {}
+    for dev in found:
+        holders.setdefault(dev["name"].strip().lower(), []).append(dev)
+    shared = [devs for devs in holders.values() if len(devs) > 1]
+    for devs in shared:
+        changes.append(f"{devs[0]['name']!r} names {len(devs)} devices in Home Assistant: told apart here "
+                       "by address; rename them there to give each its own name")
+    found = [{**dev, "name": f"{dev['name']} ({dev['addr'][-4:].upper()})"}
+             if len(holders[dev["name"].strip().lower()]) > 1 else dev for dev in found]
     by_addr = {a: e for e in entries for a in _addresses(e)}
     by_name = {(e.get("name") or "").strip().lower(): e for e in entries if e.get("name")}
     for dev in found:

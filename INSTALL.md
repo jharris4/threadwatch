@@ -89,11 +89,13 @@ and does not count it against any device.
 
 - Put the Pi + dongle **near your Thread border router** — the capture
   should represent what the border router's radio hears.
-- Storage: ~30 MB/hour ≈ 5 GB/week for a mid-sized mesh, pruned
-  automatically (`keep_files`; `keep_gb` caps the total size when the
-  card is the harder limit). That write rate is fine for a good SD
-  card; a small USB SSD is nicer if you have one. Set
-  `data_dir` in config.toml to point at it.
+- Storage: about 7 MB/hour, 1.2 GB/week, measured on a 50-device mesh
+  at rest; a storm multiplies that, and 30 MB/hour is a safe ceiling to
+  budget for (it is what `doctor` assumes until the ring has measured
+  itself). Pruned automatically (`keep_files`; `keep_gb` caps the total
+  size when the card is the harder limit). Either rate is fine for a
+  good SD card; a small USB SSD is nicer if you have one. Set `data_dir`
+  in config.toml to point at it.
 - Time sync (NTP) is on by default in Raspberry Pi OS — leave it; pcap
   timestamps that match your other logs are half the value.
 

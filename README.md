@@ -14,7 +14,8 @@ question: *why did this device go offline?*
 ## What it does
 
 - **Continuous capture** on your Thread channel into hourly pcap files,
-  keeping a rolling week (configurable). ~30 MB/hour for a ~45-node mesh.
+  keeping a rolling week (configurable). About 7 MB/hour for a 50-node
+  mesh at rest; budget 30 MB/hour for storms.
 - **A health event log** (one JSON-lines file per day) fed by several detectors,
   all from cleartext MAC headers:
   - devices going quiet / returning (a quiet without a rejoin points at the
@@ -52,8 +53,9 @@ question: *why did this device go offline?*
   too.
 - **Incident freeze**: `threadwatch freeze my-label` snapshots the ring
   buffer before it rolls over; with `freeze_on_critical` in config.toml
-  the recorder does it by itself when a storm fires. `threadwatch
-  incidents` lists and deletes them.
+  the recorder does it by itself when a storm fires (the one critical
+  event today), at most once per six hours. `threadwatch incidents`
+  lists and deletes them.
 - **Offline analysis**: `threadwatch replay file.pcap` runs the whole
   pipeline over any capture; pcaps also open in Wireshark (see
   docs/ANALYSIS.md for a filter cookbook and the storm case study).

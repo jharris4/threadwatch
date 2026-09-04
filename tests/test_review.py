@@ -334,7 +334,16 @@ class DayViewTest(unittest.TestCase):
             self.assertIn("<h1>unknown device</h1>", get("/device/72d035122fdf06f6")[1])
             data = json.loads(get(f"/api/device/{TV1}")[1])
             self.assertEqual(data["addresses"], [TV1, TV2])
+            self.assertEqual(data["last_seen"]["rssi"], -55.0)                  # the primary address's row
+            self.assertEqual(sorted(data["addresses_seen"]), sorted([TV1, TV2]))
+            self.assertEqual(data["addresses_seen"][TV2]["rssi"], -56.0)
             self.assertEqual(json.loads(get("/api/device/Living%20Room")[1])["addresses"], [TV1, TV2])
+            try:
+                urllib.request.urlopen(base + "/api/device/zzz", timeout=5)
+                self.fail("expected 404")
+            except urllib.error.HTTPError as exc:
+                self.assertEqual(exc.code, 404)
+                self.assertIn("neither", json.loads(exc.read().decode())["error"])
             self.assertEqual([e["kind"] for e in data["episodes"]], ["rejoin", "quiet"])
             status, body = get(f"/api/day/{day}")
             data = json.loads(body)

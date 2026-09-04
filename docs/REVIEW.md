@@ -44,8 +44,13 @@ is no authentication: keep it on your LAN or behind your own proxy.
 - **/incidents**: every frozen incident with when it was frozen, the
   hours its packets cover, and its size. Day pages link to it.
 - **/api/status** (with a `storage` block), **/api/incidents**,
-  **/api/day/YYYY-MM-DD**, **/api/devices**, **/api/device/<addr>**: the
-  same data as JSON, for Home Assistant or anything else.
+  **/api/day/YYYY-MM-DD**, **/api/devices**, **/api/device/<addr or name>**:
+  the same data as JSON, for Home Assistant or anything else. The device
+  response carries `addr` and `last_seen` (the primary address and its
+  last-seen row, as before), `addresses` (every address the name has had),
+  `addresses_seen` (a last-seen row per address), `name`, `role` and
+  `episodes`. An address or name that resolves to nothing is a 404 with an
+  `error` field, as is an ambiguous name.
 
 ## Episodes, not records
 

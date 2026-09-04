@@ -569,9 +569,12 @@ class Site:
             for ep in eps:
                 ep.pop("events", None)
             table = self.seen().table
+            # last_seen stays the primary address's row (the shape sensors
+            # were written against); the per-address rows of a device whose
+            # address rotates are beside it.
             return {"addr": addrs[0], "addresses": addrs, "name": name if name != addrs[0] else None,
-                    "role": names.role(addrs[0]),
-                    "last_seen": {a: table.get(a) for a in addrs}, "episodes": eps}
+                    "role": names.role(addrs[0]), "last_seen": table.get(addrs[0]),
+                    "addresses_seen": {a: table.get(a) for a in addrs}, "episodes": eps}
         if path == "/api/days":
             return {"days": day_index(self.cfg.events_dir)}
         return None
@@ -587,7 +590,8 @@ class Site:
             data = self.api(path, query)
             if data is None:
                 return 404, "application/json", b'{"error": "not found"}'
-            return 200, "application/json", json.dumps(data, indent=1).encode()
+            status = 404 if "error" in data else 200
+            return status, "application/json", json.dumps(data, indent=1).encode()
         if path in ("/", "/day"):
             return 200, "text/html; charset=utf-8", self.day_page(today(), query.get("min", "")).encode()
         if path.startswith("/day/"):

@@ -603,6 +603,25 @@ class DailySummaryTest(unittest.TestCase):
         pipe3.periodic(self.DAY + 24 * 3600 + 15 * 3600)
         self.assertEqual(sum(r["event"] == "daily_summary" for r in read_day(self.cfg.events_dir, "2026-09-03")), 1)
 
+    def test_a_summary_whose_write_failed_is_retried_next_tick(self):
+        class FlakyLog(NullEventLog):
+            failures = 1
+
+            def emit(self, event, *a, **kw):
+                if event == "daily_summary" and self.failures:
+                    self.failures -= 1
+                    raise OSError(28, "No space left on device")
+                return super().emit(event, *a, **kw)
+
+        pipe = Pipeline(self.cfg, FlakyLog())
+        with self.assertRaises(OSError):
+            pipe.periodic(self.DAY + 8 * 3600)
+        self.assertEqual(self._summaries(pipe.events), [])
+        pipe.periodic(self.DAY + 8 * 3600 + 60)             # the next tick sends it
+        self.assertEqual(len(self._summaries(pipe.events)), 1)
+        pipe.periodic(self.DAY + 9 * 3600)                  # and only once
+        self.assertEqual(len(self._summaries(pipe.events)), 1)
+
     def test_disabled_and_ephemeral(self):
         self.cfg.summary_hour = -1
         pipe = Pipeline(self.cfg, NullEventLog())

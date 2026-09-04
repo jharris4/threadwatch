@@ -664,11 +664,12 @@ class Pipeline:
         day = day_of(now)
         if day == self._summary_day or time.localtime(now).tm_hour < self.cfg.summary_hour:
             return
+        if not any(r.get("event") == "daily_summary" for r in self._records_of(day)):
+            self.events.emit("daily_summary", self.cfg.summary_severity, now,
+                             **self.summary(now, dominant))
+        # Settled only once the record is written: a failed write (disk
+        # full) leaves the day open, so the next periodic() tries again.
         self._summary_day = day
-        if any(r.get("event") == "daily_summary" for r in self._records_of(day)):
-            return
-        self.events.emit("daily_summary", self.cfg.summary_severity, now,
-                         **self.summary(now, dominant))
 
     def _records_of(self, day: str) -> list[dict]:
         events_dir = getattr(self.events, "dir", None)

@@ -61,6 +61,17 @@ class RingSizeCapTest(_ut.TestCase):
             ring._prune()
             # The two newest total 2000 bytes, under the cap: both stay.
             self.assertEqual(sorted(p.name[-7:-5] for p in Path(d).glob("*.pcap")), ["02", "03"])
+
+    def test_the_count_cap_prunes_the_oldest_with_no_byte_cap_set(self):
+        import tempfile
+        # keep_bytes unset is the default; nothing else bounds the ring, so
+        # the count cap alone has to prune or the card fills.
+        with tempfile.TemporaryDirectory() as d:
+            for h in ("00", "01", "02", "03", "04", "05"):
+                (Path(d) / f"threadwatch-20260903-{h}.pcap").write_bytes(b"x" * 1000)
+            ring = RingWriter(Path(d), keep_files=3, dlt=0)
+            ring._prune()
+            self.assertEqual(sorted(p.name[-7:-5] for p in Path(d).glob("*.pcap")), ["03", "04", "05"])
 from threadwatch.pcap import DLT_NOFCS, Frame, PcapStreamReader, PcapWriter, complete_length  # noqa: E402
 
 

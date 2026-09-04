@@ -33,7 +33,7 @@ config.toml and never in git. `config/credentials.toml` is gitignored by
 this repo and is the default path, so nothing in config.toml needs to
 change.
 
-**With Home Assistant:** `bin/threadwatch import-ha --write` fetches the
+**With Home Assistant:** `bin/threadwatch import --write` fetches the
 key from HA's Thread dataset and writes the file at mode 0600 without
 ever printing it (docs/HOME-ASSISTANT.md, including the token setup).
 

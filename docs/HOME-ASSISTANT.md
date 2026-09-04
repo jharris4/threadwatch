@@ -4,15 +4,20 @@ threadwatch does not depend on Home Assistant. But if HA is your Thread
 controller, it already holds the two things the recorder needs from you,
 the device names and the network key, and one command fetches both.
 
-## 0. Import names and the network key
+## 0. Import names, border routers and the network key
 
 ```bash
 cp config/ha.example.env config/ha.env
 # edit config/ha.env: HA_URL and HA_TOKEN (below)
 chmod 600 config/ha.env
-bin/threadwatch import-ha            # shows what would change
-bin/threadwatch import-ha --write    # writes devices.json and credentials.toml
+bin/threadwatch import            # shows what would change
+bin/threadwatch import --write    # writes devices.json and credentials.toml
 ```
+
+`threadwatch import` has two sources, each skippable (`--no-ha`,
+`--no-mdns`): Home Assistant for the Matter devices and the key, and the
+LAN itself (mDNS) for the border routers, which HA does not list (see
+"Apple TVs" below). One plan, one `--write`.
 
 **The token.** In Home Assistant open your profile (click your name at the
 bottom of the sidebar), scroll to the bottom to *Long-lived access
@@ -26,11 +31,12 @@ list. `HA_URL` is how this machine reaches HA, usually
 
 - `devices.json`: every Matter-over-Thread device in HA's device registry,
   with the name you gave it in HA and its extended address (from the
-  node's diagnostics). Existing entries are kept: a device already listed
-  under that address is renamed to the HA name if it differs, a known name
-  seen with a new address gains it (Apple TVs rotate), and hand-written
-  entries such as HomeKit-only devices are untouched. The plan is printed
-  first; `--write` applies it.
+  node's diagnostics). HA is where you named them, so HA wins on those
+  names: a device already listed under that address is renamed to the HA
+  name if it differs (the plan says so before `--write`). A known name
+  seen with a new address gains it, a missing model is filled in, and
+  everything else is carried through: notes, extra addresses, entries no
+  source knows such as HomeKit-only locks. Entries are never deleted.
 - `credentials.toml`: the network key from HA's preferred Thread dataset
   (the one your border router runs). It is written at mode 0600 and never
   printed; the command reports the network name, channel and PAN id, and
@@ -44,21 +50,29 @@ the command whenever you add or rename devices; it is safe to repeat.
 machine. Mode 0600 on your workstation keeps it private and editable;
 `setup-host.sh` locks it to 0400 on the host, where nobody edits it.
 
-**Apple TVs and HomePods are not in HA's Matter registry**, so the import
-does not cover them, and they change their Thread extended address on
-every reboot anyway. The recorder handles them itself: every border
-router advertises its current address over mDNS with a stable hostname,
-the recorder asks the LAN every ten minutes, and a new address is named
-from the old entry automatically (a `border_router_address_changed`
-notice says so). Name each hub once, by an address it has now
-(`threadwatch border-routers` lists them), and never touch it again.
-mDNS is link-local: the recorder host must be on the routers' subnet, or
-your network must reflect mDNS between VLANs (UniFi: the mDNS setting on
-the networks involved; a Linux router: avahi's reflector). `threadwatch
-doctor` reports what the host can see. HomeKit-only end devices such as
-locks never appear anywhere: name those with `threadwatch report
---suggest` and `threadwatch adopt`, or the power-cycle method in
-docs/ANALYSIS.md.
+**Apple TVs and HomePods are not in HA's Matter registry**, and they
+change their Thread extended address on every reboot. The import's mDNS
+source covers them: every border router advertises a stable hostname and
+its current address, and the entry it writes carries both, for example
+
+```json
+{"name": "AppleTV Living Room", "borderRouter": "appletv-living-room.local",
+ "extendedAddress": "C0FFEE0000000001", "model": "Apple BorderRouter"}
+```
+
+The name comes from mDNS only when the entry is created; rename it in the
+file and your name stays. The recorder then asks the LAN every ten
+minutes and, after a reboot, names the new address from the hostname
+automatically (a `border_router_address_changed` notice says so); the
+addresses in the entry are the fallback that still names the device if
+mDNS is ever out of reach. mDNS is link-local: the host running the
+import or the recorder must be on the routers' subnet, or your network
+must reflect mDNS between VLANs (UniFi: the mDNS setting on the networks
+involved; a Linux router: avahi's reflector). `threadwatch doctor` and
+`threadwatch border-routers` report what the host can see. HomeKit-only
+end devices such as locks never appear anywhere: name those with
+`threadwatch report --suggest` and `threadwatch adopt`, or the
+power-cycle method in docs/ANALYSIS.md.
 
 ## 1. Receive alerts in HA
 

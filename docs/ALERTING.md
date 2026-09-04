@@ -119,8 +119,8 @@ asks the LAN over mDNS every `[border_routers] browse_s` (default 10 min)
 which address each border router has now, keyed by its stable hostname,
 and names the new address from the same devices.json entry; the old
 address is retired rather than reported quiet. `border_router_unlisted`,
-once per router, is one that matches no entry: name it with `threadwatch
-adopt`, or give an entry `"borderRouter": "<hostname>"`. Both need the
+once per router, is one that matches no entry: `threadwatch import --write`
+creates the entry (or `threadwatch adopt` names it). Both need the
 recorder to hear the routers' mDNS, which is link-local: the same subnet,
 or a network that reflects mDNS between VLANs. `threadwatch doctor` says
 whether it can.

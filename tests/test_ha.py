@@ -10,8 +10,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from threadwatch import ha  # noqa: E402
 from threadwatch.ha import (FrameReader, HAError, connection_settings, encode_frame, load_env,  # noqa: E402
-                            normalize_ext, parse_dataset_tlv, plan_inventory, select_dataset,
+                            normalize_ext, parse_dataset_tlv, select_dataset,
                             thread_dataset, thread_devices, write_private)
+from threadwatch.importer import plan_border_routers, plan_inventory, run_import  # noqa: E402
 
 
 class EnvFileTest(unittest.TestCase):
@@ -238,5 +239,131 @@ class WritePrivateTest(unittest.TestCase):
             self.assertEqual(sorted(x.name for x in Path(d).iterdir()), ["credentials.toml"])
 
 
+
+class PlanBorderRoutersTest(unittest.TestCase):
+    R = {"hostname": "appletv-living-room.local", "ext": "c0ffee0000000001", "instance": "AppleTV Living Room",
+         "vendor": "Apple", "model": "BorderRouter"}
+
+    def test_match_by_hostname_address_or_name_else_add(self):
+        existing = [
+            {"name": "Living Room Apple TV", "extendedAddresses": ["C0FFEE0000000000", "C0FFEE0000000001"], "note": "hub"},
+            {"name": "HA OTBR", "borderRouter": "homeassistant-otbr.local"},
+            {"name": "HomePod Kitchen"},
+        ]
+        routers = [self.R,
+                   {"hostname": "homeassistant-otbr.local", "ext": "07b200000000af1b", "instance": "HA OTBR #AF1B",
+                    "vendor": "Home Assistant", "model": "OpenThread Border Router"},
+                   {"hostname": "homepod-kitchen.local", "ext": "0011223344556677", "instance": "HomePod Kitchen",
+                    "vendor": "Apple", "model": "BorderRouter"},
+                   {"hostname": "homepod-den.local", "ext": "8899aabbccddeeff", "instance": "HomePod Den",
+                    "vendor": "Apple", "model": "BorderRouter"},
+                   {"hostname": "broken.local", "ext": None, "instance": "Broken"}]
+        planned, changes = plan_border_routers(existing, routers)
+        self.assertEqual(changes, [
+            "Living Room Apple TV: border router appletv-living-room.local",        # matched by listed address
+            "Living Room Apple TV: model 'Apple BorderRouter'",
+            "HA OTBR: new address 07B200000000AF1B (now 1 addresses)",             # matched by hostname
+            "HA OTBR: model 'Home Assistant OpenThread Border Router'",
+            "HomePod Kitchen: border router homepod-kitchen.local",                 # matched by name
+            "HomePod Kitchen: new address 0011223344556677 (now 1 addresses)",
+            "HomePod Kitchen: model 'Apple BorderRouter'",
+            "add 'HomePod Den' = 8899AABBCCDDEEFF (border router homepod-den.local)",
+        ])
+        self.assertEqual(planned[0]["extendedAddresses"], ["C0FFEE0000000000", "C0FFEE0000000001"])   # kept, in order
+        self.assertEqual(planned[0]["note"], "hub")
+        self.assertEqual(planned[1]["extendedAddresses"], ["07B200000000AF1B"])
+        self.assertEqual(planned[3], {"name": "HomePod Den", "borderRouter": "homepod-den.local",
+                                      "extendedAddress": "8899AABBCCDDEEFF", "model": "Apple BorderRouter"})
+        self.assertEqual(existing[2], {"name": "HomePod Kitchen"})                  # input untouched
+        self.assertEqual(plan_border_routers(planned, routers), (planned, []))       # idempotent
+
+    def test_a_reboot_appends_the_new_address_and_keeps_the_name(self):
+        entry = {"name": "Living Room Apple TV", "borderRouter": "appletv-living-room.local",
+                 "extendedAddress": "C0FFEE0000000001"}
+        planned, changes = plan_border_routers([entry], [dict(self.R, ext="1234567890abcdef", instance="AppleTV Living Room")])
+        self.assertEqual(changes, ["Living Room Apple TV: new address 1234567890ABCDEF (now 2 addresses)",
+                                   "Living Room Apple TV: model 'Apple BorderRouter'"])
+        self.assertEqual(planned[0]["name"], "Living Room Apple TV")
+
+
+class RunImportTest(unittest.TestCase):
+    """The command end to end, with both sources faked."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.d = Path(self.tmp.name)
+        (self.d / "ha.env").write_text("HA_URL=http://ha.test:8123\nHA_TOKEN=tok\n")
+        from threadwatch.config import Config
+        self.cfg = Config(data_dir=self.d / "data", config_dir=self.d, devices_path=self.d / "devices.json",
+                          credentials_path=self.d / "credentials.toml", channel=25)
+        import threadwatch.ha as ha_mod
+        import threadwatch.mdns as mdns_mod
+        self.saved = (ha_mod.HomeAssistant, ha_mod.thread_devices, ha_mod.thread_dataset, mdns_mod.browse)
+        self.calls = []
+
+        class FakeHA:
+            def __init__(s, url, token):
+                self.calls.append(("connect", url, token))
+
+            def __enter__(s):
+                return s
+
+            def __exit__(s, *a):
+                pass
+
+        ha_mod.HomeAssistant = FakeHA
+        ha_mod.thread_devices = lambda ha, log=None: [{"name": "Living Room Motion", "model": "Eve Motion",
+                                                       "addr": "F00D000000000001"}]
+        ha_mod.thread_dataset = lambda ha, dataset_id=None: {"network_name": "MyHome", "channel": 25, "pan_id": 0xabcd,
+                                                             "ext_pan_id": "32572a6010074654",
+                                                             "network_key": "00112233445566778899aabbccddeeff"}
+        mdns_mod.browse = lambda timeout=3.0, log=None: [PlanBorderRoutersTest.R]
+
+    def tearDown(self):
+        import threadwatch.ha as ha_mod
+        import threadwatch.mdns as mdns_mod
+        ha_mod.HomeAssistant, ha_mod.thread_devices, ha_mod.thread_dataset, mdns_mod.browse = self.saved
+        self.tmp.cleanup()
+
+    def test_plan_then_write(self):
+        lines = []
+        run_import(self.cfg, self.d / "devices.json", out=lines.append)
+        text = "\n".join(lines)
+        self.assertIn("mDNS: 1 border router(s): AppleTV Living Room", text)
+        self.assertIn("Home Assistant: 1 Matter-over-Thread devices", text)
+        self.assertIn("add 'AppleTV Living Room' = C0FFEE0000000001 (border router appletv-living-room.local)", text)
+        self.assertIn("add 'Living Room Motion' = F00D000000000001", text)
+        self.assertIn("network key: not in credentials.toml; --write stores it", text)
+        self.assertIn("nothing written", text)
+        self.assertFalse((self.d / "devices.json").exists())
+        lines.clear()
+        run_import(self.cfg, self.d / "devices.json", write=True, out=lines.append)
+        entries = json.loads((self.d / "devices.json").read_text())
+        self.assertEqual([e["name"] for e in entries], ["AppleTV Living Room", "Living Room Motion"])
+        self.assertEqual(entries[0]["borderRouter"], "appletv-living-room.local")
+        self.assertIn("00112233445566778899aabbccddeeff", (self.d / "credentials.toml").read_text())
+        self.assertIn("restart it", "\n".join(lines))
+        lines.clear()
+        run_import(self.cfg, self.d / "devices.json", out=lines.append)      # now a no-op
+        text = "\n".join(lines)
+        self.assertIn("nothing to change", text)
+        self.assertIn("already holds it", text)
+
+    def test_sources_can_be_skipped(self):
+        lines = []
+        run_import(self.cfg, self.d / "devices.json", use_ha=False, out=lines.append)
+        self.assertEqual(self.calls, [])                                        # HA never contacted
+        self.assertIn("AppleTV Living Room", "\n".join(lines))
+        lines.clear()
+        import threadwatch.mdns as mdns_mod
+        mdns_mod.browse = lambda timeout=3.0, log=None: []
+        run_import(self.cfg, self.d / "devices.json", credentials=False, out=lines.append)
+        text = "\n".join(lines)
+        self.assertIn("no border routers answered", text)
+        self.assertIn("Living Room Motion", text)
+        self.assertNotIn("network key", text)
+
+
 if __name__ == "__main__":
     unittest.main()
+

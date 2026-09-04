@@ -114,3 +114,86 @@ class HourTableTest(unittest.TestCase):
     def test_a_single_year_keeps_the_short_label(self):
         rows = self._table(["2026-09-03 08:10", "2026-09-03 09:40"])
         self.assertEqual([(r[0], r[1], r[2]) for r in rows], [("09-03", "08h", "1"), ("09-03", "09h", "1")])
+
+
+class RunWhyTest(unittest.TestCase):
+    """`why` tells one device's story. Everything it counts - frames, polls,
+    transmissions, ACKs - has to be that device's; the whole mesh's traffic
+    attributed to one device answers the question confidently and wrongly."""
+
+    DEV = "26976e7f7d20964a"
+    OTHER = "b62c32bf669272db"
+
+    @staticmethod
+    def _at(stamp, plus=0.0):
+        return time.mktime(time.strptime(stamp, "%Y-%m-%d %H:%M")) + plus
+
+    def _psdu(self, addr, seq, ftype=1, dst="0000"):
+        import struct
+        fcf = ftype | 0x0040 | (2 << 10) | (1 << 12) | (3 << 14)   # pan compressed, short dst, ext src
+        return (struct.pack("<HBH", fcf, seq, 0x4e21) + bytes.fromhex(dst)[::-1]
+                + bytes.fromhex(addr)[::-1] + b"\x7f\x33")
+
+    @staticmethod
+    def _ack(seq):
+        import struct
+        return struct.pack("<HB", 2, seq)
+
+    def _run(self, frames, target=None):
+        """Write the frames to a pcap, run `why` over it, return its output."""
+        import contextlib
+        import io
+        import tempfile
+        from threadwatch.config import Config
+        from threadwatch.pcap import DLT_NOFCS, Frame, PcapWriter
+        from threadwatch.why import run_why
+        with tempfile.TemporaryDirectory() as d:
+            cred = Path(d) / "credentials.toml"
+            cred.write_text('[credentials]\nnetwork_key = "00112233445566778899aabbccddeeff"\n')
+            cfg = Config(data_dir=Path(d) / "data", credentials_path=cred)
+            pcap = Path(d) / "window.pcap"
+            with open(pcap, "wb") as fh:
+                w = PcapWriter(fh, DLT_NOFCS)
+                for ts, psdu in sorted(frames, key=lambda p: p[0]):
+                    w.write(Frame(ts=ts, raw=psdu, psdu=psdu, rssi=None, channel=None, lqi=None))
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                run_why(cfg, target or self.DEV, pcap)
+        return out.getvalue()
+
+    def _rows(self, text):
+        lines = text.splitlines()
+        start = next(i for i, l in enumerate(lines) if l.startswith("hour"))
+        rows = []
+        for line in lines[start + 1:]:                        # the table ends at the first blank line
+            if not line:
+                break
+            rows.append(line.split())
+        return rows
+
+    def test_the_table_counts_only_this_devices_frames_and_acks(self):
+        frames = []
+        for i in range(4):                                    # ours: four unicast data frames
+            frames.append((self._at(f"2026-09-03 08:{10 + i:02d}"), self._psdu(self.DEV, 10 + i)))
+        frames.append((self._at("2026-09-03 08:10", 0.002), self._ack(10)))     # ACK for the first
+        frames.append((self._at("2026-09-03 08:20"), self._psdu(self.DEV, 20, ftype=3)))   # a poll
+        for i in range(10):                                   # the rest of the mesh, same hour
+            frames.append((self._at(f"2026-09-03 08:{30 + i:02d}"), self._psdu(self.OTHER, 40 + i)))
+        frames.append((self._at("2026-09-03 08:31", 0.002), self._ack(41)))     # and an ACK of theirs
+        frames.append((self._at("2026-09-03 09:50"), self._psdu(self.DEV, 60)))  # after a long silence
+        text = self._run(frames)
+        rows = self._rows(text)
+        # date, hour, frames, polls, tx, acked
+        self.assertEqual(rows[0][:6], ["09-03", "08h", "5", "1", "5", "1"])
+        self.assertEqual(rows[1][:6], ["09-03", "09h", "1", "0", "1", "0"])
+        self.assertIn(f"=== {self.DEV} ({self.DEV}) ===", text)
+        self.assertIn("silences (>30 min):", text)
+        self.assertIn("(90 min)", text)                       # ours only: 08:20 -> 09:50
+        self.assertIn("no rejoin-related MLE seen from this device", text)
+        self.assertIn("event log: nothing recorded for this device.", text)
+
+    def test_a_device_with_nothing_in_the_window_says_so(self):
+        quiet = "72d035122fdf06f6"
+        text = self._run([(self._at("2026-09-03 08:10"), self._psdu(self.OTHER, 7))], target=quiet)
+        self.assertIn("No frames from this device in the analyzed window.", text)
+        self.assertIn("check `threadwatch report` for unknowns", text)

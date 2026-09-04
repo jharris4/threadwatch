@@ -9,4 +9,5 @@ config/config.toml
 config/devices.json
 config/credentials.toml
 config/alerts.env
+config/ha.env
 .DS_Store

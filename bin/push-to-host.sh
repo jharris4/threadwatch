@@ -11,6 +11,11 @@
 # config/credentials.toml and config/alerts.env, which git deliberately never
 # sees, and it lets you deploy an uncommitted change. data/ on the host is
 # never touched.
+#
+# What deploys is what git tracks, plus config/. Everything else in the working
+# tree -- caches, scratch notes, data/, .venv/ -- stays on the workstation. That
+# list comes from git rather than a hand-kept set of --exclude flags, so new
+# junk needs no edit here; an uncommitted edit to a tracked file still ships.
 set -euo pipefail
 
 TARGET="${1:?usage: push-to-host.sh user@host [--push-only]}"
@@ -18,9 +23,25 @@ MODE="${2:-}"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 DEST_DIR="${DEST_DIR:-threadwatch}"   # path on the host, relative to $HOME
 
+# Untracked paths, ignored ones included, anchored to the transfer root. config/
+# is held back from this list: git never sees it, but the host needs it.
+EXCLUDES="$(mktemp)"
+trap 'rm -f "$EXCLUDES"' EXIT
+{ git -C "$REPO" ls-files --others --directory | grep -v '^config/' | sed 's,^,/,'; } > "$EXCLUDES" || true
+
+# A new source file that was never committed would be skipped silently, which
+# looks exactly like a deploy that did not take. Notes and caches stay quiet.
+UNCOMMITTED_CODE="$(git -C "$REPO" ls-files --others --exclude-standard --directory \
+  | grep -Ev '^config/' | grep -E '\.py$|^bin/' || true)"
+if [ -n "$UNCOMMITTED_CODE" ]; then
+  echo "warning: these are untracked, so they are NOT being deployed:" >&2
+  printf '  %s\n' $UNCOMMITTED_CODE >&2
+  echo "  commit them if they belong on the host." >&2
+fi
+
 rsync -a --delete \
-  --exclude 'data/' --exclude '.venv/' --exclude '.venv-flash/' \
-  --exclude '__pycache__/' --exclude '*.pyc' --exclude '.git/' \
+  --exclude-from "$EXCLUDES" \
+  --exclude 'data/' --exclude '.git/' \
   "$REPO/" "$TARGET:$DEST_DIR/"
 ssh "$TARGET" "chmod 400 $DEST_DIR/config/credentials.toml $DEST_DIR/config/alerts.env $DEST_DIR/config/ha.env 2>/dev/null || true"
 echo "pushed to $TARGET:$DEST_DIR"

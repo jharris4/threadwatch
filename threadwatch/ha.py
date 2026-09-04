@@ -310,26 +310,32 @@ def thread_devices(ha: HomeAssistant, log: Callable[[str], None] = lambda m: Non
 def parse_dataset_tlv(hex_tlv: str) -> dict:
     """The MeshCoP TLVs of a Thread Operational Dataset, the few we use:
     channel, PAN id, extended PAN id, network name, network key."""
-    data = bytes.fromhex(hex_tlv.strip())
+    try:
+        data = bytes.fromhex(hex_tlv.strip())
+    except ValueError as exc:
+        raise HAError(f"Home Assistant returned a dataset that is not hex ({exc})") from exc
     out: dict[str, Any] = {}
     off = 0
     while off + 2 <= len(data):
         t, n = data[off], data[off + 1]
         off += 2
         if n == 255:
+            if off + 2 > len(data):
+                break
             n = struct.unpack(">H", data[off:off + 2])[0]
             off += 2
+        # A dataset cut short leaves fewer bytes than the TLV declares.
         val = data[off:off + n]
         off += n
-        if t == 0 and n >= 3:
+        if t == 0 and len(val) >= 3:
             out["channel"] = struct.unpack(">H", val[1:3])[0]
-        elif t == 1 and n == 2:
+        elif t == 1 and len(val) == 2:
             out["pan_id"] = struct.unpack(">H", val)[0]
-        elif t == 2 and n == 8:
+        elif t == 2 and len(val) == 8:
             out["ext_pan_id"] = val.hex()
         elif t == 3:
             out["network_name"] = val.decode("utf-8", errors="replace")
-        elif t == 5 and n == 16:
+        elif t == 5 and len(val) == 16:
             out["network_key"] = val.hex()
     return out
 

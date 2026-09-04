@@ -398,3 +398,25 @@ class CallManyTest(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+
+
+class DatasetTlvTest(unittest.TestCase):
+    def test_truncated_tlv_yields_no_field_instead_of_raising(self):
+        for bad in ("0003", "004b", "00ff01"):
+            self.assertEqual(parse_dataset_tlv(bad), {})
+
+    def test_non_hex_dataset_raises_haerror(self):
+        with self.assertRaises(HAError):
+            parse_dataset_tlv("zzzz")
+
+    def test_well_formed_dataset_still_parses(self):
+        import struct
+        body = (bytes([0, 3, 0]) + struct.pack(">H", 25)
+                + bytes([1, 2]) + struct.pack(">H", 0x1234)
+                + bytes([2, 8]) + bytes(range(8))
+                + bytes([3, 4]) + b"Home"
+                + bytes([5, 16]) + bytes(range(16)))
+        self.assertEqual(parse_dataset_tlv(body.hex()), {
+            "channel": 25, "pan_id": 0x1234, "ext_pan_id": "0001020304050607",
+            "network_name": "Home",
+            "network_key": "000102030405060708090a0b0c0d0e0f"})

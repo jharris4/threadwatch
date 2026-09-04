@@ -34,19 +34,27 @@ def freeze_ring(cfg, label: str = "incident", now: float | None = None) -> tuple
     dest = cfg.incidents_dir / f"{stamp}_{label}"
     dest.mkdir(parents=True, exist_ok=False)
     count = 0
-    for f in sorted(cfg.ring_dir.glob("threadwatch-*.pcap")) if cfg.ring_dir.exists() else []:
-        try:
-            shutil.copy2(f, dest / f.name)
-        except FileNotFoundError:
-            # The ring rotated under us and pruned its oldest file between
-            # the glob and the copy. That file was leaving anyway; the rest
-            # of the snapshot is still worth having.
-            continue
-        count += 1
-    for extra in STATE_FILES:
-        src = cfg.state_dir / extra
-        if src.exists():
-            shutil.copy2(src, dest / extra)
-    if cfg.events_dir.exists():
-        shutil.copytree(cfg.events_dir, dest / "events", dirs_exist_ok=True)
+    try:
+        for f in sorted(cfg.ring_dir.glob("threadwatch-*.pcap")) if cfg.ring_dir.exists() else []:
+            try:
+                shutil.copy2(f, dest / f.name)
+            except FileNotFoundError:
+                # The ring rotated under us and pruned its oldest file between
+                # the glob and the copy. That file was leaving anyway; the rest
+                # of the snapshot is still worth having.
+                continue
+            count += 1
+        for extra in STATE_FILES:
+            src = cfg.state_dir / extra
+            if src.exists():
+                shutil.copy2(src, dest / extra)
+        if cfg.events_dir.exists():
+            shutil.copytree(cfg.events_dir, dest / "events", dirs_exist_ok=True)
+    except BaseException:
+        # A copy cut short by a full disk, an I/O error or Ctrl-C would
+        # otherwise stay behind looking like a whole incident, with nothing
+        # to say it is not. Remove it (on a full disk that also gives the
+        # ring its space back) and let the caller report and retry.
+        shutil.rmtree(dest, ignore_errors=True)
+        raise
     return dest, count

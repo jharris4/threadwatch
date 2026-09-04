@@ -750,11 +750,15 @@ class Pipeline:
     # -------------------------------------------------- freeze on critical
 
     AUTO_FREEZE_COOLDOWN_S = 6 * 3600
+    AUTO_FREEZE_RETRY_S = 30 * 60      # after a failed freeze: the next storm event tries again
 
     def _auto_freeze(self, ts: float, reason: str) -> Optional[str]:
         """Snapshot the ring for a critical event, at most once per cooldown
         (one storm is one incident, however long it rumbles). Returns the
-        incident label, or None when off, replaying, or inside the cooldown."""
+        incident label, or None when off, replaying, or inside the cooldown.
+        The cooldown is armed before the copy starts, so the storm events
+        that fire while it runs do not start more copies; a copy that
+        fails shortens it to AUTO_FREEZE_RETRY_S (see _freeze_now)."""
         if not self.cfg.freeze_on_critical or self.ephemeral:
             return None
         if ts - self._last_auto_freeze < self.AUTO_FREEZE_COOLDOWN_S:
@@ -772,8 +776,13 @@ class Pipeline:
         try:
             dest, count = freeze_ring(self.cfg, label)
         except Exception as exc:
+            # Nothing was kept (freeze_ring removes a half copy), so the
+            # six-hour cooldown armed for this attempt must not stand: the
+            # next storm event after the retry hold tries again.
+            self._last_auto_freeze -= self.AUTO_FREEZE_COOLDOWN_S - self.AUTO_FREEZE_RETRY_S
             self.events.emit("incident_freeze_failed", "warning", time.time(), label=label,
-                             note=f"could not freeze the ring for {label}: {exc}")
+                             note=(f"could not freeze the ring for {label}: {exc}; nothing was kept, and "
+                                   f"the next storm event after {self.AUTO_FREEZE_RETRY_S // 60} min tries again"))
             return
         self.events.emit("incident_frozen", "info", time.time(), label=label, path=str(dest),
                          ring_files=count, note=f"{count} ring files kept as {dest.name}")

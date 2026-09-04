@@ -329,6 +329,39 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual(frozen, ["auto-storm"])
         self.assertEqual(Pipeline(self.cfg, NullEventLog(), test_decryptor(), ephemeral=True)._last_auto_freeze, 0.0)
 
+    def test_a_failed_freeze_is_retried_after_a_hold_not_six_hours(self):
+        from threadwatch import freeze as freeze_mod
+        self.cfg.freeze_on_critical = True
+        pipe = self._pipe()
+        attempts = []
+
+        def flaky(cfg, label):
+            attempts.append(label)
+            if len(attempts) == 1:
+                raise OSError(28, "No space left on device")
+            return cfg.incidents_dir / f"20231114T221500_{label}", 3
+
+        original = freeze_mod.freeze_ring
+        freeze_mod.freeze_ring = flaky
+        try:
+            pipe.freezer = pipe._freeze_now                # in this thread, so each outcome is known at once
+            pipe.detector.storm_active = True
+            pipe.detector.last_alert_details = {"period": 80.5, "onsets": [1.0, 2.0, 3.0]}
+            pipe.detector.add_frame = lambda ts: setattr(pipe.detector, "storm_active", True)
+            t0 = 1_700_000_000.0
+            for dt in (0, 31 * 60, 2 * 3600):             # the storm event repeats every 30 min at most
+                pipe.ingest(frame(t0 + dt, ROUTER))
+        finally:
+            freeze_mod.freeze_ring = original
+        storms = [r["auto_freeze"] for r in pipe.events.records if r["event"] == "phase_locked_storm"]
+        self.assertEqual(storms, ["auto-storm", "auto-storm", None])   # failed; retried; then the real cooldown
+        self.assertEqual(attempts, ["auto-storm", "auto-storm"])
+        failed = [r for r in pipe.events.records if r["event"] == "incident_freeze_failed"]
+        self.assertEqual(len(failed), 1)
+        self.assertIn("No space left", failed[0]["note"])
+        self.assertIn("tries again", failed[0]["note"])
+        self.assertEqual([r["ring_files"] for r in pipe.events.records if r["event"] == "incident_frozen"], [3])
+
     def test_freeze_off_by_default_and_never_in_replay(self):
         for ephemeral in (False, True):
             self.cfg.freeze_on_critical = ephemeral        # on only for the replay case

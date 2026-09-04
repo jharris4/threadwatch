@@ -73,9 +73,11 @@ but the few seconds the daemon is down; the quiet detector knows about
 that gap and does not count it against any device.
 
 If you develop on a workstation and deploy to the host, `bin/push-to-host.sh
-user@host --push-only` rsyncs the working tree including the gitignored
-config and secrets, then restart as above. Without `--push-only` it also
-runs setup-host.sh for you.
+user@host --push-only` rsyncs what git tracks, plus `config/` with its
+gitignored secrets, then restart as above. An uncommitted edit to a tracked
+file still ships; a file that was never committed does not, and the script
+warns when one of those is a `.py` or lives in `bin/`. Without `--push-only`
+it also runs setup-host.sh for you.
 
 ## 6. Placement and storage
 

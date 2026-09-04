@@ -339,6 +339,22 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual([r["event"] for r in pipe2.events.records], ["device_returned"])
         self.assertNotIn("quiet_reported", pipe2.seen.table[SENSOR])
 
+    def test_an_announced_silence_survives_a_crash_before_the_next_save(self):
+        # The flag is what stops a restart announcing the same silence twice,
+        # so it is persisted with the event, not left for the 30 s save the
+        # outage may arrive before. A return already persisted at once.
+        now = time.time()
+        pipe = self._pipe()
+        for i in range(10):
+            pipe.ingest(frame(now - 3 * 3600 + i, SENSOR))
+        pipe.periodic(now - 60 * 60)
+        self.assertEqual(self._quiet(pipe), [SENSOR])
+        self.assertTrue(json.loads(pipe.seen.state_path.read_text())[SENSOR]["quiet_reported"])
+        self._status(updated=now, last_frame_ts=now)
+        pipe2 = self._pipe()                      # no seen.save() in between
+        self.assertEqual(self._quiet(pipe2), [])  # not announced a second time
+        self.assertEqual(pipe2.quiet_reported, {SENSOR})
+
     def test_replay_neither_reads_nor_writes_live_state(self):
         now = time.time()
         live = self._pipe()

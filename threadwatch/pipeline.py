@@ -196,7 +196,7 @@ class Pipeline:
                 if row.get("quiet_reported"):
                     self.quiet_reported.add(addr)
                 elif dominant is None or row.get("pan") in (None, dominant):
-                    self._report_quiet(addr, row, now)
+                    self._report_quiet(addr, row, now, persist=False)
                     announced += 1
             if announced:
                 self.seen.save()
@@ -1012,12 +1012,20 @@ class Pipeline:
                                "rejoin, starvation, partition and sleepy-device tracking have stopped until "
                                "the file is updated and the recorder restarted."))
 
-    def _report_quiet(self, addr: str, row: dict, now: float) -> None:
+    def _report_quiet(self, addr: str, row: dict, now: float, persist: bool = True) -> None:
         """Emit device_quiet once and remember, in memory and in the row
-        (persisted with last-seen.json), that it has been announced."""
+        (persisted with last-seen.json), that it has been announced.
+
+        Persist at once, as a return does: the flag is what stops a restart
+        announcing this silence a second time, and waiting for the next 30 s
+        save leaves a window where the outage that follows costs the flag but
+        not the silence. Quiets are rare, saves are cheap. The startup pass
+        passes persist=False and saves once for the batch it announces."""
         self.quiet_reported.add(addr)
         row["quiet_reported"] = True
         self.seen._dirty = True
+        if persist:
+            self.seen.save()
         silent = self.silence_s(row, now)
         # A device the sniffer barely hears goes "quiet" whenever the link
         # fades; log it, but do not page for it.

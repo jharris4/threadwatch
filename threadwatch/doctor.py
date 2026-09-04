@@ -59,6 +59,24 @@ def check_inventory(cfg) -> list[Check]:
     return [(OK, "inventory", text)]
 
 
+def check_border_routers(cfg) -> list[Check]:
+    """Can this host see the Thread border routers over mDNS? Without that
+    an Apple hub's new address after a reboot stays unnamed."""
+    if cfg.border_router_browse_s <= 0:
+        return [(OK, "border routers", "mDNS browse disabled ([border_routers] browse_s = 0)")]
+    from .mdns import browse
+    try:
+        found = browse(timeout=3.0)
+    except OSError as exc:
+        return [(WARN, "border routers", f"mDNS browse failed ({exc})")]
+    with_addr = [r for r in found if r.get("ext")]
+    if not with_addr:
+        return [(WARN, "border routers", "none found over mDNS: is this host on the routers' subnet, or is mDNS "
+                                         "reflected between VLANs? Apple hubs' address changes will go unnamed")]
+    names = ", ".join(f"{r['instance']} ({r['ext']})" for r in with_addr)
+    return [(OK, "border routers", f"{len(with_addr)} found over mDNS: {names}")]
+
+
 def check_credentials(cfg) -> list[Check]:
     from .pipeline import credentials_path
     path = credentials_path(cfg)
@@ -277,6 +295,7 @@ def check_web(cfg) -> list[Check]:
 def run_doctor(cfg, find_port: Callable[[], str] | None = None, now: float | None = None) -> list[Check]:
     checks = []
     for step in (lambda: check_config(cfg), lambda: check_inventory(cfg), lambda: check_credentials(cfg),
+                 lambda: check_border_routers(cfg),
                  lambda: check_dongle(cfg, find_port), lambda: check_daemon(cfg, now), lambda: check_ring(cfg, now),
                  lambda: check_disk(cfg), lambda: check_writable(cfg), check_clock, check_services,
                  lambda: check_alerts(cfg), lambda: check_web(cfg)):

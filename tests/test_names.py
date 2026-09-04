@@ -162,3 +162,26 @@ class Rloc16RoleTest(unittest.TestCase):
         self.assertIsNone(rloc16_role(None))
         self.assertIsNone(rloc16_role("zz"))
 
+
+class LearnedBorderRoutersTest(unittest.TestCase):
+    def test_state_file_names_a_new_address_from_the_bound_entry(self):
+        from threadwatch.names import DeviceNames
+        with tempfile.TemporaryDirectory() as d:
+            inv = Path(d) / "devices.json"
+            inv.write_text(json.dumps([{"name": "Living Room Apple TV", "extendedAddress": TV1.upper()},
+                                       {"name": "OTBR", "borderRouter": "otbr.local"}]))
+            learned = Path(d) / "border-routers.json"
+            learned.write_text(json.dumps({
+                "appletv-living-room.local": {"addr": TV2, "name": "Living Room Apple TV", "instance": "AppleTV Living Room",
+                                              "vendor": "Apple", "model": "BorderRouter"},
+                "otbr.local": {"addr": AQ, "name": None, "instance": "OTBR #1"},
+                "junk.local": {"addr": "nope"},
+            }))
+            names = DeviceNames(inv, learned)
+            self.assertEqual(names.name(TV2), "Living Room Apple TV")
+            self.assertEqual(names.addresses_of(TV1), [TV1, TV2])
+            self.assertEqual(names.name(AQ), "OTBR")                       # borderRouter field, even unnamed in state
+            self.assertEqual(names.border_routers[TV2]["instance"], "AppleTV Living Room")
+            self.assertNotIn("nope", names.border_routers)
+            self.assertIsNone(DeviceNames(inv, Path(d) / "absent.json").name(TV2))
+

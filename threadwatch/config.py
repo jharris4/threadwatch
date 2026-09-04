@@ -47,6 +47,11 @@ class Config:
     # sniffer only sometimes hears, not a device losing its parent. 0 pages
     # every episode.
     poll_rearm_s: float = 60 * 60
+    # [border_routers] how often the recorder asks the LAN (mDNS, the
+    # _meshcop._udp service every border router advertises) which extended
+    # address each border router has now. Apple hubs change theirs on every
+    # reboot; this is how the new one gets the old name. 0 disables.
+    border_router_browse_s: float = 10 * 60
     # [summary] one daily_summary event per local day, at this hour (-1 off).
     summary_hour: int = 8
     summary_severity: str = "notice"
@@ -110,6 +115,8 @@ def load(path: Optional[Path]) -> Config:
         cfg.link_hold_s = float(link.get("hold_s", cfg.link_hold_s))
         polls = raw.get("polls", {})
         cfg.poll_rearm_s = float(polls.get("rearm_s", cfg.poll_rearm_s))
+        brs = raw.get("border_routers", {})
+        cfg.border_router_browse_s = float(brs.get("browse_s", cfg.border_router_browse_s))
         summary = raw.get("summary", {})
         cfg.summary_hour = int(summary.get("hour", cfg.summary_hour))
         if not -1 <= cfg.summary_hour <= 23:

@@ -44,7 +44,9 @@ question: *why did this device go offline?*
   repeat offender shows as one.
 - **Device tracking without a controller** — including HomeKit-only
   Thread devices that never appear in Home Assistant. `threadwatch
-  report` lists quiet devices and unknown addresses to label.
+  report` lists quiet devices and unknown addresses to label. Apple hubs,
+  which take a new Thread address on every reboot, are followed over
+  mDNS and keep their names without anyone editing the inventory.
 - **Decryption** (`docs/CREDENTIALS.md`): the recorder needs the Thread
   network key and does not start without it. It decrypts MLE and 6LoWPAN
   on the fly, which is where sleepy devices' identities, rejoin attempts,

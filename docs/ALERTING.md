@@ -47,6 +47,8 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `retransmission_elevation` | warning, or notice when one sender-target pair is `top_share` >= 0.5 of the retries (a chronic bad link, not a storm precursor) | `rate`, `baseline`, `addr`, `name`, `top_sender`, `top_target`, `top_share`, `note` |
 | `partition_or_leader_change` | warning | `previous`, `current`, each with `partition`, `leader_router` and `leader` (the router id with the device's name once the MLE layer has matched it) |
 | `credentials_stale` | warning | `failed`, `note` |
+| `border_router_address_changed` | notice | `addr`, `name`, `previous`, `hostname`, `note` |
+| `border_router_unlisted` | notice | `addr`, `hostname`, `note` |
 | `phase_locked_storm` | critical | detector snapshot (`period_s`, `onsets`, ...) |
 | `incident_frozen` | info | `label`, `path`, `ring_files`, `note` (with `[capture] freeze_on_critical`) |
 | `incident_freeze_failed` | warning | `label`, `note` |
@@ -110,6 +112,18 @@ been heard 200 frames and refreshed once a day, so a drop that lasts a day
 becomes the new normal. `rssi_recovered` closes it, either because the
 signal came back or because the refresh re-based the reference (the note
 says which). `drop_db = 0` turns the detector off.
+
+`border_router_address_changed` is an Apple hub rebooting: Apple TVs and
+HomePods take a new Thread extended address every time. The recorder
+asks the LAN over mDNS every `[border_routers] browse_s` (default 10 min)
+which address each border router has now, keyed by its stable hostname,
+and names the new address from the same devices.json entry; the old
+address is retired rather than reported quiet. `border_router_unlisted`,
+once per router, is one that matches no entry: name it with `threadwatch
+adopt`, or give an entry `"borderRouter": "<hostname>"`. Both need the
+recorder to hear the routers' mDNS, which is link-local: the same subnet,
+or a network that reflects mDNS between VLANs. `threadwatch doctor` says
+whether it can.
 
 `credentials_stale` means the network key no longer matches the mesh,
 usually because it was re-commissioned: frames keep failing to decrypt and

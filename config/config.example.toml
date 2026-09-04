@@ -70,6 +70,16 @@ period_max_s = 180.0       #   with a stable period in this range
 period_onsets = 3          # consecutive periodic onsets before alerting
 alert_cooldown_s = 1800.0
 
+[border_routers]
+# Apple hubs (Apple TV, HomePod) change their Thread extended address on
+# every reboot. Every border router advertises its current address over
+# mDNS with a stable hostname, so the recorder asks the LAN this often and
+# names the new address from the old entry (docs/HOME-ASSISTANT.md,
+# "Apple TVs"). mDNS is link-local: the recorder must be on the routers'
+# subnet, or the network must reflect mDNS between VLANs; `threadwatch
+# doctor` says what this host sees. 0 disables.
+browse_s = 600             # 10 min
+
 [web]
 # Review pages: bin/threadwatch web (systemd/threadwatch-web.service).
 # Read-only, no authentication: keep it on your LAN or behind your proxy.

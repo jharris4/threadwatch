@@ -607,6 +607,99 @@ class CredentialsTest(unittest.TestCase):
         self.assertEqual(len(stale()), 2)
 
 
+class BorderRouterTest(unittest.TestCase):
+    """An Apple hub reboots, takes a new Thread address, keeps its name."""
+
+    OLD, NEW, OTBR = "c0ffee0000000001", "1234567890abcdef", "07b200000000af1b"
+    HOST = "appletv-living-room.local"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        (d / "devices.json").write_text(json.dumps([
+            {"name": "Living Room Apple TV", "extendedAddress": self.OLD.upper()},
+            {"name": "HA OTBR", "borderRouter": "HomeAssistant-OTBR.local."}]))
+        self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json", border_router_browse_s=0)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    @staticmethod
+    def router(host, ext, instance="AppleTV Living Room", vendor="Apple", model="BorderRouter"):
+        return {"hostname": host, "ext": ext, "instance": instance, "vendor": vendor, "model": model}
+
+    def test_rebooted_hub_keeps_its_name_and_the_old_address_retires(self):
+        pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
+        t = time.time() - 3600                                  # real-clock times: the restart below judges silences by now
+        pipe.ingest(frame(t, self.OLD))
+        pipe._apply_border_routers([self.router(self.HOST, self.OLD),
+                                    self.router("homeassistant-otbr.local", self.OTBR, "HA OTBR #AF1B", "Home Assistant")], t)
+        self.assertEqual([r["event"] for r in pipe.events.records if r["event"].startswith("border_router")], [])
+        self.assertEqual(pipe.routers[self.HOST]["name"], "Living Room Apple TV")          # bound by listed address
+        self.assertEqual(pipe.routers["homeassistant-otbr.local"]["name"], "HA OTBR")      # bound by borderRouter
+        self.assertEqual(pipe.names.name(self.OTBR), "HA OTBR")
+        # Reboot: same hostname, new address.
+        pipe._apply_border_routers([self.router(self.HOST, self.NEW)], t + 600)
+        ev = [r for r in pipe.events.records if r["event"] == "border_router_address_changed"]
+        self.assertEqual(len(ev), 1)
+        self.assertEqual((ev[0]["addr"], ev[0]["previous"], ev[0]["name"]), (self.NEW, self.OLD, "Living Room Apple TV"))
+        self.assertIn("nothing to edit", ev[0]["note"])
+        self.assertEqual(pipe.names.name(self.NEW), "Living Room Apple TV")
+        self.assertEqual(pipe.seen.table[self.OLD]["rotated_to"], self.NEW)
+        self.assertEqual(pipe.routers[self.HOST]["previous"], [{"addr": self.OLD, "until": t + 600}])
+        pipe.periodic(t + 3000)                            # 50 min on: the old address never reads as quiet
+        self.assertEqual([r for r in pipe.events.records if r["event"] == "device_quiet"], [])
+        pipe.ingest(frame(time.time() - 60, self.NEW))
+        self.assertEqual(pipe.events.records[-1]["name"], "Living Room Apple TV")   # device_first_seen, named
+        # The binding survives a restart, through the state file.
+        pipe.seen.save()
+        pipe2 = Pipeline(self.cfg, NullEventLog(), test_decryptor())
+        self.assertEqual(pipe2.names.name(self.NEW), "Living Room Apple TV")
+        self.assertEqual(pipe2.names.border_routers[self.NEW]["hostname"], self.HOST)
+        self.assertEqual(pipe2.names.resolve("living room apple tv")[0], [self.OLD, self.NEW])
+        self.assertEqual([r["event"] for r in pipe2.events.records if r["event"] == "device_quiet"], [])
+        self.assertEqual(pipe2.routers[self.HOST]["addr"], self.NEW)
+
+    def test_a_router_matching_no_entry_is_announced_once(self):
+        pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
+        t = 1_700_000_000.0
+        stranger = self.router("homepod-kitchen.local", "0011223344556677", "HomePod Kitchen")
+        pipe._apply_border_routers([stranger], t)
+        pipe._apply_border_routers([stranger], t + 600)
+        ev = [r for r in pipe.events.records if r["event"] == "border_router_unlisted"]
+        self.assertEqual(len(ev), 1)
+        self.assertIn("homepod-kitchen.local", ev[0]["note"])
+        self.assertIsNone(pipe.names.name("0011223344556677"))
+        pipe._apply_border_routers([self.router("homepod-kitchen.local", "8899aabbccddeeff", "HomePod Kitchen")], t + 1200)
+        ev = [r for r in pipe.events.records if r["event"] == "border_router_address_changed"]
+        self.assertEqual((ev[0]["name"], ev[0]["previous"]), (None, "0011223344556677"))
+        self.assertIn("Not in devices.json", ev[0]["note"])
+
+    def test_browse_runs_in_a_thread_and_applies_on_the_next_tick(self):
+        from threadwatch import mdns
+        self.cfg.border_router_browse_s = 600
+        pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
+        calls = []
+        original = mdns.browse
+        mdns.browse = lambda timeout=3.0, **kw: calls.append(timeout) or [self.router(self.HOST, self.OLD)]
+        try:
+            t = 1_700_000_000.0
+            pipe.periodic(t)                       # starts the browse
+            pipe._browse_thread.join(5)
+            self.assertEqual(pipe.routers, {})     # nothing applied until the next tick
+            pipe.periodic(t + 30)                  # applies it
+            self.assertEqual(calls, [3.0])
+            self.assertEqual(pipe.routers[self.HOST]["name"], "Living Room Apple TV")
+            pipe.periodic(t + 60)                  # not yet time for another
+            self.assertIsNone(pipe._browse_thread)
+            self.assertEqual(len(calls), 1)
+            pipe.periodic(t + 601)
+            pipe._browse_thread.join(5)
+            self.assertEqual(len(calls), 2)
+        finally:
+            mdns.browse = original
+
+
 class PartitionLeaderTest(unittest.TestCase):
     """'leader router 60' on the status page should name the device."""
 

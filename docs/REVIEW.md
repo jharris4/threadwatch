@@ -32,6 +32,9 @@ is no authentication: keep it on your LAN or behind your own proxy.
   *child of Mudroom Air Quality*, each with the address and how long ago
   it was confirmed, since a re-attach changes it and a sleepy child only
   refreshes it when it next talks.
+  A border router carries its mDNS identity (instance, vendor, model),
+  and an Apple hub's retired address, after a reboot gave it a new one,
+  says which address it became.
   `?only=unknown|quiet|marginal|down|foreign|routers|children` narrows
   it and `?sort=last|rssi|frames` orders it (longest unheard, weakest,
   busiest); the links at the top of the page set both. `/api/devices`

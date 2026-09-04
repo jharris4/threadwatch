@@ -372,6 +372,15 @@ def now_card(seen: LastSeen, names: DeviceNames, events_dir: Path, min_rssi_dbm:
     return {"quiet": quiet, "degraded": degraded, "unknown": unknown, "summary": summary}
 
 
+def live_address(addrs: list[str], table: dict[str, dict]) -> str:
+    """Which of a device's addresses to describe it by: the one heard most
+    recently. A rotating device reached by name lists its addresses in
+    inventory order (oldest first), and reached by an old address puts
+    that one first; either way the header must not describe a retired
+    address while the cards below show the live one."""
+    return max(addrs, key=lambda a: ((table.get(a) or {}).get("last_seen") or 0, -addrs.index(a)))
+
+
 def device_history(events_dir: Path, addr: str, now: Optional[float] = None) -> list[dict]:
     """Every episode involving one device, across all days, newest first."""
     addr = addr.lower()

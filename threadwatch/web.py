@@ -21,7 +21,7 @@ from .events import DAY_RE, day_of, next_day, prev_day
 from .names import AmbiguousName, DeviceNames, LastSeen, load_names
 from .review import (DEVICE_FILTERS, DEVICE_SORTS, capture_for_day, day_episodes, day_index,
                      days_available, device_rows, devices_history, dominant_pan,
-                     fmt_bytes, fmt_duration, incidents, now_card, select_devices, storage, today)
+                     fmt_bytes, fmt_duration, incidents, live_address, now_card, select_devices, storage, today)
 from .review import SEVERITY_RANK
 
 REFRESH_S = 60   # today's page reloads itself this often
@@ -431,7 +431,8 @@ class Site:
                                                f'<p><a href="/devices">all devices</a></p>')
         seen = self.seen()
         from .names import reception
-        entry = names.by_addr.get(addrs[0], {})
+        primary = live_address(addrs, seen.table)
+        entry = names.by_addr.get(primary, {})
         head = []
         if entry.get("model"):
             head.append(esc(entry["model"]))
@@ -439,7 +440,7 @@ class Site:
             head.append(f'{len(addrs)} addresses (rotates)')
         live = next((r for r in device_rows(seen, names, self.cfg.quiet_min_rssi_dbm, now,
                                             leader_router=self.leader_router())
-                     if r["addr"] == addrs[0]), None)
+                     if r["addr"] == primary), None)
         if live and live["role"]:
             head.append(self.role_html(live, now))
         if live and live.get("border_router_label"):
@@ -477,7 +478,7 @@ class Site:
                  if trs else '<p class="empty">no events for this device</p>')
         title = name if name != addrs[0] else "unknown device"
         return self.page(title, f'<h1>{esc(title)}</h1>{card}<h2>history</h2>{table}'
-                                f'<p><a class="muted" href="/api/device/{esc(addrs[0])}">JSON</a></p>')
+                                f'<p><a class="muted" href="/api/device/{esc(primary)}">JSON</a></p>')
 
     def status_page(self) -> str:
         st = self.status()
@@ -606,18 +607,20 @@ class Site:
             eps = devices_history(self.cfg.events_dir, addrs)
             for ep in eps:
                 ep.pop("events", None)
-            table = self.seen().table
-            # last_seen stays the primary address's row (the shape sensors
-            # were written against); the per-address rows of a device whose
-            # address rotates are beside it.
-            live = next((r for r in device_rows(self.seen(), names, self.cfg.quiet_min_rssi_dbm,
+            seen = self.seen()
+            table = seen.table
+            # addr and last_seen describe the live address (the shape
+            # sensors were written against); the per-address rows of a
+            # device whose address rotates are beside it.
+            primary = live_address(addrs, table)
+            live = next((r for r in device_rows(seen, names, self.cfg.quiet_min_rssi_dbm,
                                                 leader_router=self.leader_router())
-                         if r["addr"] == addrs[0]), {})
-            return {"addr": addrs[0], "addresses": addrs, "name": name if name != addrs[0] else None,
+                         if r["addr"] == primary), {})
+            return {"addr": primary, "addresses": addrs, "name": name if name != addrs[0] else None,
                     "live": {k: live.get(k) for k in ("role", "rloc16", "rloc16_ts", "router_id",
                                                       "leader", "parent", "parent_addr", "border_router",
                                                       "rotated_to")},
-                    "last_seen": table.get(addrs[0]),
+                    "last_seen": table.get(primary),
                     "addresses_seen": {a: table.get(a) for a in addrs}, "episodes": eps}
         if path == "/api/days":
             return {"days": day_index(self.cfg.events_dir)}

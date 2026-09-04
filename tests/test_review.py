@@ -305,6 +305,35 @@ class DayViewTest(unittest.TestCase):
             httpd.shutdown()
             httpd.server_close()
 
+    def test_device_page_describes_the_live_address_however_it_was_reached(self):
+        from threadwatch.review import live_address
+        from threadwatch.names import LastSeen
+        table = LastSeen(self.cfg.state_dir / "last-seen.json").table
+        self.assertEqual(live_address([TV1, TV2], table), TV2)                  # by name: inventory order
+        self.assertEqual(live_address([TV2, TV1], table), TV2)                  # by address: the asked-for one first
+        self.assertEqual(live_address(["0000000000000001", TV1], {}), "0000000000000001")   # nothing heard: the first
+        # The recorder has bound the TV's hostname to its live address.
+        (self.cfg.state_dir / "border-routers.json").write_text(json.dumps({
+            "appletv-living-room.local": {"addr": TV2, "name": "Living Room Apple TV", "instance": "AppleTV Living Room",
+                                          "vendor": "Apple", "model": "BorderRouter"}}))
+        httpd = make_server(self.cfg, "127.0.0.1", 0)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{httpd.server_port}"
+        try:
+            for path in ("/device/Living%20Room", f"/device/{TV1}", f"/device/{TV2}"):
+                with urllib.request.urlopen(base + path, timeout=5) as r:
+                    body = r.read().decode()
+                self.assertIn("border router AppleTV Living Room (Apple BorderRouter)", body, path)
+                self.assertIn(f'href="/api/device/{TV2}"', body, path)
+                self.assertLess(body.index(f"<code>{TV2}</code>"), body.index(f"<code>{TV1}</code>"))
+            with urllib.request.urlopen(base + "/api/device/Living%20Room", timeout=5) as r:
+                data = json.loads(r.read())
+            self.assertEqual((data["addr"], data["addresses"], data["live"]["border_router"]),
+                             (TV2, [TV1, TV2], "appletv-living-room.local"))
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
     def test_device_history_is_newest_first(self):
         kinds = [e["kind"] for e in device_history(self.cfg.events_dir, AQ)]
         self.assertEqual(kinds, ["retransmissions", "quiet"])
@@ -357,7 +386,8 @@ class DayViewTest(unittest.TestCase):
             self.assertIn("<h1>unknown device</h1>", get("/device/72d035122fdf06f6")[1])
             data = json.loads(get(f"/api/device/{TV1}")[1])
             self.assertEqual(data["addresses"], [TV1, TV2])
-            self.assertEqual(data["last_seen"]["rssi"], -55.0)                  # the primary address's row
+            self.assertEqual(data["addr"], TV2)                                 # reached by the old address...
+            self.assertEqual(data["last_seen"]["rssi"], -56.0)                  # ...described by the live one
             self.assertEqual(sorted(data["addresses_seen"]), sorted([TV1, TV2]))
             self.assertEqual(data["addresses_seen"][TV2]["rssi"], -56.0)
             self.assertEqual(json.loads(get("/api/device/Living%20Room")[1])["addresses"], [TV1, TV2])

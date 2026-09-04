@@ -54,7 +54,7 @@ quiet channel the timers spread out naturally.
 
 ## Identifying a device without a controller
 
-1. `threadwatch report` — unknown addresses with inventory role,
+1. `threadwatch report` — unknown addresses with frame counts,
    reception quality (RSSI at the sniffer) and first/last-seen.
 2. Power-cycle the suspect device; watch which address goes silent and
    returns (`threadwatch report` again, or live in Wireshark).

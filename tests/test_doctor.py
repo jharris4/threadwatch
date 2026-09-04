@@ -138,10 +138,30 @@ class DoctorTest(unittest.TestCase):
         self.assertEqual(doctor.check_writable(self.cfg)[0][0], "ok")
         checks = doctor.run_doctor(self.cfg, find_port=lambda: "/dev/x", now=time.time())
         subjects = [c[1] for c in checks]
-        for s in ("config", "inventory", "credentials", "dongle", "capture", "ring", "disk", "writable",
-                  "clock", "alerts", "heartbeats", "web"):
+        for s in ("config", "inventory", "credentials", "dongle", "capture", "ring", "last-seen", "disk",
+                  "writable", "clock", "alerts", "heartbeats", "web"):
             self.assertIn(s, subjects)
         self.assertTrue(all(c[0] in ("ok", "warn", "FAIL") for c in checks))
+
+    def test_last_seen_check_reads_the_table_and_notices_one_kept_aside(self):
+        path = self.cfg.state_dir / "last-seen.json"
+        self.assertEqual(doctor.check_last_seen(self.cfg)[0][:2], ("ok", "last-seen"))
+        self.assertIn("not written yet", doctor.check_last_seen(self.cfg)[0][2])
+        path.write_text(json.dumps({"0011223344556677": {"last": 1.0}, "8899aabbccddeeff": {"last": 2.0}}))
+        self.assertEqual(doctor.check_last_seen(self.cfg), [("ok", "last-seen", "2 address(es) with a history")])
+        # A list parses as JSON but is not a table: bef55e2 treats it as unreadable.
+        path.write_text("[]")
+        level, _, text = doctor.check_last_seen(self.cfg)[0]
+        self.assertEqual(level, "FAIL")
+        self.assertIn("no device has a history", text)
+        path.write_text("{not json")
+        self.assertEqual(doctor.check_last_seen(self.cfg)[0][0], "FAIL")
+        # ...and the file the recorder kept aside is worth a line of its own.
+        path.write_text("{}")
+        (self.cfg.state_dir / "last-seen.json.corrupt").write_text("{oops")
+        checks = doctor.check_last_seen(self.cfg)
+        self.assertEqual([c[0] for c in checks], ["ok", "warn"])
+        self.assertIn("last-seen.json.corrupt", checks[1][2])
 
     def test_a_container_is_told_what_it_cannot_check_instead_of_warned(self):
         # docs/DOCKER.md promised these two warnings were expected and meant

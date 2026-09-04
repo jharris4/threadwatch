@@ -164,6 +164,29 @@ def check_ring(cfg, now: float | None = None) -> list[Check]:
     return [(OK, "ring", text)]
 
 
+def check_last_seen(cfg) -> list[Check]:
+    """The last-seen table is the only record of when each device was heard
+    and which silences were announced. It is written atomically, so a file
+    that will not parse here is really damaged, not caught mid-write, and
+    the recorder is running blind to every device's history."""
+    path = cfg.state_dir / "last-seen.json"
+    kept = sorted(cfg.state_dir.glob("last-seen.json.corrupt*")) if cfg.state_dir.exists() else []
+    if not path.exists():
+        return [(OK, "last-seen", "not written yet (nothing heard here so far)")]
+    try:
+        table = json.loads(path.read_text())
+        if not isinstance(table, dict):
+            raise ValueError(f"expected an object, got {type(table).__name__}")
+    except (ValueError, OSError) as exc:
+        return [(FAIL, "last-seen", f"last-seen.json is unreadable ({exc}): the recorder is starting from "
+                                    "an empty table, so no device has a history and none can go quiet")]
+    out = [(OK, "last-seen", f"{len(table)} address(es) with a history")]
+    if kept:
+        out.append((WARN, "last-seen", f"an earlier table was kept aside as {kept[-1].name}: "
+                                       "that history is lost unless you put it back"))
+    return out
+
+
 def check_disk(cfg) -> list[Check]:
     from .review import fmt_bytes, storage
     sto = storage(cfg)
@@ -329,7 +352,8 @@ def run_doctor(cfg, find_port: Callable[[], str] | None = None, now: float | Non
     for step in (lambda: check_config(cfg), lambda: check_inventory(cfg), lambda: check_credentials(cfg),
                  lambda: check_border_routers(cfg),
                  lambda: check_dongle(cfg, find_port), lambda: check_daemon(cfg, now), lambda: check_ring(cfg, now),
-                 lambda: check_disk(cfg), lambda: check_writable(cfg), check_clock, check_services,
+                 lambda: check_last_seen(cfg), lambda: check_disk(cfg), lambda: check_writable(cfg), check_clock,
+                 check_services,
                  lambda: check_alerts(cfg), lambda: check_web(cfg)):
         try:
             checks.extend(step())

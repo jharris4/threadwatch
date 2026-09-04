@@ -1009,5 +1009,10 @@ def load_decryptor(cfg):
         key = b""
     if len(key) != 16:
         raise CredentialsError(f"{cred_path}: network_key must be 32 hex digits ({how})")
-    from .crypto import Decryptor
+    try:
+        from .crypto import Decryptor
+    except ModuleNotFoundError as exc:
+        raise CredentialsError(f"decryption needs the 'cryptography' package ({exc}); "
+                               "pip install cryptography, or apt install python3-cryptography "
+                               "into the interpreter bin/threadwatch uses") from exc
     return Decryptor(network_key=key)

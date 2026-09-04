@@ -144,3 +144,59 @@ class DoctorTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MissingCryptographyTest(unittest.TestCase):
+    """requirements.txt calls cryptography optional; the recorder needs it."""
+
+    def test_doctor_fails_when_cryptography_is_absent(self):
+        import builtins
+        from threadwatch import doctor as doc
+        real = builtins.__import__
+
+        def blocked(name, *a, **k):
+            if name == "cryptography" or name.startswith("cryptography."):
+                raise ModuleNotFoundError("No module named 'cryptography'")
+            return real(name, *a, **k)
+
+        builtins.__import__ = blocked
+        try:
+            checks = doc.check_credentials(_cfg_with_key())
+        finally:
+            builtins.__import__ = real
+        self.assertEqual([c[0] for c in checks], ["FAIL"])
+        self.assertIn("cryptography", checks[0][2])
+
+    def test_load_decryptor_raises_credentialserror_when_absent(self):
+        import builtins
+        import sys as _sys
+        from threadwatch.pipeline import CredentialsError, load_decryptor
+        real = builtins.__import__
+
+        def blocked(name, *a, **k):
+            if name == "cryptography" or name.startswith("cryptography."):
+                raise ModuleNotFoundError("No module named 'cryptography'")
+            return real(name, *a, **k)
+
+        cached = _sys.modules.pop("threadwatch.crypto", None)   # force a real import
+        builtins.__import__ = blocked
+        try:
+            with self.assertRaises(CredentialsError):
+                load_decryptor(_cfg_with_key())
+        finally:
+            builtins.__import__ = real
+            if cached is not None:
+                _sys.modules["threadwatch.crypto"] = cached
+
+
+def _cfg_with_key():
+    import tempfile
+    from pathlib import Path as _P
+    from threadwatch.config import Config
+    d = _P(tempfile.mkdtemp())
+    p = d / "credentials.toml"
+    p.write_text('[credentials]\nnetwork_key = "000102030405060708090a0b0c0d0e0f"\n')
+    p.chmod(0o600)
+    cfg = Config()
+    cfg.config_dir = d
+    return cfg

@@ -79,6 +79,11 @@ def check_border_routers(cfg) -> list[Check]:
 
 def check_credentials(cfg) -> list[Check]:
     from .pipeline import credentials_path
+    try:
+        import cryptography  # noqa: F401
+    except ModuleNotFoundError:
+        return [(FAIL, "credentials", "the 'cryptography' package is missing from this interpreter: "
+                                      "the recorder cannot decrypt and will not start")]
     path = credentials_path(cfg)
     if not path.exists():
         return [(FAIL, "credentials", f"{path.name} missing: the recorder does not start without the Thread "

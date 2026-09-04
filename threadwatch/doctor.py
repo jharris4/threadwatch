@@ -66,7 +66,7 @@ def check_border_routers(cfg) -> list[Check]:
         return [(OK, "border routers", "mDNS browse disabled ([border_routers] browse_s = 0)")]
     from .mdns import browse
     try:
-        found = browse(timeout=3.0)
+        found = browse()
     except OSError as exc:
         return [(WARN, "border routers", f"mDNS browse failed ({exc})")]
     with_addr = [r for r in found if r.get("ext")]

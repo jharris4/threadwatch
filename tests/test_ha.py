@@ -120,6 +120,15 @@ class FakeHA:
             raise r
         return r
 
+    def call_many(self, requests):
+        out = []
+        for type_, fields in requests:
+            try:
+                out.append(self.call(type_, **fields))
+            except HAError as exc:
+                out.append(exc)
+        return out
+
 
 class ThreadDevicesTest(unittest.TestCase):
     def test_matter_over_thread_devices_with_names_and_addresses(self):
@@ -362,6 +371,28 @@ class RunImportTest(unittest.TestCase):
         self.assertIn("no border routers answered", text)
         self.assertIn("Living Room Motion", text)
         self.assertNotIn("network key", text)
+
+
+
+class CallManyTest(unittest.TestCase):
+    def test_results_come_back_in_request_order_whatever_the_reply_order(self):
+        from threadwatch.ha import HomeAssistant
+        ha = HomeAssistant("http://x", "t")
+        sent = []
+        replies = [{"id": 2, "type": "result", "success": True, "result": "two"},
+                   {"id": 9, "type": "event", "event": {}},
+                   {"id": 3, "type": "result", "success": False, "error": {"message": "nope"}},
+                   {"id": 1, "type": "result", "success": True, "result": "one"}]
+        ha._send_json = lambda obj: sent.append(obj)
+        ha._recv_json = lambda: replies.pop(0)
+        out = ha.call_many([("a", {"x": 1}), ("b", {}), ("c", {})])
+        self.assertEqual([m["id"] for m in sent], [1, 2, 3])
+        self.assertEqual(sent[0], {"id": 1, "type": "a", "x": 1})
+        self.assertEqual(out[:2], ["one", "two"])
+        self.assertIsInstance(out[2], HAError)
+        self.assertIn("c: nope", str(out[2]))
+        replies.append({"id": 4, "type": "result", "success": True, "result": "four"})
+        self.assertEqual(ha.call("d"), "four")
 
 
 if __name__ == "__main__":

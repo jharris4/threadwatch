@@ -126,7 +126,7 @@ def plan_border_routers(entries: list[dict], routers: list[dict]) -> tuple[list[
 
 def run_import(cfg, inventory_path: Path, *, write: bool = False, url: Optional[str] = None,
                env_file: Optional[Path] = None, dataset_id: Optional[str] = None,
-               use_ha: bool = True, use_mdns: bool = True, mdns_seconds: float = 3.0,
+               use_ha: bool = True, use_mdns: bool = True, mdns_seconds: float = 4.0,
                devices: bool = True, credentials: bool = True,
                out: Callable[[str], None] = print) -> int:
     """The whole command. Raises ha.HAError for anything Home Assistant
@@ -156,7 +156,7 @@ def run_import(cfg, inventory_path: Path, *, write: bool = False, url: Optional[
         out(f"Home Assistant: {ha_url}")
         with HomeAssistant(ha_url, token) as ha:
             if devices:
-                found = thread_devices(ha, log=lambda m: out(f"  ! {m}"))
+                found = thread_devices(ha, log=lambda m: out(f"  {'' if m.startswith('asking') else '! '}{m}"))
                 out(f"Home Assistant: {len(found)} Matter-over-Thread devices")
                 planned, more = plan_inventory(planned, found)
                 changes += more

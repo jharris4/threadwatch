@@ -41,7 +41,7 @@ class QuietPolicyTest(unittest.TestCase):
             {"name": "Living Room AQ", "extendedAddress": SENSOR, "threadRole": "sleepy-end-device"},
         ]))
         self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json",
-                          quiet_end_device_s=90 * 60, quiet_router_s=30 * 60)
+                          quiet_s=30 * 60)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -51,31 +51,31 @@ class QuietPolicyTest(unittest.TestCase):
 
     @staticmethod
     def _quiet(pipe):
-        return [(r["addr"], r["profile"]) for r in pipe.events.records if r["event"] == "device_quiet"]
+        return [r["addr"] for r in pipe.events.records if r["event"] == "device_quiet"]
 
-    def test_only_inventory_routers_get_the_short_window(self):
+    def test_one_quiet_window_for_every_device_whatever_the_inventory_says(self):
         pipe = self._pipe()
         t0 = 1_700_000_000.0
         for i in range(3):
             pipe.ingest(frame(t0 + i, ROUTER))
-            pipe.ingest(frame(t0 + i, SENSOR))
+            pipe.ingest(frame(t0 + i + 60, SENSOR))
+        pipe.periodic(t0 + 29 * 60)
+        self.assertEqual(self._quiet(pipe), [])
         pipe.periodic(t0 + 31 * 60)
-        self.assertEqual(self._quiet(pipe), [(ROUTER, "router")])
-        pipe.periodic(t0 + 91 * 60)
-        self.assertEqual(self._quiet(pipe), [(ROUTER, "router"), (SENSOR, "end-device")])
+        self.assertEqual(self._quiet(pipe), [ROUTER])          # the inventory's "leader" label buys nothing
+        pipe.periodic(t0 + 32 * 60)
+        self.assertEqual(self._quiet(pipe), [ROUTER, SENSOR])
         names = [r["name"] for r in pipe.events.records if r["event"] == "device_quiet"]
         self.assertEqual(names, ["Living Room Apple TV", "Living Room AQ"])
+        self.assertNotIn("profile", pipe.events.records[-1])
 
-    def test_reed_counts_as_router_and_role_key_variants_are_accepted(self):
+    def test_legacy_quiet_keys_still_load(self):
+        from threadwatch import config as config_mod
         d = Path(self.tmp.name)
-        (d / "devices.json").write_text(json.dumps([
-            {"name": "Light", "extendedAddress": ROUTER, "threadRole": "reed"},
-            {"name": "Plug", "extendedAddress": SENSOR, "role": "Router"},
-        ]))
-        pipe = self._pipe()
-        self.assertTrue(pipe.is_router(ROUTER))
-        self.assertTrue(pipe.is_router(SENSOR))
-        self.assertFalse(pipe.is_router(STRANGER))
+        (d / "config.toml").write_text("[quiet]\nend_device_s = 5400\nrouter_s = 1800\n")
+        self.assertEqual(config_mod.load(d / "config.toml").quiet_s, 5400)
+        (d / "config.toml").write_text("[quiet]\nsilence_s = 600\n")
+        self.assertEqual(config_mod.load(d / "config.toml").quiet_s, 600)
 
     def test_malformed_inventory_address_is_skipped_not_fatal(self):
         d = Path(self.tmp.name)
@@ -102,15 +102,16 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual(by_addr[SENSOR]["severity"], "warning")
         self.assertEqual(by_addr[SENSOR]["reception"], "good")
 
-    def test_report_carries_role_and_reception(self):
+    def test_report_carries_reception(self):
         pipe = self._pipe()
         t0 = 1_700_000_000.0
         pipe.ingest(frame(t0, ROUTER, rssi=-88.0))
         pipe.ingest(frame(t0, STRANGER, rssi=-60.0))
         rep = pipe.seen.report(pipe.names, quiet_after_s=60, now=t0 + 120, min_rssi_dbm=-82)
         rows = {r["addr"]: r for r in rep["quiet"]}
-        self.assertEqual((rows[ROUTER]["role"], rows[ROUTER]["reception"]), ("border-router-leader", "marginal"))
-        self.assertEqual((rows[STRANGER]["role"], rows[STRANGER]["reception"]), (None, "good"))
+        self.assertEqual(rows[ROUTER]["reception"], "marginal")
+        self.assertEqual(rows[STRANGER]["reception"], "good")
+        self.assertNotIn("role", rows[ROUTER])
         self.assertEqual([r["addr"] for r in rep["unknown"]], [STRANGER])
 
     def test_retransmission_alert_names_the_sender_and_target(self):
@@ -174,7 +175,7 @@ class QuietPolicyTest(unittest.TestCase):
         for i in range(3):
             pipe.ingest(frame(t0 + i, STRANGER, pan=OTHER_PAN))
         pipe.periodic(t0 + 24 * 3600)
-        self.assertEqual(self._quiet(pipe), [(SENSOR, "end-device")])
+        self.assertEqual(self._quiet(pipe), [SENSOR])
         self.assertEqual(pipe.seen.table[STRANGER]["pan"], OTHER_PAN)
 
     def test_restart_announces_a_silence_nobody_reported(self):
@@ -182,14 +183,14 @@ class QuietPolicyTest(unittest.TestCase):
         # periodic never runs) while the router crossed its window.
         now = time.time()
         pipe = self._pipe()
-        pipe.ingest(frame(now - 40 * 60, ROUTER))   # past router window, never announced
-        pipe.ingest(frame(now - 40 * 60, SENSOR))   # inside end-device window: still eligible
+        pipe.ingest(frame(now - 40 * 60, ROUTER))   # past the window, never announced
+        pipe.ingest(frame(now - 20 * 60, SENSOR))   # inside the window: still eligible
         pipe.seen.save()
         pipe2 = self._pipe()
-        self.assertEqual(self._quiet(pipe2), [(ROUTER, "router")])
+        self.assertEqual(self._quiet(pipe2), [ROUTER])
         self.assertEqual(pipe2.quiet_reported, {ROUTER})
         pipe2.periodic(now + 60 * 60)
-        self.assertEqual(self._quiet(pipe2), [(ROUTER, "router"), (SENSOR, "end-device")])
+        self.assertEqual(self._quiet(pipe2), [ROUTER, SENSOR])
         # A third start re-announces nothing: both silences are on record.
         self.assertEqual(self._quiet(self._pipe()), [])
 
@@ -207,7 +208,7 @@ class QuietPolicyTest(unittest.TestCase):
         pipe2.periodic(now + 60)
         self.assertEqual(self._quiet(pipe2), [])
         pipe2.periodic(now + 29 * 60)                     # 2 + 29 min > the 30 min window
-        self.assertEqual(self._quiet(pipe2), [(ROUTER, "router")])
+        self.assertEqual(self._quiet(pipe2), [ROUTER])
         rec = [r for r in pipe2.events.records if r["event"] == "device_quiet"][0]
         self.assertAlmostEqual(rec["silent_for_s"], 31 * 60, delta=5)
 
@@ -218,7 +219,7 @@ class QuietPolicyTest(unittest.TestCase):
             pipe.ingest(frame(now - 3 * 3600 + i, SENSOR))
         pipe.ingest(frame(now - 3 * 3600, STRANGER, pan=OTHER_PAN))
         pipe.periodic(now - 60 * 60)                # announces the sensor, skips the foreign device
-        self.assertEqual(self._quiet(pipe), [(SENSOR, "end-device")])
+        self.assertEqual(self._quiet(pipe), [SENSOR])
         pipe.seen.save()
         pipe2 = self._pipe()
         self.assertEqual(self._quiet(pipe2), [])
@@ -712,7 +713,7 @@ class DailySummaryTest(unittest.TestCase):
         (d / "devices.json").write_text(json.dumps([
             {"name": "Hall Router", "extendedAddress": ROUTER, "role": "router"}]))
         self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json",
-                          summary_hour=8, quiet_router_s=30 * 60)
+                          summary_hour=8, quiet_s=30 * 60)
 
     def tearDown(self):
         self.tmp.cleanup()

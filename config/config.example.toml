@@ -27,13 +27,11 @@ keep_files = 168                  # hourly ring files to retain (168 = 1 week)
 inventory = "devices.json"
 
 [quiet]
-# Silence before a device_quiet alert, by inventory role (role / threadRole
-# router, reed, border-router, border-router-leader vs everything else).
-# Sleepy end devices poll every few seconds, so they are not quiet from the
-# sniffer's point of view; raise end_device_s only if a class of yours
-# genuinely sleeps for long stretches.
-end_device_s = 1800        # 30 min
-router_s = 1800            # 30 min
+# Silence before a device_quiet alert. Sleepy end devices poll every few
+# seconds and routers advertise every few, so from the sniffer's point of
+# view neither is quiet for long: one window serves both. Raise it only if
+# your devices genuinely sleep for long stretches.
+silence_s = 1800           # 30 min
 # Devices the sniffer hears below this average RSSI are logged at notice
 # (not paged) when quiet: at the edge of range, silence is usually fading.
 min_rssi_dbm = -82

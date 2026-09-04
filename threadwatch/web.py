@@ -371,7 +371,6 @@ class Site:
             seen_html = f'<span class="{"bad" if silent > 1800 else ""}">{ago(r["last_seen"], now)}</span>'
             nm = esc(r["name"]) if r["name"] else f'<span class="warn">unknown</span>'
             trs.append(f'<tr><td><a href="/device/{esc(r["addr"])}">{nm}</a></td>'
-                       f'<td class="muted">{esc(r["role"] or "")}</td>'
                        f'<td>{seen_html}</td>'
                        f'<td class="n">{esc(r["rssi_dbm"])}</td><td>{rec_html}</td>'
                        f'<td class="n">{r["frames"]:,}</td><td>{pan_html}</td>'
@@ -380,7 +379,7 @@ class Site:
         note = (f'<p class="muted">{len(every)} addresses tracked'
                 + (f', <span class="warn">{unknown} not in devices.json</span>' if unknown else "")
                 + (f'; showing {len(rows)} ({DEVICE_FILTERS[only][0]})' if only else "") + '.</p>')
-        table = (f'<table><tr><th>device</th><th>role</th><th>last heard</th><th>rssi</th>'
+        table = (f'<table><tr><th>device</th><th>last heard</th><th>rssi</th>'
                  f'<th>reception</th><th>frames</th><th>pan</th><th>address</th></tr>{"".join(trs)}</table>'
                  if trs else f'<p class="empty">no devices {DEVICE_FILTERS[only][0] if only else "tracked"}</p>')
         return self.page("devices", f'<h1>devices</h1>{note}{filters}{table}')
@@ -408,8 +407,6 @@ class Site:
         head = []
         if entry.get("model"):
             head.append(esc(entry["model"]))
-        if names.role(addrs[0]):
-            head.append(esc(names.role(addrs[0])))
         if len(addrs) > 1:
             head.append(f'{len(addrs)} addresses (rotates)')
         cards = []
@@ -578,7 +575,7 @@ class Site:
             # were written against); the per-address rows of a device whose
             # address rotates are beside it.
             return {"addr": addrs[0], "addresses": addrs, "name": name if name != addrs[0] else None,
-                    "role": names.role(addrs[0]), "last_seen": table.get(addrs[0]),
+                    "last_seen": table.get(addrs[0]),
                     "addresses_seen": {a: table.get(a) for a in addrs}, "episodes": eps}
         if path == "/api/days":
             return {"days": day_index(self.cfg.events_dir)}

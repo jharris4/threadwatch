@@ -104,29 +104,28 @@ class AdoptTest(unittest.TestCase):
     def test_creates_the_file_and_appends_entries(self):
         with tempfile.TemporaryDirectory() as d:
             inv = Path(d) / "config" / "devices.json"
-            msg = adopt(inv, "26:97:6E:7F:7D:20:96:4A", "Office Air Quality", role="router")
+            msg = adopt(inv, "26:97:6E:7F:7D:20:96:4A", "Office Air Quality")
             self.assertIn("added 'Office Air Quality' = " + AQ, msg)
             adopt(inv, TV1, "Living Room Apple TV")
             entries = json.loads(inv.read_text())
             self.assertEqual(entries, [
-                {"name": "Office Air Quality", "extendedAddress": AQ.upper(), "role": "router"},
+                {"name": "Office Air Quality", "extendedAddress": AQ.upper()},
                 {"name": "Living Room Apple TV", "extendedAddress": TV1.upper()},
             ])
             names = DeviceNames(inv)
             self.assertEqual(names.name(AQ), "Office Air Quality")
-            self.assertTrue(names.is_router(AQ))
 
     def test_same_name_gains_a_rotated_address(self):
         with tempfile.TemporaryDirectory() as d:
             inv = Path(d) / "devices.json"
             inv.write_text(json.dumps([{"name": "Living Room Apple TV", "extendedAddress": TV1.upper(),
                                         "note": "rotates"}]))
-            msg = adopt(inv, TV2, "living room apple tv", role="border-router")
+            msg = adopt(inv, TV2, "living room apple tv")
             self.assertIn("2 addresses", msg)
             entry = json.loads(inv.read_text())[0]
             self.assertNotIn("extendedAddress", entry)
             self.assertEqual(entry["extendedAddresses"], [TV1.upper(), TV2.upper()])
-            self.assertEqual(entry["role"], "border-router")
+            self.assertNotIn("role", entry)
             self.assertEqual(entry["note"], "rotates")
             self.assertEqual(DeviceNames(inv).name(TV2), "Living Room Apple TV")
 

@@ -225,17 +225,11 @@ class Pipeline:
 
     # ------------------------------------------------------- quiet policy
 
-    def is_router(self, addr: str) -> bool:
-        """True when the inventory tags the address as an always-on device.
-
-        Cleartext headers cannot tell a router from a busy end device: data
-        requests (polls) are sent from the short address, so per-extended-
-        address poll counts are always zero.
-        """
-        return self.names.is_router(addr)
-
     def quiet_threshold_s(self, addr: str) -> float:
-        return self.cfg.quiet_router_s if self.is_router(addr) else self.cfg.quiet_end_device_s
+        """One window for everyone: the 2026-09-02 soak showed routers and
+        sleepy devices alike never silent for long from the sniffer's chair.
+        (Kept as a method so a per-device rule has somewhere to go.)"""
+        return self.cfg.quiet_s
 
     def dominant_pan(self) -> Optional[int]:
         return max(self.own_pans, key=self.own_pans.get) if self.own_pans else None
@@ -832,7 +826,6 @@ class Pipeline:
         self.events.emit(
             "device_quiet", "notice" if marginal else "warning", now, addr=addr,
             name=self.names.name(addr), silent_for_s=round(silent),
-            profile="router" if self.is_router(addr) else "end-device",
             rssi_dbm=rssi, reception="marginal" if marginal else "good",
             note=("sniffer hears this device at the edge of its range; "
                   "silence is more likely reception than failure" if marginal else

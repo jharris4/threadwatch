@@ -39,7 +39,7 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `join_scan_activity` | notice | `count_60s`, `src` |
 | `possible_foreign_pan` | notice | `pan`, `src`, `dominant_pan`, `note` |
 | `mle_rejoin_attempt` | notice | `command`, `src`, `name` |
-| `device_quiet` | warning, or notice when `reception` is `marginal` | `addr`, `name`, `silent_for_s`, `profile` (`router` / `end-device`), `rssi_dbm`, `reception`, `note` |
+| `device_quiet` | warning, or notice when `reception` is `marginal` | `addr`, `name`, `silent_for_s`, `rssi_dbm`, `reception`, `note` |
 | `poll_starvation` | warning, or notice when `reception` is `marginal` or `episode` > 1 | `addr`, `name`, `unanswered_polls`, `since`, `starved_for_s`, `acked_polls`, `rssi_dbm`, `reception`, `episode`, `since_previous_s`, `note` |
 | `poll_answered` | notice | `addr`, `name`, `note` |
 | `rssi_degradation` | notice | `addr`, `name`, `rssi_dbm`, `reference_dbm`, `drop_db`, `since`, `low_for_s`, `note` |
@@ -55,12 +55,10 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 
 `name` is null for addresses not in `devices.json`.
 
-`device_quiet` fires after `[quiet] end_device_s` of silence, or
-`[quiet] router_s` for entries whose `role` / `threadRole` in
-`devices.json` is `router`, `reed`, `border-router` or
-`border-router-leader` (both default 30 min; sleepy end devices poll every
-few seconds, so they are not quiet from the sniffer's point of view). Cleartext headers cannot tell the two apart (polls
-are sent from the short address), so the inventory decides. Two silences
+`device_quiet` fires after `[quiet] silence_s` of silence (default 30
+min). Routers advertise every few seconds and sleepy end devices poll
+every few, so from the sniffer's point of view neither is quiet for long
+and one window serves both. Two silences
 are deliberately not paged: addresses whose frames carry a foreign PAN id
 (someone else's mesh) are never reported, and devices whose average RSSI
 at the sniffer is below `[quiet] min_rssi_dbm` (default -82) are logged at

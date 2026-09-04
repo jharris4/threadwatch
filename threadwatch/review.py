@@ -266,7 +266,6 @@ def device_rows(seen: LastSeen, names: DeviceNames, min_rssi_dbm: float,
         rows.append({
             "addr": addr,
             "name": names.name(addr),
-            "role": names.role(addr),
             "frames": row.get("frames", 0),
             "first_seen": row.get("first_seen"),
             "last_seen": row.get("last_seen"),

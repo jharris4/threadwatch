@@ -51,8 +51,6 @@ def main(argv=None) -> int:
     p_adopt = sub.add_parser("adopt", help="name an address: add it to devices.json")
     p_adopt.add_argument("addr", help="16-hex extended address (from 'report')")
     p_adopt.add_argument("name", help="device name; an existing name gains the address (rotation)")
-    p_adopt.add_argument("--role", help="router, reed, border-router, border-router-leader "
-                                        "(always-on: short quiet window) or sleepy-end-device")
 
     p_why = sub.add_parser("why", help="reconstruct one device's story from the ring buffer")
     p_why.add_argument("device", help="device name (from devices.json) or 16-hex extended address")
@@ -293,7 +291,7 @@ def main(argv=None) -> int:
         from .names import adopt
         path = _inventory_path(cfg)
         try:
-            print(f"{adopt(path, args.addr, args.name, args.role)} -> {path}")
+            print(f"{adopt(path, args.addr, args.name)} -> {path}")
         except ValueError as exc:
             parser.exit(1, f"threadwatch adopt: {exc}\n")
         print("(the capture daemon reads the inventory at start: restart it to use the name)")

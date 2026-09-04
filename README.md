@@ -93,12 +93,12 @@ question: *why did this device go offline?*
 802.15.4 frames carry extended addresses, not names, and Thread devices
 use randomized addresses (Apple TVs rotate them over time — record every
 address you've seen per device, the inventory format supports it).
-`threadwatch report` surfaces unknown addresses with their inventory
-role, how well the sniffer hears them, and first/last-seen times; identify a
+`threadwatch report` surfaces unknown addresses with how well the
+sniffer hears them and first/last-seen times; identify a
 device by power-cycling it and watching which address disappears and
 returns, then name it:
 
-    bin/threadwatch adopt 66417fe110ed6950 "Office Air Quality" --role router
+    bin/threadwatch adopt 66417fe110ed6950 "Office Air Quality"
     bin/threadwatch report --suggest    # ready-to-paste entries for every unknown
 
 `adopt` appends to `config/devices.json` (an existing name gains the

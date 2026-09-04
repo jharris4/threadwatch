@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 from .events import DAY_RE, day_of, next_day, prev_day
 from .names import AmbiguousName, DeviceNames, LastSeen
 from .review import (DEVICE_FILTERS, DEVICE_SORTS, capture_for_day, day_episodes, day_index,
-                     days_available, device_history, device_rows, devices_history, dominant_pan,
+                     days_available, device_rows, devices_history, dominant_pan,
                      fmt_bytes, fmt_duration, incidents, now_card, select_devices, storage, today)
 from .review import SEVERITY_RANK
 

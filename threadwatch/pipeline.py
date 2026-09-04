@@ -39,6 +39,7 @@ from .events import EventLog, day_of, read_day
 from .link import assess as assess_link
 from .names import DeviceNames, LastSeen, reception
 from .pcap import Frame
+from .review import dominant_pan
 
 MLE_REJOIN_COMMANDS = {"Parent Request", "Child ID Request", "Announce"}
 
@@ -148,7 +149,7 @@ class Pipeline:
             last_alive = self._last_frame_heard()
             if last_alive is not None:
                 self._blind_from, self._blind_s = last_alive, max(0.0, now - last_alive)
-            dominant = self._persisted_dominant_pan()
+            dominant = dominant_pan(self.seen)   # best guess before any frame arrives
             announced = 0
             for addr, row in self.seen.table.items():
                 if self.silence_s(row, now) <= self.quiet_threshold_s(addr):
@@ -202,15 +203,6 @@ class Pipeline:
         if self._blind_s and row["last_seen"] <= self._blind_from:
             silent -= self._blind_s
         return silent
-
-    def _persisted_dominant_pan(self) -> Optional[int]:
-        """Best guess at this network's PAN before any frame arrives: the one
-        the persisted rows have sent the most frames on."""
-        weight: dict[int, int] = {}
-        for row in self.seen.table.values():
-            if row.get("pan") is not None:
-                weight[row["pan"]] = weight.get(row["pan"], 0) + row.get("frames", 0)
-        return max(weight, key=weight.get) if weight else None
 
     # ------------------------------------------------------- quiet policy
 

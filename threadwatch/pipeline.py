@@ -391,6 +391,9 @@ class Pipeline:
             details = self.detector.last_alert_details
             period = details.get("period")
             onsets = details.get("onsets") or []
+            # Docs say a "critical event" freezes the ring; the storm is the
+            # only critical event today, so this is the only call. A new
+            # critical event needs its own call here.
             label = self._auto_freeze(ts, "storm")
             keep = (f"the ring is being frozen as {label}" if label
                     else "run 'threadwatch freeze' to keep the packets")

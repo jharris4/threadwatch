@@ -37,7 +37,7 @@ from typing import Optional
 from .detect import Detector
 from .events import EventLog, day_of, read_day
 from .link import assess as assess_link
-from .names import DeviceNames, LastSeen, reception
+from .names import DeviceNames, LastSeen, reception, rloc16_role
 from .pcap import Frame
 from .review import dominant_pan
 
@@ -152,6 +152,13 @@ class Pipeline:
         self._blind_from, self._blind_s = time.time(), 0.0
         if not ephemeral:
             now = time.time()
+            # Short addresses learned last run: seed the decryptor so sleepy
+            # devices are attributed from the first frame. A wrong seed (the
+            # address was reassigned while the recorder was down) fails the
+            # MIC re-check on its first resolvable frame and is dropped.
+            for addr, row in sorted(self.seen.table.items(), key=lambda kv: kv[1].get("rloc16_ts") or 0):
+                if row.get("rloc16"):
+                    self.decryptor.short_to_ext[row["rloc16"]] = addr
             last_alive = self._last_frame_heard()
             if last_alive is not None:
                 self._blind_from, self._blind_s = last_alive, max(0.0, now - last_alive)
@@ -318,9 +325,11 @@ class Pipeline:
                     stats.poll_intervals.append(ts - stats.last_poll_ts)
                 stats.last_poll_ts = ts
                 stats.polls += 1
-                self._poll_sent(who, stats, f.seq, ts)
+                self._poll_sent(who, stats, f.seq, ts, f.dst)
             was_new = who not in self.seen.table
             self.seen.touch(who, ts, f.ftype, pan=f.src_pan, rssi=f.rssi)
+            if len(f.src) == 4:
+                self._note_rloc16(who, f.src, ts)
             if was_new:
                 self.events.emit("device_first_seen", "info", ts, addr=who,
                                  name=self.names.name(who))
@@ -426,7 +435,31 @@ class Pipeline:
 
     # -------------------------------------------------- poll starvation
 
-    def _poll_sent(self, who: str, stats: DeviceStats, seq: Optional[int], ts: float) -> None:
+    def _note_rloc16(self, ext: str, short: str, ts: float) -> None:
+        """Remember which short address a device answers to, with when it
+        was last confirmed: the web pages read router/child/parent from it
+        and the next run seeds the decryptor with it."""
+        row = self.seen.table.get(ext)
+        if row is None:
+            return
+        if row.get("rloc16") != short:
+            row["rloc16"] = short
+            self.seen._dirty = True
+        row["rloc16_ts"] = ts
+
+    def parent_of(self, ext: str) -> Optional[dict]:
+        """A child's parent, from its RLOC16: the router id in the top six
+        bits, and the device holding that router's address if known."""
+        role = rloc16_role((self.seen.table.get(ext) or {}).get("rloc16"))
+        if not role or role["role"] != "child":
+            return None
+        short = f"{role['router_id'] << 10:04x}"
+        addr = self.decryptor.short_to_ext.get(short)
+        return {"router_id": role["router_id"], "rloc16": short, "addr": addr,
+                "name": (self.names.name(addr) if addr else None)}
+
+    def _poll_sent(self, who: str, stats: DeviceStats, seq: Optional[int], ts: float,
+                   dst: Optional[str] = None) -> None:
         """A poll went out. If the previous one is still waiting for its ACK
         and this is not a MAC retry of it (same seq), that one went
         unanswered; enough of those in a row, from a device whose polls
@@ -455,7 +488,13 @@ class Pipeline:
                 span = round(ts - stats.unanswered_since)
                 history = (f"after {stats.acked_polls} answered polls" if stats.acked_polls
                            else "after answered polls before the recorder's last restart")
-                note = (f"polled its parent {stats.unanswered_polls} times over {span} s with no "
+                # The poll's destination is the parent's RLOC16; name it, so
+                # the question "whose ACKs are missing" is answered here.
+                parent_addr = self.decryptor.short_to_ext.get(dst) if dst and len(dst) == 4 else None
+                parent = ((self.names.name(parent_addr) or parent_addr) if parent_addr
+                          else (f"router {int(dst, 16) >> 10}" if dst and len(dst) == 4 else None))
+                whom = f"its parent {parent} ({dst})" if parent else "its parent"
+                note = (f"polled {whom} {stats.unanswered_polls} times over {span} s with no "
                         f"acknowledgement, {history}: the parent is gone "
                         "or the link to it broke and the device has not noticed; it still looks alive, "
                         "so no device_quiet will follow, and a rejoin attempt should. (If it just moved "
@@ -492,7 +531,8 @@ class Pipeline:
                     starved_for_s=span, acked_polls=stats.acked_polls,
                     rssi_dbm=rssi, reception="marginal" if marginal else "good",
                     episode=episode, since_previous_s=round(gap) if gap is not None else None,
-                    note=note)
+                    parent_rloc16=dst if dst and len(dst) == 4 else None, parent_addr=parent_addr,
+                    parent=parent, note=note)
         stats.poll_pending_seq, stats.poll_pending_ts = seq, ts
 
     def _poll_answered(self, who: str, stats: DeviceStats, ts: float) -> None:
@@ -599,6 +639,8 @@ class Pipeline:
         if MLE_UDP_PORT in (sport, dport):
             if not info:
                 return
+            if info.source_addr16 is not None and src_for_mle:
+                self._note_rloc16(src_for_mle, f"{info.source_addr16:04x}", f.ts)
             if info.command_name in MLE_REJOIN_COMMANDS:
                 # addr is the extended address (the review pages key on it);
                 # src is whatever the frame carried, often a short address.

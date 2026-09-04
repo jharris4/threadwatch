@@ -203,6 +203,22 @@ class LastSeen:
         return {"quiet": quiet, "active_count": len(active), "unknown": unknown}
 
 
+def rloc16_role(rloc16: Optional[str]) -> Optional[dict]:
+    """What a Thread short address says about its holder. The top six bits
+    are a router id; a zero low ten bits is the router itself, anything
+    else is one of its children. 0xF000 is router 60; 0xC004 is child 4
+    of router 48."""
+    if not rloc16:
+        return None
+    try:
+        v = int(rloc16, 16)
+    except ValueError:
+        return None
+    rid, cid = v >> 10, v & 0x3FF
+    return {"rloc16": rloc16, "router_id": rid, "child_id": cid or None,
+            "role": "router" if cid == 0 else "child"}
+
+
 def reception(rssi: Optional[float], min_rssi_dbm: float) -> str:
     """How much a silence from this address means, given how well we hear it."""
     if rssi is None:

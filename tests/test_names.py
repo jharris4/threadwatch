@@ -149,5 +149,16 @@ class AdoptTest(unittest.TestCase):
             self.assertFalse(inv.exists())
 
 
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class Rloc16RoleTest(unittest.TestCase):
+    def test_router_and_child_from_the_short_address(self):
+        from threadwatch.names import rloc16_role
+        self.assertEqual(rloc16_role("f000"), {"rloc16": "f000", "router_id": 60, "child_id": None, "role": "router"})
+        self.assertEqual(rloc16_role("c004"), {"rloc16": "c004", "router_id": 48, "child_id": 4, "role": "child"})
+        self.assertIsNone(rloc16_role(None))
+        self.assertIsNone(rloc16_role("zz"))
+

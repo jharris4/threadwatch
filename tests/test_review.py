@@ -155,9 +155,9 @@ class DayViewTest(unittest.TestCase):
         log.emit("mle_rejoin_attempt", "notice", T0 + 300, command="Announce", addr=TV2, name="Living Room Apple TV")
         (self.cfg.state_dir / "last-seen.json").write_text(json.dumps({
             AQ: {"first_seen": T0 - 86400, "last_seen": T0 + 3600, "frames": 1000, "types": {"1": 1000}, "rssi": -87.0, "pan": 0x4e21,
-                 "quiet_reported": True},
+                 "quiet_reported": True, "rloc16": "f000", "rloc16_ts": T0 + 3600},
             PLUG: {"first_seen": T0 - 86400, "last_seen": T0 + 3600, "frames": 500, "types": {"1": 500}, "rssi": -70.0, "pan": 0x4e21,
-                   "rssi_degraded": True, "rssi_ref": -58.0},
+                   "rssi_degraded": True, "rssi_ref": -58.0, "rloc16": "f00c", "rloc16_ts": T0 + 3000},
             "72d035122fdf06f6": {"first_seen": T0, "last_seen": T0 + 3600, "frames": 50, "types": {"1": 50}, "rssi": -60.0, "pan": 0x4e21},
             "1afe3b8423f332de": {"first_seen": T0, "last_seen": T0 + 3600, "frames": 5, "types": {"1": 5}, "pan": 0x58bc},
             TV1: {"first_seen": T0 - 86400, "last_seen": T0 - 7 * 3600, "frames": 900, "types": {"1": 900}, "rssi": -55.0,
@@ -211,6 +211,14 @@ class DayViewTest(unittest.TestCase):
         self.assertEqual(pick(only="down"), ["Irrigation"])
         self.assertEqual(pick(only="marginal"), ["Basement AQ"])
         self.assertEqual(pick(only="foreign"), ["1afe3b8423f332de"])
+        self.assertEqual(pick(only="routers"), ["Basement AQ"])
+        self.assertEqual(pick(only="children"), ["Irrigation"])
+        by = {r["name"] or r["addr"]: r for r in rows}
+        self.assertEqual((by["Basement AQ"]["role"], by["Basement AQ"]["router_id"], by["Basement AQ"]["leader"]), ("router", 60, False))
+        self.assertEqual((by["Irrigation"]["role"], by["Irrigation"]["parent"], by["Irrigation"]["parent_addr"]), ("child", "Basement AQ", AQ))
+        self.assertIsNone(by[TV]["role"])
+        led = device_rows(seen, DeviceNames(self.cfg.devices_path), self.cfg.quiet_min_rssi_dbm, T0 + 7200, leader_router=60)
+        self.assertTrue(next(r for r in led if r["addr"] == AQ)["leader"])
         self.assertEqual(pick(sort="rssi"), ["Basement AQ", "Irrigation", "72d035122fdf06f6", TV, TV, "1afe3b8423f332de"])   # weakest first, unheard last
         self.assertEqual(pick(sort="frames"), ["Basement AQ", TV, "Irrigation", TV, "72d035122fdf06f6", "1afe3b8423f332de"])
         self.assertEqual(pick(only="nonsense", sort="nonsense"), pick())

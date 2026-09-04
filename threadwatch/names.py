@@ -88,7 +88,15 @@ class DeviceNames:
         self.entries: list[dict] = []
         self.border_routers: dict[str, dict] = {}    # addr -> {hostname, instance, vendor, model, name}
         if inventory_path and inventory_path.exists():
-            for entry in json.loads(inventory_path.read_text()):
+            raw = json.loads(inventory_path.read_text())
+            if not isinstance(raw, list):
+                print(f"[threadwatch] {inventory_path.name}: expected a list of devices, got "
+                      f"{type(raw).__name__}; ignoring the file", flush=True)
+                raw = []
+            # A hand-edit can leave a bare string or a stray null behind. One bad
+            # entry must not stop the recorder or 500 every review page.
+            self.entries = [e for e in raw if isinstance(e, dict)]
+            for entry in self.entries:
                 for a in entry_addresses(entry):
                     n = _norm(str(a))
                     # Every inventory address is fed to the decryptor's nonce
@@ -99,8 +107,6 @@ class DeviceNames:
                               f"{entry.get('name')!r}: not 16 hex digits", flush=True)
                         continue
                     self.by_addr[n] = entry
-            self.entries = [e for e in (json.loads(inventory_path.read_text()) if inventory_path.exists() else [])
-                            if isinstance(e, dict)]
         for host, rec in load_border_routers(learned_path).items():
             addr = _norm(str(rec.get("addr") or ""))
             if not _EXT_ADDR.match(addr):
@@ -129,7 +135,7 @@ class DeviceNames:
 
     def name(self, addr: str) -> Optional[str]:
         entry = self.by_addr.get(_norm(addr))
-        return (entry.get("name") or None) if entry else None
+        return (str(entry["name"]) if entry and entry.get("name") else None)
 
     def addresses_of(self, addr: str) -> list[str]:
         """Every inventory address that belongs to the same device as
@@ -156,7 +162,7 @@ class DeviceNames:
             return self.addresses_of(t), self.name(t) or t
         matches: dict[str, list[str]] = {}
         for a, entry in self.by_addr.items():
-            name = entry.get("name") or ""
+            name = str(entry.get("name") or "")
             if name and target.strip().lower() in name.lower():
                 matches.setdefault(name, []).append(a)
         exact = [n for n in matches if n.lower() == target.strip().lower()]

@@ -185,3 +185,29 @@ class LearnedBorderRoutersTest(unittest.TestCase):
             self.assertNotIn("nope", names.border_routers)
             self.assertIsNone(DeviceNames(inv, Path(d) / "absent.json").name(TV2))
 
+
+
+class MalformedInventoryTest(unittest.TestCase):
+    """One bad hand-edit must not stop capture or 500 every review page."""
+
+    def _names(self, doc):
+        d = Path(tempfile.mkdtemp()) / "devices.json"
+        d.write_text(doc)
+        return DeviceNames(d, None)
+
+    def test_non_dict_entries_are_skipped(self):
+        for doc in ('["00112233445566aa"]', '[null]', '[{"name": "ok",'
+                    ' "extendedAddress": "00112233445566aa"}, "stray"]'):
+            names = self._names(doc)
+            with self.assertRaises(ValueError):
+                names.resolve("nothing-matches-this")
+
+    def test_top_level_object_is_ignored_not_fatal(self):
+        names = self._names('{"a": {"name": "x"}}')
+        self.assertEqual(names.entries, [])
+
+    def test_non_string_name_does_not_crash_resolve(self):
+        names = self._names('[{"name": 5, "extendedAddress": "00112233445566aa"}]')
+        self.assertEqual(names.name("00112233445566aa"), "5")
+        with self.assertRaises(ValueError):
+            names.resolve("nothing-matches-this")

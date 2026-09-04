@@ -27,22 +27,76 @@ PAN = 0x4e21
 
 
 def secured_frame(src_ext: str, src_short: str, counter: int, ftype: int = 1,
-                  payload: bytes = b"\x7f\x33\xf0\x11\x22") -> bytes:
+                  payload: bytes = b"\x7f\x33\xf0\x11\x22", sequence: int = 0) -> bytes:
     """An 802.15.4 frame with short source addressing, secured as Thread does
-    (ENC-MIC-32, key index mode) under key sequence 0, plus a trailing FCS.
+    (ENC-MIC-32, key index mode) under a key sequence, plus a trailing FCS.
     ftype 3 builds a data request: the command id (0x04) is authenticated
     but not encrypted, and the encrypted payload is empty."""
     fcf = ftype | 0x0008 | 0x0040 | (2 << 10) | (1 << 12) | (2 << 14)
     header = struct.pack("<HBH", fcf, counter & 0xFF, PAN) + bytes.fromhex("00cc")[::-1] \
         + bytes.fromhex(src_short)[::-1]
-    aux = bytes([0x0D]) + struct.pack("<L", counter) + bytes([1])   # level 5, key mode 1, index 1
+    aux = bytes([0x0D]) + struct.pack("<L", counter) + bytes([sequence % 127 + 1])   # level 5, key mode 1
     open_part = header + aux + (b"\x04" if ftype == 3 else b"")
     if ftype == 3:
         payload = b""
-    _mle, mac_key = derive_keys(KEY, 0)
+    _mle, mac_key = derive_keys(KEY, sequence)
     nonce = bytes.fromhex(src_ext) + struct.pack(">L", counter) + bytes([5])
     body = AESCCM(mac_key, tag_length=4).encrypt(nonce, payload, open_part)
     return open_part + body + b"\x00\x00"
+
+
+def mle_message(src_ext: str, sequence: int, counter: int, src_ip: bytes, dst_ip: bytes,
+                body: bytes) -> bytes:
+    """A secured MLE message (UDP payload) as Thread sends it: security suite
+    0, key id mode 2, whose key source is the key sequence itself."""
+    aux = bytes([5 | (2 << 3)]) + struct.pack("<L", counter) + struct.pack(">L", sequence) \
+        + bytes([sequence % 127 + 1])
+    mle_key, _mac = derive_keys(KEY, sequence)
+    nonce = bytes.fromhex(src_ext) + struct.pack(">L", counter) + bytes([5])
+    return bytes([0]) + aux + AESCCM(mle_key, tag_length=4).encrypt(nonce, body, src_ip + dst_ip + aux)
+
+
+@unittest.skipIf(AESCCM is None, "cryptography not installed")
+class KeySequenceTest(unittest.TestCase):
+    """The key sequence climbs with every rotation; the search must follow."""
+
+    def _decrypts(self, d, sequence, counter=1):
+        return d.decrypt_frame(secured_frame(SED, "c829", counter, sequence=sequence), SED, None) is not None
+
+    def test_a_high_sequence_decrypts_once_the_sequence_is_known(self):
+        d = Decryptor(network_key=KEY)
+        for seq in (0, 84, 1015):                        # the first eight generations: found cold
+            self.assertTrue(self._decrypts(Decryptor(network_key=KEY), seq), seq)
+        self.assertFalse(self._decrypts(d, 1023))        # the ninth generation of key index 8: not searched cold
+        self.assertFalse(self._decrypts(d, 5000))
+        d.note_key_sequence(4999)                        # ...until something says where the network is
+        self.assertTrue(self._decrypts(d, 5000))
+        self.assertTrue(self._decrypts(d, 4998))         # a straggler on an older key still reads
+        self.assertFalse(self._decrypts(d, 5000 + 127 * 3))   # too far to be this network's next key
+        self.assertEqual(d.key_sequence, 5000)
+
+    def test_rotations_are_followed_past_the_initial_search(self):
+        d = Decryptor(network_key=KEY)
+        self.assertTrue(self._decrypts(d, 1015))         # generation 7 of key index 127: found cold
+        self.assertEqual(d.key_sequence, 1015)
+        for seq in range(1016, 1016 + 400):              # then one rotation at a time, well past 1023
+            self.assertTrue(self._decrypts(d, seq), seq)
+        self.assertEqual(d.key_sequence, 1415)
+        self.assertEqual(d.stats["mac_failed"], 0)
+
+    def test_mle_key_source_teaches_the_mac_search(self):
+        d = Decryptor(network_key=KEY)
+        src_ip = bytes.fromhex("fe80000000000000") + bytes([0x02 ^ int(SED[:2], 16)]) + bytes.fromhex(SED[2:])
+        dst_ip = bytes.fromhex("ff020000000000000000000000000001")
+        body = b"\x04" + b"\x00\x02" + bytes.fromhex("c829")     # Advertisement, Source Address c829
+        info = d.parse_mle(mle_message(SED, 5000, 9, src_ip, dst_ip, body), SED, src_ip, dst_ip)
+        self.assertEqual((info.command_name, info.source_addr16), ("Advertisement", 0xc829))
+        self.assertEqual(d.key_sequence, 5000)
+        self.assertEqual(d.short_to_ext["c829"], SED)
+        # The sleepy device's short-source data frame under the same key now reads.
+        self.assertIsNotNone(d.decrypt_frame(secured_frame(SED, "c829", 10, sequence=5000), None, "c829"))
+        self.assertEqual(d.stats["mac_decrypted"], 1)
+        self.assertEqual(d._keys_for_index(0), [])         # an index Thread never uses: nothing to try
 
 
 @unittest.skipIf(AESCCM is None, "cryptography not installed")

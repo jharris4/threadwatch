@@ -299,7 +299,7 @@ def _write_status(cfg, port, total, started, pipe: Pipeline, ring, decryptor,
         "partition": pipe.partition_status(),
         "detector": pipe.detector.snapshot(),
     }
-    status["crypto"] = dict(decryptor.stats)
+    status["crypto"] = {**decryptor.stats, "key_sequence": decryptor.key_sequence}
     tmp = cfg.state_dir / "status.tmp"
     tmp.write_text(json.dumps(status, indent=1))
     tmp.replace(cfg.state_dir / "status.json")
@@ -330,5 +330,5 @@ def run_replay(cfg: Config, pcap_path: Path) -> None:
         "detector": pipe.detector.snapshot(),
         "events": events.records,
     }
-    out["crypto"] = dict(decryptor.stats)
+    out["crypto"] = {**decryptor.stats, "key_sequence": decryptor.key_sequence}
     print(json.dumps(out, indent=1))

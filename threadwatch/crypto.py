@@ -8,7 +8,12 @@ Thread key derivation (as implemented by OpenThread and Wireshark):
     bytes[0:16]  = MLE key
     bytes[16:32] = MAC key
 The 802.15.4 aux header carries key_index = (key_sequence % 127) + 1, so the
-sequence is recovered by trying candidates that match the observed index.
+sequence is recovered by trying candidates that match the observed index:
+the first few generations until a frame has decrypted, then the generations
+around the sequence that frame used. MLE messages carry the sequence
+outright in their key source, and every decryption (MAC or MLE) teaches it
+to the MAC search, so a network rotating its key stays readable however
+high the sequence climbs.
 """
 
 from __future__ import annotations
@@ -58,21 +63,45 @@ class Decryptor:
     network_key: bytes
     # short (rloc16 hex, 4 chars) -> extended (16 chars) learned/seeded mapping
     short_to_ext: dict = field(default_factory=dict)
-    _keys_by_index: dict = field(default_factory=dict)  # key_index -> [(seq, mle, mac)]
+    # The highest key sequence a frame has decrypted under, None until one
+    # has. The MAC key search is centred on it (see _keys_for_index).
+    key_sequence: Optional[int] = None
+    _keys_by_index: dict = field(default_factory=dict)  # key_index -> (sequence basis, [(seq, mle, mac)])
     stats: dict = field(default_factory=lambda: {
         "mac_decrypted": 0, "mac_failed": 0, "mac_no_ext_addr": 0,
         "mle_decrypted": 0, "mle_failed": 0, "plaintext": 0,
         "short_resolved": 0, "short_unresolved": 0, "parse_failed": 0,
     })
 
+    # Before any frame has decrypted, a key index is tried as the first
+    # generations that map to it; after one has, as the generations within
+    # this many rotations of the sequence it used (the next rotation, and a
+    # straggler still on the previous key, are each one away).
+    INITIAL_GENERATIONS = 8
+    NEARBY_GENERATIONS = 2
+
+    def note_key_sequence(self, sequence: int) -> None:
+        """A frame decrypted under this sequence: search near it from now
+        on. Only ever moves up, so a straggler on the old key after a
+        rotation does not pull the search back."""
+        if self.key_sequence is None or sequence > self.key_sequence:
+            self.key_sequence = sequence
+
     def _keys_for_index(self, key_index: int):
-        if key_index not in self._keys_by_index:
-            # Sequences matching this index, newest few generations first.
-            candidates = [s for s in range(0, 1024) if (s % 127) + 1 == key_index]
-            self._keys_by_index[key_index] = [
-                (s, *derive_keys(self.network_key, s)) for s in candidates[:8]
-            ]
-        return self._keys_by_index[key_index]
+        if not 1 <= key_index <= 127:
+            return []
+        cached = self._keys_by_index.get(key_index)
+        if cached is None or cached[0] != self.key_sequence:
+            if self.key_sequence is None:
+                seqs = [key_index - 1 + 127 * k for k in range(self.INITIAL_GENERATIONS)]
+            else:
+                span = 127 * self.NEARBY_GENERATIONS
+                seqs = sorted((s for s in range(max(0, self.key_sequence - span), self.key_sequence + span + 1)
+                               if (s % 127) + 1 == key_index),
+                              key=lambda s: abs(s - self.key_sequence))
+            cached = (self.key_sequence, [(s, *derive_keys(self.network_key, s)) for s in seqs])
+            self._keys_by_index[key_index] = cached
+        return cached[1]
 
     # ------------------------------------------------------------------ MAC
 
@@ -165,11 +194,13 @@ class Decryptor:
             body = secret[:len(secret) - trim]
             if len(body) < 4:
                 continue
-            for _seq, _mle, mac_key in self._keys_for_index(key_index):
+            for seq, _mle, mac_key in self._keys_for_index(key_index):
                 try:
-                    return AESCCM(mac_key, tag_length=4).decrypt(nonce, body, open_part)
+                    plain = AESCCM(mac_key, tag_length=4).decrypt(nonce, body, open_part)
                 except InvalidTag:
                     continue
+                self.note_key_sequence(seq)
+                return plain
         return None
 
     @staticmethod
@@ -333,12 +364,14 @@ class Decryptor:
                 candidates = [(sequence, mle_key, _mac)]
             else:
                 candidates = self._keys_for_index(udp_payload[1 + aux - 1])
-            for _seq, mle_key, _mac in candidates:
+            for seq, mle_key, _mac in candidates:
                 try:
                     body = AESCCM(mle_key, tag_length=4).decrypt(nonce, secret, aad)
-                    break
                 except InvalidTag:
                     continue
+                # Authenticated under this sequence: the MAC search follows it.
+                self.note_key_sequence(seq)
+                break
             if body is None:
                 self.stats["mle_failed"] += 1
                 return None

@@ -5,12 +5,13 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# Adjust if you cloned elsewhere or use a different user.
-User=pi
-WorkingDirectory=/home/pi/threadwatch
+# __USER__ and __REPO__ are filled in by bin/setup-host.sh (or by hand; see
+# threadwatch.service for the one-liner).
+User=__USER__
+WorkingDirectory=__REPO__
 # Read-only over the state directory; a separate process so a page bug can
 # never touch capture. Listen address and port: [web] in config.toml.
-ExecStart=/home/pi/threadwatch/bin/threadwatch web
+ExecStart=__REPO__/bin/threadwatch web
 Restart=always
 RestartSec=5
 

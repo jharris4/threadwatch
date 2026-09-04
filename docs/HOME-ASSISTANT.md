@@ -9,7 +9,7 @@ the device names and the network key, and one command fetches both.
 ```bash
 cp config/ha.example.env config/ha.env
 # edit config/ha.env: HA_URL and HA_TOKEN (below)
-chmod 400 config/ha.env
+chmod 600 config/ha.env
 bin/threadwatch import-ha            # shows what would change
 bin/threadwatch import-ha --write    # writes devices.json and credentials.toml
 ```
@@ -32,16 +32,17 @@ list. `HA_URL` is how this machine reaches HA, usually
   entries such as HomeKit-only devices are untouched. The plan is printed
   first; `--write` applies it.
 - `credentials.toml`: the network key from HA's preferred Thread dataset
-  (the one your border router runs). It is written at mode 0400 and never
+  (the one your border router runs). It is written at mode 0600 and never
   printed; the command reports the network name, channel and PAN id, and
   warns when `config.toml` listens on a different channel.
 
 The daemon reads both files at start, so restart it afterwards. Re-run
 the command whenever you add or rename devices; it is safe to repeat.
 
-`config/ha.env` is gitignored, locked to 0400 by `setup-host.sh`, and
-carried to the recorder host by `push-to-host.sh` like the other secrets,
-so the command runs from either machine.
+`config/ha.env` is gitignored and carried to the recorder host by
+`push-to-host.sh` like the other secrets, so the command runs from either
+machine. Mode 0600 on your workstation keeps it private and editable;
+`setup-host.sh` locks it to 0400 on the host, where nobody edits it.
 
 HomeKit-only Thread devices never appear in HA; name those with
 `threadwatch report --suggest` and `threadwatch adopt`, or the power-cycle

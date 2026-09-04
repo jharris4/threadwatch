@@ -20,7 +20,7 @@ rsync -a --delete \
   --exclude 'data/' --exclude '.venv-flash/' \
   --exclude '__pycache__/' --exclude '*.pyc' --exclude '.git/' \
   "$REPO/" "$TARGET:$DEST_DIR/"
-ssh "$TARGET" "chmod 400 $DEST_DIR/config/credentials.toml $DEST_DIR/config/alerts.env 2>/dev/null || true"
+ssh "$TARGET" "chmod 400 $DEST_DIR/config/credentials.toml $DEST_DIR/config/alerts.env $DEST_DIR/config/ha.env 2>/dev/null || true"
 echo "pushed to $TARGET:$DEST_DIR"
 
 if [ "$MODE" != "--push-only" ]; then

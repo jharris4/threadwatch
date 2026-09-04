@@ -9,7 +9,7 @@ channel = 25
 # network_name = "MyHome"
 # pan_id = "0x4e21"
 # The network key is deliberately not here either: it lives in its own
-# read-only file, see [credentials] below and docs/CREDENTIALS.md.
+# owner-only file, see [credentials] below and docs/CREDENTIALS.md.
 
 [capture]
 # serial_port = "/dev/ttyACM0"   # leave unset to auto-detect the dongle
@@ -120,7 +120,7 @@ port = 8080
 
 [credentials]
 # REQUIRED. Path (relative to this directory) of a separate, gitignored,
-# read-only file holding the Thread network key. The recorder does not
+# owner-only file holding the Thread network key. The recorder does not
 # start without it: sleepy devices, rejoins, poll starvation and the
 # partition are all behind MAC-layer encryption. docs/CREDENTIALS.md says
 # how to create it; the default path needs no setting here.

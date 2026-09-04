@@ -216,7 +216,7 @@ def load_env(path: Path) -> list[Check]:
     out = []
     mode = stat.S_IMODE(path.stat().st_mode)
     if mode & 0o077:
-        out.append((WARN, "alerts.env", f"mode {mode:04o}: readable by others; chmod 400 it"))
+        out.append((WARN, "alerts.env", f"mode {mode:04o}: readable by others; chmod 600 it"))
     loaded = 0
     for lineno, line in enumerate(path.read_text().splitlines(), 1):
         line = line.strip()

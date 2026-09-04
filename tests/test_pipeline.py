@@ -747,10 +747,15 @@ class BorderRouterTest(unittest.TestCase):
         self.assertEqual(pipe.routers[self.HOST]["name"], "Living Room Apple TV")          # bound by listed address
         self.assertEqual(pipe.routers["homeassistant-otbr.local"]["name"], "HA OTBR")      # bound by borderRouter
         self.assertEqual(pipe.names.name(self.OTBR), "HA OTBR")
-        # Reboot: the new address is heard on air, then the same hostname advertises it.
-        pipe.ingest(frame(t + 500, self.NEW))
-        self.assertEqual(pipe.events.records[-1]["event"], "device_first_seen")   # unnamed until the next browse
-        pipe._apply_border_routers([self.router(self.HOST, self.NEW)], t + 600)
+        # Reboot: the browse sees the new address before the sniffer hears
+        # it. The record waits, and the first frame from it binds the name.
+        pipe._apply_border_routers([self.router(self.HOST, self.NEW)], t + 500)
+        self.assertEqual(pipe.routers[self.HOST]["addr"], self.OLD)                # not yet believed
+        self.assertIsNone(pipe.names.name(self.NEW))
+        pipe.ingest(frame(t + 600, self.NEW))
+        first = [r for r in pipe.events.records if r["event"] == "device_first_seen" and r["addr"] == self.NEW]
+        self.assertEqual(first[0]["name"], "Living Room Apple TV")
+        self.assertEqual(pipe._pending_routers, {})
         ev = [r for r in pipe.events.records if r["event"] == "border_router_address_changed"]
         self.assertEqual(len(ev), 1)
         self.assertEqual((ev[0]["addr"], ev[0]["previous"], ev[0]["name"]), (self.NEW, self.OLD, "Living Room Apple TV"))
@@ -786,16 +791,20 @@ class BorderRouterTest(unittest.TestCase):
             for tick in (60, 660):
                 pipe._apply_border_routers([self.router(self.HOST, forged)], t + tick)
         self.assertEqual(out.getvalue().count("has not been heard on air"), 1)
+        self.assertEqual(list(pipe._pending_routers), [forged])
         self.assertEqual(pipe.routers[self.HOST]["addr"], self.OLD)
         self.assertNotIn("rotated_to", pipe.seen.table[self.OLD])
         self.assertIsNone(pipe.names.name(forged))
         self.assertEqual([r["event"] for r in pipe.events.records if r["event"].startswith("border_router")], [])
         pipe.periodic(t + 31 * 60)                          # the real device's silence still counts
         self.assertEqual([r["addr"] for r in pipe.events.records if r["event"] == "device_quiet"], [self.OLD])
-        # A real reboot: the new address is on air, so the next browse binds it.
-        pipe.ingest(frame(t + 40 * 60, self.NEW))
-        pipe._apply_border_routers([self.router(self.HOST, self.NEW)], t + 41 * 60)
+        # A real reboot: the next browse gives the hostname its real new
+        # address, which replaces the forged one waiting, and binds once heard.
+        pipe._apply_border_routers([self.router(self.HOST, self.NEW)], t + 40 * 60)
+        self.assertEqual(list(pipe._pending_routers), [self.NEW])
+        pipe.ingest(frame(t + 41 * 60, self.NEW))
         self.assertEqual((pipe.routers[self.HOST]["addr"], pipe.names.name(self.NEW)), (self.NEW, "Living Room Apple TV"))
+        self.assertEqual(pipe.seen.table[self.OLD]["rotated_to"], self.NEW)
 
     def test_a_rotation_closes_the_silence_announced_for_the_old_address(self):
         from threadwatch.review import group_episodes

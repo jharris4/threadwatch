@@ -114,6 +114,7 @@ class Pipeline:
         self._foreign_reported: set[int] = set()
         self._last_src_by_pan: dict[int, Optional[str]] = {}
         self._unheard_logged: set[str] = set()      # mDNS addresses never heard on air, complained about once
+        self._pending_routers: dict[str, dict] = {}  # ext -> the mDNS record waiting for that address to be heard
         self.partition: Optional[tuple] = None
         self._crypto_mark = (0, 0)          # (decrypted, failed) when decryption last worked
         self._stale_evt = 0.0
@@ -351,6 +352,12 @@ class Pipeline:
             self.seen.touch(who, ts, f.ftype, pan=f.src_pan, rssi=f.rssi)
             if len(f.src) == 4:
                 self._note_rloc16(who, f.src, ts)
+            pending = self._pending_routers.pop(who, None)
+            if pending is not None:
+                # A border router mDNS advertised before it was heard on air
+                # (a rebooted hub, seen by the browse first): now that it is,
+                # bind it, so the first_seen below already carries its name.
+                self._apply_border_routers([pending], ts)
             if was_new:
                 self.events.emit("device_first_seen", "info", ts, addr=who,
                                  name=self.names.name(who))
@@ -913,13 +920,17 @@ class Pipeline:
                 # any address under any hostname. Nothing is bound to, and
                 # no row is retired for, an address the sniffer has not
                 # heard on air, so a forged record cannot silence a device's
-                # quiet alerts or take its name. A border router is the
-                # chattiest thing on the mesh: after a real reboot the next
-                # browse finds its new address heard.
+                # quiet alerts or take its name. The record waits instead,
+                # and ingest() applies it the moment the address is heard
+                # (a rebooted hub the browse saw first); a later browse
+                # giving the hostname another address replaces it.
+                for stale in [a for a, rec in self._pending_routers.items() if rec.get("hostname") == host]:
+                    del self._pending_routers[stale]
+                self._pending_routers[ext] = r
                 if ext not in self._unheard_logged:
                     self._unheard_logged.add(ext)
                     print(f"[threadwatch] mdns: {r.get('instance') or host} advertises {ext}, which has not "
-                          "been heard on air; ignored until it is", flush=True)
+                          "been heard on air; held until it is", flush=True)
                 continue
             rec = self.routers.get(host) or {}
             entry = (self.names.entry_for_border_router(host) or self.names.by_addr.get(ext)

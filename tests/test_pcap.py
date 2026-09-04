@@ -137,6 +137,25 @@ class TapHeaderTest(_ut.TestCase):
     def test_tap_len_below_header_yields_no_psdu(self):
         self.assertEqual(self._tap(bytes.fromhex("00000200") + b"\xff" * 8).psdu, b"")
 
+    def test_a_real_dongle_frame_off_the_ring(self):
+        """The production entry point: DLT 283 out of a ring file, read the
+        way capture reads it. These 48 bytes are one record from
+        data/ring/threadwatch-20260902-02.pcap - a 28-byte TAP header of
+        RSSI, channel and LQI TLVs (each padded to four bytes) in front of a
+        20-byte secured MAC command frame."""
+        import io
+        from threadwatch.pcap import DLT_TAP, PcapStreamReader, PcapWriter
+        raw = bytes.fromhex("00001c0001000400000094c203000300190000000a000100"
+                            "4c0000006b98f28473003c1a3c0d5a3901005504cb7ef338")
+        buf = io.BytesIO()
+        PcapWriter(buf, DLT_TAP).write(Frame(ts=1_756_800_000.0, raw=raw, psdu=b"",
+                                             rssi=None, channel=None, lqi=None))
+        f = next(iter(PcapStreamReader(io.BytesIO(buf.getvalue()))))
+        self.assertEqual((f.rssi, f.channel, f.lqi), (-74.0, 25, 76))
+        self.assertEqual(len(f.psdu), 20)                 # the TAP header is off the front
+        self.assertEqual(f.psdu, raw[28:])
+        self.assertEqual((f.ftype, f.seq, f.src, f.dst), (3, 242, "3c1a", "3c00"))
+
     def test_well_formed_tap_header_still_parses(self):
         import struct
         body = (struct.pack("<HH", 0, 20)                       # version/reserved, tap_len

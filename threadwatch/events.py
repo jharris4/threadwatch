@@ -16,6 +16,7 @@ blocks on the network and never raises because of it.
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -52,6 +53,16 @@ def prev_day(day: str) -> str:
     return time.strftime("%Y-%m-%d", time.localtime(t))
 
 
+def _close_partial_line(path: Path) -> None:
+    """A record cut short by a kill or a power cut would otherwise swallow
+    the next line appended after it, losing both."""
+    if path.exists() and path.stat().st_size:
+        with open(path, "rb+") as fh:
+            fh.seek(-1, os.SEEK_END)
+            if fh.read(1) != b"\n":
+                fh.write(b"\n")
+
+
 class EventLog:
     def __init__(self, events_dir: Path, sinks: Optional[list[Sink]] = None):
         self.dir = events_dir
@@ -70,7 +81,9 @@ class EventLog:
              **fields) -> dict:
         record = {"ts": ts if ts is not None else time.time(),
                   "event": event, "severity": severity, **fields}
-        with open(self.path_for(record["ts"]), "a") as fh:
+        path = self.path_for(record["ts"])
+        _close_partial_line(path)
+        with open(path, "a") as fh:
             fh.write(json.dumps(record) + "\n")
         if severity in ("warning", "critical"):
             print(f"[threadwatch] {severity.upper()}: {event} {fields}", flush=True)
@@ -123,6 +136,7 @@ def migrate_legacy(events_dir: Path) -> int:
             path = events_dir / f"{day}.jsonl"
             if day not in present:
                 present[day] = set(path.read_text().splitlines()) if path.exists() else set()
+                _close_partial_line(path)
                 handles[day] = open(path, "a")
             if line in present[day]:
                 continue

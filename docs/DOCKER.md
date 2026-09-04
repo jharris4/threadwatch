@@ -18,8 +18,17 @@ device, which Docker Desktop on macOS and Windows cannot do.
 ```bash
 git clone https://github.com/jharris4/threadwatch.git && cd threadwatch
 cp config/config.example.toml config/config.toml    # set your channel
+printf '[credentials]\nnetwork_key = "%s"\n' "<32 hex digits>" > config/credentials.toml
+chmod 600 config/credentials.toml                   # the Thread network key: docs/CREDENTIALS.md
 ls /dev/serial/by-id/                                # find the dongle
 ```
+
+The recorder does not start without the network key (the container would
+restart forever, exit code 2 in `docker compose logs capture`);
+`docs/CREDENTIALS.md` says where to find it, and `threadwatch import
+--write` (run as a one-off container, below, with `config/ha.env` holding
+a Home Assistant token) fetches it from Home Assistant along with your
+device names.
 
 The dongle shows as `usb-Nordic_Semiconductor_nRF_802154_Sniffer_..-if00`
 (flash it first if not: `SETUP.md`; `bin/flash-dongle.sh` runs on the host,

@@ -88,6 +88,23 @@ class DoctorTest(unittest.TestCase):
         self.assertEqual(level, "ok")
         self.assertIn("capped at 8 KB", text)
 
+    def test_env_lines_systemd_would_ignore_are_warned_about_not_loaded(self):
+        env = self.d / "alerts.env"
+        env.write_text("export DOCTOR_TEST_EXPORTED=abc\n; a comment\nBAD-NAME=x\nDOCTOR_TEST_PLAIN=ok\n")
+        os.chmod(env, 0o600)
+        try:
+            checks = doctor.load_env(env)
+            self.assertEqual(self.levels(checks), [("warn", "alerts.env"), ("warn", "alerts.env"), ("ok", "alerts.env")])
+            self.assertIn("line 1: 'export DOCTOR_TEST_EXPORTED': the systemd unit ignores this line (drop the 'export' prefix)",
+                          checks[0][2])
+            self.assertIn("line 3: 'BAD-NAME'", checks[1][2])
+            self.assertEqual(checks[2][2], "1 secret(s) loaded for this check")
+            self.assertNotIn("DOCTOR_TEST_EXPORTED", os.environ)
+            self.assertEqual(os.environ.get("DOCTOR_TEST_PLAIN"), "ok")
+        finally:
+            os.environ.pop("DOCTOR_TEST_PLAIN", None)
+            os.environ.pop("DOCTOR_TEST_EXPORTED", None)
+
     def test_dongle_uses_the_finder(self):
         self.assertEqual(doctor.check_dongle(self.cfg, find=lambda: "/dev/ttyACM0"),
                          [("ok", "dongle", "nRF 802.15.4 sniffer at /dev/ttyACM0")])

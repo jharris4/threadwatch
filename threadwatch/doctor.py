@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -202,6 +203,9 @@ def check_services() -> list[Check]:
     return out
 
 
+_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*$")
+
+
 def load_env(path: Path) -> list[Check]:
     """Put config/alerts.env into this process's environment the way the
     systemd unit does (EnvironmentFile), so sinks build the same here.
@@ -213,13 +217,22 @@ def load_env(path: Path) -> list[Check]:
     if mode & 0o077:
         out.append((WARN, "alerts.env", f"mode {mode:04o}: readable by others; chmod 400 it"))
     loaded = 0
-    for line in path.read_text().splitlines():
+    for lineno, line in enumerate(path.read_text().splitlines(), 1):
         line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
+        if not line or line.startswith(("#", ";")) or "=" not in line:
             continue
         k, _, v = line.partition("=")
-        k, v = k.strip().removeprefix("export ").strip(), v.strip().strip("'\"")
-        if k and k not in os.environ:
+        k, v = k.strip(), v.strip().strip("'\"")
+        if k.startswith("export ") or not _ENV_NAME.match(k):
+            # systemd's EnvironmentFile takes everything before "=" as the
+            # name and drops a line whose name is not a valid variable name
+            # ("export TOKEN" has a space in it), so the daemon would never
+            # see this value. Say so instead of quietly making it work here.
+            hint = "drop the 'export' prefix" if k.startswith("export ") else "not a valid variable name"
+            out.append((WARN, "alerts.env", f"line {lineno}: {k!r}: the systemd unit ignores this line "
+                                            f"({hint}); write NAME=value"))
+            continue
+        if k not in os.environ:
             os.environ[k] = v
             loaded += 1
     out.append((OK, "alerts.env", f"{loaded} secret(s) loaded for this check"))

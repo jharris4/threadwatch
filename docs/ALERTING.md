@@ -100,7 +100,9 @@ says which). `drop_db = 0` turns the detector off.
 
 ## Secrets
 
-`config/alerts.env` is a `NAME=value` file (see `config/alerts.example.env`).
+`config/alerts.env` is a `NAME=value` file (see `config/alerts.example.env`);
+no `export` prefix, since systemd's EnvironmentFile drops such a line and
+`threadwatch doctor` warns about it.
 The systemd unit loads it; `bin/threadwatch alert-test` needs it in the
 environment too (`set -a; . config/alerts.env; set +a` or run under
 `systemd-run`). Reference variables anywhere in a sink or heartbeat as

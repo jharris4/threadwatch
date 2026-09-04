@@ -28,13 +28,13 @@ event log carry names, addresses and MLE facts, never key material.
 
 ## Setup
 
-Store the key in a **separate, gitignored, read-only** file, never in
+Store the key in a **separate, gitignored, owner-only** file, never in
 config.toml and never in git. `config/credentials.toml` is gitignored by
 this repo and is the default path, so nothing in config.toml needs to
 change.
 
 **With Home Assistant:** `bin/threadwatch import-ha --write` fetches the
-key from HA's Thread dataset and writes the file at mode 0400 without
+key from HA's Thread dataset and writes the file at mode 0600 without
 ever printing it (docs/HOME-ASSISTANT.md, including the token setup).
 
 **By hand**, from any OpenThread border router:
@@ -49,11 +49,12 @@ cat > config/credentials.toml <<'TOML'
 [credentials]
 network_key = "PUT_32_HEX_CHARS_HERE"
 TOML
-chmod 400 config/credentials.toml
+chmod 600 config/credentials.toml
 ```
 
 `bin/push-to-host.sh` carries the file to the capture host with the rest
-of the local config; `setup-host.sh` locks it to mode 0400 there. To keep
+of the local config; `setup-host.sh` locks it to mode 0400 there, where
+nobody edits it (0600 here keeps it private and editable). To keep
 it somewhere else, point config.toml at it:
 
 ```toml

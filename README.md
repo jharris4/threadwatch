@@ -63,7 +63,7 @@ question: *why did this device go offline?*
 ## What it deliberately does not do
 
 - **No key in the pcaps.** Frames are written exactly as received and
-  decrypted on read. The network key lives in one read-only file on the
+  decrypted on read. The network key lives in one owner-only file on the
   capture host and is never logged or written anywhere else.
 - **No controller dependency.** Home Assistant integration is an
   optional bonus (docs/HOME-ASSISTANT.md), not a requirement.

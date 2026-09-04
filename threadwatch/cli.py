@@ -333,9 +333,9 @@ def main(argv=None) -> int:
                         print(f"  network key: {cred.name} already holds it")
                     elif args.write:
                         write_private(cred, "[credentials]\n# Written by threadwatch import-ha from Home Assistant's "
-                                            f"Thread dataset {ds.get('network_name')!r}. Mode 0400; never commit.\n"
+                                            f"Thread dataset {ds.get('network_name')!r}. Mode 0600; never commit.\n"
                                             f'network_key = "{ds["network_key"]}"\n')
-                        print(f"  network key: wrote {cred} (mode 0400)")
+                        print(f"  network key: wrote {cred} (mode 0600)")
                     else:
                         print(f"  network key: {'differs from' if cred.exists() else 'not in'} {cred.name}; "
                               "--write stores it")

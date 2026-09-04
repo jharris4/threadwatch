@@ -230,10 +230,10 @@ class WritePrivateTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "credentials.toml"
             write_private(p, "[credentials]\nnetwork_key = \"00\"\n")
-            self.assertEqual(oct(p.stat().st_mode & 0o777), "0o400")
+            self.assertEqual(oct(p.stat().st_mode & 0o777), "0o600")
             write_private(p, "[credentials]\nnetwork_key = \"11\"\n")
             self.assertIn('"11"', p.read_text())
-            self.assertEqual(oct(p.stat().st_mode & 0o777), "0o400")
+            self.assertEqual(oct(p.stat().st_mode & 0o777), "0o600")
             self.assertEqual(ha.current_key(p), "11")
             self.assertEqual(sorted(x.name for x in Path(d).iterdir()), ["credentials.toml"])
 

@@ -19,7 +19,7 @@ config/ha.env (gitignored) as HA_TOKEN, with HA_URL beside it; see
 docs/HOME-ASSISTANT.md for creating one.
 
 The key is never printed. The dataset TLV is parsed in memory, the key is
-written to the credentials file at mode 0400, and only "unchanged" or
+written to the credentials file at mode 0600, and only "unchanged" or
 "written" is reported.
 """
 
@@ -394,14 +394,13 @@ def plan_inventory(entries: list[dict], found: list[dict]) -> tuple[list[dict], 
 
 
 def write_private(path: Path, text: str) -> None:
-    """Write a secrets file readable by its owner only, replacing atomically."""
+    """Write a secrets file readable and writable by its owner only (0600:
+    private, still editable), replacing atomically."""
     tmp = path.with_suffix(path.suffix + ".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as fh:
         fh.write(text)
-    os.chmod(tmp, 0o400)
-    if path.exists():
-        os.chmod(path, 0o600)
+    os.chmod(tmp, 0o600)
     tmp.replace(path)
 
 

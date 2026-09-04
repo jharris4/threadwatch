@@ -128,8 +128,9 @@ environment too (`set -a; . config/alerts.env; set +a` or run under
 `systemd-run`). Reference variables anywhere in a sink or heartbeat as
 `${NAME}`. A definition whose variables are unset is **disabled with a
 journal line**, not an error, so the recorder keeps running while you sort
-out credentials. `alerts.env` is gitignored; `setup-host.sh` and
-`push-to-host.sh` lock it to mode 0400.
+out credentials. `alerts.env` is gitignored; keep it 0600 on your
+workstation, and `setup-host.sh` and `push-to-host.sh` lock it to 0400 on
+the host, where nobody edits it.
 
 ## Alert sinks
 

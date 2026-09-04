@@ -2,6 +2,7 @@
 
 import json
 import os
+import socket
 import sys
 import tempfile
 import threading
@@ -219,6 +220,39 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(bodies[2]["count"], "7")
         self.assertEqual(sink._pending, {})
         alerts.Dispatcher([], print).close()                             # no sinks, no thread: instant
+
+    def test_close_gives_up_on_a_sink_that_never_answers(self):
+        # A sink that accepts the connection and then goes silent: the send
+        # blocks for the sink's own timeout, and the queue behind it never
+        # drains. close() must still return, or systemd's TimeoutStopSec
+        # kills the recorder instead of it stopping.
+        dead = socket.socket()
+        dead.bind(("127.0.0.1", 0))
+        dead.listen(8)
+        self.addCleanup(dead.close)
+        held = []                       # hold each connection open, never reply
+
+        def accept_until_closed():
+            while True:
+                try:
+                    held.append(dead.accept()[0])
+                except OSError:
+                    return              # the socket closed: the test is over
+
+        threading.Thread(target=accept_until_closed, daemon=True).start()
+        self.addCleanup(lambda: [c.close() for c in held])
+        sink = alerts.HttpSink(name="blackhole", cooldown_s=300, timeout_s=1.0,
+                               url="http://127.0.0.1:%d/" % dead.getsockname()[1])
+        d = alerts.Dispatcher([sink], lambda *a: None)
+        for i in range(8):
+            d.offer({**REC, "name": f"Device {i}", "addr": "%016x" % i})
+        started = time.time()
+        d.close(timeout=0.5)
+        elapsed = time.time() - started
+        self.assertGreaterEqual(elapsed, 0.5)       # it did wait for the bound
+        self.assertLess(elapsed, 5)                 # ...and no longer than that
+        self.assertTrue(d._thread.is_alive())       # abandoned; capture os._exit()s over it
+        self.assertEqual(alerts.Dispatcher.close.__defaults__, (15.0,))
 
     def test_close_without_sinks_or_pending_is_quick(self):
         with tempfile.TemporaryDirectory() as d:

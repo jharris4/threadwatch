@@ -526,6 +526,37 @@ class PollStarvationTest(unittest.TestCase):
         self.assertIn("edge of its range", evs[0]["note"])
 
 
+class PartitionLeaderTest(unittest.TestCase):
+    """'leader router 60' on the status page should name the device."""
+
+    LEADER = "aabbccddeeff0011"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        (d / "devices.json").write_text(json.dumps(
+            [{"name": "Living Room Apple TV", "extendedAddress": self.LEADER, "threadRole": "border-router-leader"}]))
+        self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_leader_is_named_once_its_rloc16_is_matched(self):
+        from types import SimpleNamespace
+        pipe = Pipeline(self.cfg, NullEventLog())
+        self.assertIsNone(pipe.partition_status())
+        pipe.partition = (976341733, 60)
+        self.assertEqual(pipe.partition_status(),
+                         {"id": 976341733, "leader_router": 60, "leader_rloc16": "f000",
+                          "leader_addr": None, "leader_name": None})      # no credentials: unmatched
+        self.assertEqual(pipe.leader_label(60), "r60")
+        pipe.decryptor = SimpleNamespace(short_to_ext={"f000": self.LEADER})   # the leader's MLE advert
+        self.assertEqual(pipe.partition_status()["leader_addr"], self.LEADER)
+        self.assertEqual(pipe.partition_status()["leader_name"], "Living Room Apple TV")
+        self.assertEqual(pipe.leader_label(60), "r60 (Living Room Apple TV)")
+        self.assertEqual(pipe.leader_label(3), "r3")                          # 0x0c00: nobody matched
+
+
 class LinkDegradationTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

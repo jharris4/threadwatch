@@ -474,7 +474,17 @@ class Site:
                 else "header-level only (no credentials)")
             part = st.get("partition")
             if part:
-                row("partition", f'{esc(part.get("id"))} &middot; leader router {esc(part.get("leader_router"))}')
+                # "router 60" means nothing on its own: name the device that
+                # holds that router id when the MLE layer has matched it.
+                rid = esc(part.get("leader_router"))
+                rloc = f' <span class="muted">(router id {rid}, RLOC16 {esc(part.get("leader_rloc16") or "?")})</span>'
+                if part.get("leader_addr"):
+                    who = (f'<a href="/device/{esc(part["leader_addr"])}">'
+                           f'{esc(part.get("leader_name") or part["leader_addr"])}</a>{rloc}')
+                else:
+                    who = (f'router id {rid}{rloc} <span class="muted">not matched to a device yet: '
+                           'the leader has not sent an MLE frame this run</span>')
+                row("partition", f'{esc(part.get("id"))} &middot; leader {who}')
             det = st.get("detector") or {}
             if det:
                 storm = '<span class="bad">STORM ACTIVE</span>' if det.get("storm_active") else '<span class="ok">quiet</span>'

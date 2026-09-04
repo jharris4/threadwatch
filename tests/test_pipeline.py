@@ -740,13 +740,16 @@ class BorderRouterTest(unittest.TestCase):
         pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
         t = time.time() - 3600                                  # real-clock times: the restart below judges silences by now
         pipe.ingest(frame(t, self.OLD))
+        pipe.ingest(frame(t, self.OTBR))
         pipe._apply_border_routers([self.router(self.HOST, self.OLD),
                                     self.router("homeassistant-otbr.local", self.OTBR, "HA OTBR #AF1B", "Home Assistant")], t)
         self.assertEqual([r["event"] for r in pipe.events.records if r["event"].startswith("border_router")], [])
         self.assertEqual(pipe.routers[self.HOST]["name"], "Living Room Apple TV")          # bound by listed address
         self.assertEqual(pipe.routers["homeassistant-otbr.local"]["name"], "HA OTBR")      # bound by borderRouter
         self.assertEqual(pipe.names.name(self.OTBR), "HA OTBR")
-        # Reboot: same hostname, new address.
+        # Reboot: the new address is heard on air, then the same hostname advertises it.
+        pipe.ingest(frame(t + 500, self.NEW))
+        self.assertEqual(pipe.events.records[-1]["event"], "device_first_seen")   # unnamed until the next browse
         pipe._apply_border_routers([self.router(self.HOST, self.NEW)], t + 600)
         ev = [r for r in pipe.events.records if r["event"] == "border_router_address_changed"]
         self.assertEqual(len(ev), 1)
@@ -756,17 +759,43 @@ class BorderRouterTest(unittest.TestCase):
         self.assertEqual(pipe.seen.table[self.OLD]["rotated_to"], self.NEW)
         self.assertEqual(pipe.routers[self.HOST]["previous"], [{"addr": self.OLD, "until": t + 600}])
         pipe.periodic(t + 3000)                            # 50 min on: the old address never reads as quiet
-        self.assertEqual([r for r in pipe.events.records if r["event"] == "device_quiet"], [])
+        self.assertNotIn(self.OLD, [r["addr"] for r in pipe.events.records if r["event"] == "device_quiet"])
         pipe.ingest(frame(time.time() - 60, self.NEW))
-        self.assertEqual(pipe.events.records[-1]["name"], "Living Room Apple TV")   # device_first_seen, named
         # The binding survives a restart, through the state file.
         pipe.seen.save()
         pipe2 = Pipeline(self.cfg, NullEventLog(), test_decryptor())
         self.assertEqual(pipe2.names.name(self.NEW), "Living Room Apple TV")
         self.assertEqual(pipe2.names.border_routers[self.NEW]["hostname"], self.HOST)
         self.assertEqual(pipe2.names.resolve("living room apple tv")[0], [self.OLD, self.NEW])
-        self.assertEqual([r["event"] for r in pipe2.events.records if r["event"] == "device_quiet"], [])
+        self.assertNotIn(self.OLD, [r["addr"] for r in pipe2.events.records if r["event"] == "device_quiet"])
         self.assertEqual(pipe2.routers[self.HOST]["addr"], self.NEW)
+
+    def test_an_address_never_heard_on_air_is_not_believed(self):
+        # Anyone on the LAN can advertise _meshcop._udp with any address in
+        # it. A forged record must not retire the real row (silencing its
+        # quiet alerts) or hand the name to the forged address.
+        import contextlib
+        import io
+        pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
+        t = time.time() - 7200
+        pipe.ingest(frame(t, self.OLD))
+        pipe._apply_border_routers([self.router(self.HOST, self.OLD)], t)
+        forged = "deadbeefdeadbeef"
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            for tick in (60, 660):
+                pipe._apply_border_routers([self.router(self.HOST, forged)], t + tick)
+        self.assertEqual(out.getvalue().count("has not been heard on air"), 1)
+        self.assertEqual(pipe.routers[self.HOST]["addr"], self.OLD)
+        self.assertNotIn("rotated_to", pipe.seen.table[self.OLD])
+        self.assertIsNone(pipe.names.name(forged))
+        self.assertEqual([r["event"] for r in pipe.events.records if r["event"].startswith("border_router")], [])
+        pipe.periodic(t + 31 * 60)                          # the real device's silence still counts
+        self.assertEqual([r["addr"] for r in pipe.events.records if r["event"] == "device_quiet"], [self.OLD])
+        # A real reboot: the new address is on air, so the next browse binds it.
+        pipe.ingest(frame(t + 40 * 60, self.NEW))
+        pipe._apply_border_routers([self.router(self.HOST, self.NEW)], t + 41 * 60)
+        self.assertEqual((pipe.routers[self.HOST]["addr"], pipe.names.name(self.NEW)), (self.NEW, "Living Room Apple TV"))
 
     def test_a_rotation_closes_the_silence_announced_for_the_old_address(self):
         from threadwatch.review import group_episodes
@@ -793,6 +822,7 @@ class BorderRouterTest(unittest.TestCase):
     def test_a_router_matching_no_entry_is_announced_once(self):
         pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
         t = 1_700_000_000.0
+        pipe.ingest(frame(t, "0011223344556677"))
         stranger = self.router("homepod-kitchen.local", "0011223344556677", "HomePod Kitchen")
         pipe._apply_border_routers([stranger], t)
         pipe._apply_border_routers([stranger], t + 600)
@@ -800,6 +830,7 @@ class BorderRouterTest(unittest.TestCase):
         self.assertEqual(len(ev), 1)
         self.assertIn("homepod-kitchen.local", ev[0]["note"])
         self.assertIsNone(pipe.names.name("0011223344556677"))
+        pipe.ingest(frame(t + 1100, "8899aabbccddeeff"))
         pipe._apply_border_routers([self.router("homepod-kitchen.local", "8899aabbccddeeff", "HomePod Kitchen")], t + 1200)
         ev = [r for r in pipe.events.records if r["event"] == "border_router_address_changed"]
         self.assertEqual((ev[0]["name"], ev[0]["previous"]), (None, "0011223344556677"))
@@ -814,6 +845,7 @@ class BorderRouterTest(unittest.TestCase):
         mdns.browse = lambda timeout=4.0, **kw: calls.append(timeout) or [self.router(self.HOST, self.OLD)]
         try:
             t = 1_700_000_000.0
+            pipe.ingest(frame(t, self.OLD))
             pipe.periodic(t)                       # starts the browse
             pipe._browse_thread.join(5)
             self.assertEqual(pipe.routers, {})     # nothing applied until the next tick

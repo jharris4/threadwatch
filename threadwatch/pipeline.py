@@ -113,6 +113,7 @@ class Pipeline:
                 self.own_pans[row["pan"]] = self.own_pans.get(row["pan"], 0) + int(row.get("frames") or 0)
         self._foreign_reported: set[int] = set()
         self._last_src_by_pan: dict[int, Optional[str]] = {}
+        self._unheard_logged: set[str] = set()      # mDNS addresses never heard on air, complained about once
         self.partition: Optional[tuple] = None
         self._crypto_mark = (0, 0)          # (decrypted, failed) when decryption last worked
         self._stale_evt = 0.0
@@ -906,6 +907,19 @@ class Pipeline:
         for r in found:
             host, ext = r.get("hostname"), (r.get("ext") or "").lower()
             if not host or len(ext) != 16:
+                continue
+            if ext not in self.seen.table:
+                # mDNS is unauthenticated: any host on the LAN can advertise
+                # any address under any hostname. Nothing is bound to, and
+                # no row is retired for, an address the sniffer has not
+                # heard on air, so a forged record cannot silence a device's
+                # quiet alerts or take its name. A border router is the
+                # chattiest thing on the mesh: after a real reboot the next
+                # browse finds its new address heard.
+                if ext not in self._unheard_logged:
+                    self._unheard_logged.add(ext)
+                    print(f"[threadwatch] mdns: {r.get('instance') or host} advertises {ext}, which has not "
+                          "been heard on air; ignored until it is", flush=True)
                 continue
             rec = self.routers.get(host) or {}
             entry = (self.names.entry_for_border_router(host) or self.names.by_addr.get(ext)

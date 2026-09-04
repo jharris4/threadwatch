@@ -37,7 +37,7 @@ from typing import Optional
 from .detect import Detector
 from .events import EventLog, day_of, read_day
 from .link import assess as assess_link
-from .names import DeviceNames, LastSeen, reception, rloc16_role
+from .names import DeviceNames, LastSeen, load_border_routers, reception, rloc16_role
 from .pcap import Frame
 from .review import dominant_pan
 
@@ -98,7 +98,7 @@ class Pipeline:
         self.cfg = cfg
         self.events = events
         self.ephemeral = ephemeral
-        self.names = DeviceNames(cfg.devices_path)
+        self.names = DeviceNames(cfg.devices_path, None if ephemeral else cfg.state_dir / "border-routers.json")
         self.seen = LastSeen(None if ephemeral else cfg.state_dir / "last-seen.json")
         self.detector = Detector(cfg.detector)
         self.decryptor = decryptor
@@ -107,6 +107,12 @@ class Pipeline:
         self.partition: Optional[tuple] = None
         self._crypto_mark = (0, 0)          # (decrypted, failed) when decryption last worked
         self._stale_evt = 0.0
+        # Border routers on the LAN: hostname -> current address (mDNS).
+        self.routers_path = cfg.state_dir / "border-routers.json"
+        self.routers: dict[str, dict] = {} if ephemeral else load_border_routers(self.routers_path)
+        self._browse_thread = None
+        self._browse_result: Optional[list] = None
+        self._next_browse = 0.0
         self.last_frame: Optional[Frame] = None
         self._last_who: Optional[str] = None
         self.beacon_times = deque(maxlen=16)
@@ -165,6 +171,8 @@ class Pipeline:
             dominant = dominant_pan(self.seen)   # best guess before any frame arrives
             announced = 0
             for addr, row in self.seen.table.items():
+                if row.get("rotated_to"):
+                    continue          # an Apple hub's old address: retired, not quiet
                 if self.silence_s(row, now) <= self.quiet_threshold_s(addr):
                     if row.pop("quiet_reported", None):
                         # Heard again after its announced silence, but the
@@ -678,12 +686,14 @@ class Pipeline:
         """Run every ~30 s in live capture: quiet checks, persistence."""
         self.seen.maybe_save()
         self._check_credentials(now)
+        if not self.ephemeral and self.cfg.border_router_browse_s > 0:
+            self._poll_border_routers(now)
         # Devices on another PAN (a neighbour's mesh, an unpaired device
         # announcing itself) are tracked for the report but never alerted on:
         # their absence says nothing about this network.
         dominant = self.dominant_pan()
         for addr, row in self.seen.table.items():
-            if addr in self.quiet_reported:
+            if addr in self.quiet_reported or row.get("rotated_to"):
                 continue
             pan = row.get("pan")
             if dominant is not None and pan is not None and pan != dominant:
@@ -826,6 +836,93 @@ class Pipeline:
                 "quiet": quiet, "unknown": unknown, "marginal": marginal, "degraded": degraded,
                 "storm_active": bool(self.detector.storm_active), "events_24h": counts,
                 "note": "last 24 h: " + "; ".join(parts)}
+
+    # ------------------------------------------------- border routers
+
+    def _poll_border_routers(self, now: float) -> None:
+        """Browse in a thread (the capture loop must not block on the LAN
+        for three seconds) and apply the last result when it is in."""
+        import threading
+        if self._browse_thread is not None:
+            if self._browse_thread.is_alive():
+                return
+            self._browse_thread.join()
+            self._browse_thread = None
+            result, self._browse_result = self._browse_result, None
+            if result is not None:
+                self._apply_border_routers(result, now)
+            return
+        if now < self._next_browse:
+            return
+        self._next_browse = now + self.cfg.border_router_browse_s
+
+        def run():
+            from . import mdns
+            try:
+                self._browse_result = mdns.browse(timeout=3.0)
+            except OSError as exc:
+                print(f"[threadwatch] mdns browse failed: {exc}", flush=True)
+                self._browse_result = None
+
+        self._browse_thread = threading.Thread(target=run, name="mdns-browse", daemon=True)
+        self._browse_thread.start()
+
+    def _apply_border_routers(self, found: list[dict], now: float) -> None:
+        """Bind each discovered border router to an inventory entry (by its
+        borderRouter hostname, by an address the entry already lists, or
+        by the binding remembered from an earlier browse) and notice when
+        its address has changed: the new one takes the name, the old row
+        is retired so it never reads as quiet."""
+        dirty = False
+        for r in found:
+            host, ext = r.get("hostname"), (r.get("ext") or "").lower()
+            if not host or len(ext) != 16:
+                continue
+            rec = self.routers.get(host) or {}
+            entry = (self.names.entry_for_border_router(host) or self.names.by_addr.get(ext)
+                     or (self.names.entry_named(rec["name"]) if rec.get("name") else None))
+            name = entry.get("name") if entry else None
+            prev = (rec.get("addr") or "").lower() or None
+            changed = prev is not None and prev != ext
+            new = {"addr": ext, "name": name, "instance": r.get("instance"), "vendor": r.get("vendor"),
+                   "model": r.get("model"), "since": now if (changed or not rec) else rec.get("since", now),
+                   "seen": now, "previous": list(rec.get("previous") or []), "announced": rec.get("announced", False)}
+            if changed:
+                new["previous"].append({"addr": prev, "until": now})
+            if entry is not None:
+                self.names.learn(ext, entry)
+            if changed:
+                old_row = self.seen.table.get(prev)
+                if old_row is not None:
+                    old_row["rotated_to"] = ext
+                    old_row.pop("quiet_reported", None)
+                    self.quiet_reported.discard(prev)
+                    self.seen._dirty = True
+                who = name or r.get("instance") or host
+                self.events.emit("border_router_address_changed", "notice", now, addr=ext, name=name,
+                                 previous=prev, hostname=host,
+                                 note=(f"{who} now answers to {ext}, was {prev}: an Apple hub takes a new Thread "
+                                       "address on every reboot. " + ("Named from its entry; nothing to edit." if name
+                                       else "Not in devices.json: see the devices page.")))
+            elif entry is None and not new["announced"]:
+                new["announced"] = True
+                self.events.emit("border_router_unlisted", "notice", now, addr=ext, name=None, hostname=host,
+                                 note=(f"border router {r.get('instance') or host} ({r.get('vendor')} {r.get('model')}) "
+                                       f"at {ext} is not in devices.json: name it with "
+                                       f"threadwatch adopt {ext} \"<name>\", or give an entry "
+                                       f"\"borderRouter\": \"{host}\""))
+            if new != rec:
+                self.routers[host] = new
+                dirty = True
+        if dirty:
+            self._save_border_routers()
+
+    def _save_border_routers(self) -> None:
+        if self.ephemeral:
+            return
+        tmp = self.routers_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.routers, indent=1))
+        tmp.replace(self.routers_path)
 
     STALE_FAILED_FRAMES = 200
     STALE_REPEAT_S = 6 * 3600

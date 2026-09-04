@@ -274,7 +274,12 @@ def device_rows(seen: LastSeen, names: DeviceNames, min_rssi_dbm: float,
         rssi = row.get("rssi")
         live = rloc16_role(row.get("rloc16")) or {}
         parent_addr = holder.get(live["router_id"]) if live.get("role") == "child" else None
+        br = names.border_routers.get(addr)
         rows.append({
+            "border_router": br["hostname"] if br else None,
+            "border_router_label": (f'{br.get("instance") or br["hostname"]} ({br.get("vendor") or "?"} '
+                                    f'{br.get("model") or ""})'.strip() if br else None),
+            "rotated_to": row.get("rotated_to"),
             "rloc16": row.get("rloc16"),
             "rloc16_ts": row.get("rloc16_ts"),
             "role": live.get("role"),
@@ -302,7 +307,7 @@ def device_rows(seen: LastSeen, names: DeviceNames, min_rssi_dbm: float,
 
 DEVICE_FILTERS = {
     "unknown": ("not in devices.json", lambda r, dom: r["name"] is None),
-    "quiet": ("quiet now", lambda r, dom: r["quiet"]),
+    "quiet": ("quiet now", lambda r, dom: r["quiet"] and not r["rotated_to"]),
     "marginal": ("heard marginally", lambda r, dom: r["reception"] == "marginal"),
     "down": ("signal down", lambda r, dom: r["degraded"]),
     "foreign": ("on another PAN", lambda r, dom: r["pan"] is not None and dom is not None and r["pan"] != dom),

@@ -44,9 +44,21 @@ the command whenever you add or rename devices; it is safe to repeat.
 machine. Mode 0600 on your workstation keeps it private and editable;
 `setup-host.sh` locks it to 0400 on the host, where nobody edits it.
 
-HomeKit-only Thread devices never appear in HA; name those with
-`threadwatch report --suggest` and `threadwatch adopt`, or the power-cycle
-method in docs/ANALYSIS.md.
+**Apple TVs and HomePods are not in HA's Matter registry**, so the import
+does not cover them, and they change their Thread extended address on
+every reboot anyway. The recorder handles them itself: every border
+router advertises its current address over mDNS with a stable hostname,
+the recorder asks the LAN every ten minutes, and a new address is named
+from the old entry automatically (a `border_router_address_changed`
+notice says so). Name each hub once, by an address it has now
+(`threadwatch border-routers` lists them), and never touch it again.
+mDNS is link-local: the recorder host must be on the routers' subnet, or
+your network must reflect mDNS between VLANs (UniFi: the mDNS setting on
+the networks involved; a Linux router: avahi's reflector). `threadwatch
+doctor` reports what the host can see. HomeKit-only end devices such as
+locks never appear anywhere: name those with `threadwatch report
+--suggest` and `threadwatch adopt`, or the power-cycle method in
+docs/ANALYSIS.md.
 
 ## 1. Receive alerts in HA
 

@@ -26,7 +26,8 @@ def resolve_target(cfg: Config, target: str) -> tuple[list[str], str]:
     """Resolve a name or address into the set of extended addresses to track
     (every address of a rotating device belongs to the story)."""
     try:
-        return DeviceNames(cfg.devices_path).resolve(target)
+        from .names import load_names
+        return load_names(cfg).resolve(target)
     except ValueError as exc:
         raise SystemExit(str(exc))
 

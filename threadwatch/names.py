@@ -24,6 +24,17 @@ editing a file, so the recorder learns it from traffic and never reads
 it from here. Other fields are ignored, so a file produced by another
 tool loads as long as it has names and addresses.
 
+Apple hubs (Apple TV, HomePod) change their Thread extended address on
+every reboot, so their entries would go stale within weeks. The recorder
+finds every border router on the LAN over mDNS (threadwatch/mdns.py),
+where the hostname is stable and the current extended address is
+advertised, and keeps hostname -> address in the state file
+border-routers.json. An entry is tied to a hostname either explicitly,
+with `"borderRouter": "appletv-living-room.local"`, or implicitly, the
+first time a discovered address matches one the entry lists; from then
+on a new address for that hostname is named from the entry without
+anyone editing this file.
+
 Two helpers keep the file from being hand-written: `threadwatch report
 --suggest` prints a ready-to-paste entry per unknown address, prefilled
 with any SRP hostname the credentialed pipeline harvested for it, and
@@ -66,9 +77,14 @@ class AmbiguousName(ValueError):
 
 
 class DeviceNames:
-    def __init__(self, inventory_path: Optional[Path]):
+    def __init__(self, inventory_path: Optional[Path], learned_path: Optional[Path] = None):
+        """``learned_path``: the recorder's border-routers.json, whose
+        hostname -> address bindings name a rebooted Apple hub's new
+        address after the inventory (which lists only old ones)."""
         self.by_addr: dict[str, dict] = {}
         self.inventory_path = inventory_path
+        self.entries: list[dict] = []
+        self.border_routers: dict[str, dict] = {}    # addr -> {hostname, instance, vendor, model, name}
         if inventory_path and inventory_path.exists():
             for entry in json.loads(inventory_path.read_text()):
                 for a in entry_addresses(entry):
@@ -81,6 +97,33 @@ class DeviceNames:
                               f"{entry.get('name')!r}: not 16 hex digits", flush=True)
                         continue
                     self.by_addr[n] = entry
+            self.entries = [e for e in (json.loads(inventory_path.read_text()) if inventory_path.exists() else [])
+                            if isinstance(e, dict)]
+        for host, rec in load_border_routers(learned_path).items():
+            addr = _norm(str(rec.get("addr") or ""))
+            if not _EXT_ADDR.match(addr):
+                continue
+            self.border_routers[addr] = {"hostname": host, "instance": rec.get("instance"),
+                                         "vendor": rec.get("vendor"), "model": rec.get("model"),
+                                         "name": rec.get("name")}
+            entry = self.entry_for_border_router(host) or (self.entry_named(rec["name"]) if rec.get("name") else None)
+            if entry is not None and addr not in self.by_addr:
+                self.by_addr[addr] = entry
+
+    def entry_named(self, name: str) -> Optional[dict]:
+        want = name.strip().lower()
+        return next((e for e in self.entries if (e.get("name") or "").strip().lower() == want), None)
+
+    def entry_for_border_router(self, hostname: str) -> Optional[dict]:
+        """The entry that names this border router explicitly."""
+        want = hostname.rstrip(".").lower()
+        return next((e for e in self.entries
+                     if str(e.get("borderRouter") or "").rstrip(".").lower() == want), None)
+
+    def learn(self, addr: str, entry: dict) -> None:
+        """Name an address from an inventory entry it does not list (a
+        border router's new address after a reboot)."""
+        self.by_addr[_norm(addr)] = entry
 
     def name(self, addr: str) -> Optional[str]:
         entry = self.by_addr.get(_norm(addr))
@@ -201,6 +244,24 @@ class LastSeen:
             else:
                 active.append(item)
         return {"quiet": quiet, "active_count": len(active), "unknown": unknown}
+
+
+def load_border_routers(path: Optional[Path]) -> dict[str, dict]:
+    """border-routers.json: {hostname: {addr, name, instance, vendor, model,
+    since, seen, previous: [{addr, until}]}}, written by the recorder."""
+    if path is None:
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def load_names(cfg) -> DeviceNames:
+    """The inventory plus what the recorder has learned about border
+    routers: the one way every command and page should build names."""
+    return DeviceNames(cfg.devices_path, cfg.state_dir / "border-routers.json")
 
 
 def rloc16_role(rloc16: Optional[str]) -> Optional[dict]:

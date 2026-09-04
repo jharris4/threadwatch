@@ -16,7 +16,7 @@ from typing import Optional
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from .events import DAY_RE, day_of, next_day, prev_day
-from .names import AmbiguousName, DeviceNames, LastSeen
+from .names import AmbiguousName, DeviceNames, LastSeen, load_names
 from .review import (DEVICE_FILTERS, DEVICE_SORTS, capture_for_day, day_episodes, day_index,
                      days_available, device_rows, devices_history, dominant_pan,
                      fmt_bytes, fmt_duration, incidents, now_card, select_devices, storage, today)
@@ -193,7 +193,7 @@ class Site:
             return {}
 
     def names(self) -> DeviceNames:
-        return DeviceNames(self.cfg.devices_path)
+        return load_names(self.cfg)
 
     def leader_router(self) -> Optional[int]:
         part = self.status().get("partition") or {}
@@ -390,6 +390,11 @@ class Site:
             silent = r["silent_for_s"]
             seen_html = f'<span class="{"bad" if silent > 1800 else ""}">{ago(r["last_seen"], now)}</span>'
             nm = esc(r["name"]) if r["name"] else f'<span class="warn">unknown</span>'
+            if r.get("border_router_label"):
+                nm += f' <span class="muted">border router {esc(r["border_router_label"])}</span>'
+            if r.get("rotated_to"):
+                seen_html = (f'<span class="muted">retired: now <a href="/device/{esc(r["rotated_to"])}">'
+                             f'{esc(r["rotated_to"])}</a></span>')
             trs.append(f'<tr><td><a href="/device/{esc(r["addr"])}">{nm}</a></td>'
                        f'<td>{self.role_html(r, now)}</td>'
                        f'<td>{seen_html}</td>'
@@ -435,6 +440,9 @@ class Site:
                      if r["addr"] == addrs[0]), None)
         if live and live["role"]:
             head.append(self.role_html(live, now))
+        if live and live.get("border_router_label"):
+            head.append(f'border router {esc(live["border_router_label"])}, hostname <code>{esc(live["border_router"])}</code>'
+                        ' (its address is learned from mDNS after every reboot)')
         cards = []
         for addr in sorted(addrs, key=lambda a: -(seen.table.get(a) or {}).get("last_seen", 0)):
             row = seen.table.get(addr)
@@ -605,7 +613,8 @@ class Site:
                          if r["addr"] == addrs[0]), {})
             return {"addr": addrs[0], "addresses": addrs, "name": name if name != addrs[0] else None,
                     "live": {k: live.get(k) for k in ("role", "rloc16", "rloc16_ts", "router_id",
-                                                      "leader", "parent", "parent_addr")},
+                                                      "leader", "parent", "parent_addr", "border_router",
+                                                      "rotated_to")},
                     "last_seen": table.get(addrs[0]),
                     "addresses_seen": {a: table.get(a) for a in addrs}, "episodes": eps}
         if path == "/api/days":

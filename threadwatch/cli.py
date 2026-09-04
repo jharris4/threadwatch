@@ -62,6 +62,10 @@ def main(argv=None) -> int:
     p_ha.add_argument("--no-devices", action="store_true", help="skip devices.json")
     p_ha.add_argument("--no-credentials", action="store_true", help="skip credentials.toml")
 
+    p_br = sub.add_parser("border-routers", help="ask the LAN (mDNS) which Thread border routers it can see, "
+                                                 "with their current extended addresses")
+    p_br.add_argument("--seconds", type=float, default=3.0, help="how long to wait for answers")
+
     p_why = sub.add_parser("why", help="reconstruct one device's story from the ring buffer")
     p_why.add_argument("device", help="device name (from devices.json) or 16-hex extended address")
     p_why.add_argument("--pcap", type=Path, help="analyze this file instead of the ring")
@@ -159,7 +163,8 @@ def main(argv=None) -> int:
         if args.device:
             from .names import DeviceNames
             try:
-                addrs = set(DeviceNames(cfg.devices_path).resolve(args.device)[0])
+                from .names import load_names
+                addrs = set(load_names(cfg).resolve(args.device)[0])
             except ValueError as exc:
                 parser.error(str(exc))
         floor = SEVERITY_RANK.get(args.severity or "info", 0)
@@ -271,8 +276,8 @@ def main(argv=None) -> int:
 
     if args.cmd == "report":
         import sys
-        from .names import DeviceNames, LastSeen, load_observed_names, rotation_hints, suggest_entries
-        names = DeviceNames(cfg.devices_path)
+        from .names import LastSeen, load_names, load_observed_names, rotation_hints, suggest_entries
+        names = load_names(cfg)
         seen = LastSeen(cfg.state_dir / "last-seen.json")
         report = seen.report(names, quiet_after_s=args.quiet_minutes * 60,
                              min_rssi_dbm=cfg.quiet_min_rssi_dbm)
@@ -295,6 +300,23 @@ def main(argv=None) -> int:
                   f"'threadwatch adopt <addr> <name>', or 'threadwatch report --suggest' "
                   f"for ready-to-paste entries (format: threadwatch/names.py).",
                   file=sys.stderr)
+        return 0
+
+    if args.cmd == "border-routers":
+        from .mdns import browse
+        from .names import load_names
+        names = load_names(cfg)
+        found = browse(timeout=args.seconds, log=lambda m: print(f"  ! {m}"))
+        if not found:
+            print("no Thread border routers answered over mDNS: is this host on their subnet, or is mDNS "
+                  "reflected between VLANs?")
+            return 1
+        for r in found:
+            who = names.name(r["ext"]) if r.get("ext") else None
+            print(f"{r['instance']}  {r.get('vendor') or '?'} {r.get('model') or ''}\n"
+                  f"  hostname {r.get('hostname')}  address {r.get('ext') or '?'}"
+                  f"  -> {who or 'not in devices.json'}\n"
+                  f"  network {r.get('network_name')}  ext PAN {r.get('ext_pan_id')}  ip {', '.join(r.get('addresses') or [])}")
         return 0
 
     if args.cmd == "import-ha":

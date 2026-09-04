@@ -45,6 +45,10 @@ class IncidentsTest(CliCase):
         self.assertEqual([l.split()[2] for l in out.splitlines()],
                          ["20260903T090000_storm", "20260902T141500_storm", "20260901T080000_quiet"])
         self.assertIn("3 incident(s), 300 B", err)
+        (inc / "20260901T070000_storm-at-noon").mkdir()      # freeze wrote the label filename-safe...
+        code, _, err = self.run_cli("incidents", "--delete", "storm at noon")   # ...delete takes it as typed
+        self.assertEqual((code, err), (0, ""))
+        self.assertFalse((inc / "20260901T070000_storm-at-noon").exists())
         code, _, err = self.run_cli("incidents", "--delete", "storm")
         self.assertEqual(code, 1)
         self.assertIn("names 2 incidents", err)

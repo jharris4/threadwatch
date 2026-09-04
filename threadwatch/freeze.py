@@ -19,10 +19,17 @@ STATE_FILES = ("status.json", "last-seen.json", "observed-names.json")
 _LABEL = re.compile(r"[^A-Za-z0-9._-]+")
 
 
+def safe_label(label: str) -> str:
+    """The filename-safe form a label takes in an incident's directory name
+    ("storm at noon" -> "storm-at-noon"). `incidents --delete` applies the
+    same rule, so the label a user typed at freeze time finds it again."""
+    return _LABEL.sub("-", label.strip()).strip("-") or "incident"
+
+
 def freeze_ring(cfg, label: str = "incident", now: float | None = None) -> tuple[Path, int]:
     """Snapshot the ring. Returns (incident dir, ring files copied). The
-    label is reduced to filename-safe characters."""
-    label = _LABEL.sub("-", label.strip()).strip("-") or "incident"
+    label is reduced to filename-safe characters (safe_label)."""
+    label = safe_label(label)
     stamp = time.strftime("%Y%m%dT%H%M%S", time.localtime(now or time.time()))
     dest = cfg.incidents_dir / f"{stamp}_{label}"
     dest.mkdir(parents=True, exist_ok=False)

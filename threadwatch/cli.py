@@ -194,11 +194,14 @@ def main(argv=None) -> int:
 
     if args.cmd == "incidents":
         import sys
+        from .freeze import safe_label
         from .review import fmt_bytes, incidents
         items = incidents(cfg.incidents_dir)
         if args.delete:
             want = args.delete.strip().rstrip("/")
-            hits = [i for i in items if i["name"] == want] or [i for i in items if i["label"] == want]
+            hits = ([i for i in items if i["name"] == want]
+                    or [i for i in items if i["label"] == want]
+                    or [i for i in items if i["label"] == safe_label(want)])
             if not hits:
                 parser.exit(1, f"threadwatch incidents: no incident named {want!r}\n")
             if len(hits) > 1:

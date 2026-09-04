@@ -85,6 +85,6 @@ bin/threadwatch events --episodes   # what happened lately, grouped
 bin/threadwatch why "<name>" --hours 6  # one device's story from the recent ring files
 # ...or open http://<pi>:8080/ for the same thing day by day (docs/REVIEW.md)
 bin/threadwatch freeze mylabel  # preserve the ring buffer NOW (incident!)
-bin/threadwatch incidents       # what is frozen and how big; --delete <name> when done with one
+bin/threadwatch incidents       # what is frozen and how big; --delete <name or label> when done with one
 bin/threadwatch replay f.pcap   # run detection over any pcap
 ```

@@ -29,8 +29,10 @@ missing; credentials and alerts.env locked to 0400 if present; the two
 systemd units installed, enabled and started with your user and clone
 path filled in. Re-run it after any change, including an update.
 
-Then edit `config/config.toml`: at minimum the Thread **channel**. Log out
-and in once if the group membership was new.
+Then edit `config/config.toml`: at minimum the Thread **channel**, and
+create `config/credentials.toml` with the Thread **network key**
+(docs/CREDENTIALS.md says where to find it): the recorder does not start
+without it. Log out and in once if the group membership was new.
 
 **Without setup-host.sh**, the equivalent by hand is: install pyserial
 and cryptography (or `python3 -m venv .venv && .venv/bin/pip install -r

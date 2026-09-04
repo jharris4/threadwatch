@@ -140,3 +140,25 @@ class TapHeaderTest(_ut.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RingHourNamingTest(_ut.TestCase):
+    """One file per local hour. The name is a contract: `why.select_recent`
+    parses it to pick a window, and per-file retention drops one hour at a
+    time rather than a whole day."""
+
+    def test_two_hours_of_one_day_become_two_files_why_can_window(self):
+        import time
+        from threadwatch.why import RING_NAME, select_recent
+        with tempfile.TemporaryDirectory() as d:
+            ring = RingWriter(Path(d), keep_files=10, dlt=DLT_NOFCS)
+            for stamp in ("2026-09-04 08:30:00", "2026-09-04 09:10:00"):
+                ring.write(frame(time.mktime(time.strptime(stamp, "%Y-%m-%d %H:%M:%S"))))
+            ring.close()
+            names = sorted(p.name for p in Path(d).glob("*.pcap"))
+            self.assertEqual(names, ["threadwatch-20260904-08.pcap", "threadwatch-20260904-09.pcap"])
+            for name in names:
+                time.strptime(name, RING_NAME)       # the name `why` has to parse
+            now = time.mktime(time.strptime("2026-09-04 09:40:00", "%Y-%m-%d %H:%M:%S"))
+            recent = select_recent(sorted(Path(d).glob("*.pcap")), 0.5, now)
+            self.assertEqual([p.name for p in recent], ["threadwatch-20260904-09.pcap"])

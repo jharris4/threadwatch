@@ -261,6 +261,27 @@ class DayViewTest(unittest.TestCase):
         self.assertEqual(storage(self.cfg)["ring_needs_bytes"], 0)
         self.assertEqual((fmt_bytes(512), fmt_bytes(2048), fmt_bytes(5 * 1024 ** 3)), ("512 B", "2 KB", "5.0 GB"))
 
+    def test_chooser_links_survive_url_special_characters_in_names(self):
+        d = self.cfg.devices_path
+        entries = json.loads(d.read_text())
+        entries += [{"name": "Lamp #1", "extendedAddress": "1111111111111111"},
+                    {"name": "Lamp #2", "extendedAddress": "2222222222222222"}]
+        d.write_text(json.dumps(entries))
+        httpd = make_server(self.cfg, "127.0.0.1", 0)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{httpd.server_port}"
+        try:
+            def get(path):
+                with urllib.request.urlopen(base + path, timeout=5) as r:
+                    return r.status, r.read().decode()
+            body = get("/device/Lamp")[1]
+            self.assertIn("<h1>which device?</h1>", body)
+            self.assertIn('<a href="/device/Lamp%20%231">Lamp #1</a>', body)
+            self.assertIn("<h1>Lamp #1</h1>", get("/device/Lamp%20%231")[1])
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
     def test_device_history_is_newest_first(self):
         kinds = [e["kind"] for e in device_history(self.cfg.events_dir, AQ)]
         self.assertEqual(kinds, ["retransmissions", "quiet"])

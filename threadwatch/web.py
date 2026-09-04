@@ -398,7 +398,9 @@ class Site:
             if msg.startswith("ambiguous"):
                 choices = sorted({e.get("name") for e in names.by_addr.values()
                                   if e.get("name") and target.strip().lower() in e["name"].lower()})
-                items = "".join(f'<li><a href="/device/{esc(c)}">{esc(c)}</a></li>' for c in choices)
+                # quote() so a '#', '?' or '%' in a name stays part of the
+                # path; esc() alone would send "Lamp #1" to /device/Lamp.
+                items = "".join(f'<li><a href="/device/{quote(c, safe="")}">{esc(c)}</a></li>' for c in choices)
                 return self.page("which device?", f'<h1>which device?</h1><p class="muted">{esc(target)} '
                                                   f'matches several names.</p><ul>{items}</ul>')
             return self.page("no such device", f'<h1>no such device</h1><p class="muted">{esc(msg)}</p>'

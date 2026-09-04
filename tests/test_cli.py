@@ -141,3 +141,38 @@ class EventsFilterTest(CliCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConfigValidationTest(unittest.TestCase):
+    """A config mistake must fail loudly, not silently record the wrong thing."""
+
+    def _load(self, body):
+        import tempfile
+        from pathlib import Path as _P
+        from threadwatch import config
+        d = _P(tempfile.mkdtemp())
+        (d / "config.toml").write_text(body)
+        return config.load(d / "config.toml")
+
+    def test_out_of_range_and_degenerate_values_are_rejected(self):
+        for body in ('[network]\nchannel = 99\n',
+                     '[network]\nchannel = 3\n',
+                     '[capture]\nkeep_files = 0\n',
+                     '[detect]\nperiod_onsets = 1\n'):
+            with self.assertRaises(ValueError):
+                self._load(body)
+
+    def test_quoted_channel_is_coerced_not_carried_as_a_string(self):
+        self.assertEqual(self._load('[network]\nchannel = "25"\n').channel, 25)
+
+    def test_data_dir_expands_environment_variables(self):
+        import os
+        os.environ["TW_TEST_ROOT"] = "/tmp/tw-test-root"
+        cfg = self._load('[capture]\ndata_dir = "$TW_TEST_ROOT/data"\n')
+        self.assertEqual(str(cfg.data_dir), "/tmp/tw-test-root/data")
+
+    def test_doctor_warns_when_no_config_file_was_read(self):
+        from threadwatch import doctor
+        from threadwatch.config import Config
+        levels = {name: lvl for lvl, name, _ in doctor.check_config(Config())}
+        self.assertEqual(levels["config"], "warn")

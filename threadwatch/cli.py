@@ -105,7 +105,10 @@ def main(argv=None) -> int:
     p_test.add_argument("--no-heartbeats", action="store_true")
 
     args = parser.parse_args(argv)
-    cfg = config_mod.load(args.config)
+    try:
+        cfg = config_mod.load(args.config)
+    except ValueError as exc:
+        parser.exit(2, f"threadwatch: {exc}\n")
     from .pipeline import CredentialsError
 
     if args.cmd == "capture":

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,6 +24,7 @@ class Config:
     devices_path: Optional[Path] = None
     detector: DetectorConfig = field(default_factory=DetectorConfig)
     config_dir: Path = REPO_ROOT / "config"
+    config_path: Optional[Path] = None         # the file load() read, None when defaults stood
     credentials_path: Optional[Path] = None
     # Silence (seconds) before a device_quiet event. 30 min: the 2026-09-02
     # soak (9.8 h, 22 sleepy end devices) showed 19 of them never silent for
@@ -86,14 +88,19 @@ def load(path: Optional[Path]) -> Config:
         path = default if default.exists() else None
     if path:
         cfg.config_dir = Path(path).resolve().parent
+        cfg.config_path = Path(path).resolve()
         raw = tomllib.loads(Path(path).read_text())
         net = raw.get("network", {})
-        cfg.channel = net.get("channel", cfg.channel)
+        cfg.channel = int(net.get("channel", cfg.channel))
+        if not 11 <= cfg.channel <= 26:
+            raise ValueError(f"[network] channel must be 11-26, not {cfg.channel}")
         cap = raw.get("capture", {})
         cfg.serial_port = cap.get("serial_port") or None
         if cap.get("data_dir"):
-            cfg.data_dir = Path(cap["data_dir"]).expanduser()
-        cfg.keep_files = cap.get("keep_files", cfg.keep_files)
+            cfg.data_dir = Path(os.path.expandvars(str(cap["data_dir"]))).expanduser()
+        cfg.keep_files = int(cap.get("keep_files", cfg.keep_files))
+        if cfg.keep_files < 1:
+            raise ValueError(f"[capture] keep_files must be at least 1, not {cfg.keep_files}")
         if cap.get("keep_gb"):
             cfg.keep_bytes = int(float(cap["keep_gb"]) * 1024 ** 3)
         cfg.freeze_on_critical = bool(cap.get("freeze_on_critical", cfg.freeze_on_critical))
@@ -104,6 +111,9 @@ def load(path: Optional[Path]) -> Config:
                     "period_max_s", "period_onsets", "alert_cooldown_s"):
             if key in det:
                 setattr(cfg.detector, key, det[key])
+        if int(cfg.detector.period_onsets) < 2:
+            raise ValueError(f"[detect] period_onsets must be at least 2 (a period needs two "
+                             f"onsets to measure), not {cfg.detector.period_onsets}")
         quiet = raw.get("quiet", {})
         # end_device_s / router_s were the pre-2026-09-04 split by inventory
         # role; the longer of them stands in for silence_s in an old file.

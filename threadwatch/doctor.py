@@ -28,6 +28,12 @@ def check_config(cfg) -> list[Check]:
     out = [(OK, "config", f"channel {cfg.channel}, data in {cfg.data_dir}")]
     if not 11 <= cfg.channel <= 26:
         out[0] = (FAIL, "config", f"channel {cfg.channel} is not an 802.15.4 channel (11-26)")
+    if cfg.config_path is None:
+        out.append((WARN, "config", f"no config.toml was read: built-in defaults are in use, "
+                                    f"including channel {cfg.channel} "
+                                    f"(cp config/config.example.toml config/config.toml)"))
+    else:
+        out.append((OK, "config", f"read {cfg.config_path}"))
     return out
 
 

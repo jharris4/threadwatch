@@ -167,6 +167,42 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual(ev[0]["top_target"], "broadcast")
         self.assertIn("channel contention", ev[0]["note"])
 
+    def test_a_mesh_whose_normal_rate_is_high_is_not_warned_about_every_15_min(self):
+        """A busy install sits above 20% retransmissions all day. That is its
+        baseline, not an elevation: only a rate that doubles it is news."""
+        pipe = self._pipe()
+        t = 1_700_000_000.0
+
+        def send(ts, seq):
+            pipe.ingest(Frame(ts=ts, raw=b"", psdu=b"", rssi=-60.0, channel=None, lqi=None,
+                              ftype=1, seq=seq, dst_pan=OWN_PAN, dst="0000",
+                              src_pan=OWN_PAN, src=STRANGER))
+
+        def window(w, dup_frac):
+            """One minute of 200 frames, dup_frac of them repeats of the frame
+            before them (within the 2 s the duplicate window allows)."""
+            n = 200
+            dups = round(n * dup_frac)
+            uniq = n - dups
+            base, gap = t + w * 60, 50.0 / uniq
+            for j in range(uniq):
+                at = base + j * gap
+                send(at, j)
+                for r in range((dups * (j + 1)) // uniq - (dups * j) // uniq):
+                    send(at + 0.1 * (r + 1), j)
+
+        for w in range(21):                      # 20 closed windows at ~30%
+            window(w, 0.3)
+        self.assertEqual(len(pipe.retrans_counts), 20)
+        self.assertGreater(min(pipe.retrans_counts), 0.2)      # every one is over the flat threshold
+        self.assertEqual([r for r in pipe.events.records if r["event"] == "retransmission_elevation"], [])
+
+        window(21, 0.8)                          # and then it really does double
+        window(22, 0.3)                          # (closes the spike's window)
+        ev = [r for r in pipe.events.records if r["event"] == "retransmission_elevation"]
+        self.assertEqual(len(ev), 1)
+        self.assertGreater(ev[0]["rate"], 2 * ev[0]["baseline"])
+
     def test_foreign_pan_devices_are_never_reported_quiet(self):
         pipe = self._pipe()
         t0 = 1_700_000_000.0

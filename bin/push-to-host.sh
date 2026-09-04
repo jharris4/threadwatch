@@ -14,7 +14,7 @@ set -euo pipefail
 TARGET="${1:?usage: push-to-host.sh user@host [--push-only]}"
 MODE="${2:-}"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-DEST_DIR="thread-debugger"
+DEST_DIR="threadwatch"
 
 rsync -a --delete \
   --exclude 'data/' --exclude '.venv-flash/' \

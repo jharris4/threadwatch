@@ -1,4 +1,4 @@
-# thread-debugger
+# threadwatch
 
 Turn a $10 nRF52840 USB dongle into an always-on Thread network flight
 recorder: continuous 802.15.4 packet capture with a rolling ring buffer,

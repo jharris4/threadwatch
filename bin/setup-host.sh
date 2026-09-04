@@ -51,7 +51,7 @@ fi
 echo "==> systemd services"
 for unit in threadwatch threadwatch-web; do
   sed -e "s|^User=.*|User=$RUN_USER|" \
-      -e "s|/home/pi/thread-debugger|$REPO|g" \
+      -e "s|/home/pi/threadwatch|$REPO|g" \
       "$REPO/systemd/$unit.service" > "/etc/systemd/system/$unit.service"
 done
 systemctl daemon-reload

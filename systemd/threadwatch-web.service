@@ -7,10 +7,10 @@ Wants=network-online.target
 Type=simple
 # Adjust if you cloned elsewhere or use a different user.
 User=pi
-WorkingDirectory=/home/pi/thread-debugger
+WorkingDirectory=/home/pi/threadwatch
 # Read-only over the state directory; a separate process so a page bug can
 # never touch capture. Listen address and port: [web] in config.toml.
-ExecStart=/home/pi/thread-debugger/bin/threadwatch web
+ExecStart=/home/pi/threadwatch/bin/threadwatch web
 Restart=always
 RestartSec=5
 

@@ -42,16 +42,15 @@ def check_inventory(cfg) -> list[Check]:
         return [(FAIL, "inventory", f"{path.name} is not valid JSON: {exc}")]
     if not isinstance(entries, list):
         return [(FAIL, "inventory", f"{path.name} must be a JSON list")]
-    from .names import _EXT_ADDR, _norm
+    from .names import _EXT_ADDR, _norm, entry_addresses
     bad, addrs, unnamed = [], 0, 0
     for e in entries:
-        got = list(e.get("extendedAddresses") or []) + ([e["extendedAddress"]] if e.get("extendedAddress") else [])
         if not (e.get("name") or "").strip():
             unnamed += 1
-        for a in got:
+        for a in entry_addresses(e):
             addrs += 1
-            if not _EXT_ADDR.match(_norm(str(a))):
-                bad.append(str(a))
+            if not _EXT_ADDR.match(_norm(a)):
+                bad.append(a)
     text = f"{len(entries)} devices, {addrs} addresses"
     if bad:
         return [(WARN, "inventory", f"{text}; ignored (not 16 hex digits): {', '.join(bad[:5])}")]

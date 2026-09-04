@@ -222,9 +222,11 @@ class DayViewTest(unittest.TestCase):
         self.assertEqual(names.resolve(TV2), ([TV2, TV1], "Living Room Apple TV"))
         self.assertEqual(names.resolve("apple tv"), ([TV1, TV2], "Living Room Apple TV"))
         self.assertEqual(names.resolve("0000000000000000"), (["0000000000000000"], "0000000000000000"))
-        with self.assertRaises(ValueError) as cm:
+        from threadwatch.names import AmbiguousName
+        with self.assertRaises(AmbiguousName) as cm:
             names.resolve("i")          # Irrigation, Living Room Apple TV
         self.assertIn("ambiguous", str(cm.exception))
+        self.assertEqual(cm.exception.candidates, ["Irrigation", "Living Room Apple TV"])
         with self.assertRaises(ValueError):
             names.resolve("nothing like it")
         kinds = [(e["kind"], e["addr"]) for e in devices_history(self.cfg.events_dir, [TV1, TV2])]

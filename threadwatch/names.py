@@ -47,18 +47,31 @@ def _norm(addr: str) -> str:
     return addr.replace(":", "").strip().lower()
 
 
+def entry_addresses(entry: dict) -> list[str]:
+    """Every address an inventory entry lists, as written: the
+    `extendedAddresses` list and then a single `extendedAddress`."""
+    addrs = [str(a) for a in (entry.get("extendedAddresses") or [])]
+    if entry.get("extendedAddress"):
+        addrs.append(str(entry["extendedAddress"]))
+    return addrs
+
+
+class AmbiguousName(ValueError):
+    """A name fragment that matches several inventory names; `candidates`
+    holds them, sorted, for whoever asks the user to pick."""
+
+    def __init__(self, target: str, candidates: list[str]):
+        self.target, self.candidates = target, sorted(candidates)
+        super().__init__(f"ambiguous name {target!r}: {self.candidates}")
+
+
 class DeviceNames:
     def __init__(self, inventory_path: Optional[Path]):
         self.by_addr: dict[str, dict] = {}
-        self.entries: list[dict] = []
         self.inventory_path = inventory_path
         if inventory_path and inventory_path.exists():
-            self.entries = json.loads(inventory_path.read_text())
-            for entry in self.entries:
-                addrs = entry.get("extendedAddresses") or []
-                if entry.get("extendedAddress"):
-                    addrs = addrs + [entry["extendedAddress"]]
-                for a in addrs:
+            for entry in json.loads(inventory_path.read_text()):
+                for a in entry_addresses(entry):
                     n = _norm(str(a))
                     # Every inventory address is fed to the decryptor's nonce
                     # search as raw hex; a stray 0x prefix or dash would
@@ -100,8 +113,8 @@ class DeviceNames:
     def resolve(self, target: str) -> tuple[list[str], str]:
         """A 16-hex address, or a case-insensitive substring of one
         inventory name, to (every address of that device, display name).
-        Raises ValueError with the candidates when the text matches several
-        names, and when it matches nothing."""
+        Raises AmbiguousName (a ValueError carrying the candidates) when the
+        text matches several names, and ValueError when it matches nothing."""
         t = _norm(target)
         if _EXT_ADDR.match(t):
             return self.addresses_of(t), self.name(t) or t
@@ -117,7 +130,7 @@ class DeviceNames:
             name, addrs = next(iter(matches.items()))
             return addrs, name
         if matches:
-            raise ValueError(f"ambiguous name {target!r}: {sorted(matches)}")
+            raise AmbiguousName(target, list(matches))
         raise ValueError(f"{target!r} is neither a 16-hex-char address nor a known device name")
 
 
@@ -319,10 +332,7 @@ def adopt(inventory_path: Path, addr: str, name: str, role: Optional[str] = None
         if not isinstance(entries, list):
             raise ValueError(f"{inventory_path.name} is not a JSON list")
     for entry in entries:
-        addrs = [_norm(str(a)) for a in (entry.get("extendedAddresses") or [])]
-        if entry.get("extendedAddress"):
-            addrs.append(_norm(str(entry["extendedAddress"])))
-        if n in addrs:
+        if n in [_norm(a) for a in entry_addresses(entry)]:
             if (entry.get("name") or "").strip().lower() == name.lower():
                 return f"{n} is already listed as {entry.get('name')!r}"
             raise ValueError(f"{n} is already listed as {entry.get('name') or '(unnamed)'!r}; "

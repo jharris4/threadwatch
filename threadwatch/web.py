@@ -16,7 +16,7 @@ from typing import Optional
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from .events import DAY_RE, day_of, next_day, prev_day
-from .names import DeviceNames, LastSeen
+from .names import AmbiguousName, DeviceNames, LastSeen
 from .review import (DEVICE_FILTERS, DEVICE_SORTS, capture_for_day, day_episodes, day_index,
                      days_available, device_history, device_rows, devices_history, dominant_pan,
                      fmt_bytes, fmt_duration, incidents, now_card, select_devices, storage, today)
@@ -393,17 +393,14 @@ class Site:
         names = self.names()
         try:
             addrs, name = names.resolve(target)
+        except AmbiguousName as exc:
+            # quote() so a '#', '?' or '%' in a name stays part of the
+            # path; esc() alone would send "Lamp #1" to /device/Lamp.
+            items = "".join(f'<li><a href="/device/{quote(c, safe="")}">{esc(c)}</a></li>' for c in exc.candidates)
+            return self.page("which device?", f'<h1>which device?</h1><p class="muted">{esc(target)} '
+                                              f'matches several names.</p><ul>{items}</ul>')
         except ValueError as exc:
-            msg = str(exc)
-            if msg.startswith("ambiguous"):
-                choices = sorted({e.get("name") for e in names.by_addr.values()
-                                  if e.get("name") and target.strip().lower() in e["name"].lower()})
-                # quote() so a '#', '?' or '%' in a name stays part of the
-                # path; esc() alone would send "Lamp #1" to /device/Lamp.
-                items = "".join(f'<li><a href="/device/{quote(c, safe="")}">{esc(c)}</a></li>' for c in choices)
-                return self.page("which device?", f'<h1>which device?</h1><p class="muted">{esc(target)} '
-                                                  f'matches several names.</p><ul>{items}</ul>')
-            return self.page("no such device", f'<h1>no such device</h1><p class="muted">{esc(msg)}</p>'
+            return self.page("no such device", f'<h1>no such device</h1><p class="muted">{esc(str(exc))}</p>'
                                                f'<p><a href="/devices">all devices</a></p>')
         seen = self.seen()
         from .names import reception

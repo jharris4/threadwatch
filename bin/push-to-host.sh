@@ -1,20 +1,22 @@
 #!/usr/bin/env bash
-# Push this repo (including local config + credentials, which are gitignored)
-# from your workstation to a capture host, then run remote setup.
+# Developer deploy: rsync this working tree from your workstation to a capture
+# host, then (optionally) run setup-host.sh there.
 #
-#     bin/push-to-host.sh pi@192.168.1.50            # push + setup
+#     bin/push-to-host.sh pi@192.168.1.50            # push + setup (restarts the units)
 #     bin/push-to-host.sh pi@threadwatch.local --push-only
 #
-# Use this instead of git-cloning on the host while the GitHub repo is
-# private; it also carries config/config.toml, config/devices.json,
-# config/credentials.toml and config/alerts.env, which git deliberately
-# never sees.
+# A first install does not need this: `git clone` on the host and
+# `sudo bin/setup-host.sh` is enough (INSTALL.md). What this script adds is
+# that it also carries config/config.toml, config/devices.json,
+# config/credentials.toml and config/alerts.env, which git deliberately never
+# sees, and it lets you deploy an uncommitted change. data/ on the host is
+# never touched.
 set -euo pipefail
 
 TARGET="${1:?usage: push-to-host.sh user@host [--push-only]}"
 MODE="${2:-}"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-DEST_DIR="threadwatch"
+DEST_DIR="${DEST_DIR:-threadwatch}"   # path on the host, relative to $HOME
 
 rsync -a --delete \
   --exclude 'data/' --exclude '.venv/' --exclude '.venv-flash/' \

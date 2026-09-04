@@ -75,6 +75,13 @@ if [ ! -f "$REPO/config/config.toml" ]; then
 else
   echo "    config/config.toml present"
 fi
+for secret in ha.env; do
+  if [ -f "$REPO/config/$secret" ]; then
+    chown "$RUN_USER": "$REPO/config/$secret"
+    chmod 400 "$REPO/config/$secret"
+    echo "    $secret locked to 0400"
+  fi
+done
 if [ -f "$REPO/config/credentials.toml" ]; then
   chown "$RUN_USER": "$REPO/config/credentials.toml"
   chmod 400 "$REPO/config/credentials.toml"

@@ -33,12 +33,17 @@ config.toml and never in git. `config/credentials.toml` is gitignored by
 this repo and is the default path, so nothing in config.toml needs to
 change.
 
+**With Home Assistant:** `bin/threadwatch import-ha --write` fetches the
+key from HA's Thread dataset and writes the file at mode 0400 without
+ever printing it (docs/HOME-ASSISTANT.md, including the token setup).
+
+**By hand**, from any OpenThread border router:
+
 ```bash
-# Find your network key. Home Assistant with the OTBR add-on: from an SSH
-# session on the HA host,
+# `ot-ctl networkkey` on the border router; or with the HA OTBR add-on,
+# from an SSH session on the HA host,
 #   curl -s http://core-openthread-border-router:8081/node/dataset/active
-# and read "networkKey"; or `ot-ctl networkkey` on any OpenThread border
-# router; or the Thread panel's dataset export.
+# and read "networkKey".
 
 cat > config/credentials.toml <<'TOML'
 [credentials]

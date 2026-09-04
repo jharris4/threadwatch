@@ -74,7 +74,9 @@ see: the device keeps polling, so it never goes quiet, but nothing
 acknowledges its polls. Ten distinct polls (MAC retries of one poll
 share a sequence number and count once) over at least a minute with no
 ACK, from a device whose polls were answered before, fire the warning;
-the first acknowledged poll after that logs `poll_answered`. A device
+the first acknowledged poll after that logs `poll_answered` (the open
+starvation is remembered with the last-seen rows, so a recorder restart in
+between still closes it). A device
 that just moved to a parent the sniffer cannot hear looks the same from
 the sniffer's chair: a `mle_rejoin_attempt` right before it is the tell.
 

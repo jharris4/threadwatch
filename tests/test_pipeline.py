@@ -385,6 +385,28 @@ class PollStarvationTest(unittest.TestCase):
         self.assertEqual(pipe.devices[SENSOR].unanswered_polls, 0)
         self.assertEqual(pipe.devices[SENSOR].acked_polls, 6)
 
+    def test_starvation_survives_a_restart_and_is_closed_by_the_first_answered_poll(self):
+        pipe = Pipeline(self.cfg, NullEventLog())
+        t = self._answered_polls(pipe, 1_700_000_000.0, 5)
+        for i in range(12):
+            pipe.ingest(poll(t + 10 * i, SENSOR, 100 + i))
+        self.assertEqual(len(self._events(pipe, "poll_starvation")), 1)
+        self.assertTrue(pipe.seen.table[SENSOR]["starved"])
+        pipe.seen.save()
+        pipe2 = Pipeline(self.cfg, NullEventLog())          # DeviceStats start empty
+        pipe2.ingest(poll(t + 300, SENSOR, 200))
+        pipe2.ingest(poll(t + 310, SENSOR, 201))            # still unanswered: no second announcement
+        self.assertEqual(self._events(pipe2, "poll_starvation"), [])
+        pipe2.ingest(poll(t + 320, SENSOR, 202))
+        pipe2.ingest(ack(t + 320.001, 202))
+        rec = self._events(pipe2, "poll_answered")
+        self.assertEqual(len(rec), 1)
+        self.assertEqual(rec[0]["name"], "Porch Sensor")
+        self.assertNotIn("starved", pipe2.seen.table[SENSOR])
+        pipe2.ingest(poll(t + 330, SENSOR, 203))
+        pipe2.ingest(ack(t + 330.001, 203))
+        self.assertEqual(len(self._events(pipe2, "poll_answered")), 1)   # once
+
     def test_a_device_never_answered_is_not_starving(self):
         # The sniffer may simply not hear that parent's ACKs.
         pipe = Pipeline(self.cfg, NullEventLog())

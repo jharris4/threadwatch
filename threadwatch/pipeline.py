@@ -418,6 +418,14 @@ class Pipeline:
                     and stats.unanswered_polls >= STARVED_POLLS
                     and ts - stats.unanswered_since >= STARVED_MIN_S):
                 stats.starved = True
+                # Remembered on the last-seen row too (like quiet_reported):
+                # a restart rebuilds DeviceStats empty, and without the row
+                # the first answered poll after it would never close the
+                # episode.
+                row = self.seen.table.get(who)
+                if row is not None:
+                    row["starved"] = True
+                    self.seen._dirty = True
                 span = round(ts - stats.unanswered_since)
                 self.events.emit(
                     "poll_starvation", "warning", ts, addr=who, name=self.names.name(who),
@@ -434,8 +442,12 @@ class Pipeline:
         stats.poll_pending_seq = None
         stats.acked_polls += 1
         stats.unanswered_polls, stats.unanswered_since = 0, None
-        if stats.starved:
-            stats.starved = False
+        row = self.seen.table.get(who)
+        announced = stats.starved or (row is not None and row.get("starved"))
+        stats.starved = False
+        if row is not None and row.pop("starved", None):
+            self.seen._dirty = True
+        if announced:
             self.events.emit("poll_answered", "notice", ts, addr=who, name=self.names.name(who),
                              note="its polls are acknowledged again")
 

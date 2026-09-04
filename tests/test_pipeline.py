@@ -590,6 +590,36 @@ class PollStarvationTest(unittest.TestCase):
         self.assertEqual(evs[0]["acked_polls"], 0)
         self.assertIn("before the recorder's last restart", evs[0]["note"])
 
+    def test_a_broadcast_is_never_a_transmission_awaiting_an_ack(self):
+        """MLE advertisements go out to ffff and are never acknowledged. If a
+        broadcast left an ACK pending, the next ACK the sniffer hears - for
+        somebody else's unicast, carrying the same sequence number - would be
+        credited to the broadcaster, and its parent's real answers would be
+        accounted to the wrong device."""
+        pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
+        t = self._answered_polls(pipe, 1_700_000_000.0, 5)
+        pipe.ingest(poll(t, SENSOR, 100))                  # unicast poll, still pending
+        pipe.ingest(Frame(ts=t + 0.01, raw=b"", psdu=b"", rssi=-55.0, channel=None, lqi=None,
+                          ftype=1, seq=100, dst_pan=OWN_PAN, dst="ffff",
+                          src_pan=OWN_PAN, src=ROUTER))    # a router's advertisement, same seq
+        pipe.ingest(ack(t + 0.02, 100))                    # the ACK the sniffer hears next
+        self.assertEqual((pipe.devices[ROUTER].tx, pipe.devices[ROUTER].acked), (0, 0))
+        self.assertEqual(pipe.devices[SENSOR].acked, 5)    # nothing new was credited to anyone
+
+    def test_an_ack_a_second_late_is_not_this_polls_ack(self):
+        """An ACK follows its frame in under a millisecond. Anything later is
+        a different exchange, and pairing with it would keep a device whose
+        parent has stopped answering looking healthy."""
+        pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
+        t = self._answered_polls(pipe, 1_700_000_000.0, 5)
+        for i in range(12):
+            pipe.ingest(poll(t + 10 * i, SENSOR, 100 + i))
+            pipe.ingest(ack(t + 10 * i + 1.0, 100 + i))    # a second later: not this poll's ACK
+        evs = self._events(pipe, "poll_starvation")
+        self.assertEqual(len(evs), 1)
+        self.assertEqual((evs[0]["unanswered_polls"], evs[0]["acked_polls"]), (10, 5))
+        self.assertEqual(self._events(pipe, "poll_answered"), [])
+
     def test_a_device_never_answered_is_not_starving(self):
         # The sniffer may simply not hear that parent's ACKs.
         pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())

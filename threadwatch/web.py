@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import html
 import json
+import signal
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -688,6 +690,12 @@ def make_server(cfg, bind: str, port: int) -> ThreadingHTTPServer:
 def serve(cfg, bind: str = "0.0.0.0", port: int = 8080) -> None:
     httpd = make_server(cfg, bind, port)
     print(f"[threadwatch] web: http://{bind}:{httpd.server_port}/ (state {cfg.state_dir})", flush=True)
+    # In the container this process is PID 1, which the kernel does not
+    # deliver a default-action signal to: without a handler, stop is ignored.
+    # shutdown() must not run on the thread inside serve_forever, or it
+    # blocks waiting for a loop that cannot proceed.
+    signal.signal(signal.SIGTERM,
+                  lambda *_: threading.Thread(target=httpd.shutdown, daemon=True).start())
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

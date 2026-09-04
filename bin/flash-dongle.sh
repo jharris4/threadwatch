@@ -1,98 +1,114 @@
 #!/usr/bin/env bash
-# Flash the nRF52840 Dongle with the nRF Sniffer for 802.15.4 firmware,
-# from an x86_64 Linux box or an Intel Mac, without nRF Connect for Desktop.
+# Flash the nRF52840 Dongle with the nRF Sniffer for 802.15.4 firmware, from
+# the recorder host itself or any machine with a USB port.
 #
 # Uses the pre-built DFU package in firmware/sniffer-dfu.zip (provenance in
-# firmware/README.md). Requires a USB port and, for Nordic's pip nrfutil
-# 6.1.7 (the last release with 'dfu usb-serial'): Python 3.7-3.10 with venv,
-# on an x86_64 host (Linux, an Intel Mac, or an Apple Silicon Mac under
-# Rosetta), because its pc-ble-driver-py dependency ships wheels for
-# nothing else. A 64-bit Raspberry Pi or a native Apple Silicon Python
-# cannot run it; SETUP.md lists the alternatives. The dongle keeps the
-# firmware, so any one machine that qualifies does the job once.
+# firmware/README.md) and Nordic's nrfutil binary, which ships for 64-bit
+# Linux (x86_64 and aarch64) and both Mac architectures -- a 64-bit Raspberry
+# Pi included, so the recorder can flash its own dongle. Set NRFUTIL to use an
+# nrfutil you already have; otherwise one is downloaded into .nrfutil-bin/ and
+# reused. First run needs network: the launcher then fetches ~29 MB of device
+# commands into ~/.nrfutil. The dongle keeps the firmware, so this is once per
+# dongle, not per boot.
 #
-# The dongle must be in its Open DFU bootloader to accept the flash:
-# press the small SIDEWAYS reset button (near the ID sticker, aimed at the
-# board edge - NOT the white top button). The red LED pulses slowly in
-# bootloader mode. After flashing, UNPLUG AND REPLUG the dongle - it does
-# not re-enumerate by itself.
+# The dongle must be in its Open DFU bootloader to accept the flash: press the
+# small SIDEWAYS reset button (near the ID sticker, aimed at the board edge -
+# NOT the white top button). The red LED pulses slowly in bootloader mode.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 PKG="$REPO/firmware/sniffer-dfu.zip"
-VENV="$REPO/.venv-flash"
+CACHE="$REPO/.nrfutil-bin"
+BASE="https://files.nordicsemi.com/artifactory/swtools/external/nrfutil/executables"
 
 if [ ! -f "$PKG" ]; then
   echo "missing $PKG" >&2; exit 1
 fi
 
-find_python() {
-  # The newest interpreter nrfutil 6.1.7 accepts (requires_python >=3.7,<3.11).
-  for py in python3.10 python3.9 python3.8 python3.7 python3; do
-    if command -v "$py" >/dev/null 2>&1 \
-       && "$py" -c 'import sys; sys.exit(0 if (3, 7) <= sys.version_info[:2] <= (3, 10) else 1)' 2>/dev/null; then
-      echo "$py"; return
-    fi
-  done
+# Nordic's own target triples. There is no build for 32-bit ARM or Windows;
+# those hosts use the Programmer app instead.
+target_triple() {
+  case "$(uname -s)/$(uname -m)" in
+    Linux/x86_64|Linux/amd64)   echo x86_64-unknown-linux-gnu ;;
+    Linux/aarch64|Linux/arm64)  echo aarch64-unknown-linux-gnu ;;
+    Darwin/arm64)               echo aarch64-apple-darwin ;;
+    Darwin/x86_64)              echo x86_64-apple-darwin ;;
+    *)                          echo "" ;;
+  esac
 }
 
-if [ ! -x "$VENV/bin/nrfutil" ]; then
-  PY="$(find_python || true)"
-  ARCH="$(uname -m)"
-  if [ -z "$PY" ] || { [ "$ARCH" != "x86_64" ] && [ "$ARCH" != "amd64" ]; }; then
+NRFUTIL="${NRFUTIL:-}"
+if [ -z "$NRFUTIL" ] && command -v nrfutil >/dev/null 2>&1; then
+  NRFUTIL="$(command -v nrfutil)"
+fi
+if [ -z "$NRFUTIL" ] && [ -x "$CACHE/nrfutil" ]; then
+  NRFUTIL="$CACHE/nrfutil"
+fi
+if [ -z "$NRFUTIL" ]; then
+  TRIPLE="$(target_triple)"
+  if [ -z "$TRIPLE" ]; then
     cat >&2 <<EOM
-This flasher uses Nordic's pip nrfutil 6.1.7, which installs only under
-Python 3.7-3.10 on an x86_64 host (Linux, an Intel Mac, or an Apple Silicon
-Mac under Rosetta). This host: $ARCH, $(python3 --version 2>&1)${PY:+, usable interpreter: $PY}.
-
-The dongle is flashed once and keeps the firmware, so any one of these works:
-  - run bin/flash-dongle.sh on a machine that qualifies (an x86_64 Linux box,
-    an Intel Mac, or on Apple Silicon: arch -x86_64 zsh, then a Rosetta
-    Homebrew python@3.10 on PATH);
-  - flash firmware/sniffer-dfu.zip with Nordic's tools: the Programmer app in
-    nRF Connect for Desktop (any OS), or the current nrfutil binary
-    (nrfutil install device; nrfutil device program --firmware
-    firmware/sniffer-dfu.zip --traits nordicDfu).
-Either way: sideways reset button first, unplug and replug afterwards (below).
+Nordic ships no nrfutil for this host ($(uname -s) $(uname -m)); 64-bit Linux
+and macOS only. The dongle is flashed once and keeps the firmware, so either
+run this on a machine Nordic supports, or flash firmware/sniffer-dfu.zip with
+the Programmer app in nRF Connect for Desktop (any OS). The physical steps
+below are the same either way.
 EOM
     exit 1
   fi
-  echo "==> Creating flashing venv with $PY (one-time; installs pip nrfutil 6.x)..."
-  "$PY" -m venv "$VENV"
-  "$VENV/bin/pip" install --quiet --upgrade pip
-  # nrfutil 6.1.7 is the last pip-installable version with 'dfu usb-serial'.
-  # It needs an older protobuf; pin both.
-  "$VENV/bin/pip" install --quiet "nrfutil==6.1.7" "protobuf==3.20.3"
+  echo "==> Fetching nrfutil for $TRIPLE (one-time, into .nrfutil-bin/)..."
+  mkdir -p "$CACHE"
+  curl -sSfL --retry 2 -o "$CACHE/nrfutil.part" "$BASE/$TRIPLE/nrfutil"
+  chmod +x "$CACHE/nrfutil.part"
+  mv "$CACHE/nrfutil.part" "$CACHE/nrfutil"
+  NRFUTIL="$CACHE/nrfutil"
 fi
 
-find_bootloader_port() {
-  # Open DFU bootloader enumerates as a CDC ACM device (VID 1915, PID 521f).
-  if [ "$(uname)" = "Darwin" ]; then
-    ls /dev/cu.usbmodem* 2>/dev/null | head -1
-  else
-    for d in /dev/serial/by-id/*Open_DFU*; do
-      [ -e "$d" ] && { echo "$d"; return; }
-    done
-    ls /dev/ttyACM* 2>/dev/null | head -1
-  fi
-}
+# nrfutil is a launcher: the commands it runs are installed separately, and
+# 'install' is a no-op once they are there.
+if ! "$NRFUTIL" list 2>/dev/null | grep -q '^device '; then
+  echo "==> Installing the nrfutil device command (~29 MB, one-time)..."
+  "$NRFUTIL" install device
+fi
+echo "==> $("$NRFUTIL" --version 2>/dev/null | head -1) at $NRFUTIL"
+
+# The J-Link warning is about debuggers; DFU over USB does not use one.
+nrfutil_quiet() { "$NRFUTIL" "$@" 2>&1 | grep -v 'JLinkARM\|SEGGER J-Link'; }
 
 echo "==> Press the dongle's sideways RESET button now (red LED should pulse slowly)."
 echo "    Waiting up to 60 s for the bootloader..."
-PORT=""
 for _ in $(seq 1 30); do
-  PORT="$(find_bootloader_port || true)"
-  [ -n "$PORT" ] && break
+  if nrfutil_quiet device list --traits nordicDfu | grep -q 'Open DFU Bootloader'; then
+    FOUND=1; break
+  fi
   sleep 2
 done
-if [ -z "$PORT" ]; then
-  echo "No bootloader serial port found. Check the connection and try again." >&2
+if [ -z "${FOUND:-}" ]; then
+  echo "No dongle in DFU bootloader mode found. Press the SIDEWAYS button (not the" >&2
+  echo "top one) until the red LED pulses, check the connection, and try again." >&2
   echo "(Linux: your user may need dialout group membership: sudo usermod -aG dialout \$USER)" >&2
   exit 1
 fi
 
-echo "==> Flashing sniffer firmware via $PORT ..."
-"$VENV/bin/nrfutil" dfu usb-serial -pkg "$PKG" -p "$PORT"
-echo "==> Done. UNPLUG and REPLUG the dongle now."
-echo "    It should re-enumerate as 'nRF 802154 Sniffer'."
-echo "    Verify with: bin/threadwatch status  (after starting capture)"
+echo "==> Flashing sniffer firmware..."
+nrfutil_quiet device program --firmware "$PKG" --traits nordicDfu
+
+# Unlike the old pip nrfutil, this one returns the dongle to application mode
+# itself, so no unplug/replug is needed -- but re-enumeration takes a couple of
+# seconds, and listing too early reports nothing and reads like a failed flash.
+echo "==> Flashed. Waiting for the dongle to re-enumerate..."
+for _ in $(seq 1 15); do
+  if nrfutil_quiet device list | grep -q 'nRF 802154 Sniffer'; then
+    BACK=1; break
+  fi
+  sleep 1
+done
+if [ -n "${BACK:-}" ]; then
+  echo "==> Done. The dongle is an 'nRF 802154 Sniffer':"
+  nrfutil_quiet device list | sed 's/^/    /'
+  echo "    Verify with: bin/threadwatch doctor"
+else
+  echo "The flash reported success, but no sniffer appeared within 15 s." >&2
+  echo "Unplug and replug the dongle, then check: nrfutil device list" >&2
+  exit 1
+fi

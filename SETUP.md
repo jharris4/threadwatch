@@ -12,18 +12,17 @@ convenient, and need not be the recorder host.
 bin/flash-dongle.sh
 ```
 
-The script needs **Python 3.7–3.10 on an x86_64 host**: Linux, an Intel
-Mac, or an Apple Silicon Mac under Rosetta (`arch -x86_64 zsh`, with a
-Rosetta Homebrew `python@3.10` on PATH). That is what Nordic's pip
-`nrfutil` 6.1.7, the last release able to flash over USB serial,
-installs under; its Bluetooth driver dependency has no builds for newer
-Pythons or ARM, so a 64-bit Raspberry Pi or a native Apple Silicon
-Python cannot run it, and the script says so rather than failing
-half-way. Without such a machine, flash `firmware/sniffer-dfu.zip` with
-Nordic's own tools: the Programmer app in nRF Connect for Desktop (any
-OS), or the current `nrfutil` binary (`nrfutil install device`, then
-`nrfutil device program --firmware firmware/sniffer-dfu.zip --traits
-nordicDfu`). The physical steps are the same either way.
+It runs on **64-bit Linux (x86_64 or aarch64) and both Mac
+architectures** — the recorder host itself included, so a 64-bit
+Raspberry Pi can flash its own dongle. It uses Nordic's `nrfutil`
+binary: set `NRFUTIL` to point at one you already have, or let the
+script download it into `.nrfutil-bin/` (gitignored) and reuse it. The
+first run needs network — the launcher fetches about 29 MB of device
+commands into `~/.nrfutil` — and nothing after that.
+
+Nordic ships no `nrfutil` for 32-bit ARM or Windows. On those, flash
+`firmware/sniffer-dfu.zip` with the Programmer app in nRF Connect for
+Desktop; the physical steps below are the same.
 
 The script waits for the bootloader, flashes, and tells you what to do.
 The physical steps it will ask of you:
@@ -31,10 +30,12 @@ The physical steps it will ask of you:
 1. **Enter the bootloader**: press the small **sideways** reset button —
    it's near the ID sticker, aimed at the board edge (NOT the white
    button on top). The red LED pulses slowly in bootloader mode.
-2. **After flashing: unplug and replug the dongle.** It does not
-   re-enumerate by itself after DFU — this is normal.
 
-After replug the dongle enumerates as **"nRF 802154 Sniffer"**
+That is the only one. `nrfutil` returns the dongle to application mode
+itself, so no unplug/replug is needed (the pip `nrfutil` this script
+used to drive did need it).
+
+Afterwards the dongle enumerates as **"nRF 802154 Sniffer"**
 (`lsusb`: Nordic Semiconductor; a `/dev/ttyACM*` / `/dev/cu.usbmodem*`
 serial port appears). The firmware persists across power cycles — you
 flash once, not per boot.

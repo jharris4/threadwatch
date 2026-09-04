@@ -2,6 +2,7 @@ config/config.toml
 config/devices.json
 data/
 .venv-flash/
+.nrfutil-bin/
 __pycache__/
 *.pyc
 config/credentials.toml

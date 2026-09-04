@@ -5,6 +5,7 @@ freeze_on_critical, by the pipeline itself the moment a critical event
 fires. Copies every ring file plus the state files and the event log into
 data/incidents/<stamp>_<label>. The file being written is copied as it
 is; a partial last record at its tail is harmless (readers stop cleanly).
+A ring file pruned while the copy runs is skipped, not fatal.
 """
 
 from __future__ import annotations
@@ -27,7 +28,13 @@ def freeze_ring(cfg, label: str = "incident", now: float | None = None) -> tuple
     dest.mkdir(parents=True, exist_ok=False)
     count = 0
     for f in sorted(cfg.ring_dir.glob("threadwatch-*.pcap")) if cfg.ring_dir.exists() else []:
-        shutil.copy2(f, dest / f.name)
+        try:
+            shutil.copy2(f, dest / f.name)
+        except FileNotFoundError:
+            # The ring rotated under us and pruned its oldest file between
+            # the glob and the copy. That file was leaving anyway; the rest
+            # of the snapshot is still worth having.
+            continue
         count += 1
     for extra in STATE_FILES:
         src = cfg.state_dir / extra

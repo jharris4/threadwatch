@@ -228,17 +228,38 @@ class HomeAssistant:
     def call(self, type_: str, **fields: Any) -> Any:
         """Send one command; return its ``result``. Events and other
         traffic that arrive meanwhile are skipped."""
-        msg_id = self._next_id
-        self._next_id += 1
-        self._send_json({"id": msg_id, "type": type_, **fields})
-        while True:
+        out = self.call_many([(type_, fields)])[0]
+        if isinstance(out, HAError):
+            raise out
+        return out
+
+    def call_many(self, requests: list[tuple[str, dict]]) -> list[Any]:
+        """Send every command at once and collect the results in order,
+        each a result or an HAError. Home Assistant answers commands
+        concurrently, and matter/node_diagnostics takes it a second or
+        more per device, so 45 devices in flight together finish in the
+        time of the slowest one instead of the sum."""
+        ids: dict[int, int] = {}
+        for i, (type_, fields) in enumerate(requests):
+            msg_id = self._next_id
+            self._next_id += 1
+            ids[msg_id] = i
+            self._send_json({"id": msg_id, "type": type_, **fields})
+        out: list[Any] = [None] * len(requests)
+        pending = set(ids)
+        while pending:
             reply = self._recv_json()
-            if reply.get("id") != msg_id or reply.get("type") != "result":
+            msg_id = reply.get("id")
+            if msg_id not in pending or reply.get("type") != "result":
                 continue
-            if not reply.get("success"):
+            pending.discard(msg_id)
+            i = ids[msg_id]
+            if reply.get("success"):
+                out[i] = reply.get("result")
+            else:
                 err = reply.get("error") or {}
-                raise HAError(f"{type_}: {err.get('message') or err.get('code') or 'failed'}")
-            return reply.get("result")
+                out[i] = HAError(f"{requests[i][0]}: {err.get('message') or err.get('code') or 'failed'}")
+        return out
 
 
 # ------------------------------------------------------------ what to fetch
@@ -257,19 +278,19 @@ def thread_devices(ha: HomeAssistant, log: Callable[[str], None] = lambda m: Non
     set), model, extended address, node id. Devices whose diagnostics HA
     cannot fetch are logged and skipped, not fatal."""
     registry = ha.call("config/device_registry/list") or []
+    matter = [dev for dev in registry
+              if any(isinstance(i, (list, tuple)) and i and i[0] == "matter" for i in (dev.get("identifiers") or []))]
+    log(f"asking Home Assistant about {len(matter)} Matter devices (a few seconds)")
+    diags = ha.call_many([("matter/node_diagnostics", {"device_id": dev["id"]}) for dev in matter])
     out: list[dict] = []
     skipped = 0
-    for dev in registry:
-        idents = dev.get("identifiers") or []
-        if not any(isinstance(i, (list, tuple)) and i and i[0] == "matter" for i in idents):
-            continue
+    for dev, diag in zip(matter, diags):
         name = (dev.get("name_by_user") or dev.get("name") or "").strip()
-        try:
-            diag = ha.call("matter/node_diagnostics", device_id=dev["id"]) or {}
-        except HAError as exc:
-            log(f"skip {name or dev['id']}: {exc}")
+        if isinstance(diag, HAError):
+            log(f"skip {name or dev['id']}: {diag}")
             skipped += 1
             continue
+        diag = diag or {}
         if str(diag.get("network_type", "")).lower() != "thread":
             continue
         addr = normalize_ext(diag.get("mac_address"))

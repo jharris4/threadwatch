@@ -156,7 +156,7 @@ def run_import(cfg, inventory_path: Path, *, write: bool = False, url: Optional[
         out(f"Home Assistant: {ha_url}")
         with HomeAssistant(ha_url, token) as ha:
             if devices:
-                found = thread_devices(ha, log=lambda m: out(f"  ! {m}"))
+                found = thread_devices(ha, log=lambda m: out(f"  {'' if m.startswith('asking') else '! '}{m}"))
                 out(f"Home Assistant: {len(found)} Matter-over-Thread devices")
                 planned, more = plan_inventory(planned, found)
                 changes += more

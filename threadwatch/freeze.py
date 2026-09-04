@@ -15,7 +15,7 @@ import shutil
 import time
 from pathlib import Path
 
-STATE_FILES = ("status.json", "last-seen.json", "observed-names.json")
+STATE_FILES = ("status.json", "last-seen.json", "observed-names.json", "frames-by-hour.json")
 _LABEL = re.compile(r"[^A-Za-z0-9._-]+")
 
 

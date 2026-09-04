@@ -603,6 +603,27 @@ class DailySummaryTest(unittest.TestCase):
         pipe3.periodic(self.DAY + 24 * 3600 + 15 * 3600)
         self.assertEqual(sum(r["event"] == "daily_summary" for r in read_day(self.cfg.events_dir, "2026-09-03")), 1)
 
+    def test_frame_count_survives_a_restart(self):
+        pipe = Pipeline(self.cfg, NullEventLog())
+        t = self.DAY + 7 * 3600
+        for i in range(100):
+            pipe.ingest(frame(t + i, ROUTER, rssi=-60.0))
+        pipe.periodic(t + 200)                              # persists the hourly buckets
+        pipe2 = Pipeline(self.cfg, NullEventLog())          # a restart
+        for i in range(10):
+            pipe2.ingest(frame(t + 300 + i, ROUTER, rssi=-60.0))
+        pipe2.periodic(self.DAY + 8 * 3600)
+        s = self._summaries(pipe2.events)
+        self.assertEqual(len(s), 1)
+        self.assertEqual(s[0]["frames_24h"], 110)           # both runs, not just this one
+        # Buckets older than the window are dropped on load and never counted.
+        pipe2._frames_by_hour[int(t // 3600) - 30] = 999
+        pipe2.periodic(self.DAY + 8 * 3600 + 60)
+        pipe3 = Pipeline(self.cfg, NullEventLog())
+        self.assertNotIn(int(t // 3600) - 30, pipe3._frames_by_hour)
+        self.assertEqual(pipe3.summary(self.DAY + 8 * 3600 + 120)["frames_24h"], 110)
+        self.assertEqual(Pipeline(self.cfg, NullEventLog(), ephemeral=True)._frames_by_hour, {})
+
     def test_a_summary_whose_write_failed_is_retried_next_tick(self):
         class FlakyLog(NullEventLog):
             failures = 1

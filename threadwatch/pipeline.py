@@ -117,7 +117,11 @@ class Pipeline:
         self._win_start = 0.0
         self._retrans_alerted = 0.0
         self.quiet_reported: set[str] = set()
-        self._frames_by_hour: dict[int, int] = {}    # hour bucket -> frames, last ~25 h
+        # Hour bucket -> frames, last ~25 h, for the daily summary's frame
+        # count. Persisted (frames-by-hour.json) so a summary sent soon
+        # after a restart still counts the whole day, not just this run.
+        self.frames_by_hour_path = cfg.state_dir / "frames-by-hour.json"
+        self._frames_by_hour: dict[int, int] = {} if ephemeral else self._load_frames_by_hour()
         self._last_auto_freeze = 0.0 if ephemeral else self._last_auto_freeze_on_disk()
         # How a critical event freezes the ring: in the background, so the
         # copy (gigabytes on a Pi) never stalls capture. Tests swap it.
@@ -168,6 +172,19 @@ class Pipeline:
                     announced += 1
             if announced:
                 self.seen.save()
+
+    def _load_frames_by_hour(self) -> dict[int, int]:
+        try:
+            raw = json.loads(self.frames_by_hour_path.read_text())
+            newest = max(int(b) for b in raw)
+            return {int(b): int(n) for b, n in raw.items() if int(b) >= newest - 25}
+        except (OSError, ValueError, TypeError):
+            return {}
+
+    def _save_frames_by_hour(self) -> None:
+        tmp = self.frames_by_hour_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({str(b): n for b, n in self._frames_by_hour.items()}))
+        tmp.replace(self.frames_by_hour_path)
 
     def _last_auto_freeze_on_disk(self) -> float:
         """When the newest auto-* incident was frozen, so the cooldown holds
@@ -577,6 +594,8 @@ class Pipeline:
         self._check_links(now, dominant)
         if not self.ephemeral:
             self._maybe_summarize(now, dominant)
+            if self._frames_by_hour:
+                self._save_frames_by_hour()
         if self.observed_names and not self.ephemeral:
             tmp = self.mle_names_path.with_suffix(".tmp")
             tmp.write_text(json.dumps(self.observed_names, indent=1))

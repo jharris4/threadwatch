@@ -105,9 +105,9 @@ returns, then name it:
 address, which is how a rotation is recorded); `--suggest` prefills names
 from SRP hostnames, and flags an unknown
 address that appeared just as a named device's last address fell silent
-as probably that device's new address, with the `adopt` line to run. If you run Home
-Assistant + OTBR, its Thread panel and the OTBR REST API map most
-addresses to names for you (see docs/HOME-ASSISTANT.md).
+as probably that device's new address, with the `adopt` line to run. If
+Home Assistant is your Thread controller, `threadwatch import-ha` fills
+devices.json from it, and credentials.toml too (docs/HOME-ASSISTANT.md).
 
 ## Repository layout
 

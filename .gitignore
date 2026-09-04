@@ -6,5 +6,6 @@ __pycache__/
 *.pyc
 config/credentials.toml
 config/alerts.env
+config/ha.env
 .DS_Store
 

@@ -52,6 +52,16 @@ def main(argv=None) -> int:
     p_adopt.add_argument("addr", help="16-hex extended address (from 'report')")
     p_adopt.add_argument("name", help="device name; an existing name gains the address (rotation)")
 
+    p_ha = sub.add_parser("import-ha", help="from Home Assistant: device names and addresses into devices.json, "
+                                              "the Thread network key into credentials.toml")
+    p_ha.add_argument("--write", action="store_true", help="apply; without it, only report what would change")
+    p_ha.add_argument("--url", help="Home Assistant URL (default: HA_URL from config/ha.env, else "
+                                    "http://homeassistant.local:8123)")
+    p_ha.add_argument("--env-file", type=Path, help="file holding HA_TOKEN and HA_URL (default: config/ha.env)")
+    p_ha.add_argument("--dataset-id", help="which Thread dataset, when HA holds several and none is preferred")
+    p_ha.add_argument("--no-devices", action="store_true", help="skip devices.json")
+    p_ha.add_argument("--no-credentials", action="store_true", help="skip credentials.toml")
+
     p_why = sub.add_parser("why", help="reconstruct one device's story from the ring buffer")
     p_why.add_argument("device", help="device name (from devices.json) or 16-hex extended address")
     p_why.add_argument("--pcap", type=Path, help="analyze this file instead of the ring")
@@ -285,6 +295,56 @@ def main(argv=None) -> int:
                   f"'threadwatch adopt <addr> <name>', or 'threadwatch report --suggest' "
                   f"for ready-to-paste entries (format: threadwatch/names.py).",
                   file=sys.stderr)
+        return 0
+
+    if args.cmd == "import-ha":
+        from .ha import HAError, HomeAssistant, connection_settings, current_key, plan_inventory, \
+            thread_dataset, thread_devices, write_private
+        from .pipeline import credentials_path
+        env_file = args.env_file or (cfg.config_dir / "ha.env")
+        try:
+            url, token = connection_settings(env_file, args.url)
+            print(f"Home Assistant: {url}")
+            with HomeAssistant(url, token) as ha:
+                if not args.no_devices:
+                    inv = _inventory_path(cfg)
+                    found = thread_devices(ha, log=lambda m: print(f"  ! {m}"))
+                    existing = json.loads(inv.read_text() or "[]") if inv.exists() else []
+                    planned, changes = plan_inventory(existing, found)
+                    print(f"devices: {len(found)} Matter-over-Thread devices in Home Assistant, "
+                          f"{len(existing)} entries in {inv.name}")
+                    for line in changes:
+                        print(f"  {line}")
+                    if not changes:
+                        print(f"  {inv.name} already matches")
+                    elif args.write:
+                        inv.parent.mkdir(parents=True, exist_ok=True)
+                        inv.write_text(json.dumps(planned, indent=2) + "\n")
+                        print(f"  wrote {inv} ({len(planned)} entries)")
+                if not args.no_credentials:
+                    ds = thread_dataset(ha, args.dataset_id)
+                    cred = credentials_path(cfg)
+                    print(f"thread: {ds.get('network_name')}, channel {ds.get('channel')}, "
+                          f"PAN 0x{ds.get('pan_id', 0):04x}, extended PAN {ds.get('ext_pan_id')}")
+                    if ds.get("channel") and ds["channel"] != cfg.channel:
+                        print(f"  ! config.toml says channel {cfg.channel}; the dataset says {ds['channel']}: "
+                              "the recorder listens on the wrong channel until you fix [network] channel")
+                    if current_key(cred) == ds["network_key"]:
+                        print(f"  network key: {cred.name} already holds it")
+                    elif args.write:
+                        write_private(cred, "[credentials]\n# Written by threadwatch import-ha from Home Assistant's "
+                                            f"Thread dataset {ds.get('network_name')!r}. Mode 0400; never commit.\n"
+                                            f'network_key = "{ds["network_key"]}"\n')
+                        print(f"  network key: wrote {cred} (mode 0400)")
+                    else:
+                        print(f"  network key: {'differs from' if cred.exists() else 'not in'} {cred.name}; "
+                              "--write stores it")
+            if not args.write:
+                print("(nothing written: add --write to apply)")
+            else:
+                print("(the capture daemon reads both files at start: restart it to use them)")
+        except HAError as exc:
+            parser.exit(1, f"threadwatch import-ha: {exc}\n")
         return 0
 
     if args.cmd == "adopt":

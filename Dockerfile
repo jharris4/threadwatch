@@ -10,7 +10,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
-# config/ (config.toml, devices.json, credentials.toml) and data/ are volumes.
+# config/ (config.toml, devices.json, credentials.toml, alerts.env, ha.env)
+# and data/ are volumes; .dockerignore keeps all of them out of the image.
 VOLUME ["/app/config", "/app/data"]
 EXPOSE 8080
 ENTRYPOINT ["/app/bin/threadwatch"]

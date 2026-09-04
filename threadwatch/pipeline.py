@@ -459,15 +459,44 @@ class Pipeline:
                 span = round(ts - stats.unanswered_since)
                 history = (f"after {stats.acked_polls} answered polls" if stats.acked_polls
                            else "after answered polls before the recorder's last restart")
+                note = (f"polled its parent {stats.unanswered_polls} times over {span} s with no "
+                        f"acknowledgement, {history}: the parent is gone "
+                        "or the link to it broke and the device has not noticed; it still looks alive, "
+                        "so no device_quiet will follow, and a rejoin attempt should. (If it just moved "
+                        "to a parent the sniffer cannot hear, the ACKs are missing here, not on air.)")
+                # Two reasons to log rather than page. A device the sniffer
+                # barely hears has a parent whose ACKs it hears even less
+                # (same rule as device_quiet). And a device whose previous
+                # episode ended only minutes ago, with a plain ACK and no
+                # rejoin, is flapping at the sniffer's edge, not losing its
+                # parent: one warning, then notices until it has stayed
+                # answered for [polls] rearm_s.
+                rssi = row.get("rssi") if row else stats.rssi_ewma
+                marginal = reception(rssi, self.cfg.quiet_min_rssi_dbm) == "marginal"
+                closed = row.get("starve_closed") if row else None
+                gap = stats.unanswered_since - closed if closed is not None else None
+                flapping = (gap is not None and self.cfg.poll_rearm_s > 0
+                            and gap < self.cfg.poll_rearm_s)
+                episode = ((row.get("starve_episodes") or 0) + 1) if flapping else 1
+                if row is not None and row.get("starve_episodes") != episode:
+                    row["starve_episodes"] = episode
+                    self.seen._dirty = True
+                if marginal:
+                    note += (f" The sniffer hears this device at {rssi:.0f} dBm, the edge of its range, "
+                             "so the ACKs are more likely out of earshot here than missing on air: logged, not paged.")
+                if flapping:
+                    note += (f" Episode {episode} since the last page, {gap / 60:.0f} min after the previous one "
+                             "ended with an ordinary ACK and no rejoin: a device that flaps like this has a "
+                             "parent the sniffer only sometimes hears; logged, not paged, until its polls "
+                             f"have stayed answered for {self.cfg.poll_rearm_s / 60:.0f} min.")
                 self.events.emit(
-                    "poll_starvation", "warning", ts, addr=who, name=self.names.name(who),
+                    "poll_starvation", "notice" if (marginal or flapping) else "warning", ts,
+                    addr=who, name=self.names.name(who),
                     unanswered_polls=stats.unanswered_polls, since=stats.unanswered_since,
                     starved_for_s=span, acked_polls=stats.acked_polls,
-                    note=(f"polled its parent {stats.unanswered_polls} times over {span} s with no "
-                          f"acknowledgement, {history}: the parent is gone "
-                          "or the link to it broke and the device has not noticed; it still looks alive, "
-                          "so no device_quiet will follow, and a rejoin attempt should. (If it just moved "
-                          "to a parent the sniffer cannot hear, the ACKs are missing here, not on air.)"))
+                    rssi_dbm=rssi, reception="marginal" if marginal else "good",
+                    episode=episode, since_previous_s=round(gap) if gap is not None else None,
+                    note=note)
         stats.poll_pending_seq, stats.poll_pending_ts = seq, ts
 
     def _poll_answered(self, who: str, stats: DeviceStats, ts: float) -> None:
@@ -479,6 +508,10 @@ class Pipeline:
         stats.starved = False
         if row is not None:
             if row.pop("starved", None):
+                self.seen._dirty = True
+            if announced:
+                # When this episode ended: the next one is judged against it.
+                row["starve_closed"] = ts
                 self.seen._dirty = True
             if not row.get("polls_acked"):
                 row["polls_acked"] = True

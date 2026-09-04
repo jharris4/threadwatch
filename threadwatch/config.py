@@ -42,6 +42,13 @@ class Config:
     # device's daily reference for this long is logged (notice). 0 disables.
     link_drop_db: float = 8.0
     link_hold_s: float = 30 * 60
+    # [polls] a poll_starvation that opens within this long of the previous
+    # episode's close is logged at notice, not paged: the 2026-09-04 night
+    # (37 episodes from one sensor at -81 dBm, every one closed by a plain
+    # ACK, no rejoin) showed a flapping device is a parent whose ACKs the
+    # sniffer only sometimes hears, not a device losing its parent. 0 pages
+    # every episode.
+    poll_rearm_s: float = 60 * 60
     # [summary] one daily_summary event per local day, at this hour (-1 off).
     summary_hour: int = 8
     summary_severity: str = "notice"
@@ -101,6 +108,8 @@ def load(path: Optional[Path]) -> Config:
         link = raw.get("link", {})
         cfg.link_drop_db = float(link.get("drop_db", cfg.link_drop_db))
         cfg.link_hold_s = float(link.get("hold_s", cfg.link_hold_s))
+        polls = raw.get("polls", {})
+        cfg.poll_rearm_s = float(polls.get("rearm_s", cfg.poll_rearm_s))
         summary = raw.get("summary", {})
         cfg.summary_hour = int(summary.get("hour", cfg.summary_hour))
         if not -1 <= cfg.summary_hour <= 23:

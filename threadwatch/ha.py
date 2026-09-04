@@ -16,7 +16,8 @@ controller:
 No third-party packages: the websocket client below is the few dozen
 lines of RFC 6455 a JSON-over-text-frames API needs. The token lives in
 config/ha.env (gitignored) as HA_TOKEN, with HA_URL beside it; see
-docs/HOME-ASSISTANT.md for creating one.
+docs/HOME-ASSISTANT.md for creating one. The merge into devices.json is
+threadwatch/importer.py, which is also where mDNS border routers join.
 
 The key is never printed. The dataset TLV is parsed in memory, the key is
 written to the credentials file at mode 0600, and only "unchanged" or
@@ -26,7 +27,6 @@ written to the credentials file at mode 0600, and only "unchanged" or
 from __future__ import annotations
 
 import base64
-import copy
 import hashlib
 import json
 import os
@@ -36,8 +36,6 @@ import struct
 import urllib.parse
 from pathlib import Path
 from typing import Any, Callable, Optional
-
-from .names import entry_addresses
 
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 DEFAULT_URL = "http://homeassistant.local:8123"
@@ -348,50 +346,7 @@ def thread_dataset(ha: HomeAssistant, dataset_id: Optional[str] = None) -> dict:
     return parsed
 
 
-# ---------------------------------------------------------------- planning
-
-def plan_inventory(entries: list[dict], found: list[dict]) -> tuple[list[dict], list[str]]:
-    """Merge what HA reports into the inventory. Home Assistant is the
-    authority on names for the devices it knows; everything hand-written
-    (HomeKit-only devices, notes, extra addresses) is carried through.
-    Returns the new list and one line per change."""
-    entries = copy.deepcopy(entries)
-    changes: list[str] = []
-    by_addr = {a.upper(): e for e in entries for a in entry_addresses(e)}
-    by_name = {(e.get("name") or "").strip().lower(): e for e in entries if e.get("name")}
-    for dev in found:
-        addr = dev["addr"].upper()
-        entry = by_addr.get(addr)
-        if entry is not None:
-            if (entry.get("name") or "").strip() != dev["name"]:
-                changes.append(f"rename {entry.get('name')!r} -> {dev['name']!r} ({addr})")
-                by_name.pop((entry.get("name") or "").strip().lower(), None)
-                entry["name"] = dev["name"]
-                by_name[dev["name"].lower()] = entry
-            if dev.get("model") and not entry.get("model"):
-                entry["model"] = dev["model"]
-                changes.append(f"{dev['name']}: model {dev['model']!r}")
-            continue
-        entry = by_name.get(dev["name"].lower())
-        if entry is not None:
-            addrs = [a.upper() for a in entry_addresses(entry)]
-            entry.pop("extendedAddress", None)
-            entry["extendedAddresses"] = addrs + [addr]
-            by_addr[addr] = entry
-            changes.append(f"{dev['name']}: new address {addr} (now {len(addrs) + 1} addresses)")
-            if dev.get("model") and not entry.get("model"):
-                entry["model"] = dev["model"]
-                changes.append(f"{dev['name']}: model {dev['model']!r}")
-            continue
-        new = {"name": dev["name"], "extendedAddress": addr}
-        if dev.get("model"):
-            new["model"] = dev["model"]
-        entries.append(new)
-        by_addr[addr] = new
-        by_name[dev["name"].lower()] = new
-        changes.append(f"add {dev['name']!r} = {addr}")
-    return entries, changes
-
+# ------------------------------------------------------------- key file
 
 def write_private(path: Path, text: str) -> None:
     """Write a secrets file readable and writable by its owner only (0600:

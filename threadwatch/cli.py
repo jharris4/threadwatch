@@ -52,15 +52,18 @@ def main(argv=None) -> int:
     p_adopt.add_argument("addr", help="16-hex extended address (from 'report')")
     p_adopt.add_argument("name", help="device name; an existing name gains the address (rotation)")
 
-    p_ha = sub.add_parser("import-ha", help="from Home Assistant: device names and addresses into devices.json, "
-                                              "the Thread network key into credentials.toml")
-    p_ha.add_argument("--write", action="store_true", help="apply; without it, only report what would change")
-    p_ha.add_argument("--url", help="Home Assistant URL (default: HA_URL from config/ha.env, else "
-                                    "http://homeassistant.local:8123)")
-    p_ha.add_argument("--env-file", type=Path, help="file holding HA_TOKEN and HA_URL (default: config/ha.env)")
-    p_ha.add_argument("--dataset-id", help="which Thread dataset, when HA holds several and none is preferred")
-    p_ha.add_argument("--no-devices", action="store_true", help="skip devices.json")
-    p_ha.add_argument("--no-credentials", action="store_true", help="skip credentials.toml")
+    p_imp = sub.add_parser("import", help="fill devices.json and credentials.toml from Home Assistant (Matter "
+                                          "devices, the network key) and mDNS (border routers)")
+    p_imp.add_argument("--write", action="store_true", help="apply; without it, only report what would change")
+    p_imp.add_argument("--no-ha", action="store_true", help="skip Home Assistant (no token needed then)")
+    p_imp.add_argument("--no-mdns", action="store_true", help="skip the mDNS border-router browse")
+    p_imp.add_argument("--url", help="Home Assistant URL (default: HA_URL from config/ha.env, else "
+                                     "http://homeassistant.local:8123)")
+    p_imp.add_argument("--env-file", type=Path, help="file holding HA_TOKEN and HA_URL (default: config/ha.env)")
+    p_imp.add_argument("--dataset-id", help="which Thread dataset, when HA holds several and none is preferred")
+    p_imp.add_argument("--no-devices", action="store_true", help="skip devices.json")
+    p_imp.add_argument("--no-credentials", action="store_true", help="skip credentials.toml")
+    p_imp.add_argument("--mdns-seconds", type=float, default=3.0, help="how long to wait for mDNS answers")
 
     p_br = sub.add_parser("border-routers", help="ask the LAN (mDNS) which Thread border routers it can see, "
                                                  "with their current extended addresses")
@@ -319,55 +322,16 @@ def main(argv=None) -> int:
                   f"  network {r.get('network_name')}  ext PAN {r.get('ext_pan_id')}  ip {', '.join(r.get('addresses') or [])}")
         return 0
 
-    if args.cmd == "import-ha":
-        from .ha import HAError, HomeAssistant, connection_settings, current_key, plan_inventory, \
-            thread_dataset, thread_devices, write_private
-        from .pipeline import credentials_path
-        env_file = args.env_file or (cfg.config_dir / "ha.env")
+    if args.cmd == "import":
+        from .ha import HAError
+        from .importer import run_import
         try:
-            url, token = connection_settings(env_file, args.url)
-            print(f"Home Assistant: {url}")
-            with HomeAssistant(url, token) as ha:
-                if not args.no_devices:
-                    inv = _inventory_path(cfg)
-                    found = thread_devices(ha, log=lambda m: print(f"  ! {m}"))
-                    existing = json.loads(inv.read_text() or "[]") if inv.exists() else []
-                    planned, changes = plan_inventory(existing, found)
-                    print(f"devices: {len(found)} Matter-over-Thread devices in Home Assistant, "
-                          f"{len(existing)} entries in {inv.name}")
-                    for line in changes:
-                        print(f"  {line}")
-                    if not changes:
-                        print(f"  {inv.name} already matches")
-                    elif args.write:
-                        inv.parent.mkdir(parents=True, exist_ok=True)
-                        inv.write_text(json.dumps(planned, indent=2) + "\n")
-                        print(f"  wrote {inv} ({len(planned)} entries)")
-                if not args.no_credentials:
-                    ds = thread_dataset(ha, args.dataset_id)
-                    cred = credentials_path(cfg)
-                    print(f"thread: {ds.get('network_name')}, channel {ds.get('channel')}, "
-                          f"PAN 0x{ds.get('pan_id', 0):04x}, extended PAN {ds.get('ext_pan_id')}")
-                    if ds.get("channel") and ds["channel"] != cfg.channel:
-                        print(f"  ! config.toml says channel {cfg.channel}; the dataset says {ds['channel']}: "
-                              "the recorder listens on the wrong channel until you fix [network] channel")
-                    if current_key(cred) == ds["network_key"]:
-                        print(f"  network key: {cred.name} already holds it")
-                    elif args.write:
-                        write_private(cred, "[credentials]\n# Written by threadwatch import-ha from Home Assistant's "
-                                            f"Thread dataset {ds.get('network_name')!r}. Mode 0600; never commit.\n"
-                                            f'network_key = "{ds["network_key"]}"\n')
-                        print(f"  network key: wrote {cred} (mode 0600)")
-                    else:
-                        print(f"  network key: {'differs from' if cred.exists() else 'not in'} {cred.name}; "
-                              "--write stores it")
-            if not args.write:
-                print("(nothing written: add --write to apply)")
-            else:
-                print("(the capture daemon reads both files at start: restart it to use them)")
+            return run_import(cfg, _inventory_path(cfg), write=args.write, url=args.url, env_file=args.env_file,
+                              dataset_id=args.dataset_id, use_ha=not args.no_ha, use_mdns=not args.no_mdns,
+                              mdns_seconds=args.mdns_seconds, devices=not args.no_devices,
+                              credentials=not args.no_credentials)
         except HAError as exc:
-            parser.exit(1, f"threadwatch import-ha: {exc}\n")
-        return 0
+            parser.exit(1, f"threadwatch import: {exc}\n")
 
     if args.cmd == "adopt":
         from .names import adopt

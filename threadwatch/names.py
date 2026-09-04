@@ -30,10 +30,12 @@ finds every border router on the LAN over mDNS (threadwatch/mdns.py),
 where the hostname is stable and the current extended address is
 advertised, and keeps hostname -> address in the state file
 border-routers.json. An entry is tied to a hostname either explicitly,
-with `"borderRouter": "appletv-living-room.local"`, or implicitly, the
-first time a discovered address matches one the entry lists; from then
-on a new address for that hostname is named from the entry without
-anyone editing this file.
+with `"borderRouter": "appletv-living-room.local"` (`threadwatch import`
+writes it), or implicitly, the first time a discovered address matches
+one the entry lists; from then on a new address for that hostname is
+named from the entry without anyone editing this file. The addresses
+the entry lists still name the device on their own, so nothing depends
+on mDNS being reachable.
 
 Two helpers keep the file from being hand-written: `threadwatch report
 --suggest` prints a ready-to-paste entry per unknown address, prefilled

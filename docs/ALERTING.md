@@ -73,7 +73,8 @@ docs/CREDENTIALS.md for why their frames are otherwise anonymous.
 see: the device keeps polling, so it never goes quiet, but nothing
 acknowledges its polls. Ten distinct polls (MAC retries of one poll
 share a sequence number and count once) over at least a minute with no
-ACK, from a device whose polls were answered before, fire the warning;
+ACK, from a device whose polls were answered before (in this run, or in an
+earlier one: the fact is kept with the last-seen rows), fire the warning;
 the first acknowledged poll after that logs `poll_answered` (the open
 starvation is remembered with the last-seen rows, so a recorder restart in
 between still closes it). A device

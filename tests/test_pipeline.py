@@ -407,6 +407,19 @@ class PollStarvationTest(unittest.TestCase):
         pipe2.ingest(ack(t + 330.001, 203))
         self.assertEqual(len(self._events(pipe2, "poll_answered")), 1)   # once
 
+    def test_starvation_that_begins_right_after_a_restart_is_announced(self):
+        pipe = Pipeline(self.cfg, NullEventLog())
+        t = self._answered_polls(pipe, 1_700_000_000.0, 5)
+        self.assertTrue(pipe.seen.table[SENSOR]["polls_acked"])
+        pipe.seen.save()
+        pipe2 = Pipeline(self.cfg, NullEventLog())          # acked_polls is zero again
+        for i in range(12):
+            pipe2.ingest(poll(t + 10 * i, SENSOR, 100 + i))
+        evs = self._events(pipe2, "poll_starvation")
+        self.assertEqual(len(evs), 1)
+        self.assertEqual(evs[0]["acked_polls"], 0)
+        self.assertIn("before the recorder's last restart", evs[0]["note"])
+
     def test_a_device_never_answered_is_not_starving(self):
         # The sniffer may simply not hear that parent's ACKs.
         pipe = Pipeline(self.cfg, NullEventLog())

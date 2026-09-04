@@ -414,7 +414,13 @@ class Pipeline:
             stats.unanswered_polls += 1
             if stats.unanswered_since is None:
                 stats.unanswered_since = stats.poll_pending_ts
-            if (not stats.starved and stats.acked_polls > 0
+            # "Used to be answered" is judged from this run's count or, after
+            # a restart has zeroed it, from the row's persisted marker, so a
+            # parent that dies in the first minutes after a restart is not
+            # missed.
+            row = self.seen.table.get(who)
+            answered_before = stats.acked_polls > 0 or bool(row and row.get("polls_acked"))
+            if (not stats.starved and answered_before
                     and stats.unanswered_polls >= STARVED_POLLS
                     and ts - stats.unanswered_since >= STARVED_MIN_S):
                 stats.starved = True
@@ -422,17 +428,18 @@ class Pipeline:
                 # a restart rebuilds DeviceStats empty, and without the row
                 # the first answered poll after it would never close the
                 # episode.
-                row = self.seen.table.get(who)
                 if row is not None:
                     row["starved"] = True
                     self.seen._dirty = True
                 span = round(ts - stats.unanswered_since)
+                history = (f"after {stats.acked_polls} answered polls" if stats.acked_polls
+                           else "after answered polls before the recorder's last restart")
                 self.events.emit(
                     "poll_starvation", "warning", ts, addr=who, name=self.names.name(who),
                     unanswered_polls=stats.unanswered_polls, since=stats.unanswered_since,
                     starved_for_s=span, acked_polls=stats.acked_polls,
                     note=(f"polled its parent {stats.unanswered_polls} times over {span} s with no "
-                          f"acknowledgement, after {stats.acked_polls} answered polls: the parent is gone "
+                          f"acknowledgement, {history}: the parent is gone "
                           "or the link to it broke and the device has not noticed; it still looks alive, "
                           "so no device_quiet will follow, and a rejoin attempt should. (If it just moved "
                           "to a parent the sniffer cannot hear, the ACKs are missing here, not on air.)"))
@@ -445,8 +452,12 @@ class Pipeline:
         row = self.seen.table.get(who)
         announced = stats.starved or (row is not None and row.get("starved"))
         stats.starved = False
-        if row is not None and row.pop("starved", None):
-            self.seen._dirty = True
+        if row is not None:
+            if row.pop("starved", None):
+                self.seen._dirty = True
+            if not row.get("polls_acked"):
+                row["polls_acked"] = True
+                self.seen._dirty = True
         if announced:
             self.events.emit("poll_answered", "notice", ts, addr=who, name=self.names.name(who),
                              note="its polls are acknowledged again")

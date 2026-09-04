@@ -2,10 +2,12 @@
 
 import json
 import os
+import pathlib
 import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -140,6 +142,38 @@ class DoctorTest(unittest.TestCase):
                   "clock", "alerts", "heartbeats", "web"):
             self.assertIn(s, subjects)
         self.assertTrue(all(c[0] in ("ok", "warn", "FAIL") for c in checks))
+
+    def test_a_container_is_told_what_it_cannot_check_instead_of_warned(self):
+        # docs/DOCKER.md promised these two warnings were expected and meant
+        # nothing, which is a warning the reader can do nothing about.
+        with mock.patch.object(doctor, "_in_container", return_value=False), \
+             mock.patch.object(doctor.shutil, "which", return_value=None), \
+             mock.patch.object(doctor.sys, "platform", "linux"):
+            self.assertEqual(doctor.check_clock(), [("warn", "clock", "no timedatectl: NTP state not checked")])
+            self.assertEqual(doctor.check_web(self.cfg)[0][0], "warn")
+        with mock.patch.object(doctor, "_in_container", return_value=True), \
+             mock.patch.object(doctor.shutil, "which", return_value=None), \
+             mock.patch.object(doctor.sys, "platform", "linux"):
+            level, subject, text = doctor.check_clock()[0]
+            self.assertEqual((level, subject), ("ok", "clock"))
+            self.assertIn("host keeps the time", text)
+            level, subject, text = doctor.check_web(self.cfg)[0]
+            self.assertEqual((level, subject), ("ok", "web"))
+            self.assertIn("own container", text)
+
+    def test_container_detection_reads_the_marks_a_container_leaves(self):
+        real = pathlib.Path.exists
+        with mock.patch.object(doctor, "_run", return_value="none"), \
+             mock.patch.object(pathlib.Path, "exists",
+                               lambda self: True if str(self) == "/.dockerenv" else real(self)):
+            self.assertTrue(doctor._in_container())
+        with mock.patch.object(doctor, "_run", return_value="lxc"), \
+             mock.patch.object(pathlib.Path, "exists", lambda self: False):
+            self.assertTrue(doctor._in_container())
+        with mock.patch.object(doctor, "_run", return_value="none"), \
+             mock.patch.object(pathlib.Path, "exists", lambda self: False), \
+             mock.patch.object(pathlib.Path, "read_text", lambda self, **k: "0::/init.scope\n"):
+            self.assertFalse(doctor._in_container())
 
 
 if __name__ == "__main__":

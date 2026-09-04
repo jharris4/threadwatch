@@ -204,6 +204,20 @@ def _run(cmd: list[str]) -> str | None:
         return None
 
 
+def _in_container() -> bool:
+    """Docker, Podman or an LXC container. Doctor cannot check the clock or
+    reach the web container from inside one, and saying so beats a warning
+    the reader can do nothing about (docs/DOCKER.md)."""
+    if Path("/.dockerenv").exists() or Path("/run/.containerenv").exists():
+        return True
+    if (_run(["systemd-detect-virt", "--container"]) or "none") != "none":
+        return True
+    try:
+        return any(w in Path("/proc/1/cgroup").read_text() for w in ("docker", "containerd", "lxc"))
+    except OSError:
+        return False
+
+
 def check_clock() -> list[Check]:
     if shutil.which("timedatectl"):
         got = _run(["timedatectl", "show", "-p", "NTPSynchronized", "--value"])
@@ -214,6 +228,8 @@ def check_clock() -> list[Check]:
         return [(WARN, "clock", "timedatectl gave no answer")]
     if sys.platform == "darwin":
         return [(OK, "clock", "macOS keeps time itself (not checked)")]
+    if _in_container():
+        return [(OK, "clock", "in a container: the host keeps the time (not checked)")]
     return [(WARN, "clock", "no timedatectl: NTP state not checked")]
 
 
@@ -299,6 +315,11 @@ def check_web(cfg) -> list[Check]:
             json.loads(r.read())
         return [(OK, "web", f"review pages answer on port {cfg.web_port}")]
     except Exception as exc:
+        if _in_container():
+            # 127.0.0.1 is this container; the review pages serve from their
+            # own, which doctor has no way to reach or to tell apart from one
+            # that is down.
+            return [(OK, "web", "review pages run in their own container (not checked from in here)")]
         return [(WARN, "web", f"nothing answers on port {cfg.web_port} ({type(exc).__name__}); "
                               "'threadwatch web' or threadwatch-web.service")]
 

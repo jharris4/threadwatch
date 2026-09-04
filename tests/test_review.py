@@ -313,6 +313,7 @@ class DayViewTest(unittest.TestCase):
             self.assertIn("<h1>unknown device</h1>", get("/device/72d035122fdf06f6")[1])
             data = json.loads(get(f"/api/device/{TV1}")[1])
             self.assertEqual(data["addresses"], [TV1, TV2])
+            self.assertEqual(json.loads(get("/api/device/Living%20Room")[1])["addresses"], [TV1, TV2])
             self.assertEqual([e["kind"] for e in data["episodes"]], ["rejoin", "quiet"])
             status, body = get(f"/api/day/{day}")
             data = json.loads(body)

@@ -13,7 +13,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Optional
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from .events import DAY_RE, day_of, next_day, prev_day
 from .names import DeviceNames, LastSeen
@@ -560,7 +560,7 @@ class Site:
         if path.startswith("/api/device/"):
             names = self.names()
             try:
-                addrs, name = names.resolve(path[len("/api/device/"):])
+                addrs, name = names.resolve(unquote(path[len("/api/device/"):]).strip())
             except ValueError as exc:
                 return {"error": str(exc)}
             eps = devices_history(self.cfg.events_dir, addrs)
@@ -603,7 +603,6 @@ class Site:
         if path == "/incidents":
             return 200, "text/html; charset=utf-8", self.incidents_page().encode()
         if path.startswith("/device/"):
-            from urllib.parse import unquote
             target = unquote(path[len("/device/"):]).strip()
             if not target or len(target) > 100:
                 return 404, "text/plain", b"bad device"

@@ -274,6 +274,25 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertIn("run 'threadwatch freeze'", storms[1]["note"])
         self.assertEqual(frozen, ["auto-storm", "auto-storm"])
 
+    def test_auto_freeze_cooldown_survives_a_restart(self):
+        self.cfg.freeze_on_critical = True
+        t0 = 1_700_000_000.0
+        for age, label in ((2 * 3600, "auto-storm"), (30 * 3600, "auto-storm"), (60, "manual")):
+            stamp = time.strftime("%Y%m%dT%H%M%S", time.localtime(t0 - age))
+            (self.cfg.incidents_dir / f"{stamp}_{label}").mkdir(parents=True)
+        pipe = self._pipe()                                # a restart mid-storm
+        frozen = []
+        pipe.freezer = frozen.append
+        pipe.detector.storm_active = True
+        pipe.detector.last_alert_details = {"period": 80.5, "onsets": [1.0, 2.0, 3.0]}
+        pipe.detector.add_frame = lambda ts: setattr(pipe.detector, "storm_active", True)
+        pipe.ingest(frame(t0, ROUTER))                     # 2 h after the last auto freeze: held
+        pipe.ingest(frame(t0 + 5 * 3600, ROUTER))          # 7 h after it: frozen again
+        storms = [r["auto_freeze"] for r in pipe.events.records if r["event"] == "phase_locked_storm"]
+        self.assertEqual(storms, [None, "auto-storm"])
+        self.assertEqual(frozen, ["auto-storm"])
+        self.assertEqual(Pipeline(self.cfg, NullEventLog(), ephemeral=True)._last_auto_freeze, 0.0)
+
     def test_freeze_off_by_default_and_never_in_replay(self):
         for ephemeral in (False, True):
             self.cfg.freeze_on_critical = ephemeral        # on only for the replay case

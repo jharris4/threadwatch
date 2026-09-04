@@ -117,7 +117,7 @@ class Pipeline:
         self._retrans_alerted = 0.0
         self.quiet_reported: set[str] = set()
         self._frames_by_hour: dict[int, int] = {}    # hour bucket -> frames, last ~25 h
-        self._last_auto_freeze = 0.0
+        self._last_auto_freeze = 0.0 if ephemeral else self._last_auto_freeze_on_disk()
         # How a critical event freezes the ring: in the background, so the
         # copy (gigabytes on a Pi) never stalls capture. Tests swap it.
         self.freezer = self._freeze_in_background
@@ -167,6 +167,19 @@ class Pipeline:
                     announced += 1
             if announced:
                 self.seen.save()
+
+    def _last_auto_freeze_on_disk(self) -> float:
+        """When the newest auto-* incident was frozen, so the cooldown holds
+        across a restart: a daemon that comes back mid-storm must not copy
+        the whole ring (gigabytes) a second time and fill the card."""
+        from .review import incidents
+        try:
+            for inc in incidents(self.cfg.incidents_dir):      # newest first
+                if inc["label"].startswith("auto-"):
+                    return float(inc["frozen"])
+        except OSError:
+            pass
+        return 0.0
 
     def _last_frame_heard(self) -> Optional[float]:
         """When the previous run last heard a frame: from status.json (which

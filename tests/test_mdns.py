@@ -43,6 +43,7 @@ class WireTest(unittest.TestCase):
             rr(inst_ptr, TYPE_TXT, txt(b"rv=1", b"xa=" + EXT, b"nn=MyHome", b"xp=" + bytes(range(8)), b"vn=Apple",
                                        b"mn=BorderRouter")),
             rr(host, TYPE_A, bytes([192, 0, 2, 73])),
+            rr(host, TYPE_A, bytes([192, 0, 2, 73])),        # answered twice (both queries): listed once
         ])
         recs = parse_message(msg)
         self.assertEqual(recs[0], (SERVICE, TYPE_PTR, "AppleTV Living Room." + SERVICE))
@@ -50,6 +51,7 @@ class WireTest(unittest.TestCase):
         self.assertEqual(recs[2][1], TYPE_TXT)
         self.assertEqual(recs[2][2]["xa"], EXT)
         self.assertEqual(recs[3], ("AppleTV-Living-Room.local", TYPE_A, "192.0.2.73"))
+        self.assertEqual(len(recs), 5)
         routers = collect_routers(recs)
         self.assertEqual(list(routers), ["appletv living room." + SERVICE])
         r = routers["appletv living room." + SERVICE]

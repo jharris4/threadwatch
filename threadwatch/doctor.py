@@ -60,9 +60,11 @@ def check_inventory(cfg) -> list[Check]:
 
 
 def check_credentials(cfg) -> list[Check]:
-    path = cfg.credentials_path
-    if path is None or not path.exists():
-        return [(OK, "credentials", "none: header-level analysis only (docs/CREDENTIALS.md to add the key)")]
+    from .pipeline import credentials_path
+    path = credentials_path(cfg)
+    if not path.exists():
+        return [(FAIL, "credentials", f"{path.name} missing: the recorder does not start without the Thread "
+                                      "network key (docs/CREDENTIALS.md)")]
     out = []
     mode = stat.S_IMODE(path.stat().st_mode)
     if mode & 0o077:
@@ -71,11 +73,11 @@ def check_credentials(cfg) -> list[Check]:
         import tomllib
         key = tomllib.loads(path.read_text()).get("credentials", {}).get("network_key", "")
         if len(key) != 32 or any(c not in "0123456789abcdefABCDEF" for c in key):
-            out.append((FAIL, "credentials", f"{path.name}: network_key must be 32 hex digits; deep inspection is off"))
+            out.append((FAIL, "credentials", f"{path.name}: network_key must be 32 hex digits; the recorder will not start"))
         else:
-            out.append((OK, "credentials", f"{path.name} loads; deep inspection on"))
+            out.append((OK, "credentials", f"{path.name} loads"))
     except Exception as exc:
-        out.append((FAIL, "credentials", f"{path.name} unusable ({exc}); deep inspection is off"))
+        out.append((FAIL, "credentials", f"{path.name} unusable ({exc}); the recorder will not start"))
     return out
 
 

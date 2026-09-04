@@ -214,7 +214,7 @@ class Site:
             live = '<span class="ok">capturing</span>'
         det = st.get("detector", {})
         storm = ' <span class="bad">STORM ACTIVE</span>' if det.get("storm_active") else ""
-        crypto = "deep inspection on" if st.get("deep_inspection") else "header-level only"
+        crypto = f'{(st.get("crypto") or {}).get("mac_decrypted", 0):,} decrypted'
         return (f'<header><a class="brand" href="/">threadwatch</a>'
                 f'<nav><a href="/">today</a> &nbsp; <a href="/devices">devices</a> &nbsp; '
                 f'<a href="/incidents">incidents</a> &nbsp; <a href="/status">status</a> &nbsp; '
@@ -470,8 +470,6 @@ class Site:
             row("this run", f'{st.get("frames_total", 0):,} frames in {fmt_duration(st.get("uptime_s", 0))}, '
                             f'{st.get("devices_tracked", 0)} devices with stats')
             row("current file", f'<code>{esc(Path(st.get("current_file", "")).name)}</code>')
-            row("inspection", "deep (credentials loaded: MLE, identity, names)" if st.get("deep_inspection")
-                else "header-level only (no credentials)")
             part = st.get("partition")
             if part:
                 # "router 60" means nothing on its own: name the device that

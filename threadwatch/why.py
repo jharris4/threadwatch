@@ -132,7 +132,7 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
         try:
             with open(path, "rb") as fh:
                 for f in PcapStreamReader(fh):
-                    is_ours = (ident(f) if decryptor is not None else f.src) in addr_set
+                    is_ours = ident(f) in addr_set
                     # ACK for our previous unicast transmission
                     if (prev_frame is not None and f.ftype == 2
                             and f.seq == prev_frame.seq and f.ts - prev_frame.ts < 0.05):
@@ -153,7 +153,7 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
                     if last_ts is not None and f.ts - last_ts > 1800:
                         gaps.append((last_ts, f.ts))
                     last_ts = f.ts
-                    if decryptor is not None and f.ftype == 1:
+                    if f.ftype == 1:
                         try:
                             inspect(f, h)
                         except Exception:   # one malformed unsecured payload; keep going
@@ -195,6 +195,6 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
         print("\nrejoin-related MLE (attach attempts):")
         for ts, cmd in mle_events[-10:]:
             print(f"  {_t.strftime('%m-%d %H:%M:%S', _t.localtime(ts))}  {cmd}")
-    elif decryptor is not None:
+    else:
         print("\nno rejoin-related MLE seen from this device in the window.")
     print_history(cfg.events_dir, addrs)

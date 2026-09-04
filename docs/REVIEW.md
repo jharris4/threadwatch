@@ -36,7 +36,7 @@ is no authentication: keep it on your LAN or behind your own proxy.
   address: last heard, signal level against its usual, frames. Part of a
   name works; a text that matches several names offers the choice.
 - **/status**: the daemon's status file in prose (alive, last frame,
-  channel and port, this run's frames, inspection level, partition and
+  channel and port, this run's frames, partition and
   which device leads it (linked, once its RLOC16 has been matched),
   storm detector, crypto counters) plus storage: ring size and hourly
   rate, incidents and event log size, and free disk against what a full

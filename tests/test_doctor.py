@@ -41,7 +41,8 @@ class DoctorTest(unittest.TestCase):
         self.assertEqual(doctor.check_inventory(self.cfg)[0][0], "ok")
 
     def test_credentials_permissions_and_key(self):
-        self.assertEqual(doctor.check_credentials(self.cfg)[0][0], "ok")     # none configured
+        self.cfg.credentials_path = self.d / "absent.toml"
+        self.assertEqual(doctor.check_credentials(self.cfg)[0][0], "FAIL")   # none: the recorder will not start
         cred = self.d / "credentials.toml"
         self.cfg.credentials_path = cred
         cred.write_text('[credentials]\nnetwork_key = "00112233445566778899aabbccddeeff"\n')

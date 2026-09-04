@@ -122,8 +122,8 @@ def run_capture(cfg: Config) -> None:
         _log(f"alert sink {s.describe()} (min {['info', 'notice', 'warning', 'critical'][s.min_severity]})")
     if not sinks:
         _log("no alert sinks configured (events go to the event log only; see docs/ALERTING.md)")
-    decryptor = load_decryptor(cfg)
-    _log(f"credentials: {'loaded (deep inspection on)' if decryptor else 'none (header-level only)'}")
+    decryptor = load_decryptor(cfg)      # raises CredentialsError: no key, no recorder
+    _log("credentials: loaded")
     pipe = Pipeline(cfg, events, decryptor)
     heartbeats = build_heartbeats(cfg.heartbeats_raw, _log)
     for b in heartbeats:
@@ -271,12 +271,10 @@ def _write_status(cfg, port, total, started, pipe: Pipeline, ring, decryptor,
         "uptime_s": round(time.time() - started, 1),
         "current_file": str(ring.current_path),
         "devices_tracked": len(pipe.devices),
-        "deep_inspection": decryptor is not None,
         "partition": pipe.partition_status(),
         "detector": pipe.detector.snapshot(),
     }
-    if decryptor:
-        status["crypto"] = dict(decryptor.stats)
+    status["crypto"] = dict(decryptor.stats)
     tmp = cfg.state_dir / "status.tmp"
     tmp.write_text(json.dumps(status, indent=1))
     tmp.replace(cfg.state_dir / "status.json")
@@ -303,11 +301,9 @@ def run_replay(cfg: Config, pcap_path: Path) -> None:
         "file": str(pcap_path),
         "frames": total,
         "duration_s": round(last - first, 1) if first else 0,
-        "deep_inspection": decryptor is not None,
         "partition": pipe.partition_status(),
         "detector": pipe.detector.snapshot(),
         "events": events.records,
     }
-    if decryptor:
-        out["crypto"] = dict(decryptor.stats)
+    out["crypto"] = dict(decryptor.stats)
     print(json.dumps(out, indent=1))

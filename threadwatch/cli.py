@@ -91,15 +91,22 @@ def main(argv=None) -> int:
 
     args = parser.parse_args(argv)
     cfg = config_mod.load(args.config)
+    from .pipeline import CredentialsError
 
     if args.cmd == "capture":
         from .capture import run_capture
-        run_capture(cfg)
+        try:
+            run_capture(cfg)
+        except CredentialsError as exc:
+            parser.exit(2, f"threadwatch capture: {exc}\n")
         return 0
 
     if args.cmd == "replay":
         from .capture import run_replay
-        run_replay(cfg, args.pcap)
+        try:
+            run_replay(cfg, args.pcap)
+        except CredentialsError as exc:
+            parser.exit(2, f"threadwatch replay: {exc}\n")
         return 0
 
     if args.cmd == "status":
@@ -126,7 +133,10 @@ def main(argv=None) -> int:
             parser.error("--hours selects ring files; it does not apply with --pcap")
         if args.hours is not None and args.hours <= 0:
             parser.error("--hours must be positive")
-        run_why(cfg, args.device, args.pcap, hours=args.hours)
+        try:
+            run_why(cfg, args.device, args.pcap, hours=args.hours)
+        except CredentialsError as exc:
+            parser.exit(2, f"threadwatch why: {exc}\n")
         return 0
 
     if args.cmd == "events":

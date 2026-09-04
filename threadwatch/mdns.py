@@ -145,7 +145,9 @@ def collect_routers(records: list[tuple[str, int, object]], service: str = SERVI
         elif rtype == TYPE_TXT:
             txt[n] = value  # type: ignore[assignment]
         elif rtype in (TYPE_A, TYPE_AAAA):
-            addrs.setdefault(n, []).append(str(value))
+            # Both queries (unicast- and multicast-reply) may be answered.
+            if str(value) not in addrs.setdefault(n, []):
+                addrs[n].append(str(value))
     for full, info in instances.items():
         port, target = srv.get(full, (None, None))
         info["hostname"] = _norm_host(target) if target else None

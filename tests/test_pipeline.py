@@ -456,6 +456,75 @@ class PollStarvationTest(unittest.TestCase):
         pipe.ingest(poll(t + 90, SENSOR, 70))                # ...and one more, past the minute
         self.assertEqual(len(self._events(pipe, "poll_starvation")), 1)
 
+    def _starve(self, pipe, t, seq0):
+        for i in range(12):
+            pipe.ingest(poll(t + 10 * i, SENSOR, (seq0 + i) & 0xFF))
+        return t + 120
+
+    def test_a_second_episode_soon_after_the_first_ended_is_a_notice_until_the_rearm_passes(self):
+        # 2026-09-04: 37 episodes in six hours from one sensor, each closed
+        # by an ordinary ACK. One page, then notices while it flaps.
+        pipe = Pipeline(self.cfg, NullEventLog())
+        t = self._answered_polls(pipe, 1_700_000_000.0, 5)
+        t = self._starve(pipe, t, 100)
+        t = self._answered_polls(pipe, t, 3, seq0=120)        # episode 1 closes
+        t = self._starve(pipe, t + 300, 130)                  # 5 min later: episode 2
+        t = self._answered_polls(pipe, t, 3, seq0=150)
+        t = self._starve(pipe, t + 600, 160)                  # 10 min later: episode 3
+        t = self._answered_polls(pipe, t, 3, seq0=180)
+        t = self._starve(pipe, t + 4000, 190)                 # over an hour answered: pages again
+        evs = self._events(pipe, "poll_starvation")
+        self.assertEqual([e["severity"] for e in evs], ["warning", "notice", "notice", "warning"])
+        self.assertEqual([e["episode"] for e in evs], [1, 2, 3, 1])
+        self.assertIsNone(evs[0]["since_previous_s"])
+        self.assertAlmostEqual(evs[1]["since_previous_s"], 300 + 10, delta=15)
+        self.assertIn("Episode 2 since the last page", evs[1]["note"])
+        self.assertIn("logged, not paged", evs[1]["note"])
+        self.assertNotIn("Episode", evs[3]["note"])
+        self.assertEqual(len(self._events(pipe, "poll_answered")), 3)   # every close still logged
+
+    def test_rearm_zero_pages_every_episode(self):
+        self.cfg.poll_rearm_s = 0
+        pipe = Pipeline(self.cfg, NullEventLog())
+        t = self._answered_polls(pipe, 1_700_000_000.0, 5)
+        t = self._starve(pipe, t, 100)
+        t = self._answered_polls(pipe, t, 3, seq0=120)
+        self._starve(pipe, t + 60, 130)
+        evs = self._events(pipe, "poll_starvation")
+        self.assertEqual([e["severity"] for e in evs], ["warning", "warning"])
+
+    def test_the_hold_down_survives_a_restart(self):
+        pipe = Pipeline(self.cfg, NullEventLog())
+        t = self._answered_polls(pipe, 1_700_000_000.0, 5)
+        t = self._starve(pipe, t, 100)
+        t = self._answered_polls(pipe, t, 3, seq0=120)
+        self.assertIn("starve_closed", pipe.seen.table[SENSOR])
+        pipe.seen.save()
+        pipe2 = Pipeline(self.cfg, NullEventLog())
+        t = self._answered_polls(pipe2, t + 60, 2, seq0=125)  # answered polls this run, then starved
+        self._starve(pipe2, t, 130)
+        evs = self._events(pipe2, "poll_starvation")
+        self.assertEqual([e["severity"] for e in evs], ["notice"])
+        self.assertEqual(evs[0]["episode"], 2)
+
+    def test_a_marginal_device_starving_is_a_notice(self):
+        pipe = Pipeline(self.cfg, NullEventLog())
+        t = 1_700_000_000.0
+        for i in range(5):
+            f = poll(t + 5 * i, SENSOR, i)
+            f.rssi = -90.0
+            pipe.ingest(f)
+            pipe.ingest(ack(t + 5 * i + 0.001, i))
+        t += 25
+        for i in range(12):
+            f = poll(t + 10 * i, SENSOR, 100 + i)
+            f.rssi = -90.0
+            pipe.ingest(f)
+        evs = self._events(pipe, "poll_starvation")
+        self.assertEqual(len(evs), 1)
+        self.assertEqual((evs[0]["severity"], evs[0]["reception"], evs[0]["episode"]), ("notice", "marginal", 1))
+        self.assertIn("edge of its range", evs[0]["note"])
+
 
 class LinkDegradationTest(unittest.TestCase):
     def setUp(self):

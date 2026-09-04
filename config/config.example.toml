@@ -39,6 +39,16 @@ router_s = 1800            # 30 min
 # (not paged) when quiet: at the edge of range, silence is usually fading.
 min_rssi_dbm = -82
 
+[polls]
+# A poll_starvation episode that opens within this long of the previous
+# one's close is logged at notice (not paged). A device that starves and
+# recovers every few minutes, each time with an ordinary ACK and no rejoin,
+# is a parent whose ACKs the sniffer only sometimes hears, not a device
+# losing its parent. One warning, then notices until it has stayed answered
+# this long. 0 pages every episode. Devices heard below [quiet] min_rssi_dbm
+# are logged at notice regardless, as for device_quiet.
+rearm_s = 3600             # 60 min
+
 [link]
 # Slow link degradation: a device still heard, but with its average RSSI at
 # the sniffer this far below its own daily reference for this long, is

@@ -40,7 +40,7 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `possible_foreign_pan` | notice | `pan`, `src`, `dominant_pan`, `note` |
 | `mle_rejoin_attempt` | notice | `command`, `src`, `name` (credentials only) |
 | `device_quiet` | warning, or notice when `reception` is `marginal` | `addr`, `name`, `silent_for_s`, `profile` (`router` / `end-device`), `rssi_dbm`, `reception`, `note` |
-| `poll_starvation` | warning | `addr`, `name`, `unanswered_polls`, `since`, `starved_for_s`, `acked_polls`, `note` (credentials only) |
+| `poll_starvation` | warning, or notice when `reception` is `marginal` or `episode` > 1 | `addr`, `name`, `unanswered_polls`, `since`, `starved_for_s`, `acked_polls`, `rssi_dbm`, `reception`, `episode`, `since_previous_s`, `note` (credentials only) |
 | `poll_answered` | notice | `addr`, `name`, `note` |
 | `rssi_degradation` | notice | `addr`, `name`, `rssi_dbm`, `reference_dbm`, `drop_db`, `since`, `low_for_s`, `note` |
 | `rssi_recovered` | info | `addr`, `name`, `rssi_dbm`, `reference_dbm`, `note` |
@@ -80,6 +80,19 @@ starvation is remembered with the last-seen rows, so a recorder restart in
 between still closes it). A device
 that just moved to a parent the sniffer cannot hear looks the same from
 the sniffer's chair: a `mle_rejoin_attempt` right before it is the tell.
+
+Two starvations are logged at notice rather than paged, for the same
+reason the quiet detector holds back: the sniffer, not the device, is the
+likely cause. A device heard below `[quiet] min_rssi_dbm` has a parent
+whose ACKs are heard even less reliably. And an episode that opens within
+`[polls] rearm_s` (default 60 min) of the previous one's close is flapping:
+a device that really lost its parent gives up after a handful of polls and
+rejoins, while one that recovers every few minutes with an ordinary ACK is
+sitting where the sniffer only sometimes hears its parent. The record
+carries `episode` (1 for the page, counting up through the notices) and
+`since_previous_s`; the first episode after the device has stayed answered
+for `rearm_s` pages again. The close time is kept with the last-seen rows,
+so a restart does not re-page a flapping device.
 
 `daily_summary` goes out once per local day, the first time `periodic`
 runs at or after `[summary] hour` (default 8; -1 disables). The event log

@@ -10,6 +10,7 @@ it (quiet spells, rejoins, bad links) follow, newest first, to answer
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from .config import Config
@@ -79,6 +80,7 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
     addrs, display = resolve_target(cfg, target)
     addr_set = set(addrs)
     decryptor = load_decryptor(cfg)
+    print("[threadwatch] credentials: loaded", file=sys.stderr, flush=True)
     # With credentials, frames sent from a short address (everything a
     # sleepy end device sends once attached, polls included) are attributed
     # by the same MIC search the live pipeline uses.

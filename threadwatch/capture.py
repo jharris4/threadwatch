@@ -321,6 +321,7 @@ def run_replay(cfg: Config, pcap_path: Path) -> None:
     """Run the full pipeline over an existing pcap; print events + summary."""
     events = NullEventLog()
     decryptor = load_decryptor(cfg)
+    print("[threadwatch] credentials: loaded", file=sys.stderr, flush=True)   # stdout is the JSON
     pipe = Pipeline(cfg, events, decryptor, ephemeral=True)
     pipe.detector.cfg.alert_cooldown_s = 0
     total = 0

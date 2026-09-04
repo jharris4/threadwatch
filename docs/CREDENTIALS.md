@@ -63,8 +63,8 @@ file = "credentials.toml"     # relative to the config directory
 ```
 
 `threadwatch capture`, `replay` and `why` print `credentials: loaded` when
-the file is good, and stop with the reason when it is missing or
-malformed.
+the file is good (`replay` and `why` on stderr, so their output stays
+usable), and stop with the reason when it is missing or malformed.
 
 ## If the key rotates
 

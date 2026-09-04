@@ -179,13 +179,15 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual(pipe.seen.table[STRANGER]["pan"], OTHER_PAN)
 
     def test_restart_announces_a_silence_nobody_reported(self):
-        # The recorder was down (or in the no-frames restart loop, where
-        # periodic never runs) while the router crossed its window.
+        # The recorder heard the mesh right up to a restart (a deploy, a
+        # crash) that came between the router crossing its window and the
+        # periodic tick that would have said so.
         now = time.time()
         pipe = self._pipe()
         pipe.ingest(frame(now - 40 * 60, ROUTER))   # past the window, never announced
         pipe.ingest(frame(now - 20 * 60, SENSOR))   # inside the window: still eligible
         pipe.seen.save()
+        self._status(updated=now, last_frame_ts=now)
         pipe2 = self._pipe()
         self.assertEqual(self._quiet(pipe2), [ROUTER])
         self.assertEqual(pipe2.quiet_reported, {ROUTER})
@@ -194,15 +196,16 @@ class QuietPolicyTest(unittest.TestCase):
         # A third start re-announces nothing: both silences are on record.
         self.assertEqual(self._quiet(self._pipe()), [])
 
+    def _status(self, **fields):
+        (self.cfg.state_dir / "status.json").write_text(json.dumps(fields))
+
     def test_recorder_downtime_is_not_counted_as_device_silence(self):
-        import os
         now = time.time()
         pipe = self._pipe()
         pipe.ingest(frame(now - 40 * 60, ROUTER))
         pipe.seen.save()
         # The recorder last heard anything 38 min ago (rebooted 2 min after that frame).
-        path = self.cfg.state_dir / "last-seen.json"
-        os.utime(path, (now - 38 * 60, now - 38 * 60))
+        self._status(updated=now - 38 * 60, last_frame_ts=now - 38 * 60)
         pipe2 = self._pipe()
         self.assertEqual(self._quiet(pipe2), [])          # only 2 min of witnessed silence
         pipe2.periodic(now + 60)
@@ -211,6 +214,31 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual(self._quiet(pipe2), [ROUTER])
         rec = [r for r in pipe2.events.records if r["event"] == "device_quiet"][0]
         self.assertAlmostEqual(rec["silent_for_s"], 31 * 60, delta=5)
+
+    def test_a_restart_loop_that_hears_nothing_does_not_announce_every_device(self):
+        # The mesh (or the dongle) died two hours ago. Since then the
+        # watchdog has restarted the recorder every three minutes, and every
+        # run wrote status.json and saved last-seen.json before leaving: file
+        # times say "heard something a minute ago"; the stamps say otherwise.
+        now = time.time()
+        pipe = self._pipe()
+        pipe.ingest(frame(now - 2 * 3600 - 5 * 60, ROUTER))
+        pipe.ingest(frame(now - 2 * 3600 - 5 * 60, SENSOR))
+        pipe.seen.save()                                    # mtime: now
+        self._status(updated=now - 60, last_frame_age_s=170, last_frame_ts=now - 2 * 3600)
+        pipe2 = self._pipe()
+        self.assertEqual(self._quiet(pipe2), [])           # five minutes of witnessed silence
+        pipe2.periodic(now + 20 * 60)
+        self.assertEqual(self._quiet(pipe2), [])           # frames are back: 25 min so far
+        pipe2.periodic(now + 26 * 60)
+        self.assertEqual(sorted(self._quiet(pipe2)), sorted([ROUTER, SENSOR]))
+        rec = [r for r in pipe2.events.records if r["event"] == "device_quiet"][0]
+        self.assertAlmostEqual(rec["silent_for_s"], 31 * 60, delta=5)
+        # A status file from before the stamp existed: the table's newest
+        # last_seen stands in, and the same restart loop still pages nobody.
+        pipe2.seen.save()
+        self._status(updated=now - 60, last_frame_age_s=170)
+        self.assertEqual(self._quiet(self._pipe()), [])
 
     def test_restart_does_not_repeat_an_announced_silence_or_a_foreign_one(self):
         now = time.time()
@@ -221,6 +249,7 @@ class QuietPolicyTest(unittest.TestCase):
         pipe.periodic(now - 60 * 60)                # announces the sensor, skips the foreign device
         self.assertEqual(self._quiet(pipe), [SENSOR])
         pipe.seen.save()
+        self._status(updated=now, last_frame_ts=now)   # other devices were heard until the restart
         pipe2 = self._pipe()
         self.assertEqual(self._quiet(pipe2), [])
         self.assertEqual(pipe2.quiet_reported, {SENSOR})

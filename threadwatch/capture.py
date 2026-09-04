@@ -168,6 +168,10 @@ def run_capture(cfg: Config) -> None:
     ring = None
     # Shared with the watchdog thread; benign races (status snapshot only).
     beat = {"last_frame": None, "total": 0, "ring": None}   # last_frame: None until the first frame
+    # When any run last heard a frame, carried through runs that hear
+    # nothing: the next start credits the gap since then as its own
+    # blindness, not the devices' silence (Pipeline._last_frame_heard).
+    prior_frame = last_frame_on_record(cfg.state_dir)
 
     def _watchdog():
         # The main loop blocks reading the FIFO, so a stalled stream (host
@@ -182,7 +186,8 @@ def run_capture(cfg: Config) -> None:
             if beat["ring"] is not None:
                 try:
                     _write_status(cfg, port, beat["total"], started, pipe,
-                                  beat["ring"], decryptor, last_frame_age=age)
+                                  beat["ring"], decryptor, last_frame_age=age,
+                                  last_frame_ts=beat["last_frame"] or prior_frame)
                 except Exception as exc:   # a full disk must not take the stall check with it
                     _log(f"status.json not written: {exc}")
             if beat["ring"] is None and not sniffer.thread.is_alive():
@@ -266,11 +271,25 @@ def run_capture(cfg: Config) -> None:
         os._exit(exit_code)
 
 
+def last_frame_on_record(state_dir: Path) -> Optional[float]:
+    """When the recorder last heard a frame, as the status.json of a
+    previous run recorded it; None when no run has heard one."""
+    try:
+        st = json.loads((state_dir / "status.json").read_text())
+        return float(st["last_frame_ts"]) if st.get("last_frame_ts") is not None else None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
 def _write_status(cfg, port, total, started, pipe: Pipeline, ring, decryptor,
-                  last_frame_age: float = 0.0) -> None:
+                  last_frame_age: float = 0.0, last_frame_ts: Optional[float] = None) -> None:
+    # last_frame_age_s is this run's view (the watchdog's stall clock);
+    # last_frame_ts is the wall-clock time of the last frame any run heard,
+    # which does not move while nothing is heard.
     status = {
         "updated": time.time(),
         "last_frame_age_s": round(last_frame_age, 1),
+        "last_frame_ts": last_frame_ts,
         "port": port,
         "channel": cfg.channel,
         "frames_total": total,

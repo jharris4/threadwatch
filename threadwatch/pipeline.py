@@ -217,18 +217,21 @@ class Pipeline:
         return 0.0
 
     def _last_frame_heard(self) -> Optional[float]:
-        """When the previous run last heard a frame: from status.json (which
-        records the frame age at each write), else the last-seen save time."""
+        """When a previous run last heard a frame: the stamp status.json
+        carries across runs (capture.last_frame_on_record), or the newest
+        last_seen in the table. Both stand still while nothing is heard.
+        The status file's write time and the table's save time do not: a
+        run that hears nothing still writes both before the watchdog
+        restarts it, so judging by them credits a two-hour outage as the
+        three minutes of the last restart and pages for every device."""
         stamps = []
         try:
             st = json.loads((self.cfg.state_dir / "status.json").read_text())
-            stamps.append(float(st["updated"]) - float(st.get("last_frame_age_s", 0)))
-        except (OSError, ValueError, KeyError, TypeError):
+            if st.get("last_frame_ts") is not None:
+                stamps.append(float(st["last_frame_ts"]))
+        except (OSError, ValueError, TypeError):
             pass
-        try:
-            stamps.append(self.seen.state_path.stat().st_mtime)
-        except (OSError, AttributeError):
-            pass
+        stamps.extend(row["last_seen"] for row in self.seen.table.values() if row.get("last_seen") is not None)
         return max(stamps) if stamps else None
 
     def silence_s(self, row: dict, now: float) -> float:

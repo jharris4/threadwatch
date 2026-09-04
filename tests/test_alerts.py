@@ -199,6 +199,35 @@ class DeliveryTests(unittest.TestCase):
         time.sleep(0.8)
         self.assertEqual(len(self.srv.requests), 2)   # no digest without held-back events
 
+    def test_close_delivers_the_queue_and_every_held_back_digest(self):
+        # Eight devices go quiet at once; the cooldown pages the first and
+        # holds the rest for a digest due in five minutes. The watchdog
+        # restarts the process long before that: close sends it now.
+        sink = alerts.HttpSink(name="t", url=self.srv.url, cooldown_s=300,
+                               body='{{"event": "{event}", "who": "{who}", "count": "{count}"}}')
+        d = alerts.Dispatcher([sink], print)
+        for i in range(8):
+            d.offer({**REC, "name": f"Device {i}", "addr": "%016x" % i})
+        d.offer({**REC, "event": "poll_starvation", "name": "Porch"})   # queued behind the first send
+        started = time.time()
+        d.close()
+        self.assertLess(time.time() - started, 5)
+        self.assertFalse(d._thread.is_alive())
+        bodies = [json.loads(r["body"]) for r in self.srv.wait(3)]
+        self.assertEqual([(b["event"], b["who"]) for b in bodies],
+                         [("device_quiet", "Device 0"), ("poll_starvation", "Porch"), ("device_quiet", "7 more")])
+        self.assertEqual(bodies[2]["count"], "7")
+        self.assertEqual(sink._pending, {})
+        alerts.Dispatcher([], print).close()                             # no sinks, no thread: instant
+
+    def test_close_without_sinks_or_pending_is_quick(self):
+        with tempfile.TemporaryDirectory() as d:
+            log = EventLog(Path(d) / "events", [alerts.HttpSink(name="t", url=self.srv.url)])
+            started = time.time()
+            log.close()
+            self.assertLess(time.time() - started, 2)
+            self.assertEqual(self.srv.requests, [])
+
     def test_failed_sink_is_logged_not_raised(self):
         bad = _Server(status=500)
         try:

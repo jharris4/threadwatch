@@ -196,14 +196,16 @@ def run_capture(cfg: Config) -> None:
                 # open for the whole stall timeout with a misleading message.
                 _log("sniffer thread died before delivering any data (serial port busy or gone? "
                      "see the traceback above); exiting for supervisor restart")
+                events.close()      # the start-up quiet announcements, if any
                 os._exit(4)
             if age > stall_timeout:
                 _log(f"no frames for {age:.0f}s - capture stalled (host slept? "
                      "dongle gone?); exiting for supervisor restart")
                 # The main thread is blocked in the FIFO read, so nothing is
                 # being written: keep the last frames and what they taught us,
-                # and take the sniffer's child (which holds the port) with us.
-                for step in (lambda: beat["ring"].fh.flush(), pipe.seen.save, sniffer._stop):
+                # deliver the alerts still queued or held for a digest, and
+                # take the sniffer's child (which holds the port) with us.
+                for step in (lambda: beat["ring"].fh.flush(), pipe.seen.save, events.close, sniffer._stop):
                     try:
                         step()
                     except Exception:
@@ -264,6 +266,9 @@ def run_capture(cfg: Config) -> None:
         if ring:
             ring.close()
         fifo_path.unlink(missing_ok=True)
+        # os._exit skips thread joins: the alert thread's queue and the
+        # digests its cooldowns hold would go with it.
+        events.close()
         _log(f"stopped after {total} frames")
         # The vendored sniffer starts a non-daemon thread and worker
         # processes that outlive _stop(); everything of ours is closed and

@@ -221,11 +221,12 @@ class Sink:
             return None
         return min(self._last.get(ev, 0.0) + self.cooldown_s for ev in self._pending)
 
-    def due_digests(self, now: float) -> list[dict]:
-        """Digests for windows that have ended; each opens the next window."""
+    def due_digests(self, now: float, all_pending: bool = False) -> list[dict]:
+        """Digests for windows that have ended; each opens the next window.
+        ``all_pending`` closes every window now (the process is leaving)."""
         out = []
         for ev in list(self._pending):
-            if now - self._last.get(ev, 0.0) >= self.cooldown_s:
+            if all_pending or now - self._last.get(ev, 0.0) >= self.cooldown_s:
                 records = self._pending.pop(ev)
                 self._last[ev] = now
                 out.append(digest_record(ev, records, self.cooldown_s, now))
@@ -421,7 +422,13 @@ class Dispatcher:
     """Delivers records to sinks from a background thread.
 
     Delivery never blocks the capture path and never raises: a dead endpoint
-    costs one log line, not frames.
+    costs one log line, not frames. The thread is a daemon and the capture
+    process leaves through os._exit, so nothing waits for it by itself:
+    ``close`` is how what it still holds (queued records, and the digests
+    the cooldowns are holding back) reaches the phone before the process
+    ends. A mesh-wide outage is exactly what the digest is for, and it is
+    also what puts the recorder into the watchdog restart loop that would
+    otherwise discard it.
     """
 
     def __init__(self, sinks: list[Sink], log: Callable[[str], None]):
@@ -429,11 +436,23 @@ class Dispatcher:
         self.log = log
         self._queue: list[dict] = []
         self._cv = threading.Condition()
+        self._closing = False
         self._thread: Optional[threading.Thread] = None
         if sinks:
             self._thread = threading.Thread(target=self._run, daemon=True,
                                             name="alert-dispatch")
             self._thread.start()
+
+    def close(self, timeout: float = 15.0) -> None:
+        """Deliver everything queued, send every held-back digest now, and
+        stop the thread; returns after ``timeout`` at the latest (a sink
+        that hangs must not keep the process from exiting)."""
+        if self._thread is None:
+            return
+        with self._cv:
+            self._closing = True
+            self._cv.notify()
+        self._thread.join(timeout)
 
     def offer(self, record: dict) -> None:
         if not self.sinks:
@@ -464,20 +483,23 @@ class Dispatcher:
     def _run(self) -> None:
         while True:
             with self._cv:
-                while not self._queue:
+                while not self._queue and not self._closing:
                     due = [t for t in (s.next_digest_at() for s in self.sinks) if t is not None]
                     timeout = max(0.05, min(due) - time.time()) if due else None
                     if not self._cv.wait(timeout=timeout):
                         break   # a cooldown window ended: send its digest
                 item = self._queue.pop(0) if self._queue else None
+                last = self._closing and not self._queue
                 now = time.time()
-                digests = [(s, rec) for s in self.sinks for rec in s.due_digests(now)]
+                digests = [(s, rec) for s in self.sinks for rec in s.due_digests(now, all_pending=last)]
             sends = [(s, item["record"]) for s in item["sinks"]] if item else []
             for s, record in sends + digests:
                 try:
                     s.send(record)
                 except Exception as exc:
                     self.log(f"alert sink '{s.name}' failed: {_describe_error(exc)}")
+            if last:
+                return
 
 
 def _describe_error(exc: Exception) -> str:

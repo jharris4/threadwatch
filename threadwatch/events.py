@@ -74,6 +74,11 @@ class EventLog:
     def sinks(self) -> list[Sink]:
         return self.dispatcher.sinks
 
+    def close(self, timeout: float = 15.0) -> None:
+        """Deliver what the sinks still hold (see Dispatcher.close); the
+        capture daemon calls this on every way out."""
+        self.dispatcher.close(timeout)
+
     def path_for(self, ts: float) -> Path:
         return self.dir / f"{day_of(ts)}.jsonl"
 

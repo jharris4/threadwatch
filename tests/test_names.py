@@ -187,6 +187,64 @@ class LearnedBorderRoutersTest(unittest.TestCase):
 
 
 
+class UnreadableStateTest(unittest.TestCase):
+    """A last-seen.json that does not parse is a week of history: say so
+    and keep it, rather than silently starting over."""
+
+    def _load(self, path):
+        import contextlib
+        import io
+        from threadwatch import names as names_mod
+        names_mod._warned_unreadable.clear()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            seen = LastSeen(path)
+        return seen, out.getvalue()
+
+    def test_a_broken_table_is_announced_and_kept_aside_on_the_first_save(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "last-seen.json"
+            broken = '{"' + AQ + '": {"first_seen": 1, "last_seen": 2, "frames": 3, "ty'   # cut short
+            path.write_text(broken)
+            seen, said = self._load(path)
+            self.assertEqual(seen.table, {})
+            self.assertIn("last-seen.json is unreadable", said)
+            self.assertIn("last-seen.json.corrupt", said)
+            import contextlib
+            import io
+            again = io.StringIO()
+            with contextlib.redirect_stdout(again):
+                LastSeen(path)                                             # the web reads it per request:
+            self.assertEqual(again.getvalue(), "")                         # said once per process
+            seen.touch(TV1, 10.0, 1)
+            seen.save()
+            self.assertEqual(json.loads(path.read_text())[TV1]["frames"], 1)
+            self.assertEqual((Path(d) / "last-seen.json.corrupt").read_text(), broken)
+            seen.touch(TV1, 11.0, 1)
+            seen.save()                                                    # a plain save from then on
+            self.assertEqual(sorted(p.name for p in Path(d).iterdir()), ["last-seen.json", "last-seen.json.corrupt"])
+            # A later corruption is kept as well, never over the first.
+            path.write_text("[]")                                          # a list is not a table either
+            seen2, said = self._load(path)
+            self.assertIn("expected an object", said)
+            seen2.save()
+            kept = sorted(p.name for p in Path(d).iterdir() if p.name.startswith("last-seen.json.corrupt"))
+            self.assertEqual(len(kept), 2)
+            self.assertEqual((Path(d) / "last-seen.json.corrupt").read_text(), broken)
+
+    def test_a_healthy_or_absent_table_says_nothing_and_keeps_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "last-seen.json"
+            seen, said = self._load(path)
+            self.assertEqual((seen.table, said), ({}, ""))
+            seen.touch(TV1, 10.0, 1)
+            seen.save()
+            seen, said = self._load(path)
+            self.assertEqual((seen.table[TV1]["frames"], said), (1, ""))
+            seen.save()
+            self.assertEqual([p.name for p in Path(d).iterdir()], ["last-seen.json"])
+
+
 class MalformedInventoryTest(unittest.TestCase):
     """One bad hand-edit must not stop capture or 500 every review page."""
 

@@ -176,19 +176,38 @@ class DeviceNames:
         raise ValueError(f"{target!r} is neither a 16-hex-char address nor a known device name")
 
 
+_warned_unreadable: set = set()     # state files already complained about, once per process
+
+
 class LastSeen:
     """Tracks when each source address (extended, 16-hex-char) last transmitted."""
 
     def __init__(self, state_path: Optional[Path]):
         """``state_path`` None: an in-memory table that is never saved
-        (replay must not touch the live recorder's state)."""
+        (replay must not touch the live recorder's state).
+
+        A file that does not parse is a week of first_seen, frames and
+        announced silences, and the only record of which devices died
+        while the recorder was down. Starting from an empty table is the
+        only way to keep recording, but it must not look like a first
+        run: the recorder says so, and the first save moves the broken
+        file aside as <name>.corrupt instead of writing over it."""
         self.state_path = state_path
         self.table: dict[str, dict] = {}
+        self.unreadable: Optional[Exception] = None
         if state_path is not None and state_path.exists():
             try:
-                self.table = json.loads(state_path.read_text())
-            except (json.JSONDecodeError, OSError):
-                self.table = {}
+                table = json.loads(state_path.read_text())
+                if not isinstance(table, dict):
+                    raise ValueError(f"expected an object, got {type(table).__name__}")
+                self.table = table
+            except (ValueError, OSError) as exc:
+                self.unreadable = exc
+                if state_path not in _warned_unreadable:
+                    _warned_unreadable.add(state_path)
+                    print(f"[threadwatch] {state_path.name} is unreadable ({exc}): starting from an empty "
+                          f"table, so nothing is known about the devices until they are heard again; the "
+                          f"recorder keeps the file as {state_path.name}.corrupt when it next saves", flush=True)
         self._dirty = False
         self._last_save = 0.0
 
@@ -221,11 +240,29 @@ class LastSeen:
         if self.state_path is None:
             self._dirty = False
             return
+        if self.unreadable is not None:
+            self._keep_aside()
         tmp = self.state_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(self.table))
         tmp.replace(self.state_path)
         self._dirty = False
         self._last_save = time.time()
+
+    def _keep_aside(self) -> None:
+        """Move the file that would not parse out of the way of the first
+        save, never over an earlier one kept the same way."""
+        self.unreadable = None
+        if not self.state_path.exists():
+            return
+        kept = self.state_path.with_name(self.state_path.name + ".corrupt")
+        if kept.exists():
+            kept = kept.with_name(f"{kept.name}-{int(time.time())}")
+        try:
+            self.state_path.replace(kept)
+        except OSError as exc:
+            print(f"[threadwatch] could not keep {self.state_path.name} aside as {kept.name}: {exc}", flush=True)
+            return
+        print(f"[threadwatch] unreadable {self.state_path.name} kept as {kept.name}", flush=True)
 
     def report(self, names: DeviceNames, quiet_after_s: float, now: Optional[float] = None,
                min_rssi_dbm: float = -82.0) -> dict:

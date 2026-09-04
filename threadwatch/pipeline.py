@@ -103,7 +103,16 @@ class Pipeline:
         self.detector = Detector(cfg.detector)
         self.decryptor = decryptor
         self.devices: dict[str, DeviceStats] = {}
+        # Frames heard per source PAN. The one with the most is ours: it
+        # decides which PANs are foreign and whose silences count. Seeded
+        # from the table so a week of history outweighs a start-up lull in
+        # which a neighbour's mesh happens to talk first.
         self.own_pans: dict[int, int] = {}
+        for row in self.seen.table.values():
+            if row.get("pan") is not None:
+                self.own_pans[row["pan"]] = self.own_pans.get(row["pan"], 0) + int(row.get("frames") or 0)
+        self._foreign_reported: set[int] = set()
+        self._last_src_by_pan: dict[int, Optional[str]] = {}
         self.partition: Optional[tuple] = None
         self._crypto_mark = (0, 0)          # (decrypted, failed) when decryption last worked
         self._stale_evt = 0.0
@@ -370,16 +379,24 @@ class Pipeline:
 
         # Foreign PAN: a source PAN that is not the dominant one, sighted
         # repeatedly (single hits are usually dissection edge cases - verify
-        # candidates in Wireshark with: wpan.src_pan != <dominant>).
+        # candidates in Wireshark with: wpan.src_pan != <dominant>). Once
+        # per PAN, and only against a dominant that strictly leads it: a
+        # tie (a neighbour's three frames before ours at start-up) flags
+        # nobody, so our own PAN is never the one reported, and the
+        # neighbour's is reported as soon as ours pulls ahead.
         if f.src_pan is not None:
             self.own_pans[f.src_pan] = self.own_pans.get(f.src_pan, 0) + 1
+            self._last_src_by_pan[f.src_pan] = f.src
             if len(self.own_pans) > 1:
-                dominant = max(self.own_pans, key=self.own_pans.get)
-                if f.src_pan != dominant and self.own_pans[f.src_pan] == 3:
-                    self.events.emit("possible_foreign_pan", "notice", ts,
-                                     pan=f"0x{f.src_pan:04x}", src=f.src,
-                                     dominant_pan=f"0x{dominant:04x}",
-                                     note="repeated foreign-PAN sightings; verify in Wireshark")
+                dominant = self.dominant_pan()
+                lead = self.own_pans[dominant]
+                for pan, n in self.own_pans.items():
+                    if pan != dominant and 3 <= n < lead and pan not in self._foreign_reported:
+                        self._foreign_reported.add(pan)
+                        self.events.emit("possible_foreign_pan", "notice", ts,
+                                         pan=f"0x{pan:04x}", src=self._last_src_by_pan.get(pan),
+                                         dominant_pan=f"0x{dominant:04x}",
+                                         note="repeated foreign-PAN sightings; verify in Wireshark")
 
         # Retransmission-rate window (duplicate src+seq within 2 s).
         if self._win_start == 0.0:

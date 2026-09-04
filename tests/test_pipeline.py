@@ -178,6 +178,52 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual(self._quiet(pipe), [SENSOR])
         self.assertEqual(pipe.seen.table[STRANGER]["pan"], OTHER_PAN)
 
+    @staticmethod
+    def _foreign(pipe):
+        return [(r["pan"], r["dominant_pan"], r["src"]) for r in pipe.events.records
+                if r["event"] == "possible_foreign_pan"]
+
+    def test_our_own_pan_is_never_the_foreign_one(self):
+        # Start during a lull: a neighbour's mesh lands three frames first.
+        # When ours reaches three the tie must flag nobody; once ours leads,
+        # the neighbour's PAN is the one reported, exactly once.
+        pipe = self._pipe()
+        t0 = 1_700_000_000.0
+        for i in range(3):
+            pipe.ingest(frame(t0 + i, STRANGER, pan=OTHER_PAN))
+        for i in range(400):
+            pipe.ingest(frame(t0 + 10 + i, ROUTER))
+        for i in range(50):
+            pipe.ingest(frame(t0 + 500 + i, STRANGER, pan=OTHER_PAN))
+        self.assertEqual(self._foreign(pipe), [(f"0x{OTHER_PAN:04x}", f"0x{OWN_PAN:04x}", STRANGER)])
+        self.assertEqual(pipe.dominant_pan(), OWN_PAN)
+
+    def test_a_foreign_pan_is_reported_at_its_third_sighting(self):
+        pipe = self._pipe()
+        t0 = 1_700_000_000.0
+        for i in range(10):
+            pipe.ingest(frame(t0 + i, ROUTER))
+        for i in range(5):
+            pipe.ingest(frame(t0 + 20 + i, STRANGER, pan=OTHER_PAN))
+            if i < 2:
+                self.assertEqual(self._foreign(pipe), [])
+        self.assertEqual(self._foreign(pipe), [(f"0x{OTHER_PAN:04x}", f"0x{OWN_PAN:04x}", STRANGER)])
+
+    def test_a_weeks_history_outweighs_a_neighbour_talking_first_after_a_restart(self):
+        pipe = self._pipe()
+        t0 = time.time() - 60
+        for i in range(100):
+            pipe.ingest(frame(t0 + i * 0.1, ROUTER))
+        pipe.seen.save()
+        pipe2 = self._pipe()                                   # a restart into a lull
+        self.assertEqual(pipe2.dominant_pan(), OWN_PAN)        # known before any frame
+        for i in range(3):
+            pipe2.ingest(frame(t0 + 30 + i, STRANGER, pan=OTHER_PAN))
+        self.assertEqual(self._foreign(pipe2), [(f"0x{OTHER_PAN:04x}", f"0x{OWN_PAN:04x}", STRANGER)])
+        for i in range(400):
+            pipe2.ingest(frame(t0 + 40 + i * 0.05, ROUTER))
+        self.assertEqual(len(self._foreign(pipe2)), 1)         # ours never flagged, theirs not repeated
+
     def test_restart_announces_a_silence_nobody_reported(self):
         # The recorder heard the mesh right up to a restart (a deploy, a
         # crash) that came between the router crossing its window and the

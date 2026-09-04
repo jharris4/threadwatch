@@ -111,7 +111,10 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
     import time as _t
 
     def hour_of(ts):
-        return _t.strftime("%m-%d %Hh", _t.localtime(ts))
+        # The local wall-clock hour as (year, month, day, hour): sorts in
+        # time order across a year boundary, where the printed label does
+        # not ("01-01 00h" < "12-31 23h").
+        return tuple(_t.localtime(ts)[:4])
 
     def inspect(f, h):
         """MLE visibility for one of our data frames (credentials only)."""
@@ -180,7 +183,11 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
     print(f"first seen: {_t.strftime('%Y-%m-%d %H:%M:%S', _t.localtime(first_ts))}")
     print(f"last seen:  {_t.strftime('%Y-%m-%d %H:%M:%S', _t.localtime(last_ts))}"
           f"  ({round((_t.time() - last_ts) / 60, 1)} min ago)")
-    print(f"\n{'hour':12s} {'frames':>6s} {'polls':>6s} {'tx':>5s} {'acked':>6s} {'rssi med':>9s}  mle")
+    # The year is shown only when the table spans more than one.
+    years = {k[0] for k in per_hour}
+    labels = {k: (f"{k[0]}-" if len(years) > 1 else "") + f"{k[1]:02d}-{k[2]:02d} {k[3]:02d}h" for k in per_hour}
+    width = max([12, *(len(v) for v in labels.values())])
+    print(f"\n{'hour':{width}s} {'frames':>6s} {'polls':>6s} {'tx':>5s} {'acked':>6s} {'rssi med':>9s}  mle")
     for hkey in sorted(per_hour):
         h = per_hour[hkey]
         if h["frames"] == 0 and h["acked"] == 0:
@@ -188,7 +195,7 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
         rssi = sorted(h["rssi"])
         med = f"{rssi[len(rssi)//2]:.0f}" if rssi else "-"
         mle = ", ".join(f"{k}x{v}" for k, v in h["mle"].items()) if h["mle"] else ""
-        print(f"{hkey:12s} {h['frames']:6d} {h['polls']:6d} {h['tx']:5d} {h['acked']:6d} {med:>9s}  {mle}")
+        print(f"{labels[hkey]:{width}s} {h['frames']:6d} {h['polls']:6d} {h['tx']:5d} {h['acked']:6d} {med:>9s}  {mle}")
     if gaps:
         print("\nsilences (>30 min):")
         for a, b in gaps[-10:]:

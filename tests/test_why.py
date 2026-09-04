@@ -63,3 +63,54 @@ class EventHistoryTest(unittest.TestCase):
     def test_empty_without_an_event_log(self):
         from threadwatch.why import event_history
         self.assertEqual(event_history(Path("/nonexistent/events"), ["b62c32bf669272db"], NOW), [])
+
+
+class HourTableTest(unittest.TestCase):
+    """The per-hour table is in time order, not label order."""
+
+    DEV = "26976e7f7d20964a"
+
+    def _table(self, stamps):
+        import contextlib
+        import io
+        import struct
+        import tempfile
+        from threadwatch.config import Config
+        from threadwatch.pcap import DLT_NOFCS, Frame, PcapWriter
+        from threadwatch.why import run_why
+        fcf = 1 | 0x0040 | (2 << 10) | (1 << 12) | (3 << 14)        # data, pan compressed, short dst, ext src
+
+        def psdu(seq):
+            return struct.pack("<HBH", fcf, seq, 0x4e21) + b"\x00\x00" + bytes.fromhex(self.DEV)[::-1] + b"\x7f\x33"
+
+        with tempfile.TemporaryDirectory() as d:
+            cred = Path(d) / "credentials.toml"
+            cred.write_text('[credentials]\nnetwork_key = "00112233445566778899aabbccddeeff"\n')
+            cfg = Config(data_dir=Path(d) / "data", credentials_path=cred)
+            pcap = Path(d) / "window.pcap"
+            with open(pcap, "wb") as fh:
+                w = PcapWriter(fh, DLT_NOFCS)
+                for i, stamp in enumerate(stamps):
+                    ts = time.mktime(time.strptime(stamp, "%Y-%m-%d %H:%M"))
+                    w.write(Frame(ts=ts, raw=psdu(i), psdu=psdu(i), rssi=None, channel=None, lqi=None))
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                run_why(cfg, self.DEV, pcap)
+        self.assertIn("credentials: loaded", err.getvalue())
+        lines = out.getvalue().splitlines()
+        start = next(i for i, l in enumerate(lines) if l.startswith("hour"))
+        rows = []
+        for line in lines[start + 1:]:                        # the table ends at the first blank line
+            if not line:
+                break
+            rows.append(line.split())
+        return rows
+
+    def test_rows_stay_in_time_order_across_a_year_boundary(self):
+        rows = self._table(["2025-12-31 23:10", "2025-12-31 23:40", "2026-01-01 00:20"])
+        self.assertEqual([(r[0], r[1], r[2]) for r in rows],
+                         [("2025-12-31", "23h", "2"), ("2026-01-01", "00h", "1")])
+
+    def test_a_single_year_keeps_the_short_label(self):
+        rows = self._table(["2026-09-03 08:10", "2026-09-03 09:40"])
+        self.assertEqual([(r[0], r[1], r[2]) for r in rows], [("09-03", "08h", "1"), ("09-03", "09h", "1")])

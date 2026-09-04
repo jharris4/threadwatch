@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 # Flash the nRF52840 Dongle with the nRF Sniffer for 802.15.4 firmware,
-# on Linux (incl. Raspberry Pi) or macOS, without nRF Connect for Desktop.
+# from an x86_64 Linux box or an Intel Mac, without nRF Connect for Desktop.
 #
 # Uses the pre-built DFU package in firmware/sniffer-dfu.zip (provenance in
-# firmware/README.md). Requires: python3 (>=3.8), python3-venv, a USB port.
+# firmware/README.md). Requires a USB port and, for Nordic's pip nrfutil
+# 6.1.7 (the last release with 'dfu usb-serial'): Python 3.7-3.10 with venv,
+# on an x86_64 host (Linux, an Intel Mac, or an Apple Silicon Mac under
+# Rosetta), because its pc-ble-driver-py dependency ships wheels for
+# nothing else. A 64-bit Raspberry Pi or a native Apple Silicon Python
+# cannot run it; SETUP.md lists the alternatives. The dongle keeps the
+# firmware, so any one machine that qualifies does the job once.
 #
 # The dongle must be in its Open DFU bootloader to accept the flash:
 # press the small SIDEWAYS reset button (near the ID sticker, aimed at the
@@ -20,9 +26,39 @@ if [ ! -f "$PKG" ]; then
   echo "missing $PKG" >&2; exit 1
 fi
 
+find_python() {
+  # The newest interpreter nrfutil 6.1.7 accepts (requires_python >=3.7,<3.11).
+  for py in python3.10 python3.9 python3.8 python3.7 python3; do
+    if command -v "$py" >/dev/null 2>&1 \
+       && "$py" -c 'import sys; sys.exit(0 if (3, 7) <= sys.version_info[:2] <= (3, 10) else 1)' 2>/dev/null; then
+      echo "$py"; return
+    fi
+  done
+}
+
 if [ ! -x "$VENV/bin/nrfutil" ]; then
-  echo "==> Creating flashing venv (one-time; installs pip nrfutil 6.x)..."
-  python3 -m venv "$VENV"
+  PY="$(find_python || true)"
+  ARCH="$(uname -m)"
+  if [ -z "$PY" ] || { [ "$ARCH" != "x86_64" ] && [ "$ARCH" != "amd64" ]; }; then
+    cat >&2 <<EOM
+This flasher uses Nordic's pip nrfutil 6.1.7, which installs only under
+Python 3.7-3.10 on an x86_64 host (Linux, an Intel Mac, or an Apple Silicon
+Mac under Rosetta). This host: $ARCH, $(python3 --version 2>&1)${PY:+, usable interpreter: $PY}.
+
+The dongle is flashed once and keeps the firmware, so any one of these works:
+  - run bin/flash-dongle.sh on a machine that qualifies (an x86_64 Linux box,
+    an Intel Mac, or on Apple Silicon: arch -x86_64 zsh, then a Rosetta
+    Homebrew python@3.10 on PATH);
+  - flash firmware/sniffer-dfu.zip with Nordic's tools: the Programmer app in
+    nRF Connect for Desktop (any OS), or the current nrfutil binary
+    (nrfutil install device; nrfutil device program --firmware
+    firmware/sniffer-dfu.zip --traits nordicDfu).
+Either way: sideways reset button first, unplug and replug afterwards (below).
+EOM
+    exit 1
+  fi
+  echo "==> Creating flashing venv with $PY (one-time; installs pip nrfutil 6.x)..."
+  "$PY" -m venv "$VENV"
   "$VENV/bin/pip" install --quiet --upgrade pip
   # nrfutil 6.1.7 is the last pip-installable version with 'dfu usb-serial'.
   # It needs an older protobuf; pin both.

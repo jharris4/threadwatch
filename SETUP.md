@@ -1,15 +1,29 @@
 # Dongle setup (nRF52840 Dongle / PCA10059)
 
 One-time: flash the dongle with Nordic's **nRF Sniffer for 802.15.4**
-firmware. Works on Linux (incl. the Pi itself) and macOS — no nRF
-Connect for Desktop needed; the firmware and a pre-built DFU package
-ship in `firmware/` (provenance in `firmware/README.md`).
+firmware. The firmware and a pre-built DFU package ship in `firmware/`
+(provenance in `firmware/README.md`). The dongle keeps the firmware
+across power cycles, so this is done once, from whichever machine is
+convenient, and need not be the recorder host.
 
 ## Flash
 
 ```bash
 bin/flash-dongle.sh
 ```
+
+The script needs **Python 3.7–3.10 on an x86_64 host**: Linux, an Intel
+Mac, or an Apple Silicon Mac under Rosetta (`arch -x86_64 zsh`, with a
+Rosetta Homebrew `python@3.10` on PATH). That is what Nordic's pip
+`nrfutil` 6.1.7, the last release able to flash over USB serial,
+installs under; its Bluetooth driver dependency has no builds for newer
+Pythons or ARM, so a 64-bit Raspberry Pi or a native Apple Silicon
+Python cannot run it, and the script says so rather than failing
+half-way. Without such a machine, flash `firmware/sniffer-dfu.zip` with
+Nordic's own tools: the Programmer app in nRF Connect for Desktop (any
+OS), or the current `nrfutil` binary (`nrfutil install device`, then
+`nrfutil device program --firmware firmware/sniffer-dfu.zip --traits
+nordicDfu`). The physical steps are the same either way.
 
 The script waits for the bootloader, flashes, and tells you what to do.
 The physical steps it will ask of you:

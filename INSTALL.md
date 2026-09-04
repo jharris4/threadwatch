@@ -43,8 +43,9 @@ units with the one-liner in the header of `systemd/threadwatch.service`.
 ## 3. Dongle
 
 Flash it with the sniffer firmware if not already done: `SETUP.md`
-(`bin/flash-dongle.sh` runs on the recorder host itself; no other computer
-needed). Plug it in; `lsusb` should show *Nordic Semiconductor* and
+(`bin/flash-dongle.sh` needs an x86_64 host with Python 3.7–3.10, so on a
+64-bit Pi flash from another machine or with Nordic's Programmer app; the
+dongle keeps the firmware). Plug it in; `lsusb` should show *Nordic Semiconductor* and
 `ls /dev/ttyACM*` a serial port. Auto-detection finds it by USB id;
 `serial_port` in config.toml pins one if you have several.
 
@@ -109,7 +110,8 @@ bin/threadwatch replay f.pcap   # run detection over any pcap
 Everything runs the same; you supply the supervisor. `bin/threadwatch
 capture` and `bin/threadwatch web` in two terminals is enough for desk
 use; on macOS a launchd job keeps them up. `doctor` reports "no systemd
-here (not checked)" and moves on. `bin/flash-dongle.sh` works on macOS.
+here (not checked)" and moves on. `bin/flash-dongle.sh` works on an Intel
+Mac, or on Apple Silicon under Rosetta (`SETUP.md`).
 
 ## Appendix: a Raspberry Pi from scratch
 

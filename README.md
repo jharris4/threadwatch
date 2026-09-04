@@ -81,8 +81,9 @@ question: *why did this device go offline?*
 
 ## Quick start
 
-1. `SETUP.md` — flash the dongle with the sniffer firmware (any OS, no
-   Nordic desktop apps needed).
+1. `SETUP.md` — flash the dongle with the sniffer firmware, once, from
+   any x86_64 machine with Python 3.7–3.10 (or with Nordic's Programmer
+   app anywhere).
 2. `INSTALL.md` — set up the recorder host: clone, one setup script,
    systemd units; Docker and Raspberry-Pi-from-scratch variants included.
 3. `cp config/config.example.toml config/config.toml` and set your

@@ -391,6 +391,26 @@ class RunImportTest(unittest.TestCase):
         self.assertIn("nothing to change", text)
         self.assertIn("already holds it", text)
 
+    def test_a_run_with_only_the_duplicate_name_reminder_leaves_the_file_alone(self):
+        import threadwatch.ha as ha_mod
+        ha_mod.thread_devices = lambda ha, log=None: [
+            {"name": "Contact Sensor", "model": "Eve Door", "addr": "1111111111111111"},
+            {"name": "Contact Sensor", "model": "Eve Door", "addr": "2222222222222222"}]
+        run_import(self.cfg, self.d / "devices.json", write=True, out=lambda _: None)
+        path = self.d / "devices.json"
+        before, before_mtime = path.read_text(), path.stat().st_mtime_ns
+        # HA still shares the name -- the reminder repeats, since the fix is
+        # in HA -- but no entry changes, so nothing is rewritten.
+        lines = []
+        run_import(self.cfg, path, write=True, out=lines.append)
+        text = "\n".join(lines)
+        self.assertIn("names 2 devices in Home Assistant", text)
+        self.assertIn("nothing to write: no entry changes", text)
+        self.assertNotIn("wrote", text)
+        self.assertNotIn("restart it", text)
+        self.assertEqual(path.read_text(), before)
+        self.assertEqual(path.stat().st_mtime_ns, before_mtime)
+
     def test_sources_can_be_skipped(self):
         lines = []
         run_import(self.cfg, self.d / "devices.json", use_ha=False, out=lines.append)

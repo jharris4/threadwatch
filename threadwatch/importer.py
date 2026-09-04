@@ -199,13 +199,20 @@ def run_import(cfg, inventory_path: Path, *, write: bool = False, url: Optional[
         out(f"{inventory_path.name}: {len(existing)} entries" + (":" if changes else ", nothing to change"))
         for line in changes:
             out(f"  {line}")
-        if changes and write:
-            inventory_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = inventory_path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(planned, indent=2) + "\n")
-            tmp.replace(inventory_path)
-            out(f"  wrote {inventory_path} ({len(planned)} entries)")
-            wrote = True
+        # Not every line above is an edit: a name two HA devices share is
+        # reported on every run, because the fix for it is in HA. Write only
+        # when the entries themselves differ, so a run that has nothing to
+        # say but that reminder leaves the file, and its mtime, alone.
+        if planned != existing:
+            if write:
+                inventory_path.parent.mkdir(parents=True, exist_ok=True)
+                tmp = inventory_path.with_suffix(".tmp")
+                tmp.write_text(json.dumps(planned, indent=2) + "\n")
+                tmp.replace(inventory_path)
+                out(f"  wrote {inventory_path} ({len(planned)} entries)")
+                wrote = True
+        elif changes:
+            out("  (nothing to write: no entry changes)")
 
     if not write:
         out("(nothing written: add --write to apply)")

@@ -17,7 +17,7 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 DEST_DIR="threadwatch"
 
 rsync -a --delete \
-  --exclude 'data/' --exclude '.venv-flash/' \
+  --exclude 'data/' --exclude '.venv/' --exclude '.venv-flash/' \
   --exclude '__pycache__/' --exclude '*.pyc' --exclude '.git/' \
   "$REPO/" "$TARGET:$DEST_DIR/"
 ssh "$TARGET" "chmod 400 $DEST_DIR/config/credentials.toml $DEST_DIR/config/alerts.env 2>/dev/null || true"

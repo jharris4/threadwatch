@@ -8,3 +8,4 @@ config/credentials.toml
 config/alerts.env
 .DS_Store
 
+.venv/

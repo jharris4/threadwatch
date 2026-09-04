@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
+# A repo-local venv (bin/setup-host.sh creates one where no distro packages
+# exist; `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`
+# by hand) wins over the system interpreter.
+PY="$REPO/.venv/bin/python3"; [ -x "$PY" ] || PY=python3
 CFG="$REPO/config/config.toml"
 if [ -f "$CFG" ]; then
-  exec python3 -m threadwatch --config "$CFG" "$@"
+  exec "$PY" -m threadwatch --config "$CFG" "$@"
 else
-  exec python3 -m threadwatch "$@"
+  exec "$PY" -m threadwatch "$@"
 fi

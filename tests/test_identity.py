@@ -322,3 +322,47 @@ class MleThroughThePipelineTest(unittest.TestCase):
             srp = lowpan_udp(49152, 53, b"\x00\x06\x00\x00\x0dthreadwatch-1\x05local\x00")
             pipe.ingest(parse_frame(1_700_000_000.0, secured_ext_frame(SED, 4, srp), 195))
             self.assertEqual(pipe.observed_names, {SED: {"threadwatch-1.local": 1}})
+
+
+@unittest.skipIf(AESCCM is None, "cryptography not installed")
+class ThreadKeyScheduleTest(unittest.TestCase):
+    """`derive_keys` against a frame decrypted by something that is not us.
+
+    Every other crypto test here is a round trip through `derive_keys`, so
+    it would hold just as well with the two halves of the hash swapped - and
+    a recorder that swapped them decrypts nothing on a real mesh.
+
+    Provenance of the vector below: the frame was built under the public
+    OpenThread default network key 00112233445566778899aabbccddeeff (never
+    the network's own key) and handed to Wireshark 4.6.5, configured with
+    only that network key as a "Thread hash" entry in the 802.15.4 key table
+    and thr_seq_ctr 00000000, so Wireshark derived the MAC key with its own
+    implementation of the Thread key schedule. It reported exactly the
+    plaintext asserted here. The same frame with the halves swapped it
+    rejected: "No encryption key set - can't decrypt". Both implementations
+    that publish the split agree - Wireshark's packet-thread.c copies "upper
+    hashed bytes to the MAC key" and the lower to the MLE key, and
+    OpenThread's key_manager.hpp lays HashKeys out as {Mle::Key; Mac::Key}.
+    """
+
+    NETWORK_KEY = bytes.fromhex("00112233445566778899aabbccddeeff")
+    SRC_EXT = "0a1b2c3d4e5f6071"
+    # 802.15.4 data frame, ENC-MIC-32, key id mode 1, key index 1, sequence 0
+    FRAME = bytes.fromhex("49d807cefa000071605f4e3d2c1b0a0d07000000"
+                          "01978d2892f9e12ac96a5e136fbda65d9b")
+    # what Wireshark printed as "Decrypted IEEE 802.15.4 payload (12 bytes)"
+    PLAINTEXT = bytes.fromhex("7e3b01f04d4c4d4c0000ff0f")
+
+    def test_the_frame_wireshark_decrypted_decrypts_here_too(self):
+        d = Decryptor(network_key=self.NETWORK_KEY)
+        self.assertEqual(d.decrypt_frame(self.FRAME, self.SRC_EXT, None), self.PLAINTEXT)
+        self.assertEqual(d.key_sequence, 0)
+
+    def test_the_mle_half_is_not_the_mac_half(self):
+        mle_key, mac_key = derive_keys(self.NETWORK_KEY, 0)
+        self.assertNotEqual(mle_key, mac_key)
+        # The frame above is authenticated under the MAC key. Reading the
+        # halves the other way round fails the MIC, exactly as Wireshark did.
+        swapped = Decryptor(network_key=self.NETWORK_KEY)
+        swapped._keys_by_index[1] = (None, [(0, mac_key, mle_key)])
+        self.assertIsNone(swapped.decrypt_frame(self.FRAME, self.SRC_EXT, None))

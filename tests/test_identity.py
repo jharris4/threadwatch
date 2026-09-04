@@ -204,3 +204,121 @@ class ResolveShortTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def secured_ext_frame(src_ext: str, counter: int, payload: bytes, sequence: int = 0,
+                      dst_short: str = "0000") -> bytes:
+    """The same Thread security, from an extended source address: how a device
+    talks while it is attaching, and the only form whose IPv6 source the
+    6LoWPAN layer can reconstruct for MLE."""
+    fcf = 1 | 0x0008 | 0x0040 | (2 << 10) | (1 << 12) | (3 << 14)
+    header = struct.pack("<HBH", fcf, counter & 0xFF, PAN) + bytes.fromhex(dst_short)[::-1] \
+        + bytes.fromhex(src_ext)[::-1]
+    aux = bytes([0x0D]) + struct.pack("<L", counter) + bytes([sequence % 127 + 1])
+    open_part = header + aux
+    _mle, mac_key = derive_keys(KEY, sequence)
+    nonce = bytes.fromhex(src_ext) + struct.pack(">L", counter) + bytes([5])
+    return open_part + AESCCM(mac_key, tag_length=4).encrypt(nonce, payload, open_part) + b"\x00\x00"
+
+
+def lowpan_udp(sport: int, dport: int, payload: bytes) -> bytes:
+    """A 6LoWPAN IPHC + UDP-NHC packet in the form Thread puts on air: traffic
+    class and flow label elided, hop limit 64, source address elided (derived
+    from the MAC extended source) and destination the 8-bit multicast form."""
+    iphc = (0b011 << 13) | (3 << 11) | (1 << 10) | (2 << 8) | (3 << 4) | (1 << 3) | 3
+    return (struct.pack(">H", iphc) + b"\x01"        # ff02::1
+            + b"\xf0" + struct.pack(">HH", sport, dport) + b"\x00\x00" + payload)
+
+
+LINK_LOCAL = bytes.fromhex("fe80000000000000")
+ALL_NODES = bytes.fromhex("ff020000000000000000000000000001")
+
+
+@unittest.skipIf(AESCCM is None, "cryptography not installed")
+class SixLowpanTest(unittest.TestCase):
+    """`udp_ports` is the only way into the MLE layer: no rejoin events, no
+    partition detection and no leader without it."""
+
+    def test_elided_addresses_are_reconstructed_from_the_mac_header(self):
+        r = Decryptor.udp_ports(lowpan_udp(19788, 19788, b"\xff\x09"), mac_src_ext=SED)
+        sport, dport, payload, src_ip, dst_ip = r
+        self.assertEqual((sport, dport, payload), (19788, 19788, b"\xff\x09"))
+        self.assertEqual(src_ip, LINK_LOCAL + Decryptor._iid_from_ext(SED))
+        self.assertEqual(dst_ip, ALL_NODES)
+
+    def test_the_iid_flips_the_universal_local_bit(self):
+        self.assertEqual(Decryptor._iid_from_ext(SED).hex(), "009a47566a00b543")
+        self.assertEqual(Decryptor._iid_from_ext("009a47566a00b543").hex(), SED)
+
+    def test_a_short_destination_becomes_its_link_local_address(self):
+        iphc = (0b011 << 13) | (3 << 11) | (1 << 10) | (2 << 8) | (3 << 4) | 3   # unicast, dst elided
+        pkt = struct.pack(">H", iphc) + b"\xf0" + struct.pack(">HH", 19788, 19788) + b"\x00\x00" + b"\xff\x09"
+        r = Decryptor.udp_ports(pkt, mac_src_ext=SED, mac_dst_short="c829")
+        self.assertEqual(r[4], LINK_LOCAL + bytes.fromhex("000000fffe00c829"))
+
+    def test_later_fragments_and_non_iphc_payloads_are_declined(self):
+        self.assertIsNone(Decryptor.udp_ports(b"\xe0\x00\x00\x00" + lowpan_udp(19788, 19788, b"\xff")))
+        self.assertIsNone(Decryptor.udp_ports(b"\x00\x01\x02\x03"))
+        self.assertIsNone(Decryptor.udp_ports(b""))
+
+
+@unittest.skipIf(AESCCM is None, "cryptography not installed")
+class HarvestNamesTest(unittest.TestCase):
+    def test_dns_labels_are_pulled_out_of_a_registration(self):
+        payload = b"\x00\x06\x00\x00" + b"\x0dthreadwatch-1\x05local\x00"
+        self.assertEqual(Decryptor.harvest_names(payload), ["threadwatch-1.local"])
+
+    def test_a_single_label_or_binary_noise_yields_nothing(self):
+        self.assertEqual(Decryptor.harvest_names(b"\x05local\x00"), [])
+        self.assertEqual(Decryptor.harvest_names(bytes(range(0, 32)) * 4), [])
+
+
+@unittest.skipIf(AESCCM is None, "cryptography not installed")
+class MleThroughThePipelineTest(unittest.TestCase):
+    """Frame -> MAC decryption -> 6LoWPAN -> MLE, as the live pipeline runs
+    it: the path that answers "did it try to rejoin?"."""
+
+    def _pipe(self, d):
+        cfg = Config(data_dir=Path(d) / "data")
+        return Pipeline(cfg, NullEventLog(), Decryptor(network_key=KEY), ephemeral=True)
+
+    @staticmethod
+    def _mle_frame(ts, body, counter, sequence=0):
+        src_ip = LINK_LOCAL + Decryptor._iid_from_ext(SED)
+        msg = mle_message(SED, sequence, counter, src_ip, ALL_NODES, body)
+        return parse_frame(ts, secured_ext_frame(SED, counter, lowpan_udp(19788, 19788, msg), sequence), 195)
+
+    @staticmethod
+    def _leader_data(partition_id, router_id):
+        return bytes([11, 8]) + struct.pack(">L", partition_id) + b"\x00\x00\x00" + bytes([router_id])
+
+    def test_rejoin_partition_and_leader_are_learned_from_mle(self):
+        with tempfile.TemporaryDirectory() as d:
+            pipe = self._pipe(d)
+            t = 1_700_000_000.0
+            # An advertisement: partition, leader router id and the sender's RLOC16.
+            pipe.ingest(self._mle_frame(t, b"\x04" + self._leader_data(0x3a2b1c0d, 60)
+                                        + bytes([0, 2]) + bytes.fromhex("c829"), 1))
+            self.assertEqual(pipe.partition_status()["id"], 0x3a2b1c0d)
+            self.assertEqual(pipe.partition_status()["leader_router"], 60)
+            self.assertEqual(pipe.decryptor.short_to_ext["c829"], SED)
+            self.assertEqual(pipe.decryptor.stats["mle_decrypted"], 1)
+            # Then it loses its parent and asks for a new one.
+            pipe.ingest(self._mle_frame(t + 60, b"\x09", 2))
+            ev = [r for r in pipe.events.records if r["event"] == "mle_rejoin_attempt"]
+            self.assertEqual([(e["command"], e["addr"]) for e in ev], [("Parent Request", SED)])
+            self.assertIn("trying to get back", ev[0]["note"])
+            # ...and comes back in a different partition.
+            pipe.ingest(self._mle_frame(t + 120, b"\x04" + self._leader_data(0x51119999, 11), 3))
+            chg = [r for r in pipe.events.records if r["event"] == "partition_or_leader_change"]
+            self.assertEqual(len(chg), 1)
+            self.assertEqual((chg[0]["previous"]["partition"], chg[0]["current"]["partition"]),
+                             (0x3a2b1c0d, 0x51119999))
+            self.assertEqual(pipe.partition_status()["leader_router"], 11)
+
+    def test_a_service_registration_teaches_the_device_a_name(self):
+        with tempfile.TemporaryDirectory() as d:
+            pipe = self._pipe(d)
+            srp = lowpan_udp(49152, 53, b"\x00\x06\x00\x00\x0dthreadwatch-1\x05local\x00")
+            pipe.ingest(parse_frame(1_700_000_000.0, secured_ext_frame(SED, 4, srp), 195))
+            self.assertEqual(pipe.observed_names, {SED: {"threadwatch-1.local": 1}})

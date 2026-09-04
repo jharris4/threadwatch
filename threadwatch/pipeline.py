@@ -700,7 +700,8 @@ class Pipeline:
                 self.partition = cur
         else:
             # Keyed by the extended address: a short address is reassigned
-            # when a parent restarts, and device_summary looks up by ext.
+            # when a parent restarts, so a name filed under one would follow
+            # the address to whichever device inherits it.
             owner = ext or self.decryptor.short_to_ext.get(short or "")
             if owner:
                 for n in Decryptor.harvest_names(payload):
@@ -1039,13 +1040,6 @@ class Pipeline:
                   "silence is more likely reception than failure" if marginal else
                   "no frames heard; if no mle_rejoin_attempt follows, "
                   "suspect device-internal failure rather than RF"))
-
-    def device_summary(self) -> dict:
-        out = {}
-        for addr, stats in self.devices.items():
-            out[addr] = {"name": self.names.name(addr), **stats.as_dict(),
-                         "observed_names": list(self.observed_names.get(addr, {}))[:3]}
-        return out
 
 
 class CredentialsError(RuntimeError):

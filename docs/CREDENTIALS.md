@@ -1,53 +1,44 @@
-# Optional: Thread credentials for decryption-based analysis
+# Thread credentials
 
-threadwatch works fully without the Thread network key — capture, storm
-detection, per-device health, quiet/offline tracking and `why` all run on
-cleartext 802.15.4 MAC headers alone. Providing the key unlocks a deeper
-layer, used only in analysis (`replay`, `why`) and optional live
-enrichment; the ring-buffer capture never needs it.
+threadwatch needs the Thread network key, and the recorder does not start
+without it (`threadwatch doctor` says so; so does `threadwatch capture`).
+Most of what it watches lives behind MAC-layer encryption:
 
-## What the key adds
+- Sleepy end devices poll and talk from their 16-bit short address and
+  only use the extended address while attaching: the 2026-09-02 soak saw
+  22 sleepy devices send ~250k frames in 9 h with zero extended-address
+  frames among them. With the key, the recorder identifies a short address
+  by trying every known extended address as the MAC nonce (a 32-bit MIC
+  check per candidate, rate-limited per short address) and from then on
+  attributes polls, RSSI, quiet/returned and poll starvation to the device.
+- MLE messages are encrypted with a key derived from it: rejoin attempts,
+  the partition and its leader, every router's RLOC16.
+- SRP registrations, which name devices, sit inside 6LoWPAN.
 
-| Capability | Without key | With key |
-| --- | --- | --- |
-| Capture, ring buffer | ✅ | ✅ |
-| Traffic-storm / phase-lock detection | ✅ | ✅ |
-| Per-device RSSI, ACK rate, poll cadence | ✅ | ✅ |
-| Device quiet / returned / offline | routers and REEDs | ✅ all devices, incl. sleepy end devices |
-| Rejoin attempts (Parent/Child ID Request) | infer from beacons | ✅ named, by device |
-| Partition / leader changes | ✗ | ✅ |
-| SRP / DNS-SD auto-naming | ✗ | ✅ (hints) |
-| True packet destinations (inside 6LoWPAN) | next-hop only | ✅ |
-
-Sleepy end devices poll and talk from their 16-bit short address and only
-use the extended address while attaching, so without the key their frames
-cannot be tied to a device: the 2026-09-02 soak saw 22 sleepy devices send
-~250k frames in 9 h with zero extended-address frames among them. With the
-key, the recorder identifies a short address by trying every known
-extended address as the MAC nonce (a 32-bit MIC check per candidate,
-rate-limited per short address) and from then on attributes polls, RSSI
-and quiet/returned events to the device.
-
-Note: even with the Thread key, Matter *application* payloads (e.g. sensor
-readings) stay encrypted — Matter has its own layer above Thread. You get
+Matter *application* payloads (sensor readings, commands) stay encrypted
+even with the key: Matter has its own layer above Thread. You get
 control-plane visibility and message flow, not device data.
 
 ## What the key does NOT expose
 
 The key never leaves your capture host, is never logged, and is not
-written into pcaps (frames are stored exactly as received; decryption is
-applied on read). Frame payloads in the pcaps remain encrypted at rest.
+written into pcaps: frames are stored exactly as received and decrypted
+on read, so payloads at rest remain encrypted. The web pages and the
+event log carry names, addresses and MLE facts, never key material.
 
-## Setup (kept as safe as practical)
+## Setup
 
-Store the key in a **separate, gitignored, read-only** file — never in
-config.toml, never in git. `config/credentials.toml` is gitignored by
-this repo.
+Store the key in a **separate, gitignored, read-only** file, never in
+config.toml and never in git. `config/credentials.toml` is gitignored by
+this repo and is the default path, so nothing in config.toml needs to
+change.
 
 ```bash
-# Find your network key (example, via an OTBR REST endpoint on your LAN):
-#   GET http://<otbr>:8081/node/dataset/active   -> field "networkKey"
-# or from `ot-ctl networkkey` on the border router.
+# Find your network key. Home Assistant with the OTBR add-on: from an SSH
+# session on the HA host,
+#   curl -s http://core-openthread-border-router:8081/node/dataset/active
+# and read "networkKey"; or `ot-ctl networkkey` on any OpenThread border
+# router; or the Thread panel's dataset export.
 
 cat > config/credentials.toml <<'TOML'
 [credentials]
@@ -56,18 +47,27 @@ TOML
 chmod 400 config/credentials.toml
 ```
 
-Then either rely on the default path (`config/credentials.toml` is picked
-up automatically) or point at it explicitly in config.toml:
+`bin/push-to-host.sh` carries the file to the capture host with the rest
+of the local config; `setup-host.sh` locks it to mode 0400 there. To keep
+it somewhere else, point config.toml at it:
 
 ```toml
 [credentials]
-file = "credentials.toml"
+file = "credentials.toml"     # relative to the config directory
 ```
 
-`threadwatch capture` / `replay` will print `credentials: loaded` when
-active, and fall back to header-level analysis (with a note) if the file
-is missing or malformed. Rotate the key on your Thread network and this
-file is stale — update it.
+`threadwatch capture`, `replay` and `why` print `credentials: loaded` when
+the file is good, and stop with the reason when it is missing or
+malformed.
+
+## If the key rotates
+
+Re-commissioning the Thread network gives it a new key. Capture keeps
+running (the ring keeps every frame, encrypted as received), but nothing
+decrypts any more; once a stretch of frames has failed with none
+succeeding, the recorder logs `credentials_stale` at warning severity, so
+it pages, and repeats it every six hours until the file is updated and
+the recorder restarted.
 
 ## Decrypting old pcaps in Wireshark
 

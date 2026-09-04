@@ -24,14 +24,12 @@ class Config:
     detector: DetectorConfig = field(default_factory=DetectorConfig)
     config_dir: Path = REPO_ROOT / "config"
     credentials_path: Optional[Path] = None
-    # Silence (seconds) before a device_quiet event, by inventory role. Both
-    # default to 30 min: the 2026-09-02 soak (9.8 h, 22 sleepy end devices)
-    # showed 19 of them never silent for 3 min and the rest under 30 min once
-    # marginal-reception devices are excluded, so end devices are not quiet
-    # from the sniffer's point of view. The split is kept for meshes where a
-    # class of device genuinely sleeps for long stretches.
-    quiet_end_device_s: float = 30 * 60
-    quiet_router_s: float = 30 * 60
+    # Silence (seconds) before a device_quiet event. 30 min: the 2026-09-02
+    # soak (9.8 h, 22 sleepy end devices) showed 19 of them never silent for
+    # 3 min and the rest under 30 min once marginal-reception devices are
+    # excluded, so from the sniffer's chair sleepy devices are no quieter
+    # than routers and one window serves both.
+    quiet_s: float = 30 * 60
     # Below this average RSSI the sniffer is at the edge of its range and a
     # silence is logged at notice severity (kept, not paged): the 2026-09-02
     # soak showed every device heard at -84 dBm or worse dropping out for
@@ -102,8 +100,10 @@ def load(path: Optional[Path]) -> Config:
             if key in det:
                 setattr(cfg.detector, key, det[key])
         quiet = raw.get("quiet", {})
-        cfg.quiet_end_device_s = float(quiet.get("end_device_s", cfg.quiet_end_device_s))
-        cfg.quiet_router_s = float(quiet.get("router_s", cfg.quiet_router_s))
+        # end_device_s / router_s were the pre-2026-09-04 split by inventory
+        # role; the longer of them stands in for silence_s in an old file.
+        legacy = [float(quiet[k]) for k in ("end_device_s", "router_s") if k in quiet]
+        cfg.quiet_s = float(quiet.get("silence_s", max(legacy) if legacy else cfg.quiet_s))
         cfg.quiet_min_rssi_dbm = float(quiet.get("min_rssi_dbm", cfg.quiet_min_rssi_dbm))
         link = raw.get("link", {})
         cfg.link_drop_db = float(link.get("drop_db", cfg.link_drop_db))

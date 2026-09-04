@@ -80,7 +80,7 @@ if [ -f "$REPO/config/credentials.toml" ]; then
   chmod 400 "$REPO/config/credentials.toml"
   echo "    credentials.toml locked to 0400"
 else
-  echo "    no credentials.toml (fine: header-level analysis only; see docs/CREDENTIALS.md)"
+  echo "    WARNING: no config/credentials.toml: the recorder will not start without the Thread network key (docs/CREDENTIALS.md)"
 fi
 if [ -f "$REPO/config/alerts.env" ]; then
   chown "$RUN_USER": "$REPO/config/alerts.env"

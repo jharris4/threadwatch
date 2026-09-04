@@ -8,9 +8,8 @@ channel = 25
 # Optional, purely informational:
 # network_name = "MyHome"
 # pan_id = "0x4e21"
-# NOTE: deliberately no credentials here. Capture, storm detection and
-# device tracking all work from cleartext MAC headers - the network key is
-# not needed and should not be stored on the capture box.
+# The network key is deliberately not here either: it lives in its own
+# read-only file, see [credentials] below and docs/CREDENTIALS.md.
 
 [capture]
 # serial_port = "/dev/ttyACM0"   # leave unset to auto-detect the dongle
@@ -28,13 +27,11 @@ keep_files = 168                  # hourly ring files to retain (168 = 1 week)
 inventory = "devices.json"
 
 [quiet]
-# Silence before a device_quiet alert, by inventory role (role / threadRole
-# router, reed, border-router, border-router-leader vs everything else).
-# Sleepy end devices poll every few seconds, so they are not quiet from the
-# sniffer's point of view; raise end_device_s only if a class of yours
-# genuinely sleeps for long stretches.
-end_device_s = 1800        # 30 min
-router_s = 1800            # 30 min
+# Silence before a device_quiet alert. Sleepy end devices poll every few
+# seconds and routers advertise every few, so from the sniffer's point of
+# view neither is quiet for long: one window serves both. Raise it only if
+# your devices genuinely sleep for long stretches.
+silence_s = 1800           # 30 min
 # Devices the sniffer hears below this average RSSI are logged at notice
 # (not paged) when quiet: at the edge of range, silence is usually fading.
 min_rssi_dbm = -82
@@ -122,8 +119,9 @@ port = 8080
 # interval_s = 60
 
 [credentials]
-# OPTIONAL. Path to a separate, gitignored, read-only file holding the Thread
-# network key, enabling decryption-based analysis (MLE rejoin/partition
-# visibility, SRP auto-naming). Capture works fully without this.
-# Create it read-only:  see docs/CREDENTIALS.md
+# REQUIRED. Path (relative to this directory) of a separate, gitignored,
+# read-only file holding the Thread network key. The recorder does not
+# start without it: sleepy devices, rejoins, poll starvation and the
+# partition are all behind MAC-layer encryption. docs/CREDENTIALS.md says
+# how to create it; the default path needs no setting here.
 # file = "credentials.toml"

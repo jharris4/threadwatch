@@ -92,7 +92,7 @@ class DeviceStats:
 
 
 class Pipeline:
-    def __init__(self, cfg, events: EventLog, decryptor=None, ephemeral: bool = False):
+    def __init__(self, cfg, events: EventLog, decryptor, ephemeral: bool = False):
         """``ephemeral``: judge frames on their own (replay), starting from
         an empty last-seen table and persisting nothing to the state dir."""
         self.cfg = cfg
@@ -105,6 +105,8 @@ class Pipeline:
         self.devices: dict[str, DeviceStats] = {}
         self.own_pans: dict[int, int] = {}
         self.partition: Optional[tuple] = None
+        self._crypto_mark = (0, 0)          # (decrypted, failed) when decryption last worked
+        self._stale_evt = 0.0
         self.last_frame: Optional[Frame] = None
         self._last_who: Optional[str] = None
         self.beacon_times = deque(maxlen=16)
@@ -223,17 +225,11 @@ class Pipeline:
 
     # ------------------------------------------------------- quiet policy
 
-    def is_router(self, addr: str) -> bool:
-        """True when the inventory tags the address as an always-on device.
-
-        Cleartext headers cannot tell a router from a busy end device: data
-        requests (polls) are sent from the short address, so per-extended-
-        address poll counts are always zero.
-        """
-        return self.names.is_router(addr)
-
     def quiet_threshold_s(self, addr: str) -> float:
-        return self.cfg.quiet_router_s if self.is_router(addr) else self.cfg.quiet_end_device_s
+        """One window for everyone: the 2026-09-02 soak showed routers and
+        sleepy devices alike never silent for long from the sniffer's chair.
+        (Kept as a method so a per-device rule has somewhere to go.)"""
+        return self.cfg.quiet_s
 
     def dominant_pan(self) -> Optional[int]:
         return max(self.own_pans, key=self.own_pans.get) if self.own_pans else None
@@ -258,7 +254,7 @@ class Pipeline:
             return None
         if len(src) == 16:
             return src
-        if self.decryptor is None or f.ftype not in (1, 3):
+        if f.ftype not in (1, 3):
             return None
         ext = self.decryptor.short_to_ext.get(src)
         if ext:
@@ -423,7 +419,7 @@ class Pipeline:
                              **self.detector.snapshot())
 
         # Credentialed visibility.
-        if self.decryptor is not None and f.ftype == 1:
+        if f.ftype == 1:
             self._deep_inspect(f)
 
         self.last_frame = f
@@ -530,7 +526,7 @@ class Pipeline:
         if rid is None:
             return {}
         short = f"{rid << 10:04x}"
-        ext = self.decryptor.short_to_ext.get(short) if self.decryptor else None
+        ext = self.decryptor.short_to_ext.get(short)
         return {"leader_rloc16": short, "leader_addr": ext,
                 "leader_name": self.names.name(ext) if ext else None}
 
@@ -551,7 +547,7 @@ class Pipeline:
         has mapped; falls back to the address itself."""
         if not addr:
             return None
-        ext = addr if len(addr) == 16 else (self.decryptor.short_to_ext.get(addr) if self.decryptor else None)
+        ext = addr if len(addr) == 16 else self.decryptor.short_to_ext.get(addr)
         return (self.names.name(ext) if ext else None) or addr
 
     def _retrans_attribution(self) -> dict:
@@ -639,6 +635,7 @@ class Pipeline:
     def periodic(self, now: float) -> None:
         """Run every ~30 s in live capture: quiet checks, persistence."""
         self.seen.maybe_save()
+        self._check_credentials(now)
         # Devices on another PAN (a neighbour's mesh, an unpaired device
         # announcing itself) are tracked for the report but never alerted on:
         # their absence says nothing about this network.
@@ -788,6 +785,33 @@ class Pipeline:
                 "storm_active": bool(self.detector.storm_active), "events_24h": counts,
                 "note": "last 24 h: " + "; ".join(parts)}
 
+    STALE_FAILED_FRAMES = 200
+    STALE_REPEAT_S = 6 * 3600
+
+    def _check_credentials(self, now: float) -> None:
+        """A rotated network key does not stop capture (the ring keeps every
+        frame, encrypted as received) but silently ends everything that
+        reads inside the frames. Nothing decrypting while frames keep
+        failing is that signature: say so, and keep saying so."""
+        st = self.decryptor.stats
+        ok = st["mac_decrypted"] + st["mle_decrypted"]
+        bad = st["mac_failed"] + st["mle_failed"]
+        prev_ok, prev_bad = self._crypto_mark
+        if ok > prev_ok:
+            self._crypto_mark = (ok, bad)
+            return
+        failed = bad - prev_bad
+        if failed < self.STALE_FAILED_FRAMES or now - self._stale_evt < self.STALE_REPEAT_S:
+            return
+        self._stale_evt = now
+        self._crypto_mark = (ok, bad)
+        self.events.emit("credentials_stale", "warning", now, failed=failed,
+                         note=(f"{failed} frames failed to decrypt and none succeeded since decryption last "
+                               "worked: the network key in credentials.toml no longer matches the mesh "
+                               "(re-commissioned?). Capture continues and the ring keeps every frame, but "
+                               "rejoin, starvation, partition and sleepy-device tracking have stopped until "
+                               "the file is updated and the recorder restarted."))
+
     def _report_quiet(self, addr: str, row: dict, now: float) -> None:
         """Emit device_quiet once and remember, in memory and in the row
         (persisted with last-seen.json), that it has been announced."""
@@ -802,7 +826,6 @@ class Pipeline:
         self.events.emit(
             "device_quiet", "notice" if marginal else "warning", now, addr=addr,
             name=self.names.name(addr), silent_for_s=round(silent),
-            profile="router" if self.is_router(addr) else "end-device",
             rssi_dbm=rssi, reception="marginal" if marginal else "good",
             note=("sniffer hears this device at the edge of its range; "
                   "silence is more likely reception than failure" if marginal else
@@ -817,20 +840,35 @@ class Pipeline:
         return out
 
 
+class CredentialsError(RuntimeError):
+    """No usable network key: the recorder cannot do its job without one."""
+
+
+def credentials_path(cfg) -> Path:
+    return Path(cfg.credentials_path) if getattr(cfg, "credentials_path", None) \
+        else cfg.config_dir / "credentials.toml"
+
+
 def load_decryptor(cfg):
-    """Return a Decryptor if credentials are configured, else None."""
-    cred_path = Path(cfg.credentials_path) if getattr(cfg, "credentials_path", None) \
-        else (cfg.config_dir / "credentials.toml" if hasattr(cfg, "config_dir") else None)
-    if cred_path is None or not cred_path.exists():
-        return None
+    """The Decryptor for the configured network key. Raises CredentialsError,
+    with the fix in the message, when the key file is missing or unusable:
+    sleepy devices, rejoins, starvation and the partition all live behind
+    it, so running without one would record frames and watch nothing."""
+    cred_path = credentials_path(cfg)
+    how = "see docs/CREDENTIALS.md; threadwatch doctor checks it"
+    if not cred_path.exists():
+        raise CredentialsError(f"{cred_path} is missing: the Thread network key is required ({how})")
     import tomllib
     try:
         raw = tomllib.loads(cred_path.read_text())
-        key_hex = raw.get("credentials", {}).get("network_key", "")
-        if len(key_hex) != 32:
-            return None
-        from .crypto import Decryptor
-        return Decryptor(network_key=bytes.fromhex(key_hex))
     except Exception as exc:
-        print(f"[threadwatch] credentials unusable ({exc}); continuing key-free", flush=True)
-        return None
+        raise CredentialsError(f"{cred_path} is unreadable ({exc}); {how}") from exc
+    key_hex = str(raw.get("credentials", {}).get("network_key", ""))
+    try:
+        key = bytes.fromhex(key_hex)
+    except ValueError:
+        key = b""
+    if len(key) != 16:
+        raise CredentialsError(f"{cred_path}: network_key must be 32 hex digits ({how})")
+    from .crypto import Decryptor
+    return Decryptor(network_key=key)

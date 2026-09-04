@@ -24,8 +24,8 @@ is no authentication: keep it on your LAN or behind your own proxy.
   previous / next links.
 - **/help**: what every episode kind and severity means; every row on a
   day page carries the same text as a tooltip.
-- **/devices**: every address the recorder tracks, with inventory name and
-  role, how well the sniffer hears it, when it was last heard, and whether
+- **/devices**: every address the recorder tracks, with its inventory
+  name, how well the sniffer hears it, when it was last heard, and whether
   it is on your PAN. `?only=unknown|quiet|marginal|down|foreign` narrows
   it and `?sort=last|rssi|frames` orders it (longest unheard, weakest,
   busiest); the links at the top of the page set both. `/api/devices`
@@ -36,7 +36,7 @@ is no authentication: keep it on your LAN or behind your own proxy.
   address: last heard, signal level against its usual, frames. Part of a
   name works; a text that matches several names offers the choice.
 - **/status**: the daemon's status file in prose (alive, last frame,
-  channel and port, this run's frames, inspection level, partition and
+  channel and port, this run's frames, partition and
   which device leads it (linked, once its RLOC16 has been matched),
   storm detector, crypto counters) plus storage: ring size and hourly
   rate, incidents and event log size, and free disk against what a full
@@ -49,7 +49,7 @@ is no authentication: keep it on your LAN or behind your own proxy.
   the same data as JSON, for Home Assistant or anything else. The device
   response carries `addr` and `last_seen` (the primary address and its
   last-seen row, as before), `addresses` (every address the name has had),
-  `addresses_seen` (a last-seen row per address), `name`, `role` and
+  `addresses_seen` (a last-seen row per address), `name` and
   `episodes`. An address or name that resolves to nothing is a 404 with an
   `error` field, as is an ambiguous name.
 

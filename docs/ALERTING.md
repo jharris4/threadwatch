@@ -38,14 +38,15 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `device_returned` | notice | `addr`, `name` |
 | `join_scan_activity` | notice | `count_60s`, `src` |
 | `possible_foreign_pan` | notice | `pan`, `src`, `dominant_pan`, `note` |
-| `mle_rejoin_attempt` | notice | `command`, `src`, `name` (credentials only) |
-| `device_quiet` | warning, or notice when `reception` is `marginal` | `addr`, `name`, `silent_for_s`, `profile` (`router` / `end-device`), `rssi_dbm`, `reception`, `note` |
-| `poll_starvation` | warning, or notice when `reception` is `marginal` or `episode` > 1 | `addr`, `name`, `unanswered_polls`, `since`, `starved_for_s`, `acked_polls`, `rssi_dbm`, `reception`, `episode`, `since_previous_s`, `note` (credentials only) |
+| `mle_rejoin_attempt` | notice | `command`, `src`, `name` |
+| `device_quiet` | warning, or notice when `reception` is `marginal` | `addr`, `name`, `silent_for_s`, `rssi_dbm`, `reception`, `note` |
+| `poll_starvation` | warning, or notice when `reception` is `marginal` or `episode` > 1 | `addr`, `name`, `unanswered_polls`, `since`, `starved_for_s`, `acked_polls`, `rssi_dbm`, `reception`, `episode`, `since_previous_s`, `note` |
 | `poll_answered` | notice | `addr`, `name`, `note` |
 | `rssi_degradation` | notice | `addr`, `name`, `rssi_dbm`, `reference_dbm`, `drop_db`, `since`, `low_for_s`, `note` |
 | `rssi_recovered` | info | `addr`, `name`, `rssi_dbm`, `reference_dbm`, `note` |
 | `retransmission_elevation` | warning, or notice when one sender-target pair is `top_share` >= 0.5 of the retries (a chronic bad link, not a storm precursor) | `rate`, `baseline`, `addr`, `name`, `top_sender`, `top_target`, `top_share`, `note` |
-| `partition_or_leader_change` | warning | `previous`, `current`, each with `partition`, `leader_router` and `leader` (the router id with the device's name once the MLE layer has matched it) (credentials only) |
+| `partition_or_leader_change` | warning | `previous`, `current`, each with `partition`, `leader_router` and `leader` (the router id with the device's name once the MLE layer has matched it) |
+| `credentials_stale` | warning | `failed`, `note` |
 | `phase_locked_storm` | critical | detector snapshot (`period_s`, `onsets`, ...) |
 | `incident_frozen` | info | `label`, `path`, `ring_files`, `note` (with `[capture] freeze_on_critical`) |
 | `incident_freeze_failed` | warning | `label`, `note` |
@@ -54,20 +55,15 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 
 `name` is null for addresses not in `devices.json`.
 
-`device_quiet` fires after `[quiet] end_device_s` of silence, or
-`[quiet] router_s` for entries whose `role` / `threadRole` in
-`devices.json` is `router`, `reed`, `border-router` or
-`border-router-leader` (both default 30 min; sleepy end devices poll every
-few seconds, so they are not quiet from the sniffer's point of view). Cleartext headers cannot tell the two apart (polls
-are sent from the short address), so the inventory decides. Two silences
+`device_quiet` fires after `[quiet] silence_s` of silence (default 30
+min). Routers advertise every few seconds and sleepy end devices poll
+every few, so from the sniffer's point of view neither is quiet for long
+and one window serves both. Two silences
 are deliberately not paged: addresses whose frames carry a foreign PAN id
 (someone else's mesh) are never reported, and devices whose average RSSI
 at the sniffer is below `[quiet] min_rssi_dbm` (default -82) are logged at
 notice severity, because a device at the edge of the sniffer's range drops
 out for tens of minutes whenever the link fades.
-
-Sleepy end devices are covered only when credentials are configured; see
-docs/CREDENTIALS.md for why their frames are otherwise anonymous.
 
 `poll_starvation` is the sleepy-device failure the quiet detector cannot
 see: the device keeps polling, so it never goes quiet, but nothing
@@ -110,6 +106,13 @@ been heard 200 frames and refreshed once a day, so a drop that lasts a day
 becomes the new normal. `rssi_recovered` closes it, either because the
 signal came back or because the refresh re-based the reference (the note
 says which). `drop_db = 0` turns the detector off.
+
+`credentials_stale` means the network key no longer matches the mesh,
+usually because it was re-commissioned: frames keep failing to decrypt and
+none succeed. Capture continues and the ring keeps every frame, but
+everything that reads inside them (sleepy-device identity, rejoins,
+starvation, the partition) has stopped. It repeats every six hours until
+`config/credentials.toml` is updated and the recorder restarted.
 
 ## Secrets
 

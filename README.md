@@ -16,8 +16,7 @@ question: *why did this device go offline?*
 - **Continuous capture** on your Thread channel into hourly pcap files,
   keeping a rolling week (configurable). About 7 MB/hour for a 50-node
   mesh at rest; budget 30 MB/hour for storms.
-- **A health event log** (one JSON-lines file per day) fed by several detectors,
-  all from cleartext MAC headers:
+- **A health event log** (one JSON-lines file per day) fed by several detectors:
   - devices going quiet / returning (a quiet without a rejoin points at the
     device rather than the radio);
   - foreign-PAN frames and join-scan bursts;
@@ -25,8 +24,8 @@ question: *why did this device go offline?*
   - MAC retransmission-rate elevation, attributed to the sender and target;
   - slow link degradation: a device still talking but heard well below
     its usual level, the precursor of a silence with no rejoin;
-  - (with credentials) sleepy-device starvation: a child polling a parent
-    that no longer answers, which never shows up as a silence.
+  - sleepy-device starvation: a child polling a parent that no longer
+    answers, which never shows up as a silence.
   A daily summary event (frames, devices heard, quiet and unknown ones,
   event counts) says the recorder is still watching.
   Per-device RSSI trend, ACK-success rate and poll cadence are tracked too
@@ -37,8 +36,8 @@ question: *why did this device go offline?*
   Healthchecks.io or Uptime Kuma page when the recorder itself dies
   (docs/ALERTING.md).
 - **`threadwatch why <device>`** — reconstructs one device's story from
-  the ring: hour-by-hour cadence, RSSI, ACKs, silences, and (with
-  credentials) rejoin attempts. This is the "why did X go offline"
+  the ring: hour-by-hour cadence, RSSI, ACKs, silences, and rejoin
+  attempts. This is the "why did X go offline"
   command; `--hours 6` reads only the recent ring files, which on a Pi is
   the difference between seconds and minutes. The device's episodes from
   the event log (kept long after the packets roll off) follow, so a
@@ -46,11 +45,12 @@ question: *why did this device go offline?*
 - **Device tracking without a controller** — including HomeKit-only
   Thread devices that never appear in Home Assistant. `threadwatch
   report` lists quiet devices and unknown addresses to label.
-- **Optional decryption** (`docs/CREDENTIALS.md`): supply the Thread
-  network key and analysis gains MLE visibility (named rejoin attempts,
-  partition/leader changes) and SRP-based auto-naming. Capture never
-  needs the key; it's an analysis-side upgrade, applicable to old pcaps
-  too.
+- **Decryption** (`docs/CREDENTIALS.md`): the recorder needs the Thread
+  network key and does not start without it. It decrypts MLE and 6LoWPAN
+  on the fly, which is where sleepy devices' identities, rejoin attempts,
+  poll starvation, the partition and its leader, and SRP-based
+  auto-naming live. The pcaps are stored exactly as received, so the key
+  is applied on read and payloads at rest stay encrypted.
 - **Incident freeze**: `threadwatch freeze my-label` snapshots the ring
   buffer before it rolls over; with `freeze_on_critical` in config.toml
   the recorder does it by itself when a storm fires (the one critical
@@ -62,9 +62,9 @@ question: *why did this device go offline?*
 
 ## What it deliberately does not do
 
-- **No credentials.** Everything here works from unencrypted 802.15.4
-  MAC headers. The Thread network key is never needed or stored; frame
-  payloads in the pcaps remain encrypted.
+- **No key in the pcaps.** Frames are written exactly as received and
+  decrypted on read. The network key lives in one read-only file on the
+  capture host and is never logged or written anywhere else.
 - **No controller dependency.** Home Assistant integration is an
   optional bonus (docs/HOME-ASSISTANT.md), not a requirement.
 
@@ -95,17 +95,17 @@ question: *why did this device go offline?*
 802.15.4 frames carry extended addresses, not names, and Thread devices
 use randomized addresses (Apple TVs rotate them over time — record every
 address you've seen per device, the inventory format supports it).
-`threadwatch report` surfaces unknown addresses with their inventory
-role, how well the sniffer hears them, and first/last-seen times; identify a
+`threadwatch report` surfaces unknown addresses with how well the
+sniffer hears them and first/last-seen times; identify a
 device by power-cycling it and watching which address disappears and
 returns, then name it:
 
-    bin/threadwatch adopt 66417fe110ed6950 "Office Air Quality" --role router
+    bin/threadwatch adopt 66417fe110ed6950 "Office Air Quality"
     bin/threadwatch report --suggest    # ready-to-paste entries for every unknown
 
 `adopt` appends to `config/devices.json` (an existing name gains the
 address, which is how a rotation is recorded); `--suggest` prefills names
-from SRP hostnames when credentials are configured, and flags an unknown
+from SRP hostnames, and flags an unknown
 address that appeared just as a named device's last address fell silent
 as probably that device's new address, with the `adopt` line to run. If you run Home
 Assistant + OTBR, its Thread panel and the OTBR REST API map most

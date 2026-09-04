@@ -1,10 +1,12 @@
 # Analyzing captures
 
 The ring pcaps open directly in Wireshark (link type IEEE 802.15.4 TAP —
-per-frame RSSI, LQI and channel included). Payloads are encrypted
-(Thread network key not captured, by design), but MAC headers are
-cleartext and are enough for every technique below — all of which were
-used to solve a real incident.
+per-frame RSSI, LQI and channel included). Payloads are stored encrypted,
+exactly as received (the recorder applies the key on read and never
+writes it into a pcap); MAC headers are cleartext and are enough for
+every technique below — all of which were used to solve a real incident.
+Give Wireshark the key (docs/CREDENTIALS.md, last section) and MLE,
+6LoWPAN and CoAP dissect too.
 
 ## Wireshark / tshark filter cookbook
 

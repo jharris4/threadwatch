@@ -13,6 +13,12 @@ from threadwatch.config import Config  # noqa: E402
 from threadwatch.events import NullEventLog  # noqa: E402
 from threadwatch.pcap import Frame  # noqa: E402
 from threadwatch.pipeline import Pipeline  # noqa: E402
+from threadwatch.crypto import Decryptor  # noqa: E402
+
+
+def test_decryptor():
+    """A key, so the pipeline has one; test frames carry no payload, so it never decrypts."""
+    return Decryptor(network_key=bytes(16))
 
 ROUTER = "b62c32bf669272db"
 SENSOR = "1669674dd15cf0fa"
@@ -35,41 +41,41 @@ class QuietPolicyTest(unittest.TestCase):
             {"name": "Living Room AQ", "extendedAddress": SENSOR, "threadRole": "sleepy-end-device"},
         ]))
         self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json",
-                          quiet_end_device_s=90 * 60, quiet_router_s=30 * 60)
+                          quiet_s=30 * 60)
 
     def tearDown(self):
         self.tmp.cleanup()
 
     def _pipe(self):
-        return Pipeline(self.cfg, NullEventLog())
+        return Pipeline(self.cfg, NullEventLog(), test_decryptor())
 
     @staticmethod
     def _quiet(pipe):
-        return [(r["addr"], r["profile"]) for r in pipe.events.records if r["event"] == "device_quiet"]
+        return [r["addr"] for r in pipe.events.records if r["event"] == "device_quiet"]
 
-    def test_only_inventory_routers_get_the_short_window(self):
+    def test_one_quiet_window_for_every_device_whatever_the_inventory_says(self):
         pipe = self._pipe()
         t0 = 1_700_000_000.0
         for i in range(3):
             pipe.ingest(frame(t0 + i, ROUTER))
-            pipe.ingest(frame(t0 + i, SENSOR))
+            pipe.ingest(frame(t0 + i + 60, SENSOR))
+        pipe.periodic(t0 + 29 * 60)
+        self.assertEqual(self._quiet(pipe), [])
         pipe.periodic(t0 + 31 * 60)
-        self.assertEqual(self._quiet(pipe), [(ROUTER, "router")])
-        pipe.periodic(t0 + 91 * 60)
-        self.assertEqual(self._quiet(pipe), [(ROUTER, "router"), (SENSOR, "end-device")])
+        self.assertEqual(self._quiet(pipe), [ROUTER])          # the inventory's "leader" label buys nothing
+        pipe.periodic(t0 + 32 * 60)
+        self.assertEqual(self._quiet(pipe), [ROUTER, SENSOR])
         names = [r["name"] for r in pipe.events.records if r["event"] == "device_quiet"]
         self.assertEqual(names, ["Living Room Apple TV", "Living Room AQ"])
+        self.assertNotIn("profile", pipe.events.records[-1])
 
-    def test_reed_counts_as_router_and_role_key_variants_are_accepted(self):
+    def test_legacy_quiet_keys_still_load(self):
+        from threadwatch import config as config_mod
         d = Path(self.tmp.name)
-        (d / "devices.json").write_text(json.dumps([
-            {"name": "Light", "extendedAddress": ROUTER, "threadRole": "reed"},
-            {"name": "Plug", "extendedAddress": SENSOR, "role": "Router"},
-        ]))
-        pipe = self._pipe()
-        self.assertTrue(pipe.is_router(ROUTER))
-        self.assertTrue(pipe.is_router(SENSOR))
-        self.assertFalse(pipe.is_router(STRANGER))
+        (d / "config.toml").write_text("[quiet]\nend_device_s = 5400\nrouter_s = 1800\n")
+        self.assertEqual(config_mod.load(d / "config.toml").quiet_s, 5400)
+        (d / "config.toml").write_text("[quiet]\nsilence_s = 600\n")
+        self.assertEqual(config_mod.load(d / "config.toml").quiet_s, 600)
 
     def test_malformed_inventory_address_is_skipped_not_fatal(self):
         d = Path(self.tmp.name)
@@ -96,15 +102,16 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual(by_addr[SENSOR]["severity"], "warning")
         self.assertEqual(by_addr[SENSOR]["reception"], "good")
 
-    def test_report_carries_role_and_reception(self):
+    def test_report_carries_reception(self):
         pipe = self._pipe()
         t0 = 1_700_000_000.0
         pipe.ingest(frame(t0, ROUTER, rssi=-88.0))
         pipe.ingest(frame(t0, STRANGER, rssi=-60.0))
         rep = pipe.seen.report(pipe.names, quiet_after_s=60, now=t0 + 120, min_rssi_dbm=-82)
         rows = {r["addr"]: r for r in rep["quiet"]}
-        self.assertEqual((rows[ROUTER]["role"], rows[ROUTER]["reception"]), ("border-router-leader", "marginal"))
-        self.assertEqual((rows[STRANGER]["role"], rows[STRANGER]["reception"]), (None, "good"))
+        self.assertEqual(rows[ROUTER]["reception"], "marginal")
+        self.assertEqual(rows[STRANGER]["reception"], "good")
+        self.assertNotIn("role", rows[ROUTER])
         self.assertEqual([r["addr"] for r in rep["unknown"]], [STRANGER])
 
     def test_retransmission_alert_names_the_sender_and_target(self):
@@ -168,7 +175,7 @@ class QuietPolicyTest(unittest.TestCase):
         for i in range(3):
             pipe.ingest(frame(t0 + i, STRANGER, pan=OTHER_PAN))
         pipe.periodic(t0 + 24 * 3600)
-        self.assertEqual(self._quiet(pipe), [(SENSOR, "end-device")])
+        self.assertEqual(self._quiet(pipe), [SENSOR])
         self.assertEqual(pipe.seen.table[STRANGER]["pan"], OTHER_PAN)
 
     def test_restart_announces_a_silence_nobody_reported(self):
@@ -176,14 +183,14 @@ class QuietPolicyTest(unittest.TestCase):
         # periodic never runs) while the router crossed its window.
         now = time.time()
         pipe = self._pipe()
-        pipe.ingest(frame(now - 40 * 60, ROUTER))   # past router window, never announced
-        pipe.ingest(frame(now - 40 * 60, SENSOR))   # inside end-device window: still eligible
+        pipe.ingest(frame(now - 40 * 60, ROUTER))   # past the window, never announced
+        pipe.ingest(frame(now - 20 * 60, SENSOR))   # inside the window: still eligible
         pipe.seen.save()
         pipe2 = self._pipe()
-        self.assertEqual(self._quiet(pipe2), [(ROUTER, "router")])
+        self.assertEqual(self._quiet(pipe2), [ROUTER])
         self.assertEqual(pipe2.quiet_reported, {ROUTER})
         pipe2.periodic(now + 60 * 60)
-        self.assertEqual(self._quiet(pipe2), [(ROUTER, "router"), (SENSOR, "end-device")])
+        self.assertEqual(self._quiet(pipe2), [ROUTER, SENSOR])
         # A third start re-announces nothing: both silences are on record.
         self.assertEqual(self._quiet(self._pipe()), [])
 
@@ -201,7 +208,7 @@ class QuietPolicyTest(unittest.TestCase):
         pipe2.periodic(now + 60)
         self.assertEqual(self._quiet(pipe2), [])
         pipe2.periodic(now + 29 * 60)                     # 2 + 29 min > the 30 min window
-        self.assertEqual(self._quiet(pipe2), [(ROUTER, "router")])
+        self.assertEqual(self._quiet(pipe2), [ROUTER])
         rec = [r for r in pipe2.events.records if r["event"] == "device_quiet"][0]
         self.assertAlmostEqual(rec["silent_for_s"], 31 * 60, delta=5)
 
@@ -212,7 +219,7 @@ class QuietPolicyTest(unittest.TestCase):
             pipe.ingest(frame(now - 3 * 3600 + i, SENSOR))
         pipe.ingest(frame(now - 3 * 3600, STRANGER, pan=OTHER_PAN))
         pipe.periodic(now - 60 * 60)                # announces the sensor, skips the foreign device
-        self.assertEqual(self._quiet(pipe), [(SENSOR, "end-device")])
+        self.assertEqual(self._quiet(pipe), [SENSOR])
         pipe.seen.save()
         pipe2 = self._pipe()
         self.assertEqual(self._quiet(pipe2), [])
@@ -227,7 +234,7 @@ class QuietPolicyTest(unittest.TestCase):
         live.ingest(frame(now - 2 * 3600, ROUTER))
         live.seen.save()
         before = (self.cfg.state_dir / "last-seen.json").read_text()
-        replay = Pipeline(self.cfg, NullEventLog(), ephemeral=True)
+        replay = Pipeline(self.cfg, NullEventLog(), test_decryptor(), ephemeral=True)
         replay.ingest(frame(100.0, ROUTER))
         replay.periodic(100.0)
         replay.seen.save()
@@ -291,12 +298,12 @@ class QuietPolicyTest(unittest.TestCase):
         storms = [r["auto_freeze"] for r in pipe.events.records if r["event"] == "phase_locked_storm"]
         self.assertEqual(storms, [None, "auto-storm"])
         self.assertEqual(frozen, ["auto-storm"])
-        self.assertEqual(Pipeline(self.cfg, NullEventLog(), ephemeral=True)._last_auto_freeze, 0.0)
+        self.assertEqual(Pipeline(self.cfg, NullEventLog(), test_decryptor(), ephemeral=True)._last_auto_freeze, 0.0)
 
     def test_freeze_off_by_default_and_never_in_replay(self):
         for ephemeral in (False, True):
             self.cfg.freeze_on_critical = ephemeral        # on only for the replay case
-            pipe = Pipeline(self.cfg, NullEventLog(), ephemeral=ephemeral)
+            pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor(), ephemeral=ephemeral)
             pipe.freezer = lambda label: self.fail("froze")
             pipe.detector.storm_active = True
             pipe.detector.last_alert_details = {"period": 60.0, "onsets": [1.0, 2.0, 3.0]}
@@ -384,7 +391,7 @@ class PollStarvationTest(unittest.TestCase):
         return t + 5 * n
 
     def test_unanswered_polls_after_answered_ones_are_starvation_then_recovery(self):
-        pipe = Pipeline(self.cfg, NullEventLog())
+        pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
         t = self._answered_polls(pipe, 1_700_000_000.0, 5)
         for i in range(12):                                # 12 distinct polls, nobody answers
             pipe.ingest(poll(t + 10 * i, SENSOR, 100 + i))
@@ -405,14 +412,14 @@ class PollStarvationTest(unittest.TestCase):
         self.assertEqual(pipe.devices[SENSOR].acked_polls, 6)
 
     def test_starvation_survives_a_restart_and_is_closed_by_the_first_answered_poll(self):
-        pipe = Pipeline(self.cfg, NullEventLog())
+        pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
         t = self._answered_polls(pipe, 1_700_000_000.0, 5)
         for i in range(12):
             pipe.ingest(poll(t + 10 * i, SENSOR, 100 + i))
         self.assertEqual(len(self._events(pipe, "poll_starvation")), 1)
         self.assertTrue(pipe.seen.table[SENSOR]["starved"])
         pipe.seen.save()
-        pipe2 = Pipeline(self.cfg, NullEventLog())          # DeviceStats start empty
+        pipe2 = Pipeline(self.cfg, NullEventLog(), test_decryptor())          # DeviceStats start empty
         pipe2.ingest(poll(t + 300, SENSOR, 200))
         pipe2.ingest(poll(t + 310, SENSOR, 201))            # still unanswered: no second announcement
         self.assertEqual(self._events(pipe2, "poll_starvation"), [])
@@ -427,11 +434,11 @@ class PollStarvationTest(unittest.TestCase):
         self.assertEqual(len(self._events(pipe2, "poll_answered")), 1)   # once
 
     def test_starvation_that_begins_right_after_a_restart_is_announced(self):
-        pipe = Pipeline(self.cfg, NullEventLog())
+        pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
         t = self._answered_polls(pipe, 1_700_000_000.0, 5)
         self.assertTrue(pipe.seen.table[SENSOR]["polls_acked"])
         pipe.seen.save()
-        pipe2 = Pipeline(self.cfg, NullEventLog())          # acked_polls is zero again
+        pipe2 = Pipeline(self.cfg, NullEventLog(), test_decryptor())          # acked_polls is zero again
         for i in range(12):
             pipe2.ingest(poll(t + 10 * i, SENSOR, 100 + i))
         evs = self._events(pipe2, "poll_starvation")
@@ -441,14 +448,14 @@ class PollStarvationTest(unittest.TestCase):
 
     def test_a_device_never_answered_is_not_starving(self):
         # The sniffer may simply not hear that parent's ACKs.
-        pipe = Pipeline(self.cfg, NullEventLog())
+        pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
         t = 1_700_000_000.0
         for i in range(40):
             pipe.ingest(poll(t + 10 * i, SENSOR, i))
         self.assertEqual(self._events(pipe, "poll_starvation"), [])
 
     def test_ten_quick_polls_are_not_enough_without_the_minute(self):
-        pipe = Pipeline(self.cfg, NullEventLog())
+        pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
         t = self._answered_polls(pipe, 1_700_000_000.0, 3)
         for i in range(11):
             pipe.ingest(poll(t + 0.5 * i, SENSOR, 50 + i))   # 11 polls in 5 s: fast-poll burst
@@ -464,7 +471,7 @@ class PollStarvationTest(unittest.TestCase):
     def test_a_second_episode_soon_after_the_first_ended_is_a_notice_until_the_rearm_passes(self):
         # 2026-09-04: 37 episodes in six hours from one sensor, each closed
         # by an ordinary ACK. One page, then notices while it flaps.
-        pipe = Pipeline(self.cfg, NullEventLog())
+        pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
         t = self._answered_polls(pipe, 1_700_000_000.0, 5)
         t = self._starve(pipe, t, 100)
         t = self._answered_polls(pipe, t, 3, seq0=120)        # episode 1 closes
@@ -485,7 +492,7 @@ class PollStarvationTest(unittest.TestCase):
 
     def test_rearm_zero_pages_every_episode(self):
         self.cfg.poll_rearm_s = 0
-        pipe = Pipeline(self.cfg, NullEventLog())
+        pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
         t = self._answered_polls(pipe, 1_700_000_000.0, 5)
         t = self._starve(pipe, t, 100)
         t = self._answered_polls(pipe, t, 3, seq0=120)
@@ -494,13 +501,13 @@ class PollStarvationTest(unittest.TestCase):
         self.assertEqual([e["severity"] for e in evs], ["warning", "warning"])
 
     def test_the_hold_down_survives_a_restart(self):
-        pipe = Pipeline(self.cfg, NullEventLog())
+        pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
         t = self._answered_polls(pipe, 1_700_000_000.0, 5)
         t = self._starve(pipe, t, 100)
         t = self._answered_polls(pipe, t, 3, seq0=120)
         self.assertIn("starve_closed", pipe.seen.table[SENSOR])
         pipe.seen.save()
-        pipe2 = Pipeline(self.cfg, NullEventLog())
+        pipe2 = Pipeline(self.cfg, NullEventLog(), test_decryptor())
         t = self._answered_polls(pipe2, t + 60, 2, seq0=125)  # answered polls this run, then starved
         self._starve(pipe2, t, 130)
         evs = self._events(pipe2, "poll_starvation")
@@ -508,7 +515,7 @@ class PollStarvationTest(unittest.TestCase):
         self.assertEqual(evs[0]["episode"], 2)
 
     def test_a_marginal_device_starving_is_a_notice(self):
-        pipe = Pipeline(self.cfg, NullEventLog())
+        pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
         t = 1_700_000_000.0
         for i in range(5):
             f = poll(t + 5 * i, SENSOR, i)
@@ -524,6 +531,59 @@ class PollStarvationTest(unittest.TestCase):
         self.assertEqual(len(evs), 1)
         self.assertEqual((evs[0]["severity"], evs[0]["reception"], evs[0]["episode"]), ("notice", "marginal", 1))
         self.assertIn("edge of its range", evs[0]["note"])
+
+
+class CredentialsTest(unittest.TestCase):
+    """No key, no recorder; a rotated key is announced, not silently endured."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.d = Path(self.tmp.name)
+        self.cfg = Config(data_dir=self.d / "data", credentials_path=self.d / "credentials.toml")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_missing_or_malformed_key_file_refuses_to_load(self):
+        from threadwatch.pipeline import CredentialsError, load_decryptor
+        with self.assertRaises(CredentialsError) as cm:
+            load_decryptor(self.cfg)
+        self.assertIn("missing", str(cm.exception))
+        self.assertIn("CREDENTIALS.md", str(cm.exception))
+        (self.d / "credentials.toml").write_text('[credentials]\nnetwork_key = "tooshort"\n')
+        with self.assertRaises(CredentialsError):
+            load_decryptor(self.cfg)
+        (self.d / "credentials.toml").write_text('[credentials]\nnetwork_key = "00112233445566778899aabbccddeeff"\n')
+        self.assertEqual(load_decryptor(self.cfg).network_key, bytes.fromhex("00112233445566778899aabbccddeeff"))
+
+    def test_a_key_that_stops_decrypting_is_reported_once_per_six_hours(self):
+        dec = test_decryptor()
+        pipe = Pipeline(self.cfg, NullEventLog(), dec)
+        t = 1_700_000_000.0
+        stale = lambda: [r for r in pipe.events.records if r["event"] == "credentials_stale"]
+        dec.stats["mac_decrypted"] += 500                    # healthy: decrypting
+        pipe.periodic(t)
+        dec.stats["mac_failed"] += 150                       # a few failures alongside successes
+        dec.stats["mle_decrypted"] += 20
+        pipe.periodic(t + 30)
+        self.assertEqual(stale(), [])
+        dec.stats["mac_failed"] += 150                       # nothing decrypts any more...
+        pipe.periodic(t + 60)
+        self.assertEqual(stale(), [])                        # ...but not enough failures yet
+        dec.stats["mle_failed"] += 100
+        pipe.periodic(t + 90)
+        self.assertEqual(len(stale()), 1)
+        self.assertEqual(stale()[0]["failed"], 250)
+        self.assertIn("no longer matches", stale()[0]["note"])
+        dec.stats["mac_failed"] += 1000
+        pipe.periodic(t + 3600)
+        self.assertEqual(len(stale()), 1)                    # repeats no sooner than six hours
+        pipe.periodic(t + 7 * 3600)
+        self.assertEqual(len(stale()), 2)
+        dec.stats["mac_decrypted"] += 1                      # the new key works again
+        dec.stats["mac_failed"] += 1000
+        pipe.periodic(t + 14 * 3600)
+        self.assertEqual(len(stale()), 2)
 
 
 class PartitionLeaderTest(unittest.TestCase):
@@ -543,7 +603,7 @@ class PartitionLeaderTest(unittest.TestCase):
 
     def test_leader_is_named_once_its_rloc16_is_matched(self):
         from types import SimpleNamespace
-        pipe = Pipeline(self.cfg, NullEventLog())
+        pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
         self.assertIsNone(pipe.partition_status())
         pipe.partition = (976341733, 60)
         self.assertEqual(pipe.partition_status(),
@@ -579,7 +639,7 @@ class LinkDegradationTest(unittest.TestCase):
         return t0 + n
 
     def test_fading_device_is_logged_then_recovers(self):
-        pipe = Pipeline(self.cfg, NullEventLog())
+        pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
         t = self._talk(pipe, 1_700_000_000.0, -60.0)
         pipe.periodic(t)                                     # reference taken at -60
         self.assertEqual(pipe.seen.table[ROUTER]["rssi_ref"], -60.0)
@@ -605,7 +665,7 @@ class LinkDegradationTest(unittest.TestCase):
         self.assertNotIn("rssi_degraded", pipe.seen.table[ROUTER])
 
     def test_daily_refresh_of_a_lasting_drop_closes_it_as_recovered(self):
-        pipe = Pipeline(self.cfg, NullEventLog())
+        pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
         t = self._talk(pipe, 1_700_000_000.0, -60.0)
         pipe.periodic(t)
         t = self._talk(pipe, t, -70.0)
@@ -620,13 +680,13 @@ class LinkDegradationTest(unittest.TestCase):
         self.assertNotIn("rssi_degraded", pipe.seen.table[ROUTER])
 
     def test_link_state_survives_a_restart(self):
-        pipe = Pipeline(self.cfg, NullEventLog())
+        pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
         t = self._talk(pipe, 1_700_000_000.0, -60.0)
         pipe.periodic(t)
         t = self._talk(pipe, t, -70.0)
         pipe.periodic(t)
         pipe.seen.save()
-        pipe2 = Pipeline(self.cfg, NullEventLog())
+        pipe2 = Pipeline(self.cfg, NullEventLog(), test_decryptor())
         row = pipe2.seen.table[ROUTER]
         self.assertEqual(row["rssi_ref"], -60.0)
         self.assertEqual(row["rssi_low_since"], t)
@@ -634,7 +694,7 @@ class LinkDegradationTest(unittest.TestCase):
         self.assertEqual(len(self._events(pipe2, "rssi_degradation")), 1)
 
     def test_foreign_pan_devices_are_not_assessed(self):
-        pipe = Pipeline(self.cfg, NullEventLog())
+        pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
         t0 = 1_700_000_000.0
         for i in range(300):
             pipe.ingest(frame(t0 + i, ROUTER, rssi=-60.0))
@@ -653,7 +713,7 @@ class DailySummaryTest(unittest.TestCase):
         (d / "devices.json").write_text(json.dumps([
             {"name": "Hall Router", "extendedAddress": ROUTER, "role": "router"}]))
         self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json",
-                          summary_hour=8, quiet_router_s=30 * 60)
+                          summary_hour=8, quiet_s=30 * 60)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -663,7 +723,7 @@ class DailySummaryTest(unittest.TestCase):
         return [r for r in log.records if r["event"] == "daily_summary"]
 
     def test_once_per_day_at_the_hour_with_the_days_facts(self):
-        pipe = Pipeline(self.cfg, NullEventLog())
+        pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
         t = self.DAY + 7 * 3600
         for i in range(100):
             pipe.ingest(frame(t + i, ROUTER, rssi=-60.0))
@@ -692,24 +752,24 @@ class DailySummaryTest(unittest.TestCase):
     def test_restart_neither_repeats_nor_loses_a_summary(self):
         from threadwatch.events import EventLog
         log = EventLog(self.cfg.events_dir)
-        pipe = Pipeline(self.cfg, log)
+        pipe = Pipeline(self.cfg, log, test_decryptor())
         pipe.periodic(self.DAY + 8 * 3600)
-        pipe2 = Pipeline(self.cfg, EventLog(self.cfg.events_dir))
+        pipe2 = Pipeline(self.cfg, EventLog(self.cfg.events_dir), test_decryptor())
         pipe2.periodic(self.DAY + 8 * 3600 + 900)
         from threadwatch.events import read_day
         self.assertEqual(sum(r["event"] == "daily_summary" for r in read_day(self.cfg.events_dir, "2026-09-02")), 1)
         # Down through the hour: sent late, once.
-        pipe3 = Pipeline(self.cfg, EventLog(self.cfg.events_dir))
+        pipe3 = Pipeline(self.cfg, EventLog(self.cfg.events_dir), test_decryptor())
         pipe3.periodic(self.DAY + 24 * 3600 + 15 * 3600)
         self.assertEqual(sum(r["event"] == "daily_summary" for r in read_day(self.cfg.events_dir, "2026-09-03")), 1)
 
     def test_frame_count_survives_a_restart(self):
-        pipe = Pipeline(self.cfg, NullEventLog())
+        pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
         t = self.DAY + 7 * 3600
         for i in range(100):
             pipe.ingest(frame(t + i, ROUTER, rssi=-60.0))
         pipe.periodic(t + 200)                              # persists the hourly buckets
-        pipe2 = Pipeline(self.cfg, NullEventLog())          # a restart
+        pipe2 = Pipeline(self.cfg, NullEventLog(), test_decryptor())          # a restart
         for i in range(10):
             pipe2.ingest(frame(t + 300 + i, ROUTER, rssi=-60.0))
         pipe2.periodic(self.DAY + 8 * 3600)
@@ -719,10 +779,10 @@ class DailySummaryTest(unittest.TestCase):
         # Buckets older than the window are dropped on load and never counted.
         pipe2._frames_by_hour[int(t // 3600) - 30] = 999
         pipe2.periodic(self.DAY + 8 * 3600 + 60)
-        pipe3 = Pipeline(self.cfg, NullEventLog())
+        pipe3 = Pipeline(self.cfg, NullEventLog(), test_decryptor())
         self.assertNotIn(int(t // 3600) - 30, pipe3._frames_by_hour)
         self.assertEqual(pipe3.summary(self.DAY + 8 * 3600 + 120)["frames_24h"], 110)
-        self.assertEqual(Pipeline(self.cfg, NullEventLog(), ephemeral=True)._frames_by_hour, {})
+        self.assertEqual(Pipeline(self.cfg, NullEventLog(), test_decryptor(), ephemeral=True)._frames_by_hour, {})
 
     def test_a_summary_whose_write_failed_is_retried_next_tick(self):
         class FlakyLog(NullEventLog):
@@ -734,7 +794,7 @@ class DailySummaryTest(unittest.TestCase):
                     raise OSError(28, "No space left on device")
                 return super().emit(event, *a, **kw)
 
-        pipe = Pipeline(self.cfg, FlakyLog())
+        pipe = Pipeline(self.cfg, FlakyLog(), test_decryptor())
         with self.assertRaises(OSError):
             pipe.periodic(self.DAY + 8 * 3600)
         self.assertEqual(self._summaries(pipe.events), [])
@@ -745,10 +805,10 @@ class DailySummaryTest(unittest.TestCase):
 
     def test_disabled_and_ephemeral(self):
         self.cfg.summary_hour = -1
-        pipe = Pipeline(self.cfg, NullEventLog())
+        pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
         pipe.periodic(self.DAY + 9 * 3600)
         self.assertEqual(self._summaries(pipe.events), [])
         self.cfg.summary_hour = 8
-        replay = Pipeline(self.cfg, NullEventLog(), ephemeral=True)
+        replay = Pipeline(self.cfg, NullEventLog(), test_decryptor(), ephemeral=True)
         replay.periodic(self.DAY + 9 * 3600)
         self.assertEqual(self._summaries(replay.events), [])

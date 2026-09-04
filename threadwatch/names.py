@@ -14,14 +14,15 @@ ever observed):
       {"name": "Office Air Quality", "extendedAddress": "66417FE110ED6950"},
       {"name": "Living Room Apple TV",
        "extendedAddresses": ["B62C32BF669272DB", "E6C279E8F0C70298"],
-       "role": "border-router"}
+       "model": "Apple TV 4K", "note": "rotates its address"}
     ]
 
-`role` (or `threadRole`, as exported from Home Assistant's Thread panel)
-is optional: router, reed, border-router and border-router-leader are
-always-on devices that advertise every few seconds, so a short silence is
-meaningful; anything else (sleepy-end-device, or untagged) gets the long
-quiet window.
+The inventory is identity only: a name, the addresses it has used, and
+optionally a `model` and a free-text `note`. What a device is doing on
+the mesh (router or child, leader, parent) changes without anyone
+editing a file, so the recorder learns it from traffic and never reads
+it from here. Other fields are ignored, so a file produced by another
+tool loads as long as it has names and addresses.
 
 Two helpers keep the file from being hand-written: `threadwatch report
 --suggest` prints a ready-to-paste entry per unknown address, prefilled
@@ -39,7 +40,6 @@ from pathlib import Path
 from typing import Optional
 
 
-ROUTER_ROLES = {"router", "reed", "border-router", "border-router-leader"}
 _EXT_ADDR = re.compile(r"^[0-9a-f]{16}$")
 
 
@@ -85,15 +85,6 @@ class DeviceNames:
     def name(self, addr: str) -> Optional[str]:
         entry = self.by_addr.get(_norm(addr))
         return (entry.get("name") or None) if entry else None
-
-    def role(self, addr: str) -> Optional[str]:
-        entry = self.by_addr.get(_norm(addr))
-        if not entry:
-            return None
-        return entry.get("role") or entry.get("threadRole")
-
-    def is_router(self, addr: str) -> bool:
-        return (self.role(addr) or "").lower() in ROUTER_ROLES
 
     def addresses_of(self, addr: str) -> list[str]:
         """Every inventory address that belongs to the same device as
@@ -196,7 +187,6 @@ class LastSeen:
             item = {
                 "addr": addr,
                 "name": name,
-                "role": names.role(addr),
                 "frames": row["frames"],
                 "first_seen": row.get("first_seen"),
                 "last_seen": row["last_seen"],
@@ -310,7 +300,7 @@ def suggest_entries(unknown: list[dict], observed: dict[str, dict[str, int]],
     return out
 
 
-def adopt(inventory_path: Path, addr: str, name: str, role: Optional[str] = None) -> str:
+def adopt(inventory_path: Path, addr: str, name: str) -> str:
     """Add ``addr`` to the inventory under ``name`` and rewrite the file.
 
     A device already listed under that name gains the address in its
@@ -346,15 +336,11 @@ def adopt(inventory_path: Path, addr: str, name: str, role: Optional[str] = None
             addrs.insert(0, existing.pop("extendedAddress"))
         addrs.append(stored)
         existing["extendedAddresses"] = addrs
-        if role and not (existing.get("role") or existing.get("threadRole")):
-            existing["role"] = role
         what = f"added {n} to {existing.get('name')!r} ({len(addrs)} addresses)"
     else:
         entry = {"name": name, "extendedAddress": stored}
-        if role:
-            entry["role"] = role
         entries.append(entry)
-        what = f"added {name!r} = {n}" + (f" ({role})" if role else "")
+        what = f"added {name!r} = {n}"
     inventory_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = inventory_path.with_suffix(".tmp")
     tmp.write_text(json.dumps(entries, indent=2, ensure_ascii=False) + "\n")

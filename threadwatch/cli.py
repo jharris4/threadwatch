@@ -51,8 +51,6 @@ def main(argv=None) -> int:
     p_adopt = sub.add_parser("adopt", help="name an address: add it to devices.json")
     p_adopt.add_argument("addr", help="16-hex extended address (from 'report')")
     p_adopt.add_argument("name", help="device name; an existing name gains the address (rotation)")
-    p_adopt.add_argument("--role", help="router, reed, border-router, border-router-leader "
-                                        "(always-on: short quiet window) or sleepy-end-device")
 
     p_why = sub.add_parser("why", help="reconstruct one device's story from the ring buffer")
     p_why.add_argument("device", help="device name (from devices.json) or 16-hex extended address")
@@ -91,15 +89,22 @@ def main(argv=None) -> int:
 
     args = parser.parse_args(argv)
     cfg = config_mod.load(args.config)
+    from .pipeline import CredentialsError
 
     if args.cmd == "capture":
         from .capture import run_capture
-        run_capture(cfg)
+        try:
+            run_capture(cfg)
+        except CredentialsError as exc:
+            parser.exit(2, f"threadwatch capture: {exc}\n")
         return 0
 
     if args.cmd == "replay":
         from .capture import run_replay
-        run_replay(cfg, args.pcap)
+        try:
+            run_replay(cfg, args.pcap)
+        except CredentialsError as exc:
+            parser.exit(2, f"threadwatch replay: {exc}\n")
         return 0
 
     if args.cmd == "status":
@@ -126,7 +131,10 @@ def main(argv=None) -> int:
             parser.error("--hours selects ring files; it does not apply with --pcap")
         if args.hours is not None and args.hours <= 0:
             parser.error("--hours must be positive")
-        run_why(cfg, args.device, args.pcap, hours=args.hours)
+        try:
+            run_why(cfg, args.device, args.pcap, hours=args.hours)
+        except CredentialsError as exc:
+            parser.exit(2, f"threadwatch why: {exc}\n")
         return 0
 
     if args.cmd == "events":
@@ -283,7 +291,7 @@ def main(argv=None) -> int:
         from .names import adopt
         path = _inventory_path(cfg)
         try:
-            print(f"{adopt(path, args.addr, args.name, args.role)} -> {path}")
+            print(f"{adopt(path, args.addr, args.name)} -> {path}")
         except ValueError as exc:
             parser.exit(1, f"threadwatch adopt: {exc}\n")
         print("(the capture daemon reads the inventory at start: restart it to use the name)")

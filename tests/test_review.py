@@ -167,7 +167,7 @@ class DayViewTest(unittest.TestCase):
         }))
         (self.cfg.state_dir / "status.json").write_text(json.dumps({
             "updated": time.time(), "last_frame_age_s": 1, "channel": 25, "frames_total": 12345,
-            "uptime_s": 100, "devices_tracked": 1, "deep_inspection": True, "detector": {"storm_active": False}}))
+            "uptime_s": 100, "devices_tracked": 1, "detector": {"storm_active": False}}))
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -377,7 +377,7 @@ class DayViewTest(unittest.TestCase):
             self.assertIn(f'href="/incidents#{inc.name}"', get(f"/day/{day}")[1])
             status, body = get("/status")
             self.assertIn(">running<", body)
-            self.assertIn("deep (credentials loaded", body)
+            self.assertNotIn("inspection", body)
             self.assertIn("free</span> of", body)
             self.assertIn("12,345 frames", body)
             self.assertIn("storage", json.loads(get("/api/status")[1]))

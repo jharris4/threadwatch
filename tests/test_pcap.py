@@ -28,6 +28,16 @@ class RingSizeCapTest(_ut.TestCase):
             (Path(d) / "threadwatch-20260903-04.pcap").write_bytes(b"x" * 9000)
             ring._prune()
             self.assertEqual(len(list(Path(d).glob("*.pcap"))), 2)
+
+    def test_byte_cap_counts_only_what_the_file_cap_keeps(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            ring = RingWriter(Path(d), keep_files=2, dlt=0, keep_bytes=2500)
+            for h in ("00", "01", "02", "03"):
+                (Path(d) / f"threadwatch-20260903-{h}.pcap").write_bytes(b"x" * 1000)
+            ring._prune()
+            # The two newest total 2000 bytes, under the cap: both stay.
+            self.assertEqual(sorted(p.name[-7:-5] for p in Path(d).glob("*.pcap")), ["02", "03"])
 from threadwatch.pcap import DLT_NOFCS, Frame, PcapStreamReader, PcapWriter, complete_length  # noqa: E402
 
 

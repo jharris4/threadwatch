@@ -91,7 +91,7 @@ class RingWriter:
         drop = max(0, len(files) - self.keep_files)
         if self.keep_bytes is not None:
             sizes = [f.stat().st_size if f.exists() else 0 for f in files]
-            total = sum(sizes)
+            total = sum(sizes[drop:])       # only what the count cap is keeping
             while total > self.keep_bytes and drop < len(files) - 1:   # never the file being written
                 total -= sizes[drop]
                 drop += 1

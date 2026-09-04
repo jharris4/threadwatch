@@ -56,8 +56,10 @@ is no authentication: keep it on your LAN or behind your own proxy.
 - **/api/status** (with a `storage` block), **/api/incidents**,
   **/api/day/YYYY-MM-DD**, **/api/devices**, **/api/device/<addr or name>**:
   the same data as JSON, for Home Assistant or anything else. The device
-  response carries `addr` and `last_seen` (the primary address and its
-  last-seen row, as before), `addresses` (every address the name has had),
+  response carries `addr` and `last_seen` (the address heard most recently
+  and its last-seen row, whichever address or name the request named: a
+  rotating device is described by the address it is using now), `addresses`
+  (every address the name has had),
   `addresses_seen` (a last-seen row per address), `name`, `live` (`role`,
   `rloc16`, `rloc16_ts`, `router_id`, `leader`, `parent`, `parent_addr`)
   and `episodes`. An address or name that resolves to nothing is a 404 with an

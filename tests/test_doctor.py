@@ -75,6 +75,19 @@ class DoctorTest(unittest.TestCase):
         self.assertEqual(level, "FAIL")
         self.assertIn("stopped growing", text)
 
+    def test_disk_check_honours_the_byte_cap(self):
+        self.cfg.ring_dir.mkdir(parents=True)
+        for h in ("20260903-08", "20260903-09"):
+            (self.cfg.ring_dir / f"threadwatch-{h}.pcap").write_bytes(b"x" * 4096)
+        self.cfg.keep_files = 10 ** 12                     # a ring no disk could hold...
+        level, _, text = doctor.check_disk(self.cfg)[0]
+        self.assertEqual(level, "FAIL")
+        self.assertIn("set keep_gb", text)
+        self.cfg.keep_bytes = 8192                          # ...unless keep_gb caps it
+        level, _, text = doctor.check_disk(self.cfg)[0]
+        self.assertEqual(level, "ok")
+        self.assertIn("capped at 8 KB", text)
+
     def test_dongle_uses_the_finder(self):
         self.assertEqual(doctor.check_dongle(self.cfg, find=lambda: "/dev/ttyACM0"),
                          [("ok", "dongle", "nRF 802.15.4 sniffer at /dev/ttyACM0")])

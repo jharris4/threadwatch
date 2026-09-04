@@ -381,8 +381,15 @@ def _span(pcaps: list[str]) -> Optional[tuple[str, str]]:
     return (hours[0], hours[-1]) if hours else None
 
 
+DEFAULT_BYTES_PER_HOUR = 30 * 1024 * 1024   # a busy mesh; used until the ring has measured itself
+
+
 def storage(cfg) -> dict:
-    """What the recorder keeps on disk and how much room is left there."""
+    """What the recorder keeps on disk and how much room is left there.
+    ring_bound_bytes is the most the ring can grow to (keep_files hours at
+    the measured rate, and no more than keep_gb when set); ring_needs_bytes
+    is how much of that it has not used yet. Both consumers (doctor, the
+    status page) judge free space against these, so they agree."""
     import shutil
     ring = sorted(p.name for p in cfg.ring_dir.glob("threadwatch-*.pcap")) if cfg.ring_dir.exists() else []
     out = {"ring_files": len(ring), "ring_span": _span(ring), "ring_bytes": _dir_size(cfg.ring_dir),
@@ -396,6 +403,12 @@ def storage(cfg) -> dict:
         out.update({"disk_total": None, "disk_free": None})
     if ring and len(ring) > 1:
         out["bytes_per_hour"] = out["ring_bytes"] // len(ring)
+    bound = cfg.keep_files * (out.get("bytes_per_hour") or DEFAULT_BYTES_PER_HOUR)
+    if cfg.keep_bytes:
+        bound = min(bound, cfg.keep_bytes)
+    out["keep_bytes"] = cfg.keep_bytes
+    out["ring_bound_bytes"] = bound
+    out["ring_needs_bytes"] = max(0, bound - out["ring_bytes"])
     return out
 
 

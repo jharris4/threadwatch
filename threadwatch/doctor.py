@@ -139,11 +139,15 @@ def check_disk(cfg) -> list[Check]:
     if not sto.get("disk_total"):
         return [(WARN, "disk", f"could not measure free space under {cfg.data_dir}")]
     free = sto["disk_free"]
-    per_hour = sto.get("bytes_per_hour") or 30 * 1024 * 1024
-    need = per_hour * max(0, cfg.keep_files - sto["ring_files"])
-    text = f"{fmt_bytes(free)} free; a full ring needs about {fmt_bytes(need)} more at {fmt_bytes(per_hour)}/hour"
+    need = sto["ring_needs_bytes"]
+    per_hour = sto.get("bytes_per_hour")
+    rate = (f" at {fmt_bytes(per_hour)}/hour" if per_hour
+            else " (assuming 30 MB/hour until the ring has measured itself)")
+    cap = f", capped at {fmt_bytes(sto['keep_bytes'])}" if sto.get("keep_bytes") else ""
+    text = (f"{fmt_bytes(free)} free; a full ring ({fmt_bytes(sto['ring_bound_bytes'])}{cap}) "
+            f"needs about {fmt_bytes(need)} more{rate}")
     if free < need:
-        return [(FAIL, "disk", text + ": it will not fit; lower keep_files or move data_dir")]
+        return [(FAIL, "disk", text + ": it will not fit; lower keep_files, set keep_gb, or move data_dir")]
     if free < need + 1024 ** 3:
         return [(WARN, "disk", text + ": under 1 GB to spare")]
     return [(OK, "disk", text)]

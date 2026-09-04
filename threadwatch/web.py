@@ -487,12 +487,13 @@ class Site:
                 row("crypto", '<span class="muted">' + ", ".join(f"{esc(k)} {esc(v)}" for k, v in cr.items()) + '</span>')
         span = f' <span class="muted">({sto["ring_span"][0]} to {sto["ring_span"][1]})</span>' if sto["ring_span"] else ""
         rate = f', about {fmt_bytes(sto["bytes_per_hour"])}/hour' if sto.get("bytes_per_hour") else ""
-        row("ring", f'{sto["ring_files"]} of {sto["keep_files"]} hourly files, {fmt_bytes(sto["ring_bytes"])}{rate}{span}')
+        cap = f', capped at {fmt_bytes(sto["keep_bytes"])}' if sto.get("keep_bytes") else ""
+        row("ring", f'{sto["ring_files"]} of {sto["keep_files"]} hourly files, {fmt_bytes(sto["ring_bytes"])}{rate}{cap}{span}')
         row("incidents", f'{fmt_bytes(sto["incidents_bytes"])} &middot; <a href="/incidents">list</a>')
         row("event log", fmt_bytes(sto["events_bytes"]))
         if sto.get("disk_total"):
             free = sto["disk_free"]
-            need = sto.get("bytes_per_hour", 0) * max(0, sto["keep_files"] - sto["ring_files"])
+            need = sto["ring_needs_bytes"]
             cls = "bad" if free < max(need, 512 * 1024 * 1024) else "ok"
             row("disk", f'<span class="{cls}">{fmt_bytes(free)} free</span> of {fmt_bytes(sto["disk_total"])}'
                         + (f' <span class="muted">(a full ring needs about {fmt_bytes(need)} more)</span>' if need else ""))

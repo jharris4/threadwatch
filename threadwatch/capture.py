@@ -255,6 +255,13 @@ def run_capture(cfg: Config) -> None:
         _log("capture crashed; exiting for supervisor restart")
         exit_code = 1
     finally:
+        # A second Ctrl-C here (or a SIGTERM racing a Ctrl-C) would raise
+        # SystemExit out of this block, skip the os._exit below, and leave
+        # the interpreter hanging on the sniffer's non-daemon thread until
+        # a kill -9. Everything below is quick: hold the signals until it
+        # is done. (The sniffer's children keep their own handler.)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
         try:
             sniffer._stop()
         except Exception:

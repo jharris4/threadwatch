@@ -185,7 +185,9 @@ def run_import(cfg, inventory_path: Path, *, write: bool = False, url: Optional[
             out(f"  {line}")
         if changes and write:
             inventory_path.parent.mkdir(parents=True, exist_ok=True)
-            inventory_path.write_text(json.dumps(planned, indent=2) + "\n")
+            tmp = inventory_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(planned, indent=2) + "\n")
+            tmp.replace(inventory_path)
             out(f"  wrote {inventory_path} ({len(planned)} entries)")
             wrote = True
 

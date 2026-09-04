@@ -130,15 +130,19 @@ def parse_frame(ts: float, data: bytes, dlt: int) -> Frame:
         off = 4
         while off + 4 <= min(tap_len, len(data)):
             tlv_type, tlv_len = struct.unpack("<HH", data[off:off + 4])
+            # A record cut short leaves fewer bytes than the TLV declares:
+            # measure what is actually there, not what the header claims.
             val = data[off + 4:off + 4 + tlv_len]
-            if tlv_type == 1 and tlv_len >= 4:
+            if tlv_type == 1 and len(val) >= 4:
                 rssi = struct.unpack("<f", val[:4])[0]
-            elif tlv_type == 3 and tlv_len >= 2:
+            elif tlv_type == 3 and len(val) >= 2:
                 channel = struct.unpack("<H", val[:2])[0]
-            elif tlv_type == 10 and tlv_len >= 1:
+            elif tlv_type == 10 and len(val) >= 1:
                 lqi = val[0]
             off += 4 + ((tlv_len + 3) & ~3)
-        psdu = data[tap_len:]
+        # A tap_len under 4 is not a header at all; slicing from it would
+        # reparse the TAP bytes as a MAC frame and invent devices and PANs.
+        psdu = data[tap_len:] if tap_len >= 4 else b""
     frame = Frame(ts=ts, raw=data, psdu=psdu, rssi=rssi, channel=channel, lqi=lqi)
     _parse_mac(frame)
     return frame

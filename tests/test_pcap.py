@@ -108,5 +108,35 @@ def complete_length_of(data: bytes) -> int:
         return complete_length(tmp.name)
 
 
+class TapHeaderTest(_ut.TestCase):
+    """DLT 283 is what the dongle actually produces; a corrupt ring file
+    must not take the parser with it."""
+
+    def _tap(self, body: bytes):
+        from threadwatch.pcap import DLT_TAP, parse_frame
+        return parse_frame(0.0, body, DLT_TAP)
+
+    def test_tlv_cut_short_does_not_raise(self):
+        for body in ("0000080001000400", "0000080003000200", "000008000a000100"):
+            f = self._tap(bytes.fromhex(body))
+            self.assertIsNone(f.rssi)
+            self.assertIsNone(f.channel)
+            self.assertIsNone(f.lqi)
+
+    def test_tap_len_below_header_yields_no_psdu(self):
+        self.assertEqual(self._tap(bytes.fromhex("00000200") + b"\xff" * 8).psdu, b"")
+
+    def test_well_formed_tap_header_still_parses(self):
+        import struct
+        body = (struct.pack("<HH", 0, 20)                       # version/reserved, tap_len
+                + struct.pack("<HH", 1, 4) + struct.pack("<f", -61.0)      # RSSI
+                + struct.pack("<HH", 3, 2) + struct.pack("<H", 25) + b"\x00\x00"   # channel
+                + b"\xab" * 6)                                  # PSDU
+        f = self._tap(body)
+        self.assertEqual(round(f.rssi), -61)
+        self.assertEqual(f.channel, 25)
+        self.assertEqual(f.psdu, b"\xab" * 6)
+
+
 if __name__ == "__main__":
     unittest.main()

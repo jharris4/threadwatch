@@ -126,7 +126,7 @@ def plan_border_routers(entries: list[dict], routers: list[dict]) -> tuple[list[
 
 def run_import(cfg, inventory_path: Path, *, write: bool = False, url: Optional[str] = None,
                env_file: Optional[Path] = None, dataset_id: Optional[str] = None,
-               use_ha: bool = True, use_mdns: bool = True, mdns_seconds: float = 3.0,
+               use_ha: bool = True, use_mdns: bool = True, mdns_seconds: float = 4.0,
                devices: bool = True, credentials: bool = True,
                out: Callable[[str], None] = print) -> int:
     """The whole command. Raises ha.HAError for anything Home Assistant

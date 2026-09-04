@@ -859,7 +859,7 @@ class Pipeline:
         def run():
             from . import mdns
             try:
-                self._browse_result = mdns.browse(timeout=3.0)
+                self._browse_result = mdns.browse()
             except OSError as exc:
                 print(f"[threadwatch] mdns browse failed: {exc}", flush=True)
                 self._browse_result = None

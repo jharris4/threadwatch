@@ -63,11 +63,11 @@ def main(argv=None) -> int:
     p_imp.add_argument("--dataset-id", help="which Thread dataset, when HA holds several and none is preferred")
     p_imp.add_argument("--no-devices", action="store_true", help="skip devices.json")
     p_imp.add_argument("--no-credentials", action="store_true", help="skip credentials.toml")
-    p_imp.add_argument("--mdns-seconds", type=float, default=3.0, help="how long to wait for mDNS answers")
+    p_imp.add_argument("--mdns-seconds", type=float, default=4.0, help="how long to wait for mDNS answers")
 
     p_br = sub.add_parser("border-routers", help="ask the LAN (mDNS) which Thread border routers it can see, "
                                                  "with their current extended addresses")
-    p_br.add_argument("--seconds", type=float, default=3.0, help="how long to wait for answers")
+    p_br.add_argument("--seconds", type=float, default=4.0, help="how long to wait for answers")
 
     p_why = sub.add_parser("why", help="reconstruct one device's story from the ring buffer")
     p_why.add_argument("device", help="device name (from devices.json) or 16-hex extended address")

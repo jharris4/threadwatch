@@ -163,7 +163,7 @@ def collect_routers(records: list[tuple[str, int, object]], service: str = SERVI
     return instances
 
 
-def browse(service: str = SERVICE, timeout: float = 3.0, log=lambda m: None) -> list[dict]:
+def browse(service: str = SERVICE, timeout: float = 4.0, log=lambda m: None) -> list[dict]:
     """Ask the LAN for border routers and wait ``timeout`` seconds for the
     answers. Returns one dict per instance seen: instance, hostname, port,
     ext (the Thread extended address, 16 hex, or None), network_name,
@@ -193,14 +193,24 @@ def browse(service: str = SERVICE, timeout: float = 3.0, log=lambda m: None) -> 
         # Two queries: one asking for a unicast reply straight to this
         # socket (works on the routers' own subnet), one for the ordinary
         # multicast reply, which is what an mDNS reflector between VLANs can
-        # carry back to the group socket.
-        query_sock.sendto(build_query([(service, TYPE_PTR)]), (MDNS_GROUP, MDNS_PORT))
-        query_sock.sendto(build_query([(service, TYPE_PTR)], unicast_reply=False), (MDNS_GROUP, MDNS_PORT))
+        # carry back to the group socket. Repeated about once a second, as
+        # mDNS querying is meant to be: a responder that just multicast the
+        # same records may stay silent for a second, and a reflected query
+        # can be lost, so one shot from another VLAN often finds nothing.
+        def ask():
+            query_sock.sendto(build_query([(service, TYPE_PTR)]), (MDNS_GROUP, MDNS_PORT))
+            query_sock.sendto(build_query([(service, TYPE_PTR)], unicast_reply=False), (MDNS_GROUP, MDNS_PORT))
+
         deadline = time.time() + timeout
+        next_ask = 0.0
         while True:
             left = deadline - time.time()
             if left <= 0:
                 break
+            if time.time() >= next_ask and not (records and all(
+                    r["complete"] for r in collect_routers(records, service).values())):
+                ask()
+                next_ask = time.time() + 1.0
             ready, _, _ = select.select(socks, [], [], min(left, 0.5))
             for s in ready:
                 try:

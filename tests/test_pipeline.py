@@ -681,14 +681,14 @@ class BorderRouterTest(unittest.TestCase):
         pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
         calls = []
         original = mdns.browse
-        mdns.browse = lambda timeout=3.0, **kw: calls.append(timeout) or [self.router(self.HOST, self.OLD)]
+        mdns.browse = lambda timeout=4.0, **kw: calls.append(timeout) or [self.router(self.HOST, self.OLD)]
         try:
             t = 1_700_000_000.0
             pipe.periodic(t)                       # starts the browse
             pipe._browse_thread.join(5)
             self.assertEqual(pipe.routers, {})     # nothing applied until the next tick
             pipe.periodic(t + 30)                  # applies it
-            self.assertEqual(calls, [3.0])
+            self.assertEqual(calls, [4.0])
             self.assertEqual(pipe.routers[self.HOST]["name"], "Living Room Apple TV")
             pipe.periodic(t + 60)                  # not yet time for another
             self.assertIsNone(pipe._browse_thread)

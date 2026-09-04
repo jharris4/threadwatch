@@ -63,6 +63,23 @@ class IncidentsTest(CliCase):
         self.assertIn("no incident named", err)
 
 
+class AdoptTest(CliCase):
+    def test_adopted_name_is_read_back_from_beside_the_config_file(self):
+        from unittest import mock
+        from threadwatch import config as config_mod
+        from threadwatch.names import DeviceNames
+        # This checkout may carry a real config/devices.json; keep the test
+        # (and adopt's write) away from it.
+        with mock.patch.object(config_mod, "REPO_ROOT", self.d / "repo"):
+            self.assertIsNone(config_mod.load(Path(self.cfg)).devices_path)   # no inventory anywhere yet
+            code, out, _ = self.run_cli("adopt", "66417fe110ed6950", "Office AQ")
+            self.assertEqual(code, 0)
+            self.assertIn(str(self.d / "devices.json"), out)
+            cfg = config_mod.load(Path(self.cfg))
+        self.assertEqual(cfg.devices_path, (self.d / "devices.json").resolve())   # load() resolves symlinks
+        self.assertEqual(DeviceNames(cfg.devices_path).name("66417fe110ed6950"), "Office AQ")
+
+
 class FreezeTest(CliCase):
     def test_freeze_copies_ring_state_and_events(self):
         from threadwatch.config import load

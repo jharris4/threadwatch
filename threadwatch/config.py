@@ -119,9 +119,14 @@ def load(path: Optional[Path]) -> Config:
         cfg.heartbeats_raw = list(raw.get("heartbeats", []) or [])
         if raw.get("credentials", {}).get("file"):
             cfg.credentials_path = (Path(path).parent / raw["credentials"]["file"]).resolve()
-    default_devices = REPO_ROOT / "config" / "devices.json"
-    if cfg.devices_path is None and default_devices.exists():
-        cfg.devices_path = default_devices
+    if cfg.devices_path is None:
+        # Beside the config file first: that is where `threadwatch adopt`
+        # writes when [devices] inventory is unset, so a --config elsewhere
+        # reads back the names it adopted. The repo default is the fallback.
+        for candidate in (cfg.config_dir / "devices.json", REPO_ROOT / "config" / "devices.json"):
+            if candidate.exists():
+                cfg.devices_path = candidate
+                break
     if cfg.credentials_path is None:
         default_creds = cfg.config_dir / "credentials.toml"
         if default_creds.exists():

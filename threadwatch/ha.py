@@ -72,24 +72,12 @@ def load_env(path: Path) -> dict[str, str]:
     return out
 
 
-def bare_token(path: Path) -> Optional[str]:
-    """A file holding nothing but the token (no NAME=): also accepted."""
-    try:
-        lines = [l.strip() for l in path.read_text().splitlines()]
-    except OSError:
-        return None
-    lines = [l for l in lines if l and not l.startswith("#")]
-    if len(lines) == 1 and "=" not in lines[0] and " " not in lines[0]:
-        return lines[0]
-    return None
-
-
 def connection_settings(env_path: Path, url_override: Optional[str] = None) -> tuple[str, str]:
     """(url, token) from the env file, the environment, and the flag, in
     rising precedence for the URL; the token comes from the file or the
     environment. Raises HAError with the setup steps when there is none."""
     env = load_env(env_path)
-    token = os.environ.get("HA_TOKEN") or env.get("HA_TOKEN") or bare_token(env_path) or ""
+    token = os.environ.get("HA_TOKEN") or env.get("HA_TOKEN") or ""
     url = url_override or os.environ.get("HA_URL") or env.get("HA_URL") or DEFAULT_URL
     if not token:
         raise HAError(f"no Home Assistant token: put HA_TOKEN=<long-lived access token> in {env_path} "

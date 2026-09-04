@@ -25,17 +25,6 @@ class EnvFileTest(unittest.TestCase):
             self.assertEqual(connection_settings(p, "http://other:8123")[0], "http://other:8123")
             self.assertEqual(load_env(Path(d) / "missing.env"), {})
 
-    def test_a_file_holding_only_the_token_is_accepted(self):
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "ha.env"
-            p.write_text("# pasted straight from HA\neyJ.abc.def\n")
-            saved = os.environ.pop("HA_TOKEN", None)
-            try:
-                self.assertEqual(connection_settings(p), (ha.DEFAULT_URL, "eyJ.abc.def"))
-            finally:
-                if saved is not None:
-                    os.environ["HA_TOKEN"] = saved
-
     def test_missing_token_says_how_to_get_one(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "ha.env"

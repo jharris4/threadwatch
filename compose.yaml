@@ -1,0 +1,30 @@
+# docker compose up -d
+# Before the first start: cp config/config.example.toml config/config.toml and
+# set your channel; see docs/DOCKER.md for the dongle device path.
+services:
+  capture:
+    build: .
+    image: threadwatch
+    command: capture
+    restart: unless-stopped
+    devices:
+      # Left side: the dongle on the host. /dev/serial/by-id/usb-Nordic_Semiconductor_*
+      # survives re-enumeration; a plain /dev/ttyACM0 works while there is one dongle.
+      - /dev/ttyACM0:/dev/ttyACM0
+    volumes:
+      - ./config:/app/config
+      - ./data:/app/data
+    env_file:
+      - path: ./config/alerts.env   # alert/heartbeat secrets, optional
+        required: false
+
+  web:
+    image: threadwatch
+    command: web
+    restart: unless-stopped
+    depends_on: [capture]
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config:/app/config:ro
+      - ./data:/app/data:ro

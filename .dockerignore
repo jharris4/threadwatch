@@ -1,0 +1,12 @@
+.git
+data/
+.venv/
+.venv-flash/
+__pycache__/
+*.pyc
+# Local config and secrets are mounted at run time, never baked into the image.
+config/config.toml
+config/devices.json
+config/credentials.toml
+config/alerts.env
+.DS_Store

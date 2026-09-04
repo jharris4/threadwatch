@@ -38,9 +38,15 @@ only works while it is the sole such device. Then:
 
 ```bash
 docker compose up -d --build
-docker compose run --rm --no-deps capture doctor    # every line ok?
+docker compose run --rm --no-deps capture doctor    # all ok, bar two warnings
 docker compose logs -f capture
 ```
+
+Two doctor warnings are expected inside a one-off container and mean
+nothing: `clock` (the image has no `timedatectl`, so NTP state is not
+checked; the host keeps the time) and `web` (the review pages run in
+their own container, which doctor cannot reach at 127.0.0.1). Everything
+else should be `ok`.
 
 The review pages are on port 8080 (`ports:` in `compose.yaml` to change).
 

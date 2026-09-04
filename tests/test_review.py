@@ -271,6 +271,19 @@ class DayViewTest(unittest.TestCase):
         self.assertEqual(storage(self.cfg)["ring_needs_bytes"], 0)
         self.assertEqual((fmt_bytes(512), fmt_bytes(2048), fmt_bytes(5 * 1024 ** 3)), ("512 B", "2 KB", "5.0 GB"))
 
+    def test_incidents_are_filed_by_the_days_their_packets_cover(self):
+        from threadwatch.review import capture_for_day
+        late = self.cfg.incidents_dir / "20260904T000500_auto-storm"      # frozen just after midnight...
+        late.mkdir(parents=True)
+        for h in ("20260830-22", "20260830-23", "20260831-00"):           # ...holding the storm's evening
+            (late / f"threadwatch-{h}.pcap").write_bytes(b"x")
+        (self.cfg.incidents_dir / "20260904T090000_empty").mkdir()          # no pcaps: its freeze day
+        by_day = {d: capture_for_day(self.cfg.ring_dir, self.cfg.incidents_dir, d)["incidents"]
+                  for d in ("2026-08-29", "2026-08-30", "2026-08-31", "2026-09-04")}
+        self.assertEqual(by_day, {"2026-08-29": [], "2026-08-30": [late.name], "2026-08-31": [late.name],
+                                  "2026-09-04": ["20260904T090000_empty"]})
+        self.assertEqual(capture_for_day(self.cfg.ring_dir, Path(self.tmp.name) / "none", "2026-08-30")["incidents"], [])
+
     def test_chooser_links_survive_url_special_characters_in_names(self):
         d = self.cfg.devices_path
         entries = json.loads(d.read_text())

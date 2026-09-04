@@ -471,12 +471,19 @@ def fmt_bytes(n: Optional[int]) -> str:
 
 def capture_for_day(ring_dir: Path, incidents_dir: Path, day: str) -> dict:
     """Whether packets for a day still exist: ring files (one week) and any
-    frozen incidents dated that day."""
+    frozen incidents whose pcaps cover it. An incident belongs to the days
+    its packets span, not the moment it was frozen: the storm logged on
+    one day is usually frozen after midnight, and the day page for the
+    storm is where the packets are wanted. One with no pcaps is filed
+    under its freeze day."""
     stamp = day.replace("-", "")
     ring = sorted(p.name for p in ring_dir.glob(f"threadwatch-{stamp}-*.pcap")) if ring_dir.exists() else []
-    incidents = sorted(p.name for p in incidents_dir.iterdir()
-                       if p.is_dir() and p.name.startswith(stamp)) if incidents_dir.exists() else []
-    return {"ring_files": ring, "incidents": incidents}
+    kept = []
+    for inc in incidents(incidents_dir):
+        span = inc["span"]
+        if (span[0][:8] <= stamp <= span[1][:8]) if span else inc["day"] == day:
+            kept.append(inc["name"])
+    return {"ring_files": ring, "incidents": sorted(kept)}
 
 
 def today() -> str:

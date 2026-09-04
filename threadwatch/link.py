@@ -22,7 +22,8 @@ and judges the average against the reference:
                           announced, cleared by the recovery event or by
                           the daily refresh (a drop that persists a day is
                           the new normal, and further drops measure from
-                          there).
+                          there). Either way the clearing is reported as a
+                          recovery, so an announced drop is always closed.
 
 The reference is only taken once a device has been heard enough for its
 average to have settled.
@@ -39,7 +40,9 @@ WARMUP_FRAMES = 200
 def assess(row: dict, now: float, drop_db: float, hold_s: float) -> Optional[str]:
     """Update one last-seen row's link bookkeeping. Returns "degraded" the
     moment a drop has held long enough to announce, "recovered" when an
-    announced drop has ended, else None. A drop_db of zero disables it."""
+    announced drop has ended (the signal came back, or the daily refresh
+    made the lower level the new reference), else None. A drop_db of zero
+    disables it."""
     rssi = row.get("rssi")
     if rssi is None or drop_db <= 0 or row.get("frames", 0) < WARMUP_FRAMES:
         return None
@@ -62,5 +65,9 @@ def assess(row: dict, now: float, drop_db: float, hold_s: float) -> Optional[str
     if now - row.get("rssi_ref_ts", now) >= DAY_S and (low_since is None or now - low_since >= DAY_S):
         row["rssi_ref"], row["rssi_ref_ts"] = rssi, now
         row.pop("rssi_low_since", None)
-        row.pop("rssi_degraded", None)
+        if row.pop("rssi_degraded", None):
+            # The announced drop is now the normal level. Report it closed,
+            # or the review would carry it as "still down" forever while
+            # the device page says the device is fine.
+            result = "recovered"
     return result

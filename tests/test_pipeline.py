@@ -450,6 +450,21 @@ class LinkDegradationTest(unittest.TestCase):
         self.assertEqual(rec[0]["severity"], "info")
         self.assertNotIn("rssi_degraded", pipe.seen.table[ROUTER])
 
+    def test_daily_refresh_of_a_lasting_drop_closes_it_as_recovered(self):
+        pipe = Pipeline(self.cfg, NullEventLog())
+        t = self._talk(pipe, 1_700_000_000.0, -60.0)
+        pipe.periodic(t)
+        t = self._talk(pipe, t, -70.0)
+        pipe.periodic(t)
+        pipe.periodic(t + 31 * 60)
+        self.assertEqual(len(self._events(pipe, "rssi_degradation")), 1)
+        pipe.periodic(t + 86400 + 1)                         # a day into the drop: re-based
+        rec = self._events(pipe, "rssi_recovered")
+        self.assertEqual(len(rec), 1)
+        self.assertIn("reference re-based", rec[0]["note"])
+        self.assertEqual(rec[0]["reference_dbm"], pipe.seen.table[ROUTER]["rssi_ref"])
+        self.assertNotIn("rssi_degraded", pipe.seen.table[ROUTER])
+
     def test_link_state_survives_a_restart(self):
         pipe = Pipeline(self.cfg, NullEventLog())
         t = self._talk(pipe, 1_700_000_000.0, -60.0)

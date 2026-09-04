@@ -73,13 +73,21 @@ class AssessTest(unittest.TestCase):
         # A day after the reference, but the drop is younger than a day: keep waiting.
         self.assertIsNone(assess(r, T0 + 2 * DAY_S, DROP, HOLD))
         self.assertEqual(r["rssi_ref"], -63.0)
-        self.assertIsNone(assess(r, T0 + 2 * DAY_S + 60, DROP, HOLD))
+        # The refresh adopts the low level and closes the announced drop.
+        self.assertEqual(assess(r, T0 + 2 * DAY_S + 60, DROP, HOLD), "recovered")
         self.assertEqual(r["rssi_ref"], -75.0)
         self.assertNotIn("rssi_degraded", r)
         self.assertNotIn("rssi_low_since", r)
         r["rssi"] = -84.0                                   # a further drop measures from the new normal
         assess(r, T0 + 2 * DAY_S + 120, DROP, HOLD)
         self.assertEqual(assess(r, T0 + 2 * DAY_S + 120 + HOLD, DROP, HOLD), "degraded")
+
+    def test_refresh_of_an_unannounced_drop_is_silent(self):
+        r = row(-60.0)
+        assess(r, T0, DROP, HOLD)
+        r["rssi"] = -63.0                                   # drift, never a drop
+        self.assertIsNone(assess(r, T0 + DAY_S, DROP, HOLD))
+        self.assertNotIn("rssi_degraded", r)
 
     def test_disabled_or_no_rssi(self):
         r = row(-60.0)

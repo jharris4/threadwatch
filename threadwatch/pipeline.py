@@ -575,8 +575,15 @@ class Pipeline:
                           "fading (moved, obstructed, interference nearby) while the device "
                           "still talks; a silence without a rejoin may follow"))
             else:
+                # A reference taken this very tick means the daily refresh
+                # closed the drop by adopting the lower level, not that the
+                # signal came back.
+                rebased = row.get("rssi_ref_ts") == now
                 self.events.emit("rssi_recovered", "info", now, addr=addr, name=name,
-                                 rssi_dbm=rssi, reference_dbm=ref)
+                                 rssi_dbm=rssi, reference_dbm=ref,
+                                 note=(f"reference re-based to {ref:g} dBm: the drop held a day "
+                                       "and is the new normal" if rebased else
+                                       f"back to its usual {ref:g} dBm"))
 
     # -------------------------------------------------- freeze on critical
 

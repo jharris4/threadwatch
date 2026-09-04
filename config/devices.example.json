@@ -1,7 +1,7 @@
 [
-  {"name": "Office Air Quality", "extendedAddress": "66417FE110ED6950", "role": "router"},
+  {"name": "Office Air Quality", "extendedAddress": "66417FE110ED6950"},
   {"name": "Living Room Apple TV",
    "extendedAddresses": ["B62C32BF669272DB", "E6C279E8F0C70298"],
-   "role": "border-router",
+   "model": "Apple TV 4K",
    "note": "Apple TVs rotate extended addresses; keep every address ever observed."}
 ]

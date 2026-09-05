@@ -144,7 +144,7 @@ credentials.toml too (docs/HOME-ASSISTANT.md).
       config.py    config.toml loading
       capture.py   live daemon (ring buffer) + replay
       cli.py       command-line interface
-    tests/         unittest suite (python3 -m unittest)
+    tests/         unittest suite (python3 -m unittest discover -s tests)
     vendor/        Nordic's sniffer extcap module (BSD, unmodified)
     firmware/      sniffer firmware hex + prebuilt DFU package
     bin/           threadwatch CLI shim, flash-dongle.sh, setup-host.sh (host install),
@@ -153,4 +153,4 @@ credentials.toml too (docs/HOME-ASSISTANT.md).
     Dockerfile, compose.yaml   the container alternative (docs/DOCKER.md)
     config/        examples for config.toml, devices.json, alerts.env, ha.env
     docs/          analysis cookbook, alerting, credentials, Docker, Home Assistant, review pages
-    .github/       CI: the test suite on push and pull request
+    .github/       CI: the test suite and a Docker build on push and pull request

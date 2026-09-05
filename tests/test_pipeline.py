@@ -1249,6 +1249,31 @@ class RetransmissionConfirmTest(unittest.TestCase):
         self.assertIn("paged if the rate is still up in 5 min", first["note"])
         self.assertNotIn("sustained_s", first)
 
+    def test_calm_low_traffic_minutes_end_an_elevation_rather_than_sustain_it(self):
+        # A minute under 100 frames never reached the detector, so it could
+        # not close an elevation: a one-minute burst, ten quiet minutes of
+        # 40 frames each and another one-minute burst paged as twelve
+        # minutes of sustained retries.
+        pipe = self._pipe()
+        w = self.run_minutes(pipe, [0.05] * 10)
+        w = self.run_minutes(pipe, [0.5], start=w, frames=120)
+        w = self.run_minutes(pipe, [0.0] * 10, start=w, frames=40)
+        w = self.run_minutes(pipe, [0.5], start=w, frames=120)
+        w = self.run_minutes(pipe, [0.05] * 3, start=w)
+        evs = self._events(pipe)
+        self.assertEqual(self._shape(evs), [("notice", False)])  # the second burst is inside the notice cooldown
+        self.assertNotIn("sustained_s", evs[0])
+        self.assertIsNone(pipe._retrans_since)                   # two calm full minutes closed it
+        # Thin minutes for longer than the cooldown: the elevation is over,
+        # and the next burst is a new one with its own notice (an open
+        # elevation would have given it none).
+        w = self.run_minutes(pipe, [0.05] * 12, start=w)
+        w = self.run_minutes(pipe, [0.5], start=w, frames=120)
+        w = self.run_minutes(pipe, [0.0] * 16, start=w, frames=40)
+        w = self.run_minutes(pipe, [0.5], start=w, frames=120)
+        self.run_minutes(pipe, [0.05] * 3, start=w)
+        self.assertEqual(self._shape(self._events(pipe)), [("notice", False)] * 3)
+
     def test_a_restart_during_an_elevation_neither_loses_the_page_nor_makes_it_normal(self):
         # Restarted in the second elevated minute, the detector used to
         # start its baseline from that minute's rate, and the same rate
@@ -1372,16 +1397,21 @@ class RetransmissionConfirmTest(unittest.TestCase):
         self.assertIn("still up in 2 min", evs[0]["note"])
         self.assertIn("elevated for 2 min", evs[1]["note"])
 
-    def test_a_thin_minute_is_neither_elevated_nor_a_lull(self):
+    def test_a_thin_minute_is_neither_elevated_nor_a_lull_nor_sustained(self):
         pipe = self._pipe()
         w = self.run_minutes(pipe, [0.05] * 10)
         w = self.run_minutes(pipe, [0.5, 0.5], start=w)
         w = self.run_minutes(pipe, [0.0] * 3, start=w, frames=20)  # too few frames to judge
         w = self.run_minutes(pipe, [0.5], start=w)
+        self.run_minutes(pipe, [0.5], start=w)                    # closes the sixth minute: three seen up so far
+        self.assertEqual(self._shape(self._events(pipe)), [("notice", False)])
+        self.assertIsNotNone(pipe._retrans_since)                 # still the same elevation...
+        w = self.run_minutes(pipe, [0.5, 0.5], start=w + 1)
         self.run_minutes(pipe, [0.05], start=w)
         evs = self._events(pipe)
         self.assertEqual(self._shape(evs), [("notice", False), ("warning", True)])
-        self.assertEqual(evs[1]["ts"], self.T + 16 * 60)          # still the same elevation
+        self.assertEqual(evs[1]["ts"], self.T + 18 * 60)          # ...paged at the fifth minute seen up
+        self.assertEqual(evs[1]["sustained_s"], 300)
 
     def test_pages_are_fifteen_minutes_apart_however_the_rate_flaps(self):
         pipe = self._pipe()

@@ -157,6 +157,7 @@ class Pipeline:
         self._retrans_base = 0.0
         self._retrans_lull = 0
         self._retrans_confirmed = False
+        self._retrans_up = 0.0                  # close of the last elevated minute
         # All of the above persist (retransmissions.json) and come back at
         # the next start. Without them a restart in the middle of an
         # elevation made the elevated rate the whole baseline: the first
@@ -271,12 +272,13 @@ class Pipeline:
             since = raw.get("since")
             state = (None if since is None else float(since), float(raw.get("base") or 0.0),
                      int(raw.get("lull") or 0), bool(raw.get("confirmed")),
-                     float(raw.get("alerted") or 0.0), float(raw.get("paged") or 0.0), float(raw["closed"]))
+                     float(raw.get("alerted") or 0.0), float(raw.get("paged") or 0.0), float(raw["closed"]),
+                     float(raw.get("up") or 0.0))
         except (OSError, ValueError, TypeError, KeyError, AttributeError):
             return
         self.retrans_counts.extend(rates)
         (self._retrans_since, self._retrans_base, self._retrans_lull, self._retrans_confirmed,
-         self._retrans_alerted, self._retrans_paged, self._retrans_closed) = state
+         self._retrans_alerted, self._retrans_paged, self._retrans_closed, self._retrans_up) = state
 
     def _save_retrans(self, closed: float) -> None:
         tmp = self.retrans_path.with_suffix(".tmp")
@@ -284,7 +286,7 @@ class Pipeline:
             tmp.write_text(json.dumps({
                 "closed": closed, "rates": list(self.retrans_counts), "since": self._retrans_since,
                 "base": self._retrans_base, "lull": self._retrans_lull, "confirmed": self._retrans_confirmed,
-                "alerted": self._retrans_alerted, "paged": self._retrans_paged}))
+                "alerted": self._retrans_alerted, "paged": self._retrans_paged, "up": self._retrans_up}))
             tmp.replace(self.retrans_path)
         except OSError as exc:
             print(f"[threadwatch] {self.retrans_path.name} not written: {exc}", flush=True)
@@ -643,10 +645,13 @@ class Pipeline:
                 cutoff = ts - 4
                 self.dup_recent = {k: v for k, v in self.dup_recent.items() if v > cutoff}
         if ts - self._win_start >= 60:
+            self._retrans_resume(self._win_start)
             if self._win_frames >= 100:
                 self._retrans_window(ts, self._win_dups / self._win_frames)
-                if not self.ephemeral:
-                    self._save_retrans(ts)
+            else:
+                self._retrans_thin(self._win_start, ts)
+            if not self.ephemeral:
+                self._save_retrans(ts)
             self._win_start = ts
             self._win_dups = self._win_frames = 0
             self._win_dup_by = {}
@@ -913,17 +918,9 @@ class Pipeline:
         and a long elevation pages again every 15 min.
 
         Across a restart the history, the frozen baseline and the open
-        elevation are the last run's (_load_retrans). The recorder saw
-        nothing between that run's last window and this one, so that gap
-        is not elevated time: the elevation's start moves past it, and the
-        page waits for confirm_s of minutes actually observed. Whether it
-        is still on is judged the usual way, against the frozen baseline,
-        and two calm minutes close it."""
-        if self._retrans_closed is not None:
-            gap = max(0.0, ts - 60 - self._retrans_closed)
-            self._retrans_closed = None
-            if self._retrans_since is not None:
-                self._retrans_since += gap
+        elevation are the last run's (_load_retrans, _retrans_resume).
+        A minute with too few frames to measure never gets here; see
+        _retrans_thin for what it does to an elevation."""
         self.retrans_counts.append(rate)
         median = sorted(self.retrans_counts)[len(self.retrans_counts) // 2]
         base = self._retrans_base if self._retrans_since is not None else median
@@ -934,6 +931,7 @@ class Pipeline:
                 if self._retrans_lull > 1:
                     self._retrans_since = None
             return
+        self._retrans_up = ts
         attribution = self._retrans_attribution()
         # One pair hammering each other is a chronic bad link between two
         # devices at the RF edge: worth a log line, not a page. Retries
@@ -976,6 +974,43 @@ class Pipeline:
             self.events.emit("retransmission_elevation", "notice" if one_link else "warning", ts,
                              rate=round(rate, 3), baseline=round(base, 3), sustained_s=sustained,
                              confirmed=True, **attribution)
+
+    def _retrans_resume(self, start: float) -> None:
+        """The first window after a restart: the recorder saw nothing
+        between the last run's last closed window and this one's start,
+        so that gap is not elevated time. The open elevation's start moves
+        past it, and the page waits for confirm_s of minutes actually
+        observed; whether the elevation is still on is judged the usual
+        way, against the frozen baseline, and two calm minutes close it."""
+        if self._retrans_closed is None:
+            return
+        gap = max(0.0, start - self._retrans_closed)
+        self._retrans_closed = None
+        if self._retrans_since is not None:
+            self._retrans_since += gap
+
+    # An elevation not seen up for this long is over, however few frames
+    # the minutes in between carried (the notice and page cooldown, so a
+    # burst that follows is a new elevation with its own notice).
+    RETRANS_UNSEEN_S = 900.0
+
+    def _retrans_thin(self, start: float, ts: float) -> None:
+        """A closed window with fewer than 100 frames: too few to measure
+        a rate, so it neither joins the baseline nor counts as elevated,
+        and it is not a lull either (a quiet mesh at night is not the
+        storm ending). But it is time in which the rate was not seen to be
+        up, and it must not count as sustained elevation: the elevation's
+        start moves past it, so the page waits for confirm_s of minutes in
+        which the rate was measured and up. Skipped outright, ten quiet
+        low-traffic minutes between two one-minute bursts paged as twelve
+        minutes of sustained retries nobody had observed. An elevation not
+        seen up for RETRANS_UNSEEN_S is closed."""
+        if self._retrans_since is None:
+            return
+        if ts - self._retrans_up > self.RETRANS_UNSEEN_S:
+            self._retrans_since = None
+            return
+        self._retrans_since += ts - start
 
     def _retrans_attribution(self) -> dict:
         """Who did the repeating this window, and to whom. One sender hammering

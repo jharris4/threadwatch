@@ -26,14 +26,31 @@ fi
 id "$RUN_USER" >/dev/null 2>&1 || { echo "no such user: $RUN_USER" >&2; exit 1; }
 
 echo "==> Python"
-if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
-  echo "    python3 >= 3.11 required (tomllib); found: $(python3 --version 2>&1 || echo none)" >&2
+# The interpreter the service runs is the one bin/threadwatch picks: the
+# repo-local .venv when it exists, else the system python3. The version
+# check, the packages and the import check below are all about that one
+# interpreter. A venv does not see the system site-packages, so distro
+# packages installed for python3 never reached a half-made .venv that the
+# launcher then preferred: setup reported success and the recorder failed
+# its imports, run after run.
+VENV="$REPO/.venv"
+if [ -x "$VENV/bin/python3" ]; then PY="$VENV/bin/python3"; else PY="$(command -v python3 || true)"; fi
+if [ -z "$PY" ] || ! "$PY" -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
+  echo "    python3 >= 3.11 required (tomllib); found: $("${PY:-python3}" --version 2>&1 || echo none) (${PY:-python3})" >&2
+  if [ "$PY" = "$VENV/bin/python3" ]; then
+    echo "    that is the repo's .venv, which bin/threadwatch prefers over the system python3: remove it (rm -rf $VENV) and re-run" >&2
+  fi
   exit 1
 fi
-echo "    $(python3 --version)"
+echo "    $("$PY" --version) ($PY)"
 
 echo "==> Python packages (pyserial, cryptography)"
-if command -v apt-get >/dev/null; then
+if [ "$PY" = "$VENV/bin/python3" ]; then
+  # An existing venv is the service's interpreter whatever package manager
+  # the host has: repair it in place.
+  sudo -u "$RUN_USER" "$PY" -m pip install --quiet -r "$REPO/requirements.txt"
+  echo "    installed into $VENV (bin/threadwatch prefers it over the system python3)"
+elif command -v apt-get >/dev/null; then
   apt-get update -qq
   apt-get install -y -qq python3-serial python3-cryptography > /dev/null
   echo "    apt: python3-serial, python3-cryptography"
@@ -49,11 +66,18 @@ elif command -v zypper >/dev/null; then
 else
   # No known package manager: a repo-local venv, which bin/threadwatch prefers
   # over the system python3 whenever it exists.
-  VENV="$REPO/.venv"
-  [ -x "$VENV/bin/python3" ] || sudo -u "$RUN_USER" python3 -m venv "$VENV"
-  sudo -u "$RUN_USER" "$VENV/bin/pip" install --quiet -r "$REPO/requirements.txt"
+  sudo -u "$RUN_USER" "$PY" -m venv "$VENV"
+  PY="$VENV/bin/python3"
+  sudo -u "$RUN_USER" "$PY" -m pip install --quiet -r "$REPO/requirements.txt"
   echo "    no apt/dnf/pacman/zypper: installed into $VENV"
 fi
+# What the service will do at its first import, done here where the
+# failure names the interpreter rather than in the journal.
+if ! "$PY" -c 'import serial, cryptography' 2>/dev/null; then
+  echo "    ERROR: $PY cannot import pyserial and cryptography after the install above; the recorder would not start" >&2
+  exit 1
+fi
+echo "    $PY imports pyserial and cryptography"
 
 echo "==> Serial port access for $RUN_USER"
 SERIAL_GROUP=""

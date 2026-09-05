@@ -16,9 +16,11 @@ is no authentication: keep it on your LAN or behind your own proxy.
   links and a strip of recent days with their event counts. Whether the
   packets for that day still exist (ring files last a week; frozen
   incidents last forever) is shown at the top. Today's page opens with a
-  *right now* card: devices quiet at this moment, devices whose signal
-  is down, and unnamed addresses; any day that has a daily summary shows
-  it under that. Today's page reloads itself every minute.
+  *right now* card: devices quiet at this moment (the ones the recorder
+  has announced, after `[quiet] silence_s` of silence it was up to hear;
+  `threadwatch report` and the daily summary list the same set), devices
+  whose signal is down, and unnamed addresses; any day that has a daily
+  summary shows it under that. Today's page reloads itself every minute.
   `?min=notice` or `?min=warning` hides the rows below that severity
   (the first-seen bursts, the marginal quiets) and carries through the
   previous / next links.

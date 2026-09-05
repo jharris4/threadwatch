@@ -13,6 +13,7 @@ from threadwatch.names import (DeviceNames, LastSeen, adopt, load_observed_names
 
 AQ = "26976e7f7d20964a"
 TV1 = "b62c32bf669272db"
+PLUG = "2a2d355a26ccae5f"
 TV2 = "e6c279e8f0c70298"
 
 
@@ -64,6 +65,38 @@ class SuggestTest(unittest.TestCase):
             self.assertEqual(load_observed_names(Path(d)), {})
             (Path(d) / "observed-names.json").write_text(json.dumps({AQ: {"x": 1}}))
             self.assertEqual(load_observed_names(Path(d)), {AQ: {"x": 1}})
+
+
+class ReportQuietTest(unittest.TestCase):
+    """threadwatch report's "quiet" is the recorder's own announcement,
+    the same set the pages show, not a third window of its own."""
+
+    def _seen(self):
+        seen = LastSeen(None)
+        now = 1_756_804_000.0
+        seen.touch(AQ, now - 5 * 3600, 1, pan=0x4e21)          # announced quiet by the recorder
+        seen.table[AQ]["quiet_reported"] = True
+        seen.touch(PLUG, now - 5 * 3600, 1, pan=0x4e21)        # silent as long, not (yet) announced
+        seen.touch(TV1, now - 5 * 3600, 1, pan=0x4e21)         # a hub's retired address
+        seen.table[TV1]["rotated_to"] = TV2
+        seen.touch(TV2, now - 60, 1, pan=0x4e21)
+        seen.touch("72d035122fdf06f6", now - 5 * 3600, 1, pan=0x58bc)   # a neighbour's device, flagged by an old run
+        seen.table["72d035122fdf06f6"]["quiet_reported"] = True
+        return seen, now
+
+    def test_default_is_what_the_recorder_announced_minus_retired_and_foreign(self):
+        seen, now = self._seen()
+        rep = seen.report(DeviceNames(None), now=now, dominant=0x4e21)
+        self.assertEqual([i["addr"] for i in rep["quiet"]], [AQ])
+        self.assertEqual(rep["active_count"], 2)                            # PLUG and TV2; TV1 retired, the stranger foreign
+        self.assertEqual(len(rep["unknown"]), 5)                            # naming is a separate question
+
+    def test_an_explicit_window_is_the_wall_clock_and_still_skips_retired_and_foreign(self):
+        seen, now = self._seen()
+        rep = seen.report(DeviceNames(None), quiet_after_s=3600, now=now, dominant=0x4e21)
+        self.assertEqual(sorted(i["addr"] for i in rep["quiet"]), sorted([AQ, PLUG]))
+        rep = seen.report(DeviceNames(None), quiet_after_s=3600, now=now)   # no PAN known: everyone is judged
+        self.assertEqual(sorted(i["addr"] for i in rep["quiet"]), sorted([AQ, PLUG, "72d035122fdf06f6"]))
 
 
 class RssiSmoothingTest(unittest.TestCase):

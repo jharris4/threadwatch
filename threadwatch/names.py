@@ -283,8 +283,18 @@ class LastSeen:
             return
         print(f"[threadwatch] unreadable {self.state_path.name} kept as {kept.name}", flush=True)
 
-    def report(self, names: DeviceNames, quiet_after_s: float, now: Optional[float] = None,
-               min_rssi_dbm: float = -82.0) -> dict:
+    def report(self, names: DeviceNames, quiet_after_s: Optional[float] = None,
+               now: Optional[float] = None, min_rssi_dbm: float = -82.0,
+               dominant: Optional[int] = None) -> dict:
+        """Quiet, active and unknown devices. "Quiet" is one thing
+        everywhere: what the recorder announced (the row's persisted
+        quiet_reported flag, set after [quiet] silence_s of silence it
+        was up to hear), which is also what the review pages show.
+        ``quiet_after_s`` instead lists every device silent that long on
+        the wall clock, for a table no recorder is judging. Either way
+        a retired address (an Apple hub's before its reboot) and a device
+        on another PAN (``dominant``) are never quiet, as in the
+        pipeline; they still count as unknown if unnamed."""
         now = now or time.time()
         quiet, active, unknown = [], [], []
         for addr, row in sorted(self.table.items(), key=lambda kv: kv[1]["last_seen"]):
@@ -303,9 +313,15 @@ class LastSeen:
             }
             if name is None:
                 unknown.append(item)
-            if silent_for > quiet_after_s:
-                quiet.append(item)
+            judged = not row.get("rotated_to") and (
+                dominant is None or row.get("pan") is None or row.get("pan") == dominant)
+            if quiet_after_s is None:
+                is_quiet = judged and bool(row.get("quiet_reported"))
             else:
+                is_quiet = judged and silent_for > quiet_after_s
+            if is_quiet:
+                quiet.append(item)
+            elif judged:
                 active.append(item)
         return {"quiet": quiet, "active_count": len(active), "unknown": unknown}
 

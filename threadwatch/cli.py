@@ -42,8 +42,10 @@ def main(argv=None) -> int:
     p_freeze.add_argument("label", nargs="?", default="incident")
 
     p_report = sub.add_parser("report", help="device last-seen / quiet / unknown-address report")
-    p_report.add_argument("--quiet-minutes", type=float, default=90.0,
-                          help="minutes of silence before a device is listed as quiet")
+    p_report.add_argument("--quiet-minutes", type=float, default=None,
+                          help="list every device silent this many minutes (wall clock) as quiet, instead of "
+                               "the devices the recorder has announced quiet (the same set the review pages "
+                               "show: [quiet] silence_s of silence it was up to hear)")
     p_report.add_argument("--suggest", action="store_true",
                           help="print a ready-to-paste devices.json entry per unknown address "
                                "instead of the report (names prefilled from harvested SRP hostnames)")
@@ -282,10 +284,11 @@ def main(argv=None) -> int:
     if args.cmd == "report":
         import sys
         from .names import LastSeen, load_names, load_observed_names, rotation_hints, suggest_entries
+        from .review import dominant_pan
         names = load_names(cfg)
         seen = LastSeen(cfg.state_dir / "last-seen.json")
-        report = seen.report(names, quiet_after_s=args.quiet_minutes * 60,
-                             min_rssi_dbm=cfg.quiet_min_rssi_dbm)
+        report = seen.report(names, quiet_after_s=None if args.quiet_minutes is None else args.quiet_minutes * 60,
+                             min_rssi_dbm=cfg.quiet_min_rssi_dbm, dominant=dominant_pan(seen, cfg.pan_id))
         if args.suggest:
             hints = rotation_hints(report["unknown"], seen.table, names)
             entries = suggest_entries(report["unknown"], load_observed_names(cfg.state_dir), hints)

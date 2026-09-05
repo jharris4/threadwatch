@@ -16,7 +16,7 @@ Your own network's PAN ID is in every frame; find it once
 | Question | Filter |
 | --- | --- |
 | Any foreign 802.15.4 network on my channel? | `wpan.src_pan && wpan.src_pan != 0x4e21` |
-| Who is scanning/joining? | `wpan.frame_type == 0x0` (beacons/beacon requests) |
+| Who is scanning/joining? | `wpan.frame_type == 0x0 \|\| (wpan.frame_type == 0x3 && wpan.cmd == 0x07)` (beacons, beacon requests) |
 | Everything one device sent | `wpan.src64 == 66:41:7f:e1:10:ed:69:50` |
 | Sleepy children polling their parents | `wpan.frame_type == 0x3 && wpan.cmd == 0x04` |
 | Traffic converging on one node (e.g. a hub) | `wpan.dst16 == 0x8400` |

@@ -29,6 +29,21 @@ class TapBoundaryTest(unittest.TestCase):
                 self.assertIsNone(f.ftype)
                 self.assertIsNone(f.rssi)
 
+    def test_nonfinite_rssi_does_not_poison_later_signal_measurements(self):
+        # Unsecured data with an extended source; payload need not decode.
+        mac = struct.pack('<HBH', 1 | (3 << 14), 1, 0x4e21) + bytes(range(8))
+        addr = bytes(range(8))[::-1].hex()
+        with tempfile.TemporaryDirectory() as d:
+            for bad in (float('nan'), float('inf'), float('-inf')):
+                with self.subTest(bad=bad):
+                    pipe = Pipeline(Config(data_dir=Path(d)), NullEventLog(),
+                                    Decryptor(bytes(16)), ephemeral=True)
+                    for i, rssi in enumerate((bad, -60.0)):
+                        raw = struct.pack('<HHHHf', 0, 12, 1, 4, rssi) + mac
+                        pipe.ingest(parse_frame(1700000000 + i, raw, DLT_TAP))
+                    self.assertEqual(pipe.seen.table[addr]['rssi'], -60.0)
+                    self.assertTrue(math.isfinite(pipe.devices[addr].rssi_ewma))
+                    json.dumps(pipe.seen.table, allow_nan=False)
 
 
 

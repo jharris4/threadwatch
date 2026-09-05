@@ -7,6 +7,7 @@ DLT 230 (IEEE802_15_4_NOFCS). Stdlib only.
 
 from __future__ import annotations
 
+import math
 import struct
 from dataclasses import dataclass
 from typing import BinaryIO, Iterator, Optional
@@ -167,7 +168,9 @@ def parse_frame(ts: float, data: bytes, dlt: int) -> Frame:
                 break   # Never borrow bytes from the MAC payload for a TLV.
             val = data[off + 4:off + 4 + tlv_len]
             if tlv_type == 1 and len(val) >= 4:
-                rssi = struct.unpack("<f", val[:4])[0]
+                value = struct.unpack("<f", val[:4])[0]
+                if math.isfinite(value):
+                    rssi = value
             elif tlv_type == 3 and len(val) >= 2:
                 channel = struct.unpack("<H", val[:2])[0]
             elif tlv_type == 10 and len(val) >= 1:

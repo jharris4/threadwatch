@@ -366,6 +366,13 @@ class Decryptor:
             key_mode = (sec_ctl >> 3) & 0x03
             counter = struct.unpack("<L", udp_payload[2:6])[0]
             aux = 1 + 4 + (1 if key_mode == 1 else 5 if key_mode == 2 else 9 if key_mode == 3 else 0)
+            if key_mode == 0 or len(udp_payload) < 1 + aux + 4:
+                # Mode 0 carries no key identifier (the key is implicit,
+                # and Thread never sends it on air), so there is no index
+                # to search under; and a message shorter than its security
+                # header plus the MIC is not one. Neither says anything
+                # about the credentials, so neither counts as a failure.
+                return None
             nonce = bytes.fromhex(src_ext_hex) + struct.pack(">L", counter) + bytes([sec_level])
             aad = src_ip + dst_ip + udp_payload[1:1 + aux]
             secret = udp_payload[1 + aux:]
@@ -376,7 +383,9 @@ class Decryptor:
                 mle_key, _mac = derive_keys(self.network_key, sequence)
                 candidates = [(sequence, mle_key, _mac)]
             else:
-                candidates = self._keys_for_index(udp_payload[1 + aux - 1])
+                # Modes 1 and 3: the key index is the last byte of the key
+                # identifier, after the 8-byte key source in mode 3.
+                candidates = self._keys_for_index(udp_payload[aux])
             for seq, mle_key, _mac in candidates:
                 try:
                     body = AESCCM(mle_key, tag_length=4).decrypt(nonce, secret, aad)

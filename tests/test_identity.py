@@ -305,6 +305,19 @@ class MleThroughThePipelineTest(unittest.TestCase):
     def _leader_data(partition_id, router_id):
         return bytes([11, 8]) + struct.pack(">L", partition_id) + b"\x00\x00\x00" + bytes([router_id])
 
+    def test_mle_without_a_key_identifier_or_cut_short_is_refused_not_a_crash(self):
+        # Key id mode 0 names no key: there is no index byte to read, and
+        # the byte at that offset is the frame counter's high byte. Mode 3
+        # puts the index 14 bytes in; a message cut before it must not
+        # raise. Neither is Thread traffic, so neither counts as a failure.
+        d = Decryptor(network_key=KEY)
+        src_ip = LINK_LOCAL + Decryptor._iid_from_ext(SED)
+        mode0 = bytes([0, 5 | (0 << 3)]) + struct.pack("<L", 0x01FFFFFF) + b"\x00" * 8
+        self.assertIsNone(d.parse_mle(mode0, SED, src_ip, ALL_NODES))
+        mode3 = bytes([0, 5 | (3 << 3)]) + struct.pack("<L", 7) + b"\x00" * 6
+        self.assertIsNone(d.parse_mle(mode3, SED, src_ip, ALL_NODES))
+        self.assertEqual(d.stats["mle_failed"], 0)
+
     def test_rejoin_partition_and_leader_are_learned_from_mle(self):
         with tempfile.TemporaryDirectory() as d:
             pipe = self._pipe(d)

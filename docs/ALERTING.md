@@ -273,8 +273,10 @@ window ends, whatever was held back goes out as one **digest** record: the
 same event name, `digest = true`, `count`, `name` = "N more", and the device
 names in `note`. So a second device failing three minutes after the first
 still reaches the phone within the cooldown, and a mesh-wide outage costs two
-messages instead of one per device. The digest opens the next window. A
-Home Assistant automation can key on `digest` to treat them differently.
+messages instead of one per device. The digest opens the next window, and a
+batch goes out when the window it was held in ends even if a new page has
+already opened the next window at that moment. A Home Assistant automation
+can key on `digest` to treat them differently.
 
 ### `type = "http"`
 

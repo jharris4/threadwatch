@@ -226,6 +226,12 @@ class Sink:
     ignore_events: frozenset = frozenset()
     _last: dict = field(default_factory=dict)      # event -> start of its current window
     _pending: dict = field(default_factory=dict)   # event -> records held back this window
+    # event -> start of the window its pending records were held in. A
+    # page that arrives at the window's end before the dispatcher has
+    # collected the digest opens the next window (_last moves on); the
+    # batch's deadline stays with the window it was held in, or each such
+    # page pushed the same batch back another cooldown.
+    _since: dict = field(default_factory=dict)
     # Held while a send is in flight: a sink that has not answered is not
     # sent to again until it has (see _bounded).
     _inflight: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
@@ -246,23 +252,28 @@ class Sink:
             return True
         if now - self._last.get(ev, 0.0) < self.cooldown_s:
             self._pending.setdefault(ev, []).append(record)
+            self._since.setdefault(ev, self._last.get(ev, 0.0))
             return False
         self._last[ev] = now
         return True
+
+    def _held_since(self, ev: str) -> float:
+        return self._since.get(ev, self._last.get(ev, 0.0))
 
     def next_digest_at(self) -> Optional[float]:
         """When the earliest window with held-back records ends, or None."""
         if not self._pending:
             return None
-        return min(self._last.get(ev, 0.0) + self.cooldown_s for ev in self._pending)
+        return min(self._held_since(ev) + self.cooldown_s for ev in self._pending)
 
     def due_digests(self, now: float, all_pending: bool = False) -> list[dict]:
         """Digests for windows that have ended; each opens the next window.
         ``all_pending`` closes every window now (the process is leaving)."""
         out = []
         for ev in list(self._pending):
-            if all_pending or now - self._last.get(ev, 0.0) >= self.cooldown_s:
+            if all_pending or now - self._held_since(ev) >= self.cooldown_s:
                 records = self._pending.pop(ev)
+                self._since.pop(ev, None)
                 self._last[ev] = now
                 out.append(digest_record(ev, records, self.cooldown_s, now))
         return out

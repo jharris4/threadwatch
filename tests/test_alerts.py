@@ -829,6 +829,25 @@ class DigestWindowTest(unittest.TestCase):
         self.assertFalse(sink.wants({**REC, "name": "Dining AQ"}, t + 301))   # the digest opened the next window
         self.assertEqual(sink.next_digest_at(), t + 600)
 
+    def test_a_page_at_the_boundary_does_not_push_the_held_batch_back(self):
+        # BUG-13: a page arriving at the window's end before the dispatcher
+        # collected the digest moved the batch's deadline to the new window,
+        # and every such page moved it again.
+        sink = alerts.HttpSink(name="t", url="http://x", cooldown_s=300)
+        self.assertTrue(sink.wants(REC, 1000))
+        self.assertFalse(sink.wants({**REC, "name": "Freezer Outlet"}, 1001))
+        self.assertTrue(sink.wants({**REC, "name": "Dining AQ"}, 1300))         # producer first: the next window opens
+        self.assertEqual(sink.next_digest_at(), 1300)                            # the held batch is due now, not at 1600
+        digests = sink.due_digests(1300)
+        self.assertEqual([(d["event"], d["count"], d["ts"]) for d in digests], [("device_quiet", 1, 1300)])
+        self.assertIn("Freezer Outlet", digests[0]["note"])
+        self.assertEqual(sink._pending, {})
+        for t in (1600, 1900):
+            self.assertTrue(sink.wants({**REC, "name": f"Porch {t}"}, t))
+            self.assertEqual(sink.due_digests(t), [])
+        self.assertFalse(sink.wants({**REC, "name": "Stove Light"}, 1901))      # held in the window opened at 1900
+        self.assertEqual(sink.next_digest_at(), 2200)
+
     def test_a_digest_carries_the_most_severe_event_it_stands_for(self):
         # A sink with its floor at notice holds back a mixed batch; the one
         # record that stands for them must read as urgent as the worst.

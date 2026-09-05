@@ -57,12 +57,24 @@ def _read_exact(stream: BinaryIO, n: int) -> bytes:
     return buf
 
 
+def _record_is_plausible(incl: int, snaplen: int) -> bool:
+    """A record header a writer of ours could have produced. Sixteen NUL
+    bytes unpack to a well-formed header of a zero-length record, and a
+    power cut on ext4 leaves exactly that: a tail the file system had
+    extended but never written. Every frame the sniffer emits has at least
+    a TAP or MAC header, so a zero length is the end of the good data, and
+    so is a length past the file's own snaplen."""
+    return 0 < incl <= (snaplen or 0xFFFFFFFF)
+
+
 def complete_length(path) -> int:
     """Bytes of a pcap file up to its last complete record.
 
-    A capture killed mid-write leaves a partial record at the tail; a
-    writer that appends after it would bury every later frame behind bytes
-    no reader can get past. 0 means there is no usable global header."""
+    A capture killed mid-write leaves a partial record at the tail, and a
+    power cut leaves a run of NULs; a writer that appends after either
+    would bury every later frame behind bytes no reader can get past (the
+    NULs read as phantom zero-length frames at 1970). 0 means there is no
+    usable global header."""
     with open(path, "rb") as fh:
         header = fh.read(24)
         if len(header) < 24:
@@ -74,12 +86,15 @@ def complete_length(path) -> int:
             endian = ">"
         else:
             return 0
+        snaplen = struct.unpack(endian + "L", header[16:20])[0]
         good = 24
         while True:
             rec = fh.read(16)
             if len(rec) < 16:
                 return good
             incl = struct.unpack(endian + "LLLL", rec)[2]
+            if not _record_is_plausible(incl, snaplen):
+                return good
             if len(fh.read(incl)) < incl:
                 return good
             good += 16 + incl
@@ -100,6 +115,7 @@ class PcapStreamReader:
             self.endian = ">"
         else:
             raise PcapFormatError(f"unsupported pcap magic {magic:#x} (pcapng? convert with: tshark -F pcap)")
+        self.snaplen = struct.unpack(self.endian + "L", header[16:20])[0]
         self.dlt = struct.unpack(self.endian + "L", header[20:24])[0]
 
     def __iter__(self) -> Iterator[Frame]:
@@ -108,6 +124,8 @@ class PcapStreamReader:
             if len(rec) < 16:
                 return   # EOF, or a record cut short by a crash mid-write
             ts_sec, ts_usec, incl, _orig = struct.unpack(self.endian + "LLLL", rec)
+            if not _record_is_plausible(incl, self.snaplen):
+                return   # a NUL tail from a power cut, or garbage: nothing past it is a frame
             data = _read_exact(self.stream, incl)
             if len(data) < incl:
                 return

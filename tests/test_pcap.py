@@ -1,6 +1,7 @@
 """The ring survives a capture killed mid-write."""
 
 import io
+import struct
 import sys
 import tempfile
 import unittest
@@ -88,6 +89,31 @@ class TruncatedRingTest(unittest.TestCase):
         cut = buf.getvalue()[:-3]
         self.assertEqual(len(list(PcapStreamReader(io.BytesIO(cut)))), 1)
         self.assertEqual(complete_length_of(cut), 24 + 16 + 9)   # header + one whole record
+
+    def test_a_nul_tail_from_a_power_cut_is_not_a_run_of_records(self):
+        # ext4 extends the file before the data lands: a power cut leaves
+        # NULs, and sixteen NULs unpack to a zero-length record at 1970.
+        buf = io.BytesIO()
+        w = PcapWriter(buf, DLT_NOFCS)
+        w.write(frame(1.0)); w.write(frame(2.0))
+        whole = buf.getvalue()
+        data = whole + b"\x00" * 4096
+        self.assertEqual(complete_length_of(data), len(whole))
+        self.assertEqual([round(f.ts) for f in PcapStreamReader(io.BytesIO(data))], [1, 2])
+        # A length past the file's snaplen is garbage too, not a record.
+        huge = whole + struct.pack("<LLLL", 1, 0, 0x7FFFFFFF, 0x7FFFFFFF) + b"x" * 32
+        self.assertEqual(complete_length_of(huge), len(whole))
+        with tempfile.TemporaryDirectory() as d:
+            ring = RingWriter(Path(d), keep_files=5, dlt=DLT_NOFCS)
+            ring.write(frame(1_700_000_000.0)); ring.close()
+            path = ring.current_path
+            with open(path, "ab") as fh:
+                fh.write(b"\x00" * 4096)
+            ring2 = RingWriter(Path(d), keep_files=5, dlt=DLT_NOFCS)     # the resume trims the NULs
+            ring2.write(frame(1_700_000_002.0)); ring2.close()
+            with open(path, "rb") as fh:
+                self.assertEqual([round(f.ts) for f in PcapStreamReader(fh)], [1_700_000_000, 1_700_000_002])
+            self.assertEqual(complete_length(path), path.stat().st_size)
 
     def test_microseconds_never_round_to_a_full_second(self):
         buf = io.BytesIO()

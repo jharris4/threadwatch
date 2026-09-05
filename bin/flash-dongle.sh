@@ -73,7 +73,11 @@ fi
 echo "==> $("$NRFUTIL" --version 2>/dev/null | head -1) at $NRFUTIL"
 
 # The J-Link warning is about debuggers; DFU over USB does not use one.
-nrfutil_quiet() { "$NRFUTIL" "$@" 2>&1 | grep -v 'JLinkARM\|SEGGER J-Link'; }
+# The status is nrfutil's own (pipefail), never grep's: grep -v exits 1
+# when it prints nothing, which is exactly what a successful command with
+# no output, or only the filtered warning, looks like, and under set -e
+# that aborted the script right after a flash that had worked.
+nrfutil_quiet() { "$NRFUTIL" "$@" 2>&1 | { grep -v 'JLinkARM\|SEGGER J-Link' || true; }; }
 
 echo "==> Press the dongle's sideways RESET button now (red LED should pulse slowly)."
 echo "    Waiting up to 60 s for the bootloader..."
@@ -91,7 +95,11 @@ if [ -z "${FOUND:-}" ]; then
 fi
 
 echo "==> Flashing sniffer firmware..."
-nrfutil_quiet device program --firmware "$PKG" --traits nordicDfu
+if ! nrfutil_quiet device program --firmware "$PKG" --traits nordicDfu; then
+  echo "nrfutil reported a failed flash (see above). Press the sideways reset button" >&2
+  echo "again so the red LED pulses, and re-run." >&2
+  exit 1
+fi
 
 # Unlike the old pip nrfutil, this one returns the dongle to application mode
 # itself, so no unplug/replug is needed -- but re-enumeration takes a couple of

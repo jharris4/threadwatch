@@ -2231,6 +2231,33 @@ class SummaryWindowTest(unittest.TestCase):
             self.assertEqual((s["frames_24h"], s["devices_heard_24h"]), (12, 1))
 
 
+    @unittest.skipUnless(hasattr(time, "tzset"), "needs time.tzset to switch zones")
+    def test_the_day_after_the_spring_clock_change_is_not_skipped(self):
+        # A summary at 00:30 on the day after the change reaches back to
+        # 23:30 two days before: three local days, and the middle one,
+        # 23 hours long, was read by neither of the two files opened.
+        import os
+        saved = os.environ.get("TZ")
+        os.environ["TZ"] = "America/Toronto"
+        time.tzset()
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                pipe = Pipeline(Config(data_dir=Path(d) / "data"), NullEventLog(), stub_decryptor(), ephemeral=True)
+                at = lambda stamp: time.mktime(time.strptime(stamp, "%Y-%m-%d %H:%M"))
+                now = at("2026-03-09 00:30")
+                self.assertEqual(now - 86400, at("2026-03-07 23:30"))
+                pipe.events.emit("device_quiet", "warning", at("2026-03-08 12:00"), addr=SENSOR)
+                pipe.events.emit("device_quiet", "warning", at("2026-03-07 23:00"), addr=ROUTER)   # before the window
+                pipe.events.emit("device_quiet", "warning", at("2026-03-07 23:45"), addr=STRANGER)
+                self.assertEqual(pipe.summary(now)["events_24h"]["warning"], 2)
+        finally:
+            if saved is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = saved
+            time.tzset()
+
+
 class FramesByHourLoadTest(unittest.TestCase):
     """frames-by-hour.json is the frame count the summary and the review
     pages draw across a restart. Loading keeps the newest 26 hourly

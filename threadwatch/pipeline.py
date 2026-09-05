@@ -1376,7 +1376,11 @@ class Pipeline:
                           if reception(r.get("rssi"), self.cfg.quiet_min_rssi_dbm) == "marginal")
         degraded = sorted(label(a) for a, r in ours.items() if r.get("rssi_degraded"))
         counts = {"critical": 0, "warning": 0, "notice": 0, "info": 0}
-        for day in dict.fromkeys((day_of(since), day_of(now))):
+        # Every local day the window touches: after the spring clock change
+        # 24 hours can span three of them, and reading the first and last
+        # day's files alone dropped the whole middle day's events.
+        days = dict.fromkeys(day_of(t) for t in [since + h * 3600 for h in range(25)] + [now])
+        for day in days:
             for r in self._records_of(day):
                 if r["ts"] >= since and r.get("event") != "daily_summary":
                     counts[r.get("severity", "info")] = counts.get(r.get("severity", "info"), 0) + 1

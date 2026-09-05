@@ -45,6 +45,25 @@ class KeepGbTest(unittest.TestCase):
             self.assertEqual(len(list(Path(d).glob("*.pcap"))), 3)
 
 
+class ChannelTest(unittest.TestCase):
+    def _load(self, text):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "config.toml"
+            path.write_text(text)
+            return config_mod.load(path)
+
+    def test_the_2_4_ghz_channels_11_to_26_and_no_other(self):
+        # 802.15.4 at 2.4 GHz is channels 11-26; the dongle cannot be tuned
+        # to 27, and 10 is nothing. Both ends are the radio's, not a typo.
+        self.assertEqual(self._load("[network]\npan_id = 0x4e21\n").channel, 25)
+        for ch in (11, 15, 25, 26):
+            self.assertEqual(self._load(f"[network]\nchannel = {ch}\n").channel, ch)
+        for bad in (0, 10, 27, 28, 255, -11):
+            with self.assertRaises(ValueError) as cm:
+                self._load(f"[network]\nchannel = {bad}\n")
+            self.assertEqual(str(cm.exception), f"[network] channel must be 11-26, not {bad}")
+
+
 class EventsKeepDaysTest(unittest.TestCase):
     def _load(self, text):
         with tempfile.TemporaryDirectory() as d:

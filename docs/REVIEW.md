@@ -57,8 +57,13 @@ is no authentication: keep it on your LAN or behind your own proxy.
 - **/incidents**: every frozen incident with when it was frozen, the
   hours its packets cover, and its size. Day pages link to it.
 - **/api/status** (with a `storage` block), **/api/incidents**,
-  **/api/day/YYYY-MM-DD**, **/api/devices**, **/api/device/<addr or name>**:
-  the same data as JSON, for Home Assistant or anything else. The device
+  **/api/days**, **/api/day/YYYY-MM-DD**, **/api/devices**,
+  **/api/device/<addr or name>**:
+  the same data as JSON, for Home Assistant or anything else. `/api/days`
+  is the day strip: one row per day that has an event file, newest first,
+  with `day`, `total` and a count per severity (`info`, `notice`,
+  `warning`, `critical`), so a sensor that wants "warnings today" reads
+  one row instead of paging through `/api/day/`. The device
   response carries `addr` and `last_seen` (the address heard most recently
   and its last-seen row, whichever address or name the request named: a
   rotating device is described by the address it is using now), `addresses`

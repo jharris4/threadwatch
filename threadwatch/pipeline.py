@@ -1060,7 +1060,7 @@ class Pipeline:
 
     def _poll_border_routers(self, now: float) -> None:
         """Browse in a thread (the capture loop must not block on the LAN
-        for three seconds) and apply the last result when it is in."""
+        for the browse's four-second wait) and apply the last result when it is in."""
         import threading
         if self._browse_thread is not None:
             if self._browse_thread.is_alive():

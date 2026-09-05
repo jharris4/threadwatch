@@ -5,6 +5,7 @@ event log, and the review pages are how you read it back later: what
 happened on a day, and what one device has been doing.
 
     bin/threadwatch web            # http://<host>:8080/, or [web] in config.toml
+    bin/threadwatch web --bind 127.0.0.1 --port 8081   # for one run, over the config
 
 `setup-host.sh` installs it as `threadwatch-web.service`, a separate
 read-only process from capture, so a page bug can never cost frames. There

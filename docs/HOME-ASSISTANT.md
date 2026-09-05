@@ -17,7 +17,15 @@ bin/threadwatch import --write    # writes devices.json and credentials.toml
 `threadwatch import` has two sources, each skippable (`--no-ha`,
 `--no-mdns`): Home Assistant for the Matter devices and the key, and the
 LAN itself (mDNS) for the border routers, which HA does not list (see
-"Apple TVs" below). One plan, one `--write`.
+"Apple TVs" below). One plan, one `--write`. The rest of its options:
+
+| option | when |
+| --- | --- |
+| `--url URL` | HA is not where `HA_URL` says (default `http://homeassistant.local:8123`) |
+| `--env-file FILE` | the token lives somewhere other than `config/ha.env` |
+| `--dataset-id ID` | HA holds several Thread datasets and none is preferred: the import stops and lists them, and this picks one |
+| `--no-devices` / `--no-credentials` | write only the other file (the key without touching names, or names on a host that must not hold the key) |
+| `--mdns-seconds N` | how long to wait for border routers to answer (default 4; raise it on a slow or reflected network) |
 
 **The token.** In Home Assistant open your profile (click your name at the
 bottom of the sidebar), scroll to the bottom to *Long-lived access
@@ -69,7 +77,9 @@ mDNS is ever out of reach. mDNS is link-local: the host running the
 import or the recorder must be on the routers' subnet, or your network
 must reflect mDNS between VLANs (UniFi: the mDNS setting on the networks
 involved; a Linux router: avahi's reflector). `threadwatch doctor` and
-`threadwatch border-routers` report what the host can see. HomeKit-only
+`threadwatch border-routers` report what the host can see (the latter
+waits `--seconds N` for answers, 4 by default, and exits 1 when nothing
+answers). HomeKit-only
 end devices such as locks never appear anywhere: name those with
 `threadwatch report --suggest` and `threadwatch adopt`, or the
 power-cycle method in docs/ANALYSIS.md.

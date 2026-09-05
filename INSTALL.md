@@ -142,6 +142,14 @@ When a line of `doctor` is not `ok`, or the daemon keeps restarting,
 docs/OPERATIONS.md says what each line and each journal message means and
 what to do about it.
 
+Every command takes `--config /path/to/config.toml` before the command
+name, for a second recorder on one host or a layout that is not the
+repo's: `bin/threadwatch --config /srv/tw2/config.toml doctor`. The
+`devices.json` and `credentials.toml` beside that file are used (and
+`adopt` writes there), while `data/` stays the repo's unless that file
+sets `[capture] data_dir`. The shim passes the repo's own config first,
+and the last `--config` wins.
+
 ## Without systemd (macOS, or a Linux without it)
 
 Everything runs the same; you supply the supervisor. `bin/threadwatch

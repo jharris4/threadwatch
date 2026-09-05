@@ -18,7 +18,14 @@ Configure in `config.toml`; put secrets in `config/alerts.env`; verify with
 ```sh
 bin/threadwatch alert-test              # sends a synthetic warning + one heartbeat push each
 bin/threadwatch alert-test --severity critical
+bin/threadwatch alert-test --event device_quiet --no-heartbeats   # a named event, sinks only
 ```
+
+`--event` sets the record's `event` field, so a receiver that routes on
+the event name (an HA automation with a condition on it) can be tried
+with the real name; `--no-heartbeats` leaves the monitors alone, for
+testing a sink without reassuring a heartbeat that should be failing. The
+command exits 1 when any delivery fails.
 
 Delivery runs on a background thread, never blocks capture, and never raises:
 a dead endpoint costs one journal line per failure (`alert sink 'x' failed:

@@ -39,7 +39,9 @@ question: *why did this device go offline?*
   the ring: hour-by-hour cadence, RSSI, ACKs, silences, and rejoin
   attempts. This is the "why did X go offline"
   command; `--hours 6` reads only the recent ring files, which on a Pi is
-  the difference between seconds and minutes. The device's episodes from
+  the difference between seconds and minutes, and `--pcap file` reads one
+  file instead of the ring (a frozen incident's hour, a capture from
+  elsewhere). The device's episodes from
   the event log (kept long after the packets roll off) follow, so a
   repeat offender shows as one.
 - **Device tracking without a controller** — including HomeKit-only
@@ -109,7 +111,10 @@ question: *why did this device go offline?*
 use randomized addresses (Apple TVs rotate them over time — record every
 address you've seen per device, the inventory format supports it).
 `threadwatch report` surfaces unknown addresses with how well the
-sniffer hears them and first/last-seen times; identify a
+sniffer hears them and first/last-seen times (its quiet list is what the
+recorder has announced; `--quiet-minutes 90` lists instead every device
+silent that long on the wall clock, a different question, useful for a
+table no recorder is judging); identify a
 device by power-cycling it and watching which address disappears and
 returns, then name it:
 

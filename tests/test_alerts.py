@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -316,6 +317,25 @@ class DeliveryTests(unittest.TestCase):
         for text in (sink.describe(), beat.describe()):
             self.assertNotIn("SECRET", text)
         self.assertIn("https://discord.com/...", sink.describe())
+
+    def test_described_sinks_hide_userinfo_and_command_arguments(self):
+        # Credentials before the host (Gotify, a basic-auth proxy, Uptime
+        # Kuma) and tokens on a command line (${TOKEN} is expanded before
+        # the sink is built) both went to the journal at every start.
+        sink = alerts.HttpSink(name="b", url="https://svc:tk_SECRET@alerts.example:8443/hook?tok=SECRET")
+        self.assertEqual(sink.describe(), "b: POST https://alerts.example:8443/...")
+        self.assertEqual(alerts._redact_url("https://user:SECRET@ntfy.example.org"), "https://ntfy.example.org/...")
+        self.assertEqual(alerts._redact_url("https://ntfy.example.org/"), "https://ntfy.example.org")
+        beat = alerts.Heartbeat(name="hc", url="https://user:SECRET@hc.example/")
+        self.assertNotIn("SECRET", beat.describe())
+        cmd = alerts.CommandSink(name="c", command=["curl", "-H", "Authorization: Bearer SECRET", "https://h/x"])
+        self.assertEqual(cmd.describe(), "c: curl (+3 args)")
+        self.assertEqual(alerts.CommandSink(name="c", command=["notify"]).describe(), "c: notify")
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"TOKEN": "tk_SECRET"}):
+            built = alerts.build_sink({"type": "command", "command": ["curl", "-H", "Authorization: Bearer ${TOKEN}",
+                                                                      "https://h/x"]}, 0, print)
+            self.assertNotIn("SECRET", built.describe())
+            self.assertIn("tk_SECRET", built.command[2])    # still sent, just not printed
 
     def test_partial_severity_table_never_yields_a_bare_name(self):
         table = {"warning": 5, "critical": 8}

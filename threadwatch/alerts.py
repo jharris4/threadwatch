@@ -290,17 +290,25 @@ class CommandSink(Sink):
                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
     def describe(self) -> str:
-        return f"{self.name}: {' '.join(shlex.quote(c) for c in self.command)}"
+        # The program only: the arguments have had ${VAR} expanded by then,
+        # and a token passed on the command line is the usual way to
+        # authenticate curl. The journal is not the place for it.
+        rest = len(self.command) - 1
+        return f"{self.name}: {shlex.quote(self.command[0]) if self.command else '<command>'}" \
+            + (f" (+{rest} args)" if rest > 0 else "")
 
 
 def _redact_url(url: str) -> str:
     """Scheme and host only for log output: Discord, Healthchecks, Uptime
-    Kuma, Cronitor and Home Assistant all carry the secret in the path."""
+    Kuma, Cronitor and Home Assistant all carry the secret in the path,
+    and Gotify, a basic-auth proxy or Uptime Kuma may carry it as
+    user:password before the host."""
     parts = urllib.parse.urlsplit(url)
     if not parts.netloc:
         return "<url>"
-    tail = "/..." if (parts.path not in ("", "/") or parts.query) else ""
-    return f"{parts.scheme}://{parts.netloc}{tail}"
+    host = parts.netloc.rsplit("@", 1)[-1]
+    dropped = parts.path not in ("", "/") or parts.query or host != parts.netloc
+    return f"{parts.scheme}://{host}{'/...' if dropped else ''}"
 
 
 # ----------------------------------------------------------------- presets

@@ -99,7 +99,9 @@ LEGEND = [
      "within 2 s), and more than double the recent baseline. A repeat means the sender got no "
      "acknowledgement. One sender hammering one target is a bad link between those two (notice, "
      "logged only); retries spread across many devices is channel-wide contention or "
-     "interference (warning), which is the early sign of a storm."),
+     "interference, which is the early sign of a storm: logged at notice for the first minute, "
+     "warning if the rate stays up for five ([retransmissions] confirm_s), since one minute is a "
+     "microwave."),
     ("storm", "Phase-locked storm",
      "Traffic floods recurring with a stable period: the signature of the mesh-wide broadcast "
      "storm that took the network down before. Critical. This is what the ring buffer is for: "

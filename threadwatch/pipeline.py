@@ -148,7 +148,15 @@ class Pipeline:
         self._win_frames = 0
         self._win_dup_by: dict[tuple, int] = {}  # (sender identity, dst) -> dups this window
         self._win_start = 0.0
-        self._retrans_alerted = 0.0
+        self._retrans_alerted = 0.0             # last opening record (notice, or the page with confirm_s = 0)
+        self._retrans_paged = 0.0               # last confirmed page
+        # The elevation in progress, if any: when its first elevated minute
+        # began, the baseline frozen then, sub-threshold minutes since the
+        # last elevated one, and whether it has paged.
+        self._retrans_since: Optional[float] = None
+        self._retrans_base = 0.0
+        self._retrans_lull = 0
+        self._retrans_confirmed = False
         self.quiet_reported: set[str] = set()
         # Hour bucket -> frames, last ~25 h, for the daily summary's frame
         # count. Persisted (frames-by-hour.json) so a summary sent soon
@@ -571,21 +579,7 @@ class Pipeline:
                 self.dup_recent = {k: v for k, v in self.dup_recent.items() if v > cutoff}
         if ts - self._win_start >= 60:
             if self._win_frames >= 100:
-                rate = self._win_dups / self._win_frames
-                self.retrans_counts.append(rate)
-                base = sorted(self.retrans_counts)[len(self.retrans_counts) // 2]
-                if rate > 0.2 and rate > 2 * base and ts - self._retrans_alerted > 900:
-                    self._retrans_alerted = ts
-                    attribution = self._retrans_attribution()
-                    # One pair hammering each other is a chronic bad link
-                    # between two devices at the RF edge: worth a log line,
-                    # not a page. Retries spread across the mesh are the
-                    # storm precursor this detector exists for.
-                    one_link = attribution.get("top_share", 0) >= 0.5
-                    self.events.emit("retransmission_elevation",
-                                     "notice" if one_link else "warning", ts,
-                                     rate=round(rate, 3), baseline=round(base, 3),
-                                     **attribution)
+                self._retrans_window(ts, self._win_dups / self._win_frames)
             self._win_start = ts
             self._win_dups = self._win_frames = 0
             self._win_dup_by = {}
@@ -827,6 +821,74 @@ class Pipeline:
             return None
         ext = addr if len(addr) == 16 else self.decryptor.short_to_ext.get(addr)
         return (self.names.name(ext) if ext else None) or addr
+
+    def _retrans_window(self, ts: float, rate: float) -> None:
+        """One closed minute of the retransmission-rate window.
+
+        A minute is elevated when more than 20% of frames were repeats and
+        that is over twice the baseline: the median of the last 30 minutes,
+        frozen for as long as an elevation lasts (a long one would otherwise
+        pull the median up under itself and end its own alarm). The first
+        elevated minute is logged (a notice, held back 15 min from the last
+        one); the warning waits until the rate has stayed up for
+        [retransmissions] confirm_s, judged at the minute that completes it
+        (and held back 15 min from the last page), because one elevated
+        minute is a microwave and a storm building keeps the rate up. One
+        sub-threshold minute inside an elevation does not end it; two do.
+        confirm_s = 0 is the old detector: the first elevated minute pages,
+        and a long elevation pages again every 15 min."""
+        self.retrans_counts.append(rate)
+        median = sorted(self.retrans_counts)[len(self.retrans_counts) // 2]
+        base = self._retrans_base if self._retrans_since is not None else median
+        elevated = rate > 0.2 and rate > 2 * base
+        if not elevated:
+            if self._retrans_since is not None:
+                self._retrans_lull += 1
+                if self._retrans_lull > 1:
+                    self._retrans_since = None
+            return
+        attribution = self._retrans_attribution()
+        # One pair hammering each other is a chronic bad link between two
+        # devices at the RF edge: worth a log line, not a page. Retries
+        # spread across the mesh are the storm precursor this detector
+        # exists for.
+        one_link = attribution.get("top_share", 0) >= 0.5
+        confirm_s = self.cfg.retrans_confirm_s
+        if self._retrans_since is None:
+            self._retrans_since = ts - 60             # this minute's start
+            self._retrans_base = base
+            self._retrans_lull = 0
+            self._retrans_confirmed = confirm_s <= 0
+            if ts - self._retrans_alerted > 900:
+                self._retrans_alerted = ts
+                extra = {}
+                if confirm_s > 0:
+                    extra["confirmed"] = False
+                    attribution["note"] = (attribution.get("note", "elevated retransmissions") +
+                                           f". Logged now; paged if the rate is still up in {confirm_s / 60:.0f} min "
+                                           "(a minute of interference passes, a storm building does not).")
+                self.events.emit("retransmission_elevation",
+                                 "notice" if (one_link or confirm_s > 0) else "warning", ts,
+                                 rate=round(rate, 3), baseline=round(base, 3), **attribution, **extra)
+            return
+        self._retrans_lull = 0
+        if confirm_s <= 0:
+            # The old detector: a long elevation is a warning every 15 min.
+            if ts - self._retrans_alerted > 900:
+                self._retrans_alerted = ts
+                self.events.emit("retransmission_elevation", "notice" if one_link else "warning", ts,
+                                 rate=round(rate, 3), baseline=round(base, 3), **attribution)
+            return
+        if (not self._retrans_confirmed and ts - self._retrans_since >= confirm_s
+                and ts - self._retrans_paged > 900):
+            self._retrans_confirmed = True
+            self._retrans_paged = ts
+            sustained = round(ts - self._retrans_since)
+            attribution["note"] = (f"retransmissions elevated for {sustained / 60:.0f} min: "
+                                   + attribution.get("note", "more than 20% of frames were repeats"))
+            self.events.emit("retransmission_elevation", "notice" if one_link else "warning", ts,
+                             rate=round(rate, 3), baseline=round(base, 3), sustained_s=sustained,
+                             confirmed=True, **attribution)
 
     def _retrans_attribution(self) -> dict:
         """Who did the repeating this window, and to whom. One sender hammering

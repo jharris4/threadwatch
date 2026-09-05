@@ -60,6 +60,11 @@ class Config:
     # inside eight minutes; a device that has really lost its parent stays
     # unanswered far longer. 0 pages at the threshold, as before.
     poll_confirm_s: float = 10 * 60
+    # [retransmissions] a minute of elevated retries is logged at notice and
+    # paged only if the rate has stayed up this long. One minute of
+    # elevation is a microwave; a storm building keeps the rate up. 0 pages
+    # at the first minute, as before.
+    retrans_confirm_s: float = 5 * 60
     # [border_routers] how often the recorder asks the LAN (mDNS, the
     # _meshcop._udp service every border router advertises) which extended
     # address each border router has now. Apple hubs change theirs on every
@@ -171,6 +176,11 @@ def load(path: Optional[Path]) -> Config:
         cfg.poll_confirm_s = float(polls.get("confirm_s", cfg.poll_confirm_s))
         if cfg.poll_confirm_s < 0:
             raise ValueError(f"[polls] confirm_s must be 0 (page at once) or more, not {cfg.poll_confirm_s:g}")
+        retrans = raw.get("retransmissions", {})
+        cfg.retrans_confirm_s = float(retrans.get("confirm_s", cfg.retrans_confirm_s))
+        if cfg.retrans_confirm_s < 0:
+            raise ValueError("[retransmissions] confirm_s must be 0 (page at the first minute) or more, "
+                             f"not {cfg.retrans_confirm_s:g}")
         brs = raw.get("border_routers", {})
         cfg.border_router_browse_s = float(brs.get("browse_s", cfg.border_router_browse_s))
         summary = raw.get("summary", {})

@@ -53,7 +53,7 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `poll_answered` | notice | `addr`, `name`, `note` |
 | `rssi_degradation` | notice | `addr`, `name`, `rssi_dbm`, `reference_dbm`, `drop_db`, `since`, `low_for_s`, `note` |
 | `rssi_recovered` | info | `addr`, `name`, `rssi_dbm`, `reference_dbm`, `note` |
-| `retransmission_elevation` | warning, or notice when one sender-target pair is `top_share` >= 0.5 of the retries (a chronic bad link, not a storm precursor) | `rate`, `baseline`, `addr`, `name`, `top_sender`, `top_target`, `top_share`, `note` |
+| `retransmission_elevation` | notice for the first elevated minute, warning once the rate has stayed up for `[retransmissions] confirm_s` (`confirmed`); notice regardless when one sender-target pair is `top_share` >= 0.5 of the retries (a chronic bad link, not a storm precursor) | `rate`, `baseline`, `addr`, `name`, `top_sender`, `top_target`, `top_share`, `confirmed`, `sustained_s`, `note` |
 | `partition_or_leader_change` | warning | `previous`, `current`, each with `partition`, `leader_router` and `leader` (the router id with the device's name once the MLE layer has matched it) |
 | `credentials_stale` | warning | `failed`, `note` |
 | `clock_step` | info | `step_s`, `note` (the host clock jumped forward, NTP after a boot without an RTC; silences spanning it are not counted) |
@@ -138,6 +138,24 @@ recorder has matched that short address to a device), which is the first
 thing to look at: is it the parent that died, or a link the sniffer
 cannot hear? The close time is kept with the last-seen rows,
 so a restart does not re-page a flapping device.
+
+`retransmission_elevation` is the storm precursor: in one minute more than
+20% of frames were repeats (same sender and sequence number within 2 s, a
+frame whose ACK never came) and that is over twice the baseline, the median
+of the last 30 minutes. Interference looks the same in a single minute as a
+storm building, and only the duration tells them apart, so the first
+elevated minute is a notice with `confirmed = false` and the warning waits
+until the rate has stayed up for `[retransmissions] confirm_s` (default 5
+min): a second record, `confirmed = true`, with `sustained_s`, folded into
+the same row on the review pages. The baseline is frozen for as long as an
+elevation lasts (a long one would otherwise raise the median under itself
+and end its own alarm), one sub-threshold minute inside an elevation does
+not end it, and two do. Whichever record it is, one sender-target pair with
+half or more of the retries makes it a notice: a failing link between two
+devices, not the mesh. Repeats are held back: an opening notice within 15
+min of the last, or a page within 15 min of the last page, is not sent.
+`confirm_s = 0` pages at the first elevated minute, as before, and the
+records carry no `confirmed` field.
 
 `daily_summary` goes out once per local day, the first time `periodic`
 runs at or after `[summary] hour` (default 8; -1 disables). The event log

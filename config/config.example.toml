@@ -59,6 +59,15 @@ rearm_s = 3600             # 60 min
 # lost its parent stays unanswered far longer. 0 pages at the threshold.
 confirm_s = 600            # 10 min
 
+[retransmissions]
+# A minute in which more than 20% of frames were repeats, at over twice the
+# recent baseline, is logged at notice; the warning waits until the rate has
+# stayed up this long. One elevated minute is a microwave or a neighbour's
+# Wi-Fi burst; a storm building keeps the rate up. 0 pages at the first
+# minute. (One sender hammering one target is a notice regardless: a bad
+# link between two devices, not the mesh.)
+confirm_s = 300            # 5 min
+
 [link]
 # Slow link degradation: a device still heard, but with its average RSSI at
 # the sniffer this far below its own daily reference for this long, is

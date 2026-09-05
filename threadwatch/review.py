@@ -158,6 +158,14 @@ def group_episodes(records: list[dict], now: Optional[float] = None) -> list[dic
         elif ev == "retransmission_elevation":
             key = (rec.get("top_sender") or "", rec.get("top_target") or "")
             ep = retrans.get(key)
+            if rec.get("confirmed") and (ep is None or rec["ts"] - ep["end"] > GAP_S["retransmissions"]):
+                # The page for an elevation logged minutes ago: the busiest
+                # pair may have changed since, but it is the same elevation,
+                # so it joins the newest open row rather than starting one.
+                recent = [e for e in retrans.values() if rec["ts"] - e["end"] <= GAP_S["retransmissions"]]
+                if recent:
+                    ep = max(recent, key=lambda e: e["end"])
+                    key = next(k for k, v in retrans.items() if v is ep)
             if ep is None or rec["ts"] - ep["end"] > GAP_S["retransmissions"]:
                 who = f"{key[0]} -> {key[1]}" if key[0] else "mesh-wide"
                 ep = retrans[key] = new("retransmissions", rec, f"retransmissions: {who}",

@@ -163,10 +163,13 @@ class QuietPolicyTest(unittest.TestCase):
         send(STRANGER, "0000", 200, base + 61)
         ev = [r for r in pipe.events.records if r["event"] == "retransmission_elevation"]
         self.assertEqual(len(ev), 1)
-        self.assertEqual(ev[0]["severity"], "warning")
+        # Mesh-wide is the paging kind, but one minute is logged first; the
+        # page waits for [retransmissions] confirm_s (RetransmissionConfirmTest).
+        self.assertEqual((ev[0]["severity"], ev[0]["confirmed"]), ("notice", False))
         self.assertLess(ev[0]["top_share"], 0.5)
         self.assertEqual(ev[0]["top_target"], "broadcast")
         self.assertIn("channel contention", ev[0]["note"])
+        self.assertIn("paged if the rate is still up in 5 min", ev[0]["note"])
 
     def test_a_mesh_whose_normal_rate_is_high_is_not_warned_about_every_15_min(self):
         """A busy install sits above 20% retransmissions all day. That is its
@@ -1140,6 +1143,197 @@ class PollStarvationTest(unittest.TestCase):
         self.assertEqual(len(evs), 1)
         self.assertEqual((evs[0]["severity"], evs[0]["reception"], evs[0]["episode"]), ("notice", "marginal", 1))
         self.assertIn("edge of its range", evs[0]["note"])
+
+
+class RetransmissionConfirmTest(unittest.TestCase):
+    """The first elevated minute is logged; the page waits until the rate has
+    stayed up for [retransmissions] confirm_s."""
+
+    T = 1_700_000_000.0
+    SENDERS = ["%016x" % (0x1000 + k) for k in range(8)]
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        (d / "devices.json").write_text("[]")
+        self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _pipe(self):
+        return Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+
+    def window(self, pipe, w, dup_frac, frames=200, senders=None):
+        """One minute of frames, dup_frac of them repeats within 2 s of the
+        original, spread over eight senders to broadcast (mesh-wide) unless
+        one sender is given (one link)."""
+        senders = senders or self.SENDERS
+        dups = round(frames * dup_frac)
+        uniq = frames - dups
+        base, gap = self.T + w * 60, 50.0 / max(uniq, 1)
+        for j in range(uniq):
+            at = base + j * gap
+            src = senders[j % len(senders)]
+            dst = "ffff" if len(senders) > 1 else "0000"
+            pipe.ingest(Frame(ts=at, raw=b"", psdu=b"", rssi=-60.0, channel=None, lqi=None,
+                              ftype=1, seq=j & 0xFF, dst_pan=OWN_PAN, dst=dst, src_pan=OWN_PAN, src=src))
+            for r in range((dups * (j + 1)) // uniq - (dups * j) // uniq):
+                pipe.ingest(Frame(ts=at + 0.1 * (r + 1), raw=b"", psdu=b"", rssi=-60.0, channel=None,
+                                  lqi=None, ftype=1, seq=j & 0xFF, dst_pan=OWN_PAN, dst=dst,
+                                  src_pan=OWN_PAN, src=src))
+
+    def run_minutes(self, pipe, fracs, start=0, **kw):
+        """Windows start..start+len(fracs); the last one is closed by the
+        first frame of the following minute, so run one more quiet window."""
+        for i, frac in enumerate(fracs):
+            self.window(pipe, start + i, frac, **kw)
+        return start + len(fracs)
+
+    @staticmethod
+    def _events(pipe):
+        return [r for r in pipe.events.records if r["event"] == "retransmission_elevation"]
+
+    @staticmethod
+    def _shape(evs):
+        return [(e["severity"], e.get("confirmed")) for e in evs]
+
+    def test_the_first_elevated_minute_is_logged_and_the_fifth_pages_with_the_baseline_frozen(self):
+        pipe = self._pipe()
+        w = self.run_minutes(pipe, [0.05] * 10)                 # a quiet baseline of 5%
+        w = self.run_minutes(pipe, [0.5] * 20, start=w)          # twenty minutes at 50%
+        self.run_minutes(pipe, [0.05], start=w)                  # closes the last one
+        evs = self._events(pipe)
+        self.assertEqual(self._shape(evs), [("notice", False), ("warning", True)])
+        first, page = evs
+        self.assertEqual(first["ts"], self.T + 11 * 60)          # the close of the first elevated minute
+        self.assertEqual(page["ts"], self.T + 15 * 60)           # the close of the fifth
+        self.assertEqual(page["sustained_s"], 300)
+        self.assertEqual((first["baseline"], page["baseline"]), (0.05, 0.05))
+        # The median of the last 30 windows is 50% by now; the frozen
+        # baseline is why the elevation is still open and did not re-open
+        # as a second notice after the 15 min cooldown.
+        self.assertGreater(sorted(pipe.retrans_counts)[len(pipe.retrans_counts) // 2], 0.4)
+        self.assertIsNotNone(pipe._retrans_since)
+        self.assertIn("retransmissions elevated for 5 min: retries spread across devices", page["note"])
+        self.assertLess(page["top_share"], 0.5)
+        self.assertEqual(page["top_target"], "broadcast")
+        self.assertIn("paged if the rate is still up in 5 min", first["note"])
+        self.assertNotIn("sustained_s", first)
+
+    def test_a_minute_or_two_of_interference_is_logged_and_never_paged(self):
+        # 2026-09-05 05:33: a microwave. One record in the log, nothing on the phone.
+        pipe = self._pipe()
+        w = self.run_minutes(pipe, [0.05] * 10)
+        w = self.run_minutes(pipe, [0.5, 0.5], start=w)
+        w = self.run_minutes(pipe, [0.05] * 16, start=w)          # quiet through the 15 min cooldown
+        w = self.run_minutes(pipe, [0.6], start=w)               # another burst
+        self.run_minutes(pipe, [0.05] * 3, start=w)
+        evs = self._events(pipe)
+        self.assertEqual(self._shape(evs), [("notice", False), ("notice", False)])
+        self.assertIsNone(pipe._retrans_since)                   # both elevations closed
+
+    def test_one_quiet_minute_inside_an_elevation_does_not_end_it_and_two_do(self):
+        pipe = self._pipe()
+        w = self.run_minutes(pipe, [0.05] * 10)
+        # Elevated, elevated, elevated, quiet, elevated: the fifth minute
+        # since the start completes the window, lull included.
+        w = self.run_minutes(pipe, [0.5, 0.5, 0.5, 0.05, 0.5], start=w)
+        self.run_minutes(pipe, [0.05], start=w)
+        evs = self._events(pipe)
+        self.assertEqual(self._shape(evs), [("notice", False), ("warning", True)])
+        self.assertEqual(evs[1]["ts"], self.T + 15 * 60)
+        # Two quiet minutes close it; the next elevated minute is a new
+        # elevation, whose notice is due once the 15 min cooldown has passed.
+        w = self.run_minutes(pipe, [0.05] * 14, start=w + 1)     # 16 quiet minutes in all since the page
+        w = self.run_minutes(pipe, [0.5], start=w)
+        self.run_minutes(pipe, [0.05], start=w)
+        evs = self._events(pipe)
+        self.assertEqual(self._shape(evs), [("notice", False), ("warning", True), ("notice", False)])
+
+    def test_confirm_zero_is_the_old_detector(self):
+        self.cfg.retrans_confirm_s = 0
+        pipe = self._pipe()
+        w = self.run_minutes(pipe, [0.05] * 10)
+        w = self.run_minutes(pipe, [0.5] * 20, start=w)
+        self.run_minutes(pipe, [0.05], start=w)
+        evs = self._events(pipe)
+        # Pages at the first elevated minute, and again 15 min later while it
+        # lasts (the old cooldown); never a confirmed record.
+        self.assertEqual([e["severity"] for e in evs], ["warning", "warning"])
+        self.assertEqual([e["ts"] for e in evs], [self.T + 11 * 60, self.T + 27 * 60])
+        for e in evs:
+            self.assertNotIn("confirmed", e)
+            self.assertNotIn("sustained_s", e)
+            self.assertNotIn("paged if", e["note"])
+
+    def test_one_bad_link_sustained_is_confirmed_at_notice(self):
+        pipe = self._pipe()
+        w = self.run_minutes(pipe, [0.05] * 10)
+        w = self.run_minutes(pipe, [0.5] * 6, start=w, senders=[STRANGER])
+        self.run_minutes(pipe, [0.05], start=w)
+        evs = self._events(pipe)
+        self.assertEqual(self._shape(evs), [("notice", False), ("notice", True)])
+        self.assertEqual((evs[1]["top_share"], evs[1]["sustained_s"]), (1.0, 300))
+        self.assertIn("a failing link between those two", evs[1]["note"])
+
+    def test_the_window_is_the_configured_length(self):
+        self.cfg.retrans_confirm_s = 120
+        pipe = self._pipe()
+        w = self.run_minutes(pipe, [0.05] * 10)
+        w = self.run_minutes(pipe, [0.5] * 3, start=w)
+        self.run_minutes(pipe, [0.05], start=w)
+        evs = self._events(pipe)
+        self.assertEqual(self._shape(evs), [("notice", False), ("warning", True)])
+        self.assertEqual((evs[1]["ts"], evs[1]["sustained_s"]), (self.T + 12 * 60, 120))
+        self.assertIn("still up in 2 min", evs[0]["note"])
+        self.assertIn("elevated for 2 min", evs[1]["note"])
+
+    def test_a_thin_minute_is_neither_elevated_nor_a_lull(self):
+        pipe = self._pipe()
+        w = self.run_minutes(pipe, [0.05] * 10)
+        w = self.run_minutes(pipe, [0.5, 0.5], start=w)
+        w = self.run_minutes(pipe, [0.0] * 3, start=w, frames=20)  # too few frames to judge
+        w = self.run_minutes(pipe, [0.5], start=w)
+        self.run_minutes(pipe, [0.05], start=w)
+        evs = self._events(pipe)
+        self.assertEqual(self._shape(evs), [("notice", False), ("warning", True)])
+        self.assertEqual(evs[1]["ts"], self.T + 16 * 60)          # still the same elevation
+
+    def test_pages_are_fifteen_minutes_apart_however_the_rate_flaps(self):
+        pipe = self._pipe()
+        w = self.run_minutes(pipe, [0.05] * 10)
+        # Five up, two down, five up, two down, seven up: three elevations.
+        w = self.run_minutes(pipe, ([0.5] * 5 + [0.05] * 2) * 2 + [0.5] * 7, start=w)
+        self.run_minutes(pipe, [0.05], start=w)
+        evs = self._events(pipe)
+        pages = [e for e in evs if e.get("confirmed")]
+        notices = [e for e in evs if e.get("confirmed") is False]
+        # The second elevation (minutes 17-21) completed 14 min after the
+        # first page: held back, like its opening notice. The third completed
+        # at minute 29, also inside the 15 min, and pages at the first
+        # elevated minute past them (16 min after the first page). Both
+        # openings were inside the notice cooldown too.
+        self.assertEqual([e["ts"] for e in pages], [self.T + 15 * 60, self.T + 31 * 60])
+        self.assertEqual([e["ts"] for e in notices], [self.T + 11 * 60])
+        self.assertEqual(pages[1]["sustained_s"], 420)
+
+    def test_a_confirmed_page_joins_the_row_its_notice_opened(self):
+        from threadwatch.review import group_episodes
+        recs = [
+            {"ts": self.T, "event": "retransmission_elevation", "severity": "notice", "confirmed": False,
+             "rate": 0.25, "baseline": 0.05, "top_sender": "Kitchen Light", "top_target": "broadcast",
+             "top_share": 0.14, "note": "retries spread across devices"},
+            {"ts": self.T + 240, "event": "retransmission_elevation", "severity": "warning", "confirmed": True,
+             "rate": 0.31, "baseline": 0.05, "sustained_s": 300, "top_sender": "Basement AQ",
+             "top_target": "Irrigation", "top_share": 0.3, "note": "retransmissions elevated for 5 min"},
+        ]
+        eps = group_episodes(recs)
+        self.assertEqual([(e["title"], e["count"], e["severity"], e["max_rate"]) for e in eps],
+                         [("retransmissions: Kitchen Light -> broadcast", 2, "warning", 0.31)])
+        # A confirmed record with nothing open within the hour is a row of its own.
+        eps = group_episodes(recs[1:])
+        self.assertEqual([(e["title"], e["count"]) for e in eps], [("retransmissions: Basement AQ -> Irrigation", 1)])
 
 
 class EventRetentionTest(unittest.TestCase):

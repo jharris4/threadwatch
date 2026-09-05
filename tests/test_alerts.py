@@ -55,6 +55,7 @@ class _Server:
 
     def close(self):
         self.httpd.shutdown()
+        self.httpd.server_close()      # shutdown() stops serve_forever; the listening socket needs this
 
 
 REC = {"ts": 1700000000.0, "event": "device_quiet", "severity": "warning",
@@ -279,6 +280,7 @@ class DeliveryTests(unittest.TestCase):
 
         drip = ThreadingHTTPServer(("127.0.0.1", 0), Drip)
         threading.Thread(target=drip.serve_forever, daemon=True).start()
+        self.addCleanup(drip.server_close)
         self.addCleanup(drip.shutdown)
         drip_url = f"http://127.0.0.1:{drip.server_port}/"
         logs = []
@@ -381,6 +383,7 @@ class DeliveryTests(unittest.TestCase):
             self.assertEqual([err for _s, err in results], ["HTTP 302"])   # reported, not followed
         finally:
             bounce.shutdown()
+            bounce.server_close()
             elsewhere.close()
 
     def test_heartbeat_without_failure_url_stays_silent_when_unhealthy(self):

@@ -159,7 +159,9 @@ class ReportSuggestTest(CliCase):
         from threadwatch.events import NullEventLog
         from threadwatch.pcap import Frame
         from threadwatch.pipeline import Pipeline
+        (self.d / "devices.json").write_text("[]")   # an inventory of our own, not the repo's fallback
         cfg = config_mod.load(Path(self.cfg))
+        self.assertEqual(cfg.devices_path, (self.d / "devices.json").resolve())
         names_file = cfg.state_dir / "observed-names.json"
         t = 1_756_800_000.0
 

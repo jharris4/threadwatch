@@ -306,7 +306,7 @@ def main(argv=None) -> int:
         if report["unknown"]:
             print(f"{len(report['unknown'])} unknown address(es) seen. Name them with "
                   f"'threadwatch adopt <addr> <name>', or 'threadwatch report --suggest' "
-                  f"for ready-to-paste entries (format: threadwatch/names.py).",
+                  f"for ready-to-paste entries (the format: README.md, devices.json).",
                   file=sys.stderr)
         return 0
 

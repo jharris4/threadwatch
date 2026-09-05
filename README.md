@@ -124,6 +124,32 @@ Home Assistant is your Thread controller, `threadwatch import` fills
 devices.json from it and from the LAN's border routers, and
 credentials.toml too (docs/HOME-ASSISTANT.md).
 
+### devices.json
+
+`config/devices.json` is a JSON list of entries, one per device
+(`config/devices.example.json` shows two). The fields the recorder honours:
+
+| field | required | meaning |
+| --- | --- | --- |
+| `name` | yes | the human name; every page, report and alert uses it. Blank leaves the addresses in the unknown list |
+| `extendedAddress` | one of the two | one 16-hex-digit 802.15.4 extended address (`66417FE110ED6950`; case and colons are ignored) |
+| `extendedAddresses` | one of the two | a list of them, for a device that has had several. Both fields may be present; every address named is this device |
+| `model` | no | free text (`threadwatch import` fills it from Home Assistant or mDNS) |
+| `note` | no | free text for the person editing the file |
+| `borderRouter` | no | the mDNS hostname of a border router (`appletv-living-room.local`), so a new address announced under that hostname is named from this entry without an edit (docs/HOME-ASSISTANT.md) |
+
+Anything else is ignored, so a file produced by another tool loads as
+long as it has names and addresses. What a device is doing on the mesh
+(router, child, leader, parent) is learned from traffic and never read
+from here. The rules when the file is not quite right: an address that is
+not 16 hex digits is dropped with a journal line and the rest of the
+entry stands; an entry that is not an object is skipped; a file that is
+not a list, or not valid JSON, is ignored whole, with a journal line and
+a `FAIL` from `threadwatch doctor`, and every device is unknown until it
+is fixed. One address may belong to one entry: `adopt` refuses to move an
+address already listed under another name, which is an edit for you to
+make. The daemon reads the file at start, so restart it after editing.
+
 ## Repository layout
 
     threadwatch/   the Python package

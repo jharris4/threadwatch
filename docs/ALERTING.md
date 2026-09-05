@@ -163,9 +163,14 @@ name = "phone"                 # for journal lines and alert-test output
 type = "http"                  # http | command | ntfy (preset)
 min_severity = "warning"       # default warning
 cooldown_s = 300               # per event name, per sink; default 300 (see Digests)
-timeout_s = 10
+timeout_s = 10                 # for the whole request, connect to reply
 enabled = true
 ```
+
+`timeout_s` bounds the whole request. A sink that has not answered by then
+is given up on and logged, and is skipped until that request has finished,
+so one stalled endpoint never holds back the records or the other sinks
+queued behind it.
 
 ### Digests
 
@@ -260,6 +265,7 @@ interval_s = 60                # minimum 10
 method = "POST"
 headers = { Authorization = "Bearer ${GATUS_THREADWATCH_TOKEN}" }
 # body = "..."                 # optional, sent verbatim (text/plain)
+# timeout_s = 10               # for the whole request, as for sinks
 ```
 
 "Healthy" means a frame arrived within the last three minutes; until a run has
@@ -269,6 +275,8 @@ built-in watchdog exits the process for systemd to restart, so a monitor sees
 either a `failure_url` hit or silence, never a reassuring beat from a stalled
 capture. Each heartbeat runs on its own timer in one daemon thread; failures
 are logged on the transition (first miss, then recovery), not every interval.
+A beat with no answer inside `timeout_s` is given up on, so one stalled
+monitor does not hold the beats to the others.
 
 ## Recipes
 

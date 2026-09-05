@@ -9,7 +9,7 @@ import threading
 import time
 import unittest
 from unittest import mock
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -254,6 +254,50 @@ class DeliveryTests(unittest.TestCase):
         self.assertLess(elapsed, 5)                 # ...and no longer than that
         self.assertTrue(d._thread.is_alive())       # abandoned; capture os._exit()s over it
         self.assertEqual(alerts.Dispatcher.close.__defaults__, (15.0,))
+
+    def test_a_sink_answering_a_byte_at_a_time_does_not_hold_the_others(self):
+        # urlopen's timeout bounds each socket read, not the request: a
+        # remote that accepts and then drips its reply never trips it, and
+        # every other sink and record waited behind it, silently.
+        class Drip(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                self.send_response(200)
+                self.send_header("Content-Length", "1000")
+                self.end_headers()
+                try:
+                    for _ in range(30):             # 3 s of one byte every 0.1 s
+                        self.wfile.write(b"x")
+                        self.wfile.flush()
+                        time.sleep(0.1)
+                except OSError:
+                    pass
+
+            def log_message(self, *a):
+                pass
+
+        drip = ThreadingHTTPServer(("127.0.0.1", 0), Drip)
+        threading.Thread(target=drip.serve_forever, daemon=True).start()
+        self.addCleanup(drip.shutdown)
+        drip_url = f"http://127.0.0.1:{drip.server_port}/"
+        logs = []
+        slow = alerts.HttpSink(name="slow", cooldown_s=0, timeout_s=0.5, url=drip_url)
+        good = alerts.HttpSink(name="good", cooldown_s=0, url=self.srv.url)
+        d = alerts.Dispatcher([slow, good], logs.append)
+        started = time.time()
+        for i in range(2):
+            d.offer({**REC, "name": f"Device {i}"})
+        self.assertEqual(len(self.srv.wait(2, timeout=3.0)), 2)     # both records reached the healthy sink
+        self.assertLess(time.time() - started, 2.0)                 # ...without waiting out the drip
+        self.assertTrue(any("'slow'" in m and "no answer within 0.5 s" in m for m in logs), logs)
+        self.assertTrue(any("'slow'" in m and "still not been answered" in m for m in logs), logs)
+        # Heartbeats share the deadline (push_all is the runner's synchronous form).
+        beats = [alerts.Heartbeat(name="drip", url=drip_url, timeout_s=0.5),
+                 alerts.Heartbeat(name="good", url=self.srv.url + "/ping")]
+        started = time.time()
+        out = alerts.HeartbeatRunner(beats, healthy=lambda: True, log=logs.append, start=False).push_all(healthy=True)
+        self.assertEqual([(b.name, err is None) for b, err in out], [("drip", False), ("good", True)])
+        self.assertLess(time.time() - started, 2.0)
 
     def test_close_without_sinks_or_pending_is_quick(self):
         with tempfile.TemporaryDirectory() as d:

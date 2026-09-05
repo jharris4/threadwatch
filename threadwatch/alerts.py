@@ -51,6 +51,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any, Callable, Optional
 
 SEVERITIES = ("info", "notice", "warning", "critical")
@@ -202,6 +203,9 @@ class Sink:
     timeout_s: float = 10.0
     _last: dict = field(default_factory=dict)      # event -> start of its current window
     _pending: dict = field(default_factory=dict)   # event -> records held back this window
+    # Held while a send is in flight: a sink that has not answered is not
+    # sent to again until it has (see _bounded).
+    _inflight: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def wants(self, record: dict, now: float, ignore_cooldown: bool = False) -> bool:
         if _severity_index(record.get("severity", "info"), 0) < self.min_severity:
@@ -482,7 +486,7 @@ class Dispatcher:
             if not s.wants(record, time.time(), ignore_cooldown=ignore_cooldown):
                 continue
             try:
-                s.send(record)
+                _bounded(s, partial(s.send, record), s.timeout_s, "send")
                 out.append((s, None))
             except Exception as exc:
                 out.append((s, _describe_error(exc)))
@@ -503,11 +507,47 @@ class Dispatcher:
             sends = [(s, item["record"]) for s in item["sinks"]] if item else []
             for s, record in sends + digests:
                 try:
-                    s.send(record)
+                    _bounded(s, partial(s.send, record), s.timeout_s, "send")
                 except Exception as exc:
                     self.log(f"alert sink '{s.name}' failed: {_describe_error(exc)}")
             if last:
                 return
+
+
+def _bounded(target, call: Callable[[], Any], timeout_s: float, what: str) -> Any:
+    """Run ``call`` (a send to ``target``) under a wall-clock deadline.
+
+    urlopen's timeout bounds each socket operation, not the request: a
+    remote that accepts the connection and then answers a byte at a time
+    (an overloaded server behind a proxy, a captive portal) never trips
+    it, and the thread parks there with every other sink and every queued
+    record behind it, silently. So the call runs in a thread of its own;
+    past the deadline it is left to finish or not and TimeoutError is
+    raised. While it is still in flight another send to the same target
+    is refused at once, rather than stacking one parked thread behind
+    another.
+    """
+    lock = target._inflight
+    if not lock.acquire(blocking=False):
+        raise TimeoutError(f"the previous {what} has still not been answered")
+    done = threading.Event()
+    box: dict = {}
+
+    def run():
+        try:
+            box["result"] = call()
+        except BaseException as exc:
+            box["exc"] = exc
+        finally:
+            lock.release()
+            done.set()
+
+    threading.Thread(target=run, daemon=True, name=f"{what}-{target.name}").start()
+    if not done.wait(timeout_s):
+        raise TimeoutError(f"no answer within {timeout_s:g} s")
+    if "exc" in box:
+        raise box["exc"]
+    return box.get("result")
 
 
 def _describe_error(exc: Exception) -> str:
@@ -531,6 +571,7 @@ class Heartbeat:
     body: Optional[str] = None
     failure_url: Optional[str] = None     # hit instead of url when unhealthy
     timeout_s: float = 10.0
+    _inflight: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def push(self, healthy: bool) -> bool:
         """Beat, or report the stall. Returns False when nothing was sent:
@@ -609,7 +650,7 @@ class HeartbeatRunner:
             return out
         for b in self.beats:
             try:
-                b.push(state)
+                _bounded(b, partial(b.push, state), b.timeout_s, "heartbeat")
                 out.append((b, None))
             except Exception as exc:
                 out.append((b, _describe_error(exc)))
@@ -627,7 +668,7 @@ class HeartbeatRunner:
                     continue
                 due[b.name] = now + b.interval_s
                 try:
-                    b.push(state)
+                    _bounded(b, partial(b.push, state), b.timeout_s, "heartbeat")
                     if b.name in self._failing:
                         self._failing.discard(b.name)
                         self.log(f"heartbeat '{b.name}' recovered")

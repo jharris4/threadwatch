@@ -21,12 +21,16 @@ from pathlib import Path
 STATE_FILES = ("status.json", "last-seen.json", "observed-names.json", "frames-by-hour.json",
                "border-routers.json")
 _LABEL = re.compile(r"[^A-Za-z0-9._-]+")
-# A copy in progress is built under this suffix and renamed into place only
-# once whole. The capture daemon leaves through os._exit on every path,
-# which unwinds nothing: a freeze it interrupts must not be findable as an
-# incident (review.incidents skips the suffix), and a leftover is discarded
-# at the next start (discard_partials).
-PARTIAL_SUFFIX = ".partial"
+# A copy in progress is built under this directory, beside the finished
+# incidents, and renamed into place only once whole. The capture daemon
+# leaves through os._exit on every path, which unwinds nothing: a freeze it
+# interrupts must not be findable as an incident (review.incidents lists
+# only the incidents directory itself), and a leftover is discarded at the
+# next start (discard_partials). Staging lives in its own directory rather
+# than under a name suffix so that no label a user can type (safe_label
+# keeps periods, so "test.partial" is one) can make a whole incident look
+# like a half copy.
+STAGING_DIR = ".staging"
 
 
 def safe_label(label: str) -> str:
@@ -42,7 +46,7 @@ def freeze_ring(cfg, label: str = "incident", now: float | None = None) -> tuple
     label = safe_label(label)
     stamp = time.strftime("%Y%m%dT%H%M%S", time.localtime(now or time.time()))
     final = cfg.incidents_dir / f"{stamp}_{label}"
-    dest = final.with_name(final.name + PARTIAL_SUFFIX)
+    dest = cfg.incidents_dir / STAGING_DIR / final.name
     # Never over an incident that exists (the same label twice in one
     # second), and never into a half copy another freeze is building or
     # a dead run left behind: an incident is whole or it is nothing.
@@ -82,11 +86,12 @@ def discard_partials(incidents_dir: Path) -> list[str]:
     by a restart or the stall watchdog) and return their labels. Nothing in
     one can be trusted to be whole, and the ring it was copied from is
     still there for the retry."""
-    if not incidents_dir.exists():
+    staging = incidents_dir / STAGING_DIR
+    if not staging.is_dir():
         return []
     labels = []
-    for d in sorted(incidents_dir.iterdir()):
-        if d.is_dir() and d.name.endswith(PARTIAL_SUFFIX):
+    for d in sorted(staging.iterdir()):
+        if d.is_dir():
             shutil.rmtree(d, ignore_errors=True)
-            labels.append(d.name[:-len(PARTIAL_SUFFIX)].partition("_")[2] or d.name)
+            labels.append(d.name.partition("_")[2] or d.name)
     return labels

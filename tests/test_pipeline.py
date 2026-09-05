@@ -588,7 +588,7 @@ class QuietPolicyTest(unittest.TestCase):
         self.cfg.freeze_on_critical = True
         t0 = 1_700_000_000.0
         stamp = time.strftime("%Y%m%dT%H%M%S", time.localtime(t0 - 600))
-        half = self.cfg.incidents_dir / f"{stamp}_auto-storm.partial"     # the run died 10 min ago, mid-copy
+        half = self.cfg.incidents_dir / ".staging" / f"{stamp}_auto-storm"    # the run died 10 min ago, mid-copy
         half.mkdir(parents=True)
         (half / "threadwatch-20231114-21.pcap").write_bytes(b"ring")
         pipe = self._pipe()

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 from .events import day_bounds, day_of, iter_days, list_days, read_day
+from .freeze import STAGING_DIR
 from .names import DeviceNames, LastSeen, reception, rloc16_role
 
 SEVERITY_RANK = {"info": 0, "notice": 1, "warning": 2, "critical": 3}
@@ -479,7 +480,7 @@ def incidents(incidents_dir: Path) -> list[dict]:
         return []
     out = []
     for d in incidents_dir.iterdir():
-        if not d.is_dir() or d.name.endswith(".partial"):      # freeze.PARTIAL_SUFFIX: a copy still running, or cut short
+        if not d.is_dir() or d.name == STAGING_DIR:      # a copy still running, or cut short, is not an incident
             continue
         stamp, _, label = d.name.partition("_")
         try:

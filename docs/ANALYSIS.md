@@ -109,9 +109,10 @@ with any run of anything else replaced by `-` (`storm at noon` becomes
 `storm-at-noon`; an empty label becomes `incident`). Automatic ones are
 labelled `auto-storm`. The ring file being written is copied as it is, so
 its last record can be cut short; readers stop cleanly there.
-`border-routers.json` is not copied today. A directory ending in
-`.partial` is a copy still running or one cut short by a restart; the
-listing ignores it and the daemon deletes it at its next start.
+A copy still running is built under `data/incidents/.staging/` and
+renamed into place once whole; one cut short by a restart stays there,
+where the listing never sees it, and the daemon deletes it at its next
+start.
 
 Nothing prunes an incident: each one is the size of the ring (about
 1.2 GB for a week at rest) and stays until `threadwatch incidents --delete

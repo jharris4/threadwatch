@@ -144,7 +144,7 @@ class FreezeTest(CliCase):
         code, out, _ = self.run_cli("freeze", "my label/with junk")
         self.assertEqual(code, 0)
         self.assertIn("froze 2 ring files", out)
-        inc = next(cfg.incidents_dir.iterdir())
+        inc = next(p for p in cfg.incidents_dir.iterdir() if not p.name.startswith("."))
         self.assertTrue(inc.name.endswith("_my-label-with-junk"))
         self.assertEqual(sorted(p.name for p in inc.iterdir()),
                          ["border-routers.json", "events", "last-seen.json",

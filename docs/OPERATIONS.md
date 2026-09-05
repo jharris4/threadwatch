@@ -244,6 +244,8 @@ it up if you care about the history; nothing else holds it.
         frames-by-hour.json  frames per hour, the last day or so, for the daily summary
         retransmissions.json the retransmission detector's last 30 minute rates and the
                              elevation in progress, so a restart mid-incident keeps its baseline
+        blind-spans.json     when the recorder was not listening (its own outages, clock steps),
+                             kept while a device's silence still reaches back over one
         border-routers.json  mDNS hostname -> current address of each border router, with the
                              addresses it retired (how a rebooted Apple hub keeps its name)
         capture.fifo         the pipe the sniffer writes into; recreated at every start

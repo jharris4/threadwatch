@@ -418,6 +418,43 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual(rec["last_seen"], pipe2.seen.table[ROUTER]["last_seen"])
         self.assertIn("not listening for 38 min of the 69 min", rec["note"])
 
+    def test_a_second_restart_still_keeps_the_first_ones_outage_off_the_devices(self):
+        # Router last heard at T; the recorder stopped at T+120 and came back
+        # at T+2400, which it correctly took as its own blindness. Then a
+        # sensor was heard, and the recorder restarted again a second later:
+        # that outage was known only to the run that had just ended, and
+        # the router was charged the whole 41 minutes and announced.
+        from unittest import mock
+        T = time.time() - 3000
+        pipe = self._pipe()
+        pipe.ingest(frame(T, ROUTER))
+        pipe.ingest(frame(T + 120, SENSOR))
+        pipe.seen.save()
+        self._status(updated=T + 120, last_frame_ts=T + 120)
+        with mock.patch("threadwatch.pipeline.time.time", lambda: T + 2400):
+            pipe2 = self._pipe()
+        self.assertEqual(self._quiet(pipe2), [])
+        self.assertAlmostEqual(pipe2.silence_s(pipe2.seen.table[ROUTER], T + 2400), 120, delta=1)
+        pipe2.ingest(frame(T + 2460, SENSOR))
+        pipe2.seen.save()
+        self._status(updated=T + 2460, last_frame_ts=T + 2460)
+        with mock.patch("threadwatch.pipeline.time.time", lambda: T + 2461):
+            pipe3 = self._pipe()
+        self.assertEqual(self._quiet(pipe3), [])
+        self.assertAlmostEqual(pipe3.silence_s(pipe3.seen.table[ROUTER], T + 2461), 180, delta=1)
+        self.assertAlmostEqual(pipe3.silence_s(pipe3.seen.table[SENSOR], T + 2461), 0, delta=1)
+        pipe3.periodic(T + 2461 + 27 * 60)                      # 3 + 27 min: still inside the window
+        self.assertEqual(self._quiet(pipe3), [])
+        pipe3.periodic(T + 2461 + 28 * 60)
+        self.assertEqual(self._quiet(pipe3), [ROUTER])
+        # Once every device has been heard since a span, it is retired.
+        pipe3.ingest(frame(T + 2461 + 29 * 60, ROUTER))
+        pipe3._save_blind()
+        self.assertEqual(json.loads(pipe3.blind_path.read_text()), [[T + 2460, 1.0]])   # the sensor's, still
+        pipe3.ingest(frame(T + 2461 + 29 * 60, SENSOR))
+        pipe3._save_blind()
+        self.assertEqual(json.loads(pipe3.blind_path.read_text()), [])
+
     def test_a_clock_step_after_boot_is_the_recorders_blindness_not_the_devices(self):
         # An RTC-less Pi boots on its saved clock, about when it last heard
         # a frame, so the start-up pass sees a minute of outage; NTP then

@@ -217,11 +217,19 @@ class Pipeline:
         # the host clock adds one (see _check_clock). Signed, and clamped
         # as a sum: an RTC-less Pi boots on a saved clock that can trail
         # the last frame, and the step that follows makes up the rest.
+        # Persisted (blind-spans.json): a span is needed for as long as a
+        # silence reaches back over it, and a run only knows the gap it
+        # started with. Kept in memory alone, the outage before the last
+        # start was forgotten at the next one as soon as any device had
+        # advanced the last frame, and a device unheard since before that
+        # outage was charged for it in full.
         self._blind: list[tuple[float, float]] = []
+        self.blind_path = cfg.state_dir / "blind-spans.json"
         self._wall, self._mono = time.time, time.monotonic   # swapped by tests
         self._clock = (self._wall(), self._mono())
         if not ephemeral:
             now = self._clock[0]
+            self._blind = self._load_blind()
             # Short addresses learned last run: seed the decryptor so sleepy
             # devices are attributed from the first frame. A wrong seed (the
             # address was reassigned while the recorder was down) fails the
@@ -240,6 +248,9 @@ class Pipeline:
                     stats.confirm_at = row.get("starve_confirm_at")
             last_alive = self._last_frame_heard()
             if last_alive is not None:
+                # A span an earlier start recorded from this same last frame
+                # (the watchdog restart loop) lies inside this one.
+                self._blind = [span for span in self._blind if span[0] < last_alive]
                 self._blind.append((last_alive, now - last_alive))
             dominant = self.dominant_pan()       # best guess before any frame arrives
             announced = 0
@@ -262,6 +273,32 @@ class Pipeline:
                     announced += 1
             if announced:
                 self.seen.save()
+            self._save_blind()
+
+    BLIND_MAX = 64
+
+    def _load_blind(self) -> list[tuple[float, float]]:
+        try:
+            raw = json.loads(self.blind_path.read_text())
+            return [(float(since), float(length)) for since, length in raw][-self.BLIND_MAX:]
+        except (OSError, ValueError, TypeError):
+            return []
+
+    def _save_blind(self) -> None:
+        """Write the blind spans, less those no silence reaches back over
+        (every row was heard after them) and beyond the newest BLIND_MAX."""
+        if self.ephemeral:
+            return
+        stamps = [row.get("last_seen") for row in self.seen.table.values()]
+        stamps = [t for t in stamps if isinstance(t, (int, float))]
+        oldest = min(stamps) if stamps else None
+        keep = [span for span in self._blind if oldest is None or span[0] >= oldest][-self.BLIND_MAX:]
+        tmp = self.blind_path.with_suffix(".tmp")
+        try:
+            tmp.write_text(json.dumps(keep))
+            tmp.replace(self.blind_path)
+        except OSError as exc:
+            print(f"[threadwatch] {self.blind_path.name} not written: {exc}", flush=True)
 
     def _load_retrans(self) -> None:
         """The retransmission detector as the last run left it (_save_retrans).
@@ -368,6 +405,7 @@ class Pipeline:
             return
         if step > 0:
             self._blind.append((wall - step, step))
+            self._save_blind()
             self.events.emit("clock_step", "info", now, step_s=round(step),
                              note=(f"the host clock jumped forward {round(step / 60)} min (NTP after boot?); "
                                    "silences that span the jump are not counted against any device"))
@@ -402,6 +440,7 @@ class Pipeline:
                     row[key] -= back
         self.seen._dirty = True
         self._blind = [(since - back if before(since) else since, length) for since, length in self._blind]
+        self._save_blind()
         for stats in self.devices.values():
             for attr in self.STATS_STAMPS:
                 t = getattr(stats, attr)

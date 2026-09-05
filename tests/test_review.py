@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from threadwatch.config import Config  # noqa: E402
-from threadwatch.events import EventLog, day_of, list_days, migrate_legacy, read_day  # noqa: E402
+from threadwatch.events import EventLog, day_bounds, day_of, list_days, migrate_legacy, read_day  # noqa: E402
 from threadwatch.review import day_episodes, day_index, device_history, group_episodes  # noqa: E402
 from threadwatch.web import make_server  # noqa: E402
 
@@ -153,6 +153,27 @@ class LongEpisodeTest(unittest.TestCase):
         self.log.emit("mle_rejoin_attempt", "notice", T0 + 86400 + 600, addr=AQ, name="AQ", command="Child ID Request")
         rows = device_history(self.dir, AQ)
         self.assertEqual([r["count"] for r in rows], [2, 1])
+
+
+class DayBoundaryTest(unittest.TestCase):
+    def test_a_record_at_midnight_is_the_first_row_of_the_day_it_starts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp) / "events"
+            log = EventLog(events)
+            day = day_of(T0)
+            start, end = day_bounds(day)
+            log.emit("alert_test", "info", start - 1, name="x", note="a second before midnight")
+            log.emit("clock_step", "info", start, step_s=60, note="at midnight")
+            log.emit("clock_step", "info", end - 1, step_s=60, note="a second before the next midnight")
+            log.emit("clock_step", "info", end, step_s=60, note="at the next midnight")
+            now = end + 3600
+
+            def notes(which):
+                return [(e["detail"], e["carried_over"]) for e in day_episodes(events, which, now)]
+
+            self.assertEqual(notes(day), [("at midnight", False), ("a second before the next midnight", False)])
+            self.assertEqual(notes(day_of(start - 1)), [("a second before midnight", False)])
+            self.assertEqual(notes(day_of(end)), [("at the next midnight", False)])
 
 
 class DayViewTest(unittest.TestCase):

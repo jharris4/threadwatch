@@ -309,15 +309,32 @@ def load_env(path: Path) -> list[Check]:
 
 
 def check_alerts(cfg) -> list[Check]:
-    from .alerts import build_heartbeats, build_sinks
-    problems = []
-    sinks = build_sinks(cfg.alerts_raw, problems.append)
-    beats = build_heartbeats(cfg.heartbeats_raw, problems.append)
+    from .alerts import ConfigError, build_heartbeats, build_sinks
+
+    def build(problems: list[str]) -> tuple[list, list]:
+        # A sink or heartbeat the daemon would refuse (unknown type, no
+        # url, two with one name) raises here as it does at capture
+        # start. That is the failing configuration this check exists to
+        # catch, so it is a FAIL line, not a "check crashed" warning and
+        # a green exit.
+        sinks: list = []
+        beats: list = []
+        try:
+            sinks = build_sinks(cfg.alerts_raw, problems.append)
+        except ConfigError as exc:
+            problems.append(f"{exc}: the recorder refuses to start on this [alerts] table")
+        try:
+            beats = build_heartbeats(cfg.heartbeats_raw, problems.append)
+        except ConfigError as exc:
+            problems.append(f"{exc}: the recorder refuses to start on this [[heartbeats]] table")
+        return sinks, beats
+
+    problems: list[str] = []
+    sinks, beats = build(problems)
     out = load_env(cfg.config_dir / "alerts.env")
     if out:   # secrets may have arrived just now: build again with them
         problems.clear()
-        sinks = build_sinks(cfg.alerts_raw, problems.append)
-        beats = build_heartbeats(cfg.heartbeats_raw, problems.append)
+        sinks, beats = build(problems)
     for p in problems:
         out.append((FAIL, "alerts", p))
     if not sinks:

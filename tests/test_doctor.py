@@ -143,6 +143,26 @@ class DoctorTest(unittest.TestCase):
             self.assertIn(s, subjects)
         self.assertTrue(all(c[0] in ("ok", "warn", "FAIL") for c in checks))
 
+    def test_a_sink_the_daemon_would_refuse_fails_the_check_and_the_exit_code(self):
+        import contextlib
+        import io
+        for raw in ({"sinks": [{"name": "x", "type": "pigeon"}]},
+                    {"sinks": [{"name": "x", "type": "http"}]},                          # no url
+                    {"sinks": [{"name": "x", "type": "http", "url": "http://127.0.0.1:9/"},
+                               {"name": "x", "type": "http", "url": "http://127.0.0.1:9/"}]}):
+            self.cfg.alerts_raw = raw
+            checks = doctor.check_alerts(self.cfg)
+            self.assertEqual(checks[0][:2], ("FAIL", "alerts"), raw)
+            self.assertIn("refuses to start", checks[0][2])
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(doctor.print_report(
+                    doctor.run_doctor(self.cfg, find_port=lambda: "/dev/x", now=time.time())), 1)
+        self.cfg.alerts_raw = {}
+        self.cfg.heartbeats_raw = [{"name": "h"}]                                       # no url
+        checks = doctor.check_alerts(self.cfg)
+        self.assertEqual(checks[0][:2], ("FAIL", "alerts"))
+        self.assertIn("heartbeats", checks[0][2])
+
     def test_last_seen_check_reads_the_table_and_notices_one_kept_aside(self):
         path = self.cfg.state_dir / "last-seen.json"
         self.assertEqual(doctor.check_last_seen(self.cfg)[0][:2], ("ok", "last-seen"))

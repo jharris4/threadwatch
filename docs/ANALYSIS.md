@@ -100,6 +100,7 @@ newest automatic incident on disk). Each incident is one directory:
       last-seen.json         the last-seen table: first/last heard, frames, RSSI per address
       observed-names.json    SRP hostnames harvested from the mesh
       frames-by-hour.json    the frame counts behind the daily summary
+      border-routers.json    each border router's hostname, address and retired addresses
       events/                a copy of the whole event log, one file per day
 
 The name is the freeze time (local, `YYYYMMDDTHHMMSS`) and the label

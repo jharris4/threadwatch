@@ -15,7 +15,11 @@ import shutil
 import time
 from pathlib import Path
 
-STATE_FILES = ("status.json", "last-seen.json", "observed-names.json", "frames-by-hour.json")
+# border-routers.json is the hostname -> address history of every hub that
+# rotates its address: without it an incident cannot name the border
+# router on the very day it rebooted, the device most worth reading.
+STATE_FILES = ("status.json", "last-seen.json", "observed-names.json", "frames-by-hour.json",
+               "border-routers.json")
 _LABEL = re.compile(r"[^A-Za-z0-9._-]+")
 # A copy in progress is built under this suffix and renamed into place only
 # once whole. The capture daemon leaves through os._exit on every path,

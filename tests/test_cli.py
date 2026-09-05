@@ -88,6 +88,7 @@ class FreezeTest(CliCase):
         (cfg.ring_dir / "threadwatch-20260903-08.pcap").write_bytes(b"a")
         (cfg.ring_dir / "threadwatch-20260903-09.pcap").write_bytes(b"b")
         (cfg.state_dir / "last-seen.json").write_text("{}")
+        (cfg.state_dir / "border-routers.json").write_text("{}")   # the hubs' address history
         cfg.events_dir.mkdir(parents=True)
         (cfg.events_dir / "2026-09-03.jsonl").write_text("")
         code, out, _ = self.run_cli("freeze", "my label/with junk")
@@ -96,7 +97,8 @@ class FreezeTest(CliCase):
         inc = next(cfg.incidents_dir.iterdir())
         self.assertTrue(inc.name.endswith("_my-label-with-junk"))
         self.assertEqual(sorted(p.name for p in inc.iterdir()),
-                         ["events", "last-seen.json", "threadwatch-20260903-08.pcap", "threadwatch-20260903-09.pcap"])
+                         ["border-routers.json", "events", "last-seen.json",
+                          "threadwatch-20260903-08.pcap", "threadwatch-20260903-09.pcap"])
         self.assertEqual(self.run_cli("incidents")[1].count("my-label-with-junk"), 1)
 
 

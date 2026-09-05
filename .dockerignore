@@ -1,13 +1,17 @@
-.git
-data/
-.venv/
-.venv-flash/
-__pycache__/
-*.pyc
-# Local config and secrets are mounted at run time, never baked into the image.
-config/config.toml
-config/devices.json
-config/credentials.toml
-config/alerts.env
-config/ha.env
-.DS_Store
+# An allowlist. Everything in the build context stays out of the image
+# unless named below, so a new file in the working tree (a scratch note, a
+# venv, data/, the .nrfutil-bin/ that bin/flash-dongle.sh leaves behind)
+# needs no entry here to stay out. push-to-host.sh takes its list from git
+# for the same reason; Docker cannot ask git before COPY, so what the
+# container runs is listed instead: the package, the vendored sniffer, the
+# entrypoint and the requirements the Dockerfile installs first.
+# config/ (config.toml, devices.json, credentials.toml, alerts.env, ha.env)
+# and data/ are volumes at run time and never part of the image.
+*
+!requirements.txt
+!bin/threadwatch
+!threadwatch/
+!vendor/
+# Caches inside the trees allowed above.
+**/__pycache__/
+**/*.pyc

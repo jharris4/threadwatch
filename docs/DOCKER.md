@@ -72,7 +72,9 @@ The review pages are on port 8080 (`ports:` in `compose.yaml` to change).
 - Everything in `config/` is read when a container starts: after editing
   `config.toml`, `credentials.toml` or `devices.json`, `docker compose
   restart capture` (and `web` for `[web]`).
-- The image contains no config or secrets (`.dockerignore`).
+- The image holds the code and nothing else: `.dockerignore` is an
+  allowlist, so config, secrets, `data/` and anything else in the
+  working tree stay out without being named.
 
 ## Everyday commands
 

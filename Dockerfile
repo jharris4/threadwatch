@@ -9,9 +9,12 @@ FROM python:3.12-slim
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+# .dockerignore is an allowlist: this copies the package, vendor/, the
+# entrypoint and requirements.txt, nothing else. config/ (config.toml,
+# devices.json, credentials.toml, alerts.env, ha.env) and data/ are
+# volumes, never part of the image; so is whatever else the working tree
+# holds. A new directory the container needs is added there.
 COPY . .
-# config/ (config.toml, devices.json, credentials.toml, alerts.env, ha.env)
-# and data/ are volumes; .dockerignore keeps all of them out of the image.
 VOLUME ["/app/config", "/app/data"]
 EXPOSE 8080
 ENTRYPOINT ["/app/bin/threadwatch"]

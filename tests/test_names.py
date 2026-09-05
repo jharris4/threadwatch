@@ -424,3 +424,34 @@ class SaveIntervalTest(unittest.TestCase):
             seen.maybe_save()
             self.assertEqual(json.loads(path.read_text())["b62c32bf669272db"]["last_seen"], 1001.0)
             self.assertEqual(LastSeen.maybe_save.__defaults__, (30.0,))
+
+
+class TouchExtendedOnlyTest(unittest.TestCase):
+    """The table is keyed by extended address. A short address (an RLOC16)
+    is reassigned whenever a parent restarts, so a row under one would
+    follow the address to the next device that inherits it, and every
+    frame from an unresolved sleepy device would add a row that is nobody."""
+
+    def test_only_a_16_hex_extended_address_gets_a_row(self):
+        seen = LastSeen(None)
+        for addr in (None, "", "3c1a", "fffe", AQ[:15], AQ + "0"):
+            seen.touch(addr, 1_756_800_000.0, 1, pan=0x4e21, rssi=-60.0)
+        self.assertEqual(seen.table, {})
+        self.assertFalse(seen._dirty)
+        seen.touch(AQ, 1_756_800_000.0, 1, pan=0x4e21, rssi=-60.0)
+        self.assertEqual(list(seen.table), [AQ])
+        self.assertTrue(seen._dirty)
+
+    def test_a_frame_from_an_unresolved_short_address_adds_no_row(self):
+        from threadwatch.config import Config
+        from threadwatch.crypto import Decryptor
+        from threadwatch.events import NullEventLog
+        from threadwatch.pcap import Frame
+        from threadwatch.pipeline import Pipeline
+        with tempfile.TemporaryDirectory() as d:
+            pipe = Pipeline(Config(data_dir=Path(d) / "data"), NullEventLog(), Decryptor(network_key=bytes(16)),
+                            ephemeral=True)
+            for i in range(3):
+                pipe.ingest(Frame(ts=1_756_800_000.0 + i, raw=b"", psdu=b"", rssi=-60.0, channel=None, lqi=None,
+                                  ftype=1, seq=i, dst_pan=0x4e21, dst="0000", src_pan=0x4e21, src="3c1a"))
+            self.assertEqual(pipe.seen.table, {})

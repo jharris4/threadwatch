@@ -90,7 +90,8 @@ LEGEND = [
      "A sleepy end device keeps polling its parent and nothing acknowledges it, after its polls "
      "used to be answered (credentials needed: polls carry a short address). Its parent died or "
      "the link to it broke, and the device has not noticed: it looks alive, never goes quiet, and "
-     "delivers nothing until it gives up and rejoins. Warning. If the device just moved to a "
+     "delivers nothing until it gives up and rejoins. Logged at notice when it starts, warning "
+     "if the polls are still unanswered ten minutes later ([polls] confirm_s). If the device just moved to a "
      "parent the sniffer cannot hear, the acknowledgements are missing at the sniffer, not on air: "
      "a rejoin row just before this one says so."),
     ("retransmissions", "Retransmissions elevated",

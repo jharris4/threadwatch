@@ -734,15 +734,25 @@ class PollStarvationTest(unittest.TestCase):
         evs = self._events(pipe, "poll_starvation")
         self.assertEqual(len(evs), 1)
         ev = evs[0]
-        self.assertEqual((ev["severity"], ev["name"], ev["acked_polls"]), ("warning", "Porch Sensor", 5))
+        # Logged at once, at notice: the page waits for [polls] confirm_s.
+        self.assertEqual((ev["severity"], ev["confirmed"], ev["name"], ev["acked_polls"]),
+                         ("notice", False, "Porch Sensor", 5))
         self.assertEqual(ev["unanswered_polls"], 10)      # fired at the tenth, not later
         self.assertGreaterEqual(ev["starved_for_s"], 60)
         self.assertIn("no device_quiet will follow", ev["note"])
+        self.assertIn("paged if its polls are still unanswered in 10 min", ev["note"])
+        self.assertEqual(pipe.devices[SENSOR].confirm_at, ev["ts"] + 600)
+        self.assertEqual(pipe.seen.table[SENSOR]["starve_confirm_at"], ev["ts"] + 600)
         pipe.ingest(poll(t + 200, SENSOR, 200))
         pipe.ingest(ack(t + 200.001, 200))
         rec = self._events(pipe, "poll_answered")
         self.assertEqual(len(rec), 1)
+        self.assertIn("before the starvation was confirmed: it was logged, not paged", rec[0]["note"])
+        self.assertEqual(self._events(pipe, "poll_starvation"), evs)          # never paged
         self.assertFalse(pipe.devices[SENSOR].starved)
+        self.assertIsNone(pipe.devices[SENSOR].confirm_at)
+        for key in ("starved", "starve_confirm_at", "starve_since"):
+            self.assertNotIn(key, pipe.seen.table[SENSOR])
         self.assertEqual(pipe.devices[SENSOR].unanswered_polls, 0)
         self.assertEqual(pipe.devices[SENSOR].acked_polls, 6)
 
@@ -774,23 +784,34 @@ class PollStarvationTest(unittest.TestCase):
         for i in range(12):
             pipe.ingest(poll(t + 10 * i, SENSOR, 100 + i))
         self.assertEqual(len(self._events(pipe, "poll_starvation")), 1)
+        logged_at = self._events(pipe, "poll_starvation")[0]["ts"]
         pipe.seen.save()
+        paged = []
         for run in range(3):                                  # the watchdog restarts the daemon every 3 min
             pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
             t += 200
             for i in range(12):                               # still nobody answers
                 pipe.ingest(poll(t + 10 * i, SENSOR, (run * 20 + i) & 0xFF))
-            self.assertEqual(self._events(pipe, "poll_starvation"), [], run)
+            paged += self._events(pipe, "poll_starvation")
             self.assertTrue(pipe.seen.table[SENSOR]["starved"])
             pipe.seen.save()
+        # The threshold is not announced again by any run; the page behind
+        # confirm_s fires once, in the run whose unanswered poll passes the
+        # mark the row remembered (runs 0 and 1 end before it).
+        self.assertEqual([(e["severity"], e["confirmed"]) for e in paged], [("warning", True)])
+        self.assertGreaterEqual(paged[0]["ts"], logged_at + 600)
+        self.assertNotIn("starve_confirm_at", pipe.seen.table[SENSOR])
         pipe.ingest(poll(t + 300, SENSOR, 250))
         pipe.ingest(ack(t + 300.001, 250))
-        self.assertEqual(len(self._events(pipe, "poll_answered")), 1)    # closed once, by the ACK
+        rec = self._events(pipe, "poll_answered")
+        self.assertEqual(len(rec), 1)                                      # closed once, by the ACK
+        self.assertNotIn("before the starvation was confirmed", rec[0]["note"])
         self.assertNotIn("starved", pipe.seen.table[SENSOR])
         # A new episode after the close is announced again.
+        before = len(self._events(pipe, "poll_starvation"))
         for i in range(12):
             pipe.ingest(poll(t + 400 + 10 * i, SENSOR, 30 + i))
-        self.assertEqual(len(self._events(pipe, "poll_starvation")), 1)
+        self.assertEqual(len(self._events(pipe, "poll_starvation")), before + 1)
 
     def test_starvation_that_begins_right_after_a_restart_is_announced(self):
         pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
@@ -858,6 +879,7 @@ class PollStarvationTest(unittest.TestCase):
         return t + 120
 
     def test_a_second_episode_soon_after_the_first_ended_is_a_notice_until_the_rearm_passes(self):
+        self.cfg.poll_confirm_s = 0                            # the threshold record is the subject here
         # 2026-09-04: 37 episodes in six hours from one sensor, each closed
         # by an ordinary ACK. One page, then notices while it flaps.
         pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
@@ -898,6 +920,7 @@ class PollStarvationTest(unittest.TestCase):
         self.assertIn("polled its parent Hall Router (0000)", ev["note"])
 
     def test_rearm_zero_pages_every_episode(self):
+        self.cfg.poll_confirm_s = 0                            # the threshold record is the subject here
         self.cfg.poll_rearm_s = 0
         pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
         t = self._answered_polls(pipe, 1_700_000_000.0, 5)
@@ -920,6 +943,185 @@ class PollStarvationTest(unittest.TestCase):
         evs = self._events(pipe2, "poll_starvation")
         self.assertEqual([e["severity"] for e in evs], ["notice"])
         self.assertEqual(evs[0]["episode"], 2)
+
+    def _unanswered(self, pipe, t, n, seq0, gap=10):
+        for i in range(n):
+            pipe.ingest(poll(t + gap * i, SENSOR, (seq0 + i) & 0xFF))
+        return t + gap * n
+
+    def test_a_starvation_still_unanswered_after_the_window_is_paged_once(self):
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t = self._answered_polls(pipe, 1_700_000_000.0, 5)
+        t = self._unanswered(pipe, t, 12, 100)                 # logged at notice at the tenth poll
+        logged = self._events(pipe, "poll_starvation")[0]
+        t = self._unanswered(pipe, t, 70, 112, gap=10)         # 700 s more: crosses the 600 s mark
+        evs = self._events(pipe, "poll_starvation")
+        self.assertEqual([(e["severity"], e["confirmed"]) for e in evs], [("notice", False), ("warning", True)])
+        page = evs[1]
+        self.assertGreaterEqual(page["ts"], logged["ts"] + 600)
+        self.assertLess(page["ts"], logged["ts"] + 620)          # the first unanswered poll past the mark
+        self.assertEqual((page["name"], page["episode"], page["since"], page["reception"]),
+                         ("Porch Sensor", 1, logged["since"], "good"))
+        self.assertEqual(page["starved_for_s"], round(page["ts"] - logged["since"]))
+        self.assertIn("still polling its parent router 0 (0000) with no acknowledgement 10 min after "
+                      "the starvation was logged", page["note"])
+        self.assertIn("no device_quiet will follow", page["note"])
+        self.assertIsNone(pipe.devices[SENSOR].confirm_at)
+        self.assertNotIn("starve_confirm_at", pipe.seen.table[SENSOR])
+        self.assertTrue(pipe.seen.table[SENSOR]["starved"])           # still open
+        self._unanswered(pipe, t, 100, 200)                            # another 1000 s: no second page
+        self.assertEqual(len(self._events(pipe, "poll_starvation")), 2)
+        pipe.ingest(poll(t + 2000, SENSOR, 50))
+        pipe.ingest(ack(t + 2000.001, 50))
+        rec = self._events(pipe, "poll_answered")
+        self.assertEqual(len(rec), 1)
+        self.assertEqual(rec[0]["note"], "its polls are acknowledged again")
+        self.assertNotIn("starve_since", pipe.seen.table[SENSOR])
+
+    def test_a_starvation_that_recovers_inside_the_window_is_never_paged(self):
+        # The 2026-09-04 morning: every episode that recovered by itself did
+        # so within eight minutes. Those are the log's business, not the phone's.
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t = self._answered_polls(pipe, 1_700_000_000.0, 5)
+        t = self._unanswered(pipe, t, 12, 100)
+        t = self._unanswered(pipe, t, 47, 112)                 # 470 s more, still inside 600
+        t = self._answered_polls(pipe, t, 2, seq0=160)
+        self.assertEqual([e["severity"] for e in self._events(pipe, "poll_starvation")], ["notice"])
+        self.assertEqual(len(self._events(pipe, "poll_answered")), 1)
+        # A fresh episode over an hour later starts the window over.
+        t = self._unanswered(pipe, t + 4000, 12, 170)
+        evs = self._events(pipe, "poll_starvation")
+        self.assertEqual([(e["severity"], e["episode"]) for e in evs], [("notice", 1), ("notice", 1)])
+        self.assertEqual(pipe.devices[SENSOR].confirm_at, evs[1]["ts"] + 600)
+
+    def test_the_page_rests_on_an_unanswered_poll_not_on_the_clock(self):
+        # A device that stops polling altogether is the quiet detector's; the
+        # page needs a poll past the mark that nobody answered.
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t = self._answered_polls(pipe, 1_700_000_000.0, 5)
+        t = self._unanswered(pipe, t, 12, 100)
+        pipe.periodic(t + 1200)                                # 20 min of nothing from the device
+        self.assertEqual(len(self._events(pipe, "poll_starvation")), 1)
+        pipe.ingest(poll(t + 1300, SENSOR, 150))               # one poll, answered: closed, never paged
+        pipe.ingest(ack(t + 1300.001, 150))
+        self.assertEqual([e["severity"] for e in self._events(pipe, "poll_starvation")], ["notice"])
+        self.assertEqual(len(self._events(pipe, "poll_answered")), 1)
+        pipe.seen.save()                                       # periodic() saved the open row; save the close too
+        pipe2 = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t = self._answered_polls(pipe2, t + 5000, 5, seq0=10)
+        t = self._unanswered(pipe2, t, 12, 100)
+        pipe2.ingest(poll(t + 1300, SENSOR, 150))              # after 20 min silent: this poll pends...
+        self.assertEqual(len(self._events(pipe2, "poll_starvation")), 1)
+        pipe2.ingest(poll(t + 1310, SENSOR, 151))              # ...and the next shows it went unanswered
+        evs = self._events(pipe2, "poll_starvation")
+        self.assertEqual([(e["severity"], e["confirmed"]) for e in evs], [("notice", False), ("warning", True)])
+        self.assertEqual(evs[1]["ts"], t + 1310)
+
+    def test_the_pending_page_survives_a_restart_and_an_ack_first_cancels_it(self):
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t = self._answered_polls(pipe, 1_700_000_000.0, 5)
+        t = self._unanswered(pipe, t, 12, 100)
+        logged = self._events(pipe, "poll_starvation")[0]
+        pipe.seen.save()
+        # Down across the mark, back up, and the device is still unanswered:
+        # the second poll of the new run is the evidence, and the page names
+        # the whole span from the row's remembered start.
+        pipe2 = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        self.assertEqual(pipe2.devices[SENSOR].confirm_at, logged["ts"] + 600)
+        pipe2.ingest(poll(t + 900, SENSOR, 130))
+        self.assertEqual(self._events(pipe2, "poll_starvation"), [])
+        pipe2.ingest(poll(t + 910, SENSOR, 131))
+        evs = self._events(pipe2, "poll_starvation")
+        self.assertEqual([(e["severity"], e["confirmed"], e["acked_polls"]) for e in evs], [("warning", True, 0)])
+        self.assertEqual((evs[0]["since"], evs[0]["starved_for_s"]),
+                         (logged["since"], round(t + 910 - logged["since"])))
+        self.assertIn("16 min after the starvation was logged", evs[0]["note"])
+        self.assertNotIn("starve_confirm_at", pipe2.seen.table[SENSOR])
+        # ...whereas an ACK first closes it quietly: logged, never paged.
+        pipe.seen.save()                                       # back to the state before the page
+        pipe3 = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        pipe3.ingest(poll(t + 900, SENSOR, 130))
+        pipe3.ingest(ack(t + 900.001, 130))
+        self.assertEqual(self._events(pipe3, "poll_starvation"), [])
+        rec = self._events(pipe3, "poll_answered")
+        self.assertEqual(len(rec), 1)
+        self.assertIn("before the starvation was confirmed", rec[0]["note"])
+        for key in ("starved", "starve_confirm_at", "starve_since"):
+            self.assertNotIn(key, pipe3.seen.table[SENSOR])
+        pipe3.seen.save()
+        pipe4 = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        self.assertIsNone(pipe4.devices.get(SENSOR) and pipe4.devices[SENSOR].confirm_at)
+
+    def test_confirm_zero_pages_at_the_threshold_as_before(self):
+        self.cfg.poll_confirm_s = 0
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t = self._answered_polls(pipe, 1_700_000_000.0, 5)
+        t = self._unanswered(pipe, t, 100, 100)                # 1000 s unanswered
+        evs = self._events(pipe, "poll_starvation")
+        self.assertEqual(len(evs), 1)
+        self.assertEqual((evs[0]["severity"], evs[0]["unanswered_polls"]), ("warning", 10))
+        self.assertNotIn("confirmed", evs[0])
+        self.assertNotIn("paged if", evs[0]["note"])
+        self.assertIsNone(pipe.devices[SENSOR].confirm_at)
+        self.assertNotIn("starve_confirm_at", pipe.seen.table[SENSOR])
+
+    def test_the_window_is_the_configured_length(self):
+        self.cfg.poll_confirm_s = 120
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t = self._answered_polls(pipe, 1_700_000_000.0, 5)
+        t = self._unanswered(pipe, t, 12, 100)
+        logged = self._events(pipe, "poll_starvation")[0]
+        self.assertIn("still unanswered in 2 min", logged["note"])
+        self._unanswered(pipe, t, 20, 112)
+        evs = self._events(pipe, "poll_starvation")
+        self.assertEqual([e["severity"] for e in evs], ["notice", "warning"])
+        self.assertGreaterEqual(evs[1]["ts"], logged["ts"] + 120)
+        self.assertLess(evs[1]["ts"], logged["ts"] + 140)
+        self.assertIn("2 min after the starvation was logged", evs[1]["note"])
+
+    def test_a_notice_for_a_marginal_or_flapping_device_is_never_confirmed(self):
+        # Those two are "logged, not paged" for their own reasons; the window
+        # does not turn them into a page later.
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t = self._answered_polls(pipe, 1_700_000_000.0, 5)
+        t = self._unanswered(pipe, t, 12, 100)
+        t = self._answered_polls(pipe, t, 3, seq0=120)         # episode 1 closed inside its window
+        t = self._unanswered(pipe, t + 300, 12, 130)           # episode 2, 5 min later: flapping
+        evs = self._events(pipe, "poll_starvation")
+        self.assertEqual([(e["severity"], e["episode"]) for e in evs], [("notice", 1), ("notice", 2)])
+        self.assertNotIn("confirmed", evs[1])
+        self.assertIsNone(pipe.devices[SENSOR].confirm_at)
+        self.assertNotIn("starve_confirm_at", pipe.seen.table[SENSOR])
+        self._unanswered(pipe, t, 100, 150)                    # 1000 s more unanswered: still no page
+        self.assertEqual(len(self._events(pipe, "poll_starvation")), 2)
+        # Marginal, the same.
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t = 1_700_000_000.0
+        for i in range(5):
+            f = poll(t + 5 * i, SENSOR, i)
+            f.rssi = -90.0
+            pipe.ingest(f)
+            pipe.ingest(ack(t + 5 * i + 0.001, i))
+        for i in range(100):
+            f = poll(t + 25 + 10 * i, SENSOR, (100 + i) & 0xFF)
+            f.rssi = -90.0
+            pipe.ingest(f)
+        evs = self._events(pipe, "poll_starvation")
+        self.assertEqual([(e["severity"], e["reception"]) for e in evs], [("notice", "marginal")])
+        self.assertNotIn("confirmed", evs[0])
+
+    def test_a_confirmed_page_then_a_quick_relapse_is_a_flapping_notice(self):
+        # The rearm hold-down counts from the close of an episode whether or
+        # not it was paged, so the page-then-flap sequence is one page.
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t = self._answered_polls(pipe, 1_700_000_000.0, 5)
+        t = self._unanswered(pipe, t, 80, 100)                 # 800 s: logged, then paged
+        t = self._answered_polls(pipe, t, 3, seq0=200)
+        t = self._unanswered(pipe, t + 300, 80, 210)           # relapse 5 min later, for another 800 s
+        evs = self._events(pipe, "poll_starvation")
+        self.assertEqual([(e["severity"], e.get("confirmed"), e["episode"]) for e in evs],
+                         [("notice", False, 1), ("warning", True, 1), ("notice", None, 2)])
+        self.assertEqual(len(self._events(pipe, "poll_answered")), 1)
 
     def test_a_marginal_device_starving_is_a_notice(self):
         pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())

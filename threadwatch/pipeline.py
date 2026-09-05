@@ -54,7 +54,7 @@ class DeviceStats:
     __slots__ = ("rssi_ewma", "rssi_min", "rssi_max", "polls", "last_poll_ts",
                  "poll_intervals", "tx", "acked", "ack_pending_seq",
                  "ack_pending_ts", "beacons", "poll_pending_seq", "poll_pending_ts",
-                 "acked_polls", "unanswered_polls", "unanswered_since", "starved")
+                 "acked_polls", "unanswered_polls", "unanswered_since", "starved", "confirm_at")
 
     def __init__(self):
         self.rssi_ewma = None
@@ -74,6 +74,7 @@ class DeviceStats:
         self.unanswered_polls = 0         # distinct polls since the last answered one
         self.unanswered_since = None
         self.starved = False
+        self.confirm_at = None            # when a logged starvation becomes a page, if still unanswered
 
     def as_dict(self):
         ivals = sorted(self.poll_intervals)
@@ -212,7 +213,9 @@ class Pipeline:
                     # for a silence) so the first answered poll closes it,
                     # and so that this run's unanswered polls do not
                     # announce the same unbroken episode again.
-                    self.devices.setdefault(addr, DeviceStats()).starved = True
+                    stats = self.devices.setdefault(addr, DeviceStats())
+                    stats.starved = True
+                    stats.confirm_at = row.get("starve_confirm_at")
             last_alive = self._last_frame_heard()
             if last_alive is not None:
                 self._blind.append((last_alive, now - last_alive))
@@ -644,7 +647,14 @@ class Pipeline:
             # missed.
             row = self.seen.table.get(who)
             answered_before = stats.acked_polls > 0 or bool(row and row.get("polls_acked"))
-            if (not stats.starved and answered_before
+            if stats.starved and stats.confirm_at is not None and stats.poll_pending_ts >= stats.confirm_at:
+                # Logged [polls] confirm_s ago and still nobody answers. The
+                # evidence is a poll sent after the mark that went unanswered
+                # (this one proves it), not a poll from before the mark that
+                # a silent stretch left pending: a device back from twenty
+                # minutes of silence with an answered poll is not paged.
+                self._confirm_starvation(who, stats, row, ts, dst)
+            elif (not stats.starved and answered_before
                     and stats.unanswered_polls >= STARVED_POLLS
                     and ts - stats.unanswered_since >= STARVED_MIN_S):
                 stats.starved = True
@@ -654,16 +664,12 @@ class Pipeline:
                 # episode.
                 if row is not None:
                     row["starved"] = True
+                    row["starve_since"] = stats.unanswered_since
                     self.seen._dirty = True
                 span = round(ts - stats.unanswered_since)
                 history = (f"after {stats.acked_polls} answered polls" if stats.acked_polls
                            else "after answered polls before the recorder's last restart")
-                # The poll's destination is the parent's RLOC16; name it, so
-                # the question "whose ACKs are missing" is answered here.
-                parent_addr = self.decryptor.short_to_ext.get(dst) if dst and len(dst) == 4 else None
-                parent = ((self.names.name(parent_addr) or parent_addr) if parent_addr
-                          else (f"router {int(dst, 16) >> 10}" if dst and len(dst) == 4 else None))
-                whom = f"its parent {parent} ({dst})" if parent else "its parent"
+                parent, parent_addr, whom = self._parent_of(dst)
                 note = (f"polled {whom} {stats.unanswered_polls} times over {span} s with no "
                         f"acknowledgement, {history}: the parent is gone "
                         "or the link to it broke and the device has not noticed; it still looks alive, "
@@ -694,16 +700,71 @@ class Pipeline:
                              "ended with an ordinary ACK and no rejoin: a device that flaps like this has a "
                              "parent the sniffer only sometimes hears; logged, not paged, until its polls "
                              f"have stayed answered for {self.cfg.poll_rearm_s / 60:.0f} min.")
+                # A third: not yet. A starvation that would page is logged
+                # now and paged only if the polls are still unanswered
+                # [polls] confirm_s later (the first poll sent past that
+                # mark that goes unanswered, so the page rests on evidence,
+                # not on a timer that outlived the recorder). Every
+                # starvation that recovered by itself has done so well
+                # inside the window.
+                hold = 0.0 if (marginal or flapping) else self.cfg.poll_confirm_s
+                extra = {}
+                if hold > 0:
+                    stats.confirm_at = ts + hold
+                    if row is not None:
+                        row["starve_confirm_at"] = stats.confirm_at
+                        self.seen._dirty = True
+                    extra["confirmed"] = False
+                    note += (f" Logged now; paged if its polls are still unanswered in {hold / 60:.0f} min "
+                             "(a starvation that recovers by itself does so within minutes).")
                 self.events.emit(
-                    "poll_starvation", "notice" if (marginal or flapping) else "warning", ts,
+                    "poll_starvation", "notice" if (marginal or flapping or hold > 0) else "warning", ts,
                     addr=who, name=self.names.name(who),
                     unanswered_polls=stats.unanswered_polls, since=stats.unanswered_since,
                     starved_for_s=span, acked_polls=stats.acked_polls,
                     rssi_dbm=rssi, reception="marginal" if marginal else "good",
                     episode=episode, since_previous_s=round(gap) if gap is not None else None,
                     parent_rloc16=dst if dst and len(dst) == 4 else None, parent_addr=parent_addr,
-                    parent=parent, note=note)
+                    parent=parent, note=note, **extra)
         stats.poll_pending_seq, stats.poll_pending_ts = seq, ts
+
+    def _parent_of(self, dst: Optional[str]) -> tuple:
+        """The poll's destination is the parent's RLOC16: name it, so the
+        question "whose ACKs are missing" is answered in the record.
+        Returns (parent label, parent's extended address, 'its parent ...')."""
+        short = dst if dst and len(dst) == 4 else None
+        parent_addr = self.decryptor.short_to_ext.get(short) if short else None
+        parent = ((self.names.name(parent_addr) or parent_addr) if parent_addr
+                  else (f"router {int(short, 16) >> 10}" if short else None))
+        whom = f"its parent {parent} ({dst})" if parent else "its parent"
+        return parent, parent_addr, whom
+
+    def _confirm_starvation(self, who: str, stats: DeviceStats, row: Optional[dict],
+                            ts: float, dst: Optional[str]) -> None:
+        """The page behind [polls] confirm_s: the starvation logged at notice
+        is still open and another poll has just gone unanswered."""
+        held = ts - (stats.confirm_at - self.cfg.poll_confirm_s)
+        stats.confirm_at = None
+        since = (row.get("starve_since") if row else None) or stats.unanswered_since or ts
+        if row is not None:
+            row.pop("starve_confirm_at", None)
+            self.seen._dirty = True
+        parent, parent_addr, whom = self._parent_of(dst)
+        rssi = row.get("rssi") if row else stats.rssi_ewma
+        note = (f"still polling {whom} with no acknowledgement {held / 60:.0f} min after the starvation "
+                f"was logged ({round(ts - since)} s in all): the parent is gone or the link to it broke "
+                "and the device has not noticed; it still looks alive, so no device_quiet will follow, "
+                "and a rejoin attempt should. (If it just moved to a parent the sniffer cannot hear, "
+                "the ACKs are missing here, not on air.)")
+        self.events.emit(
+            "poll_starvation", "warning", ts, addr=who, name=self.names.name(who),
+            unanswered_polls=stats.unanswered_polls, since=since,
+            starved_for_s=round(ts - since), acked_polls=stats.acked_polls,
+            rssi_dbm=rssi, reception=reception(rssi, self.cfg.quiet_min_rssi_dbm),
+            episode=(row.get("starve_episodes") if row else None) or 1,
+            since_previous_s=None, confirmed=True,
+            parent_rloc16=dst if dst and len(dst) == 4 else None, parent_addr=parent_addr,
+            parent=parent, note=note)
 
     def _poll_answered(self, who: str, stats: DeviceStats, ts: float) -> None:
         stats.poll_pending_seq = None
@@ -711,10 +772,15 @@ class Pipeline:
         stats.unanswered_polls, stats.unanswered_since = 0, None
         row = self.seen.table.get(who)
         announced = stats.starved or (row is not None and row.get("starved"))
+        unconfirmed = stats.confirm_at is not None or bool(row and row.get("starve_confirm_at"))
         stats.starved = False
+        stats.confirm_at = None
         if row is not None:
             if row.pop("starved", None):
                 self.seen._dirty = True
+            for key in ("starve_confirm_at", "starve_since"):
+                if row.pop(key, None) is not None:
+                    self.seen._dirty = True
             if announced:
                 # When this episode ended: the next one is judged against it.
                 row["starve_closed"] = ts
@@ -724,7 +790,9 @@ class Pipeline:
                 self.seen._dirty = True
         if announced:
             self.events.emit("poll_answered", "notice", ts, addr=who, name=self.names.name(who),
-                             note="its polls are acknowledged again")
+                             note="its polls are acknowledged again"
+                             + (" (before the starvation was confirmed: it was logged, not paged)"
+                                if unconfirmed else ""))
 
     def leader_device(self, router_id: Optional[int] = None) -> dict:
         """Which device holds a router id (the leader's, by default), as far

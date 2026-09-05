@@ -54,6 +54,12 @@ class Config:
     # sniffer only sometimes hears, not a device losing its parent. 0 pages
     # every episode.
     poll_rearm_s: float = 60 * 60
+    # [polls] a starvation that would page is logged at notice first and
+    # paged only if the polls are still unanswered this long later. Every
+    # starvation in the 2026-09-02..05 log that recovered by itself did so
+    # inside eight minutes; a device that has really lost its parent stays
+    # unanswered far longer. 0 pages at the threshold, as before.
+    poll_confirm_s: float = 10 * 60
     # [border_routers] how often the recorder asks the LAN (mDNS, the
     # _meshcop._udp service every border router advertises) which extended
     # address each border router has now. Apple hubs change theirs on every
@@ -162,6 +168,9 @@ def load(path: Optional[Path]) -> Config:
         cfg.link_hold_s = float(link.get("hold_s", cfg.link_hold_s))
         polls = raw.get("polls", {})
         cfg.poll_rearm_s = float(polls.get("rearm_s", cfg.poll_rearm_s))
+        cfg.poll_confirm_s = float(polls.get("confirm_s", cfg.poll_confirm_s))
+        if cfg.poll_confirm_s < 0:
+            raise ValueError(f"[polls] confirm_s must be 0 (page at once) or more, not {cfg.poll_confirm_s:g}")
         brs = raw.get("border_routers", {})
         cfg.border_router_browse_s = float(brs.get("browse_s", cfg.border_router_browse_s))
         summary = raw.get("summary", {})

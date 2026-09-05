@@ -49,7 +49,7 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `configured_pan_silent` | warning | `pan`, `heard_frames`, `window_s`, `busiest_pan`, `note` |
 | `mle_rejoin_attempt` | notice | `command`, `src`, `name` |
 | `device_quiet` | warning, or notice when `reception` is `marginal` | `addr`, `name`, `silent_for_s` (wall clock since the device's last frame, as the pages show it), `unheard_s` (the part the recorder was listening for, the figure judged against `[quiet] silence_s`), `blind_s` (the difference: the recorder's own outage or clock step), `last_seen`, `rssi_dbm`, `reception`, `note` |
-| `poll_starvation` | warning, or notice when `reception` is `marginal` or `episode` > 1 | `addr`, `name`, `unanswered_polls`, `since`, `starved_for_s`, `acked_polls`, `rssi_dbm`, `reception`, `episode`, `since_previous_s`, `parent`, `parent_rloc16`, `parent_addr`, `note` |
+| `poll_starvation` | notice when first logged, warning once `[polls] confirm_s` later the polls are still unanswered (`confirmed`); notice only when `reception` is `marginal` or `episode` > 1 | `addr`, `name`, `unanswered_polls`, `since`, `starved_for_s`, `acked_polls`, `rssi_dbm`, `reception`, `episode`, `since_previous_s`, `confirmed`, `parent`, `parent_rloc16`, `parent_addr`, `note` |
 | `poll_answered` | notice | `addr`, `name`, `note` |
 | `rssi_degradation` | notice | `addr`, `name`, `rssi_dbm`, `reference_dbm`, `drop_db`, `since`, `low_for_s`, `note` |
 | `rssi_recovered` | info | `addr`, `name`, `rssi_dbm`, `reference_dbm`, `note` |
@@ -97,16 +97,34 @@ see: the device keeps polling, so it never goes quiet, but nothing
 acknowledges its polls. Ten distinct polls (MAC retries of one poll
 share a sequence number and count once) over at least a minute with no
 ACK, from a device whose polls were answered before (in this run, or in an
-earlier one: the fact is kept with the last-seen rows), fire the warning;
+earlier one: the fact is kept with the last-seen rows), log the starvation;
 the first acknowledged poll after that logs `poll_answered` (the open
 starvation is remembered with the last-seen rows, so a recorder restart in
 between still closes it). A device
 that just moved to a parent the sniffer cannot hear looks the same from
 the sniffer's chair: a `mle_rejoin_attempt` right before it is the tell.
 
-Two starvations are logged at notice rather than paged, for the same
-reason the quiet detector holds back: the sniffer, not the device, is the
-likely cause. A device heard below `[quiet] min_rssi_dbm` has a parent
+The page waits. The record at the threshold is a notice with `confirmed =
+false`, so it is in the log and on the review pages at once, and the
+warning follows only if the polls are still unanswered `[polls] confirm_s`
+later (default 10 min): a second `poll_starvation` record for the same
+device, `confirmed = true`, `starved_for_s` counted from the original start,
+folded into the same row on the review pages. The evidence is the first
+poll sent after the mark that nobody answers, not a clock: a device that
+fell silent and comes back with an answered poll is closed, not paged, and
+a recorder that was down across the mark pages from the first unanswered
+poll it hears after starting (the pending page is kept with the last-seen
+rows). Every starvation in the first days of running that recovered by
+itself did so within minutes, while a device that has lost its parent
+stays unanswered far longer, so nearly every page this saves is one that
+would have been followed by `poll_answered` before you had read it. The
+`poll_answered` note says when a starvation closed unconfirmed. `confirm_s
+= 0` pages at the threshold, as before, and the records carry no
+`confirmed` field.
+
+Two starvations are logged at notice rather than paged, and never
+confirmed, for the same reason the quiet detector holds back: the sniffer,
+not the device, is the likely cause. A device heard below `[quiet] min_rssi_dbm` has a parent
 whose ACKs are heard even less reliably. And an episode that opens within
 `[polls] rearm_s` (default 60 min) of the previous one's close is flapping:
 a device that really lost its parent gives up after a handful of polls and

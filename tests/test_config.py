@@ -78,6 +78,14 @@ class EventsKeepDaysTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self._load("[events]\nkeep_days = -1\n")
 
+    def test_confirm_s_defaults_to_ten_minutes_zero_pages_at_once_negative_refused(self):
+        self.assertEqual(self._load("[network]\nchannel = 25\n").poll_confirm_s, 600)
+        self.assertEqual(self._load("[polls]\nconfirm_s = 0\n").poll_confirm_s, 0)
+        self.assertEqual(self._load("[polls]\nconfirm_s = 300\n").poll_confirm_s, 300)
+        with self.assertRaises(ValueError) as cm:
+            self._load("[polls]\nconfirm_s = -5\n")
+        self.assertEqual(str(cm.exception), "[polls] confirm_s must be 0 (page at once) or more, not -5")
+
 
 class ReadOnlyStateDirTest(unittest.TestCase):
     """The web container mounts data/ read-only; before capture has run
@@ -135,6 +143,7 @@ class ExampleConfigTest(unittest.TestCase):
         ("quiet", "silence_s"): ("quiet_s", 1800, 600),
         ("quiet", "min_rssi_dbm"): ("quiet_min_rssi_dbm", -82, -70),
         ("polls", "rearm_s"): ("poll_rearm_s", 3600, 120),
+        ("polls", "confirm_s"): ("poll_confirm_s", 600, 120),
         ("link", "drop_db"): ("link_drop_db", 8, 3),
         ("link", "hold_s"): ("link_hold_s", 1800, 120),
         ("summary", "hour"): ("summary_hour", 8, 6),

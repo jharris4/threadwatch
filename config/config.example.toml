@@ -52,6 +52,12 @@ min_rssi_dbm = -82
 # this long. 0 pages every episode. Devices heard below [quiet] min_rssi_dbm
 # are logged at notice regardless, as for device_quiet.
 rearm_s = 3600             # 60 min
+# A starvation that would page is logged at notice first and paged only if
+# the device's polls are still unanswered this long later (the page is the
+# first poll sent after the mark that nobody answers). Every starvation that
+# recovered by itself so far did so within minutes; a device that really
+# lost its parent stays unanswered far longer. 0 pages at the threshold.
+confirm_s = 600            # 10 min
 
 [link]
 # Slow link degradation: a device still heard, but with its average RSSI at

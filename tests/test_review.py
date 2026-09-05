@@ -337,9 +337,9 @@ class DayViewTest(unittest.TestCase):
         self.assertGreater(sto["disk_free"], 0)
         self.assertEqual((sto["ring_bound_bytes"], sto["ring_needs_bytes"]),
                          (self.cfg.keep_files * 4096, self.cfg.keep_files * 4096 - 8192))
-        self.cfg.keep_bytes = 10000                            # keep_gb wins when it is the smaller bound
-        sto = storage(self.cfg)
-        self.assertEqual((sto["keep_bytes"], sto["ring_bound_bytes"], sto["ring_needs_bytes"]), (10000, 10000, 1808))
+        self.cfg.keep_bytes = 10000                            # keep_gb wins when it is the smaller bound...
+        sto = storage(self.cfg)                                # ...plus the hour being written, never pruned
+        self.assertEqual((sto["keep_bytes"], sto["ring_bound_bytes"], sto["ring_needs_bytes"]), (10000, 14096, 5904))
         self.cfg.keep_bytes = 4096                             # already over the cap: nothing more needed
         self.assertEqual(storage(self.cfg)["ring_needs_bytes"], 0)
         self.assertEqual((fmt_bytes(512), fmt_bytes(2048), fmt_bytes(5 * 1024 ** 3)), ("512 B", "2 KB", "5.0 GB"))

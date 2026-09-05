@@ -30,6 +30,30 @@ class RingSizeCapTest(_ut.TestCase):
             ring._prune()
             self.assertEqual(len(list(Path(d).glob("*.pcap"))), 2)
 
+    def test_the_byte_cap_holds_while_the_hour_grows_not_only_at_the_rotation(self):
+        # Pruned only at rotation, the ring sat over the cap for the whole
+        # hour, by as much as the hour brought.
+        import tempfile
+        import time
+        from threadwatch.pcap import Frame
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "threadwatch-20260904-08.pcap").write_bytes(b"x" * 50_000)
+            (Path(d) / "threadwatch-20260904-09.pcap").write_bytes(b"x" * 50_000)
+            ring = RingWriter(Path(d), keep_files=168, dlt=0, keep_bytes=150_000)
+            self.assertEqual(ring._prune_step, 65536)
+            ts = time.mktime(time.strptime("2026-09-04 10:00:00", "%Y-%m-%d %H:%M:%S"))
+            frame = lambda i: Frame(ts=ts + i, raw=b"\x00" * 1000, psdu=b"", rssi=None, channel=None, lqi=None)
+            total = lambda: sum(p.stat().st_size for p in Path(d).glob("*.pcap"))
+            for i in range(40):                     # 40 KB into the hour: 140 KB, under the cap, all three stay
+                ring.write(frame(i))
+            self.assertEqual(len(list(Path(d).glob("*.pcap"))), 3)
+            for i in range(40, 200):                # the hour keeps coming; no rotation
+                ring.write(frame(i))
+                self.assertLessEqual(total(), 150_000 + ring._prune_step, f"frame {i}")
+            self.assertEqual(sorted(p.name[-7:-5] for p in Path(d).glob("*.pcap")), ["10"])
+            self.assertTrue(ring.current_path.exists())
+            ring.close()
+
     def test_current_file_survives_a_clock_step_back(self):
         import tempfile
         import time

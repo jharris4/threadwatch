@@ -42,7 +42,17 @@ def find_sniffer_port() -> str:
 class RingWriter:
     """Hourly pcap files in a ring directory, oldest pruned beyond
     keep_files, and beyond keep_bytes of total size when that is set (a
-    small SD card is a harder limit than a week)."""
+    small SD card is a harder limit than a week).
+
+    The byte cap is kept while the hour's file grows, not only at the
+    rotation: every PRUNE_STEP bytes written the oldest closed files go
+    until the ring, the open file included, is back under it. Pruned
+    only at rotation, the ring sat over the cap for the rest of the
+    hour, by as much as the hour brought. What remains is the open file
+    itself, which is never pruned: one hour heavier than the whole cap
+    exceeds it on its own (review.storage allows an hour for that)."""
+
+    PRUNE_STEP = 4 * 1024 * 1024
 
     def __init__(self, ring_dir: Path, keep_files: int, dlt: int, keep_bytes: Optional[int] = None):
         if keep_bytes is not None and keep_bytes <= 0:
@@ -52,6 +62,10 @@ class RingWriter:
         self.ring_dir = ring_dir
         self.keep_files = keep_files
         self.keep_bytes = keep_bytes
+        # A small cap is checked in proportion (a 64 KiB step under a few
+        # MiB), a large one every few MiB: a stat of every ring file each.
+        self._prune_step = max(65536, min(self.PRUNE_STEP, keep_bytes // 32)) if keep_bytes else None
+        self._pruned_at = 0
         self.dlt = dlt
         self.current_hour = None
         self.fh = None
@@ -72,6 +86,9 @@ class RingWriter:
         # write(2) per frame, not a sync: the kernel still writes the card
         # back on its own schedule.
         self.fh.flush()
+        if self._prune_step is not None and self.fh.tell() - self._pruned_at >= self._prune_step:
+            self._pruned_at = self.fh.tell()
+            self._prune()
 
     def _rotate(self, hour: str) -> None:
         if self.fh:
@@ -104,6 +121,7 @@ class RingWriter:
             self.writer = PcapWriter(self.fh, self.dlt)
         self.fh.flush()                     # the header, so an early freeze copies a readable pcap
         self._prune()
+        self._pruned_at = self.fh.tell()
 
     def _prune(self) -> None:
         # The file being written is never a candidate: it does not always sort

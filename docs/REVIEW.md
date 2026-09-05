@@ -52,8 +52,9 @@ is no authentication: keep it on your LAN or behind your own proxy.
   which device leads it (linked, once its RLOC16 has been matched),
   storm detector, crypto counters) plus storage: ring size and hourly
   rate, incidents and event log size, and free disk against what a full
-  ring still needs (keep_files hours at the measured rate, and no more
-  than keep_gb when set; the doctor's disk check uses the same figure).
+  ring still needs (keep_files hours at the measured rate, or keep_gb
+  plus one hour when set, since the hour being written is never pruned;
+  the doctor's disk check uses the same figure).
 - **/incidents**: every frozen incident with when it was frozen, the
   hours its packets cover, and its size. Day pages link to it.
 - **/api/status** (with a `storage` block), **/api/incidents**,

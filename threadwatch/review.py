@@ -470,9 +470,12 @@ def storage(cfg) -> dict:
         out.update({"disk_total": None, "disk_free": None})
     if ring and len(ring) > 1:
         out["bytes_per_hour"] = out["ring_bytes"] // len(ring)
-    bound = cfg.keep_files * (out.get("bytes_per_hour") or DEFAULT_BYTES_PER_HOUR)
+    per_hour = out.get("bytes_per_hour") or DEFAULT_BYTES_PER_HOUR
+    bound = cfg.keep_files * per_hour
     if cfg.keep_bytes:
-        bound = min(bound, cfg.keep_bytes)
+        # The writer prunes closed files to the cap as the hour grows, but
+        # never the file being written: the ring can stand one hour over.
+        bound = min(bound, cfg.keep_bytes + per_hour)
     out["keep_bytes"] = cfg.keep_bytes
     out["ring_bound_bytes"] = bound
     out["ring_needs_bytes"] = max(0, bound - out["ring_bytes"])

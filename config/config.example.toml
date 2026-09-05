@@ -21,7 +21,8 @@ channel = 25
 # serial_port = "/dev/ttyACM0"   # leave unset to auto-detect the dongle
 # data_dir = "~/threadwatch-data"  # default: <repo>/data; ~ and ${HOME}-style variables expand
 keep_files = 168                  # hourly ring files to retain (168 = 1 week)
-# keep_gb = 4                     # ...and never more than this much on disk (oldest go first)
+# keep_gb = 4                     # ...and no more than this much on disk (oldest go first; the hour
+                                  # being written is never pruned, so one heavy hour can stand over it)
 # Copy the ring into data/incidents/ by itself when a critical event
 # (phase_locked_storm) fires, at most once per six hours (counted from the
 # newest auto-* incident on disk, so a restart does not reset it). Off by default:

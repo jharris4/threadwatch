@@ -1,11 +1,13 @@
 """The event log survives a write cut short."""
 
 import json
+import os
 import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -85,6 +87,36 @@ class RetentionTest(unittest.TestCase):
                 self.assertEqual(len(read_day(d, day)), 1)
             self.assertEqual(len(events_mod._read_cache), events_mod.READ_CACHE_MAX)
             self.assertNotIn(d / f"{day_of(TS)}.jsonl", events_mod._read_cache)    # the first read went first
+
+
+class ReadCacheTest(unittest.TestCase):
+    def test_an_unchanged_file_is_served_from_the_cache_and_any_rewrite_is_read_again(self):
+        from threadwatch import events as events_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            day = day_of(TS)
+            path = d / f"{day}.jsonl"
+            first = json.dumps({"ts": TS, "event": "first", "severity": "info"}) + "\n"
+            again = first.replace("first", "again")                          # the same size to the byte
+            path.write_text(first)
+            events_mod._read_cache.clear()
+            self.assertEqual([r["event"] for r in read_day(d, day)], ["first"])
+            with mock.patch.object(Path, "read_text", side_effect=AssertionError("parsed again")):
+                self.assertEqual([r["event"] for r in read_day(d, day)], ["first"])   # cached: not re-read
+            # Rewritten whole with the same size (a migration, an edit by
+            # hand); the file's mtime moves on, as it does for any write.
+            path.write_text(again)
+            st = path.stat()
+            os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+            self.assertEqual([r["event"] for r in read_day(d, day)], ["again"])
+            # ...and appended to, which changes the size alone.
+            with open(path, "a") as fh:
+                fh.write(first)
+            os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))    # same mtime as before
+            self.assertEqual([r["event"] for r in read_day(d, day)], ["again", "first"])
+            self.assertEqual([r["event"] for r in read_day(d, day)], ["again", "first"])
+            self.assertEqual(read_day(d, "1999-01-01"), [])                  # no file: nothing, nothing cached
+            self.assertNotIn(d / "1999-01-01.jsonl", events_mod._read_cache)
 
 
 if __name__ == "__main__":

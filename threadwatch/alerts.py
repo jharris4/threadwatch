@@ -443,8 +443,13 @@ def _event_filter(raw: dict, key: str, name: str, log: Callable[[str], None]) ->
     return frozenset(value)
 
 
-def build_sink(raw: dict, index: int, log: Callable[[str], None]) -> Optional[Sink]:
-    """Turn one [[alerts.sinks]] table into a Sink, or None if disabled."""
+def build_sink(raw: dict, index: int, log: Callable[[str], None],
+               unbuilt: Optional[list] = None) -> Optional[Sink]:
+    """Turn one [[alerts.sinks]] table into a Sink, or None if disabled.
+    A sink that is enabled but cannot be built (a ${VARIABLE} it names is
+    not set) is logged and, when ``unbuilt`` is given, appended to it as
+    (name, reason): alert-test counts those as failures, since an
+    installation check that says "ok" with no recipient built is no check."""
     raw = dict(raw)
     kind = raw.get("type", "http")
     name = raw.get("name") or f"{kind}-{index}"
@@ -454,8 +459,10 @@ def build_sink(raw: dict, index: int, log: Callable[[str], None]) -> Optional[Si
     missing: set[str] = set()
     raw = expand_env(raw, missing)
     if missing:
-        log(f"alert sink '{name}' disabled: environment variable(s) not set: "
-            f"{', '.join(sorted(missing))} (see config/alerts.env)")
+        reason = f"environment variable(s) not set: {', '.join(sorted(missing))} (see config/alerts.env)"
+        log(f"alert sink '{name}' disabled: {reason}")
+        if unbuilt is not None:
+            unbuilt.append((name, reason))
         return None
     if kind in PRESETS:
         raw = PRESETS[kind](raw)
@@ -495,20 +502,22 @@ def _check_unique_names(kind: str, items) -> None:
         seen.add(it.name)
 
 
-def build_sinks(alerts_raw: dict, log: Callable[[str], None]) -> list[Sink]:
+def build_sinks(alerts_raw: dict, log: Callable[[str], None], unbuilt: Optional[list] = None) -> list[Sink]:
     sinks: list[Sink] = []
     # Legacy single-webhook form, kept working as a shorthand.
     if alerts_raw.get("webhook_url"):
         missing: set[str] = set()
         url = expand_env(str(alerts_raw["webhook_url"]), missing)
         if missing:
-            log(f"alert sink 'webhook' disabled: environment variable(s) not set: "
-                f"{', '.join(sorted(missing))} (see config/alerts.env)")
+            reason = f"environment variable(s) not set: {', '.join(sorted(missing))} (see config/alerts.env)"
+            log(f"alert sink 'webhook' disabled: {reason}")
+            if unbuilt is not None:
+                unbuilt.append(("webhook", reason))
         else:
             sinks.append(HttpSink(name="webhook", url=url,
                                   min_severity=_severity_index(str(alerts_raw.get("min_severity", "warning")))))
     for i, raw in enumerate(alerts_raw.get("sinks", []) or []):
-        s = build_sink(raw, i, log)
+        s = build_sink(raw, i, log, unbuilt)
         if s is not None:
             sinks.append(s)
     _check_unique_names("alert sink", sinks)
@@ -683,7 +692,10 @@ class Heartbeat:
         return f"{self.name}: {self.method} {_redact_url(self.url)} every {self.interval_s:.0f}s"
 
 
-def build_heartbeats(raw_list: list, log: Callable[[str], None]) -> list[Heartbeat]:
+def build_heartbeats(raw_list: list, log: Callable[[str], None],
+                     unbuilt: Optional[list] = None) -> list[Heartbeat]:
+    """The [[heartbeats]] tables as Heartbeats. ``unbuilt`` collects, as
+    build_sink does, the enabled ones a missing ${VARIABLE} kept out."""
     out: list[Heartbeat] = []
     for i, raw in enumerate(raw_list or []):
         raw = dict(raw)
@@ -693,8 +705,10 @@ def build_heartbeats(raw_list: list, log: Callable[[str], None]) -> list[Heartbe
         missing: set[str] = set()
         raw = expand_env(raw, missing)
         if missing:
-            log(f"heartbeat '{name}' disabled: environment variable(s) not set: "
-                f"{', '.join(sorted(missing))} (see config/alerts.env)")
+            reason = f"environment variable(s) not set: {', '.join(sorted(missing))} (see config/alerts.env)"
+            log(f"heartbeat '{name}' disabled: {reason}")
+            if unbuilt is not None:
+                unbuilt.append((name, reason))
             continue
         if not raw.get("url"):
             raise ConfigError(f"heartbeat '{name}': url is required")

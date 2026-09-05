@@ -82,6 +82,43 @@ class AlertTestFilterTest(CliCase):
         ])
 
 
+class AlertTestUnbuiltTest(CliCase):
+    """A recipient a missing ${VARIABLE} kept from being built is a failure
+    of the test, not a note above a clean exit."""
+
+    def test_a_sink_or_heartbeat_that_could_not_be_built_fails_the_test(self):
+        import os
+        for var in ("THREADWATCH_TEST_UNSET_TOKEN", "THREADWATCH_TEST_UNSET_BEAT"):
+            self.assertNotIn(var, os.environ)
+        (self.d / "config.toml").write_text(
+            f'[capture]\ndata_dir = "{self.d / "data"}"\n'
+            '[[alerts.sinks]]\nname = "all"\ntype = "command"\ncommand = ["true"]\n'
+            '[[alerts.sinks]]\nname = "phone"\ntype = "http"\nurl = "http://127.0.0.1:9/${THREADWATCH_TEST_UNSET_TOKEN}"\n'
+            '[[alerts.sinks]]\nname = "off"\ntype = "http"\nenabled = false\nurl = "http://127.0.0.1:9/${THREADWATCH_TEST_UNSET_TOKEN}"\n'
+            '[[heartbeats]]\nname = "gatus"\nurl = "http://127.0.0.1:9/${THREADWATCH_TEST_UNSET_BEAT}"\n')
+        code, out, _ = self.run_cli("alert-test", "--no-heartbeats", "--event", "device_quiet")
+        self.assertEqual(code, 1, out)
+        self.assertEqual(out.splitlines(), [
+            "  ! alert sink 'phone' disabled: environment variable(s) not set: THREADWATCH_TEST_UNSET_TOKEN "
+            "(see config/alerts.env)",
+            "sinks (2):",
+            "  ok   all: true",
+            "  FAIL phone: not built -> environment variable(s) not set: THREADWATCH_TEST_UNSET_TOKEN "
+            "(see config/alerts.env)",
+        ])
+        code, out, _ = self.run_cli("alert-test", "--event", "device_quiet")
+        self.assertEqual(code, 1, out)
+        self.assertIn("heartbeats (1):", out)
+        self.assertIn("  FAIL gatus: not built -> environment variable(s) not set: THREADWATCH_TEST_UNSET_BEAT", out)
+        # With the variables set, the usable recipient alone is a pass.
+        (self.d / "config.toml").write_text(
+            f'[capture]\ndata_dir = "{self.d / "data"}"\n'
+            '[[alerts.sinks]]\nname = "all"\ntype = "command"\ncommand = ["true"]\n'
+            '[[alerts.sinks]]\nname = "off"\ntype = "http"\nenabled = false\nurl = "http://127.0.0.1:9/${THREADWATCH_TEST_UNSET_TOKEN}"\n')
+        code, out, _ = self.run_cli("alert-test", "--no-heartbeats", "--event", "device_quiet")
+        self.assertEqual((code, out.splitlines()), (0, ["sinks (1):", "  ok   all: true"]))
+
+
 class IncidentsTest(CliCase):
     def test_list_and_delete(self):
         code, out, _ = self.run_cli("incidents")

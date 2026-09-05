@@ -273,26 +273,37 @@ def main(argv=None) -> int:
         from .alerts import Dispatcher, HeartbeatRunner, build_heartbeats, build_sinks
         import socket
         log = lambda m: print(f"  ! {m}")
-        sinks = build_sinks(cfg.alerts_raw, log)
-        beats = [] if args.no_heartbeats else build_heartbeats(cfg.heartbeats_raw, log)
+        # A recipient that is enabled but could not be built (a ${VARIABLE}
+        # it names is unset) delivers nothing: that is what this command
+        # exists to catch, so it is a FAIL line and a non-zero exit, not a
+        # note above an "ok". A recipient switched off with enabled = false
+        # is not listed, as before.
+        unbuilt_sinks: list = []
+        unbuilt_beats: list = []
+        sinks = build_sinks(cfg.alerts_raw, log, unbuilt_sinks)
+        beats = [] if args.no_heartbeats else build_heartbeats(cfg.heartbeats_raw, log, unbuilt_beats)
         record = {"ts": time.time(), "event": args.event, "severity": args.severity,
                   "name": "Test device", "addr": "0000000000000000",
                   "note": f"threadwatch alert-test from {socket.gethostname()}"}
-        failures = 0
-        print(f"sinks ({len(sinks)}):")
+        failures = len(unbuilt_sinks) + len(unbuilt_beats)
+        print(f"sinks ({len(sinks) + len(unbuilt_sinks)}):")
         for sink, err in Dispatcher(sinks, log).deliver_now(record):
             print(f"  {'ok  ' if err is None else 'FAIL'} {sink.describe()}" + (f" -> {err}" if err else ""))
             failures += err is not None
+        for name, reason in unbuilt_sinks:
+            print(f"  FAIL {name}: not built -> {reason}")
         for s in sinks:
             if s.min_severity > ["info", "notice", "warning", "critical"].index(args.severity):
                 print(f"  skip {s.name} (min severity above {args.severity})")
             elif not s.takes_event(args.event):
                 print(f"  skip {s.name} (does not take {args.event})")
-        if beats:
-            print(f"heartbeats ({len(beats)}):")
+        if beats or unbuilt_beats:
+            print(f"heartbeats ({len(beats) + len(unbuilt_beats)}):")
             for beat, err in HeartbeatRunner(beats, healthy=lambda: True, log=log, start=False).push_all(healthy=True):
                 print(f"  {'ok  ' if err is None else 'FAIL'} {beat.describe()}" + (f" -> {err}" if err else ""))
                 failures += err is not None
+            for name, reason in unbuilt_beats:
+                print(f"  FAIL {name}: not built -> {reason}")
         return 1 if failures else 0
 
     if args.cmd == "report":

@@ -351,6 +351,28 @@ class PlanInventoryTest(unittest.TestCase):
                          ["Contact Sensor", "Living Room Apple TV", "Back Door", "Garage Door"])
 
 
+    def test_shared_names_are_told_apart_even_when_address_tails_match(self):
+        # BUG-08: two devices HA calls "Sensor" whose addresses end in the
+        # same four characters were given one name, and the second was
+        # then filed under the first as its rotated address.
+        found = [{"name": "Sensor", "model": None, "addr": "001122334455abcd"},
+                 {"name": "Sensor", "model": None, "addr": "8899aabbccddabcd"}]
+        planned, changes = plan_inventory([], found)
+        self.assertEqual(planned, [{"name": "Sensor (55ABCD)", "extendedAddress": "001122334455ABCD"},
+                                   {"name": "Sensor (DDABCD)", "extendedAddress": "8899AABBCCDDABCD"}])
+        self.assertIn("add 'Sensor (55ABCD)' = 001122334455ABCD", changes)
+        self.assertIn("add 'Sensor (DDABCD)' = 8899AABBCCDDABCD", changes)
+        self.assertEqual(plan_inventory(planned, found), (planned, changes[:1]))     # idempotent
+        # A generated name must not land on an unrelated entry either, or
+        # the name fallback would file the device under it.
+        existing = [{"name": "Sensor (ABCD)", "extendedAddress": "FFFFFFFFFFFFFFFF", "note": "mine"}]
+        found = [{"name": "Sensor", "model": None, "addr": "001122334455abcd"},
+                 {"name": "Sensor", "model": None, "addr": "0000000000001234"}]
+        planned, changes = plan_inventory(existing, found)
+        self.assertEqual(planned[0], existing[0])
+        self.assertEqual([e["name"] for e in planned], ["Sensor (ABCD)", "Sensor (55ABCD)", "Sensor (001234)"])
+        self.assertEqual([len(_addrs(e)) for e in planned], [1, 1, 1])
+
     def test_a_colon_formatted_address_is_the_same_address(self):
         # BUG-07: the loader takes 00:11:22:... but the importer matched
         # addresses as written, so HA's 001122... never found the entry and

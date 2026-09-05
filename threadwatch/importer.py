@@ -52,6 +52,24 @@ def _add_address(entry: dict, addr: str) -> int:
     return len(addrs) + 1
 
 
+def _told_apart(devs: list[dict], entries: list[dict]) -> dict[str, str]:
+    """Names for devices Home Assistant calls the same thing: the shared
+    name and the tail of each address, as many characters of it as it
+    takes for the names to differ from one another and from every entry
+    that holds none of these addresses. Four characters told two devices
+    apart until two shared them, when the second was filed under the
+    first's name as its rotated address. Address -> name."""
+    base = devs[0]["name"]
+    addrs = {dev["addr"].upper() for dev in devs}
+    taken = {(e.get("name") or "").strip().lower() for e in entries if not addrs & set(_addresses(e))}
+    names = {}
+    for n in range(4, 17, 2):
+        names = {dev["addr"].upper(): f"{base} ({dev['addr'][-n:].upper()})" for dev in devs}
+        if len(set(names.values())) == len(names) and not any(v.lower() in taken for v in names.values()):
+            break
+    return names
+
+
 def plan_inventory(entries: list[dict], found: list[dict]) -> tuple[list[dict], list[str]]:
     """Merge Home Assistant's Matter-over-Thread devices into the
     inventory. HA is the authority on their names. Returns the new list
@@ -72,8 +90,9 @@ def plan_inventory(entries: list[dict], found: list[dict]) -> tuple[list[dict], 
     for devs in shared:
         changes.append(f"{devs[0]['name']!r} names {len(devs)} devices in Home Assistant: told apart here "
                        "by address; rename them there to give each its own name")
-    found = [{**dev, "name": f"{dev['name']} ({dev['addr'][-4:].upper()})"}
-             if len(holders[dev["name"].strip().lower()]) > 1 else dev for dev in found]
+    apart = {addr: name for devs in shared for addr, name in _told_apart(devs, entries).items()}
+    found = [{**dev, "name": apart[dev["addr"].upper()]} if dev["addr"].upper() in apart else dev
+             for dev in found]
     by_addr = {a: e for e in entries for a in _addresses(e)}
     by_name = {(e.get("name") or "").strip().lower(): e for e in entries if e.get("name")}
     for dev in found:
@@ -89,7 +108,10 @@ def plan_inventory(entries: list[dict], found: list[dict]) -> tuple[list[dict], 
                 entry["model"] = dev["model"]
                 changes.append(f"{dev['name']}: model {dev['model']!r}")
             continue
-        entry = by_name.get(dev["name"].lower())
+        # A device told apart by its address is one of several live at
+        # once, never a rotating device known under an old address: it is
+        # matched by address or added, whatever entry carries its name.
+        entry = by_name.get(dev["name"].lower()) if addr not in apart else None
         if entry is not None:
             n = _add_address(entry, addr)
             by_addr[addr] = entry

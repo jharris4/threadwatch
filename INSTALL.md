@@ -132,6 +132,10 @@ bin/threadwatch incidents       # what is frozen and how big; --delete <name or 
 bin/threadwatch replay f.pcap   # run detection over any pcap
 ```
 
+When a line of `doctor` is not `ok`, or the daemon keeps restarting,
+docs/OPERATIONS.md says what each line and each journal message means and
+what to do about it.
+
 ## Without systemd (macOS, or a Linux without it)
 
 Everything runs the same; you supply the supervisor. `bin/threadwatch

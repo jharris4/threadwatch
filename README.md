@@ -98,7 +98,8 @@ question: *why did this device go offline?*
 4. `bin/threadwatch doctor` says whether the box is fit to record.
 5. `bin/threadwatch capture` (or enable the systemd unit).
 6. When something feels wrong: `bin/threadwatch status`, and
-   `bin/threadwatch freeze` before the evidence rolls off.
+   `bin/threadwatch freeze` before the evidence rolls off
+   (docs/OPERATIONS.md: logs, restarts, what every doctor line means).
 
 ## Naming devices (the human-readable problem)
 
@@ -152,5 +153,5 @@ credentials.toml too (docs/HOME-ASSISTANT.md).
     systemd/       service unit templates (capture, web review)
     Dockerfile, compose.yaml   the container alternative (docs/DOCKER.md)
     config/        examples for config.toml, devices.json, alerts.env, ha.env
-    docs/          analysis cookbook, alerting, credentials, Docker, Home Assistant, review pages
+    docs/          analysis cookbook, alerting, credentials, Docker, Home Assistant, operations, review pages
     .github/       CI: the test suite and a Docker build on push and pull request

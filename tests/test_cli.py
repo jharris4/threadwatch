@@ -170,6 +170,11 @@ class AdoptTest(CliCase):
 class FreezeTest(CliCase):
     def test_freeze_copies_ring_state_and_events(self):
         from threadwatch.config import load
+        (self.d / "config.toml").write_text(
+            f'[capture]\ndata_dir = "{self.d / "data"}"\n[devices]\ninventory = "devices.json"\n'
+            '[[alerts.sinks]]\nname = "phone"\ntype = "ntfy"\nurl = "https://ntfy.example/topic-9f3a"\n'
+            'headers = { Authorization = "Bearer hunter2" }\n')
+        (self.d / "devices.json").write_text('[{"name": "Office AQ", "extendedAddress": "26976E7F7D20964A"}]')
         cfg = load(Path(self.cfg))
         cfg.ring_dir.mkdir(parents=True)
         (cfg.ring_dir / "threadwatch-20260903-08.pcap").write_bytes(b"a")
@@ -184,9 +189,24 @@ class FreezeTest(CliCase):
         inc = next(p for p in cfg.incidents_dir.iterdir() if not p.name.startswith("."))
         self.assertTrue(inc.name.endswith("_my-label-with-junk"))
         self.assertEqual(sorted(p.name for p in inc.iterdir()),
-                         ["border-routers.json", "events", "last-seen.json",
-                          "threadwatch-20260903-08.pcap", "threadwatch-20260903-09.pcap"])
+                         ["border-routers.json", "config.toml", "devices.json", "events", "last-seen.json",
+                          "manifest.json", "threadwatch-20260903-08.pcap", "threadwatch-20260903-09.pcap"])
         self.assertEqual(self.run_cli("incidents")[1].count("my-label-with-junk"), 1)
+        # The inventory as it was; the configuration with its secrets blanked.
+        self.assertEqual((inc / "devices.json").read_text(), (self.d / "devices.json").read_text())
+        frozen_cfg = (inc / "config.toml").read_text()
+        self.assertNotIn("topic-9f3a", frozen_cfg)
+        self.assertNotIn("hunter2", frozen_cfg)
+        self.assertIn('url = "<redacted>"', frozen_cfg)
+        self.assertIn('name = "phone"', frozen_cfg)
+        manifest = json.loads((inc / "manifest.json").read_text())
+        self.assertEqual((manifest["label"], manifest["trigger"], manifest["ring_files"], manifest["span"],
+                          manifest["inventory"], manifest["config"], manifest["events_days"]),
+                         ("my-label-with-junk", "manual", 2, ["20260903-08", "20260903-09"],
+                          "devices.json", "config.toml", 1))
+        self.assertEqual(manifest["files"]["threadwatch-20260903-08.pcap"], 1)
+        self.assertIn("events/2026-09-03.jsonl", manifest["files"])
+        self.assertIn("threadwatch", manifest)
 
 
 class EventsFilterTest(CliCase):
@@ -334,9 +354,9 @@ class ReplayTest(CliCase):
         self.assertEqual(code, 0)
         self.assertIn("[threadwatch] credentials: loaded", err)      # stdout is the JSON alone
         run = json.loads(out)
-        self.assertEqual(sorted(run), ["crypto", "detector", "duration_s", "events", "file", "frames", "partition"])
-        self.assertEqual((run["file"], run["frames"], run["duration_s"], run["partition"]),
-                         (str(self.d / "storm.pcap"), 6, 5.0, None))
+        self.assertEqual(sorted(run), ["crypto", "detector", "duration_s", "events", "file", "files", "frames", "partition"])
+        self.assertEqual((run["file"], run["files"], run["frames"], run["duration_s"], run["partition"]),
+                         (str(self.d / "storm.pcap"), [str(self.d / "storm.pcap")], 6, 5.0, None))
         self.assertEqual(run["detector"]["storm_active"], False)
         self.assertIsNone(run["crypto"]["key_sequence"])            # nothing in the file is secured
         self.assertIn("mac_decrypted", run["crypto"])
@@ -379,6 +399,51 @@ class ReplayTest(CliCase):
         events = [(e["event"], e["addr"]) for e in json.loads(out)["events"] if e.get("addr") == self.DEV]
         self.assertEqual(events, [("device_first_seen", self.DEV), ("device_quiet", self.DEV),
                                   ("device_returned", self.DEV)])
+
+    def test_replay_judges_several_files_as_one_run(self):
+        # A silence that begins in one hourly file and ends in the next is
+        # one silence: judged once, across the boundary, as the recorder
+        # judged it, whether the files are named or the directory is.
+        from threadwatch.pcap import DLT_NOFCS
+        (self.d / "config.toml").write_text(f'[capture]\ndata_dir = "{self.d / "data"}"\n[quiet]\nsilence_s = 60\n')
+        (self.d / "credentials.toml").write_text('[credentials]\nnetwork_key = "00112233445566778899aabbccddeeff"\n')
+        ring = self.d / "ring"
+        ring.mkdir()
+        first = [(self.T, self._psdu(self.DEV, 0))] + [(self.T + 30 * i, self._psdu(self.OTHER, i)) for i in range(1, 4)]
+        second = [(self.T + 30 * i, self._psdu(self.OTHER, i)) for i in range(4, 7)] + [(self.T + 210, self._psdu(self.DEV, 7))]
+        a = self._write_pcap("ring/threadwatch-20260903-08.pcap", first, DLT_NOFCS)
+        b = self._write_pcap("ring/threadwatch-20260903-09.pcap", second, DLT_NOFCS)
+        code, out, _err = self.run_cli("replay", str(a), str(b))
+        self.assertEqual(code, 0)
+        run = json.loads(out)
+        self.assertEqual((run["file"], run["files"], run["frames"]), (None, [str(a), str(b)], 8))
+        events = [(e["event"], e["addr"]) for e in run["events"] if e.get("addr") == self.DEV]
+        self.assertEqual(events, [("device_first_seen", self.DEV), ("device_quiet", self.DEV),
+                                  ("device_returned", self.DEV)])
+        self.assertEqual(json.loads(self.run_cli("replay", str(ring))[1])["events"], run["events"])   # the directory: the same
+        code, out, _err = self.run_cli("replay", str(self.d))                       # no pcaps in it
+        self.assertEqual(code, f"threadwatch replay: no pcap files in {self.d}")
+        self.assertEqual(self.run_cli("replay")[0], 2)                               # nothing named: usage error
+
+    def test_replay_reads_an_incident_with_the_inventory_frozen_in_it(self):
+        from threadwatch.pcap import DLT_NOFCS
+        (self.d / "config.toml").write_text(f'[capture]\ndata_dir = "{self.d / "data"}"\n[devices]\ninventory = "devices.json"\n')
+        (self.d / "devices.json").write_text(json.dumps([{"name": "Live Name", "extendedAddress": self.DEV}]))
+        (self.d / "credentials.toml").write_text('[credentials]\nnetwork_key = "00112233445566778899aabbccddeeff"\n')
+        inc = self.d / "data" / "incidents" / "20260903T100000_storm-at-noon"
+        inc.mkdir(parents=True)
+        self._write_pcap("data/incidents/20260903T100000_storm-at-noon/threadwatch-20260903-09.pcap",
+                         [(self.T + i, self._psdu(self.DEV, i)) for i in range(3)], DLT_NOFCS)
+        (inc / "devices.json").write_text(json.dumps([{"name": "Frozen Name", "extendedAddress": self.DEV}]))
+        for want in ("storm-at-noon", "storm at noon", inc.name, str(inc)):
+            code, out, err = self.run_cli("replay", "--incident", want)
+            self.assertEqual(code, 0, (want, err))
+            run = json.loads(out)
+            self.assertEqual(run["files"], [str(inc / "threadwatch-20260903-09.pcap")])
+            self.assertEqual([e["name"] for e in run["events"] if e["event"] == "device_first_seen"], ["Frozen Name"])
+        code, _out, _err = self.run_cli("replay", "--incident", "nope")
+        self.assertEqual(code, 1)
+        self.assertEqual(sorted(p.name for p in (self.d / "data" / "state").rglob("*")) if (self.d / "data" / "state").exists() else [], [])
 
     def test_replay_finds_a_link_drop_that_holds_and_then_recovers(self):
         from threadwatch.pcap import DLT_TAP

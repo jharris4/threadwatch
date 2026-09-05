@@ -747,8 +747,9 @@ class QuietPolicyTest(unittest.TestCase):
         pipe = self._pipe()
         attempts = []
 
-        def flaky(cfg, label):
+        def flaky(cfg, label, trigger=None):
             attempts.append(label)
+            self.assertEqual(trigger, "phase_locked_storm")
             if len(attempts) == 1:
                 raise OSError(28, "No space left on device")
             return cfg.incidents_dir / f"20231114T221500_{label}", 3

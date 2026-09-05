@@ -31,6 +31,11 @@ class Config:
     config_dir: Path = REPO_ROOT / "config"
     config_path: Optional[Path] = None         # the file load() read, None when defaults stood
     credentials_path: Optional[Path] = None
+    # A frozen incident to read state and events from instead of
+    # data/state (replay and why --incident): its copies of the state
+    # files and the event log sit at its top level, and nothing is ever
+    # written there. See for_incident.
+    frozen_dir: Optional[Path] = None
     # Silence (seconds) before a device_quiet event. 30 min: the 2026-09-02
     # soak (9.8 h, 22 sleepy end devices) showed 19 of them never silent for
     # 3 min and the rest under 30 min once marginal-reception devices are
@@ -87,8 +92,21 @@ class Config:
     def ring_dir(self) -> Path:
         return self.data_dir / "ring"
 
+    def for_incident(self, incident_dir: Path) -> "Config":
+        """This configuration turned on a frozen incident: state, events
+        and (when the freeze kept one) the inventory come from the
+        incident's copies, so names and history are the ones current when
+        it was frozen, not today's. Everything else, the credentials
+        above all, is the live configuration's."""
+        import dataclasses
+        inventory = incident_dir / "devices.json"
+        return dataclasses.replace(self, frozen_dir=incident_dir,
+                                   devices_path=inventory if inventory.exists() else self.devices_path)
+
     @property
     def state_dir(self) -> Path:
+        if self.frozen_dir is not None:
+            return self.frozen_dir
         d = self.data_dir / "state"
         # Created on first use for whoever writes there (the recorder). A
         # reader on a read-only mount (the web container, data:ro) cannot

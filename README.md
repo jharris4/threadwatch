@@ -39,9 +39,11 @@ question: *why did this device go offline?*
   the ring: hour-by-hour cadence, RSSI, ACKs, silences, and rejoin
   attempts. This is the "why did X go offline"
   command; `--hours 6` reads only the recent ring files, which on a Pi is
-  the difference between seconds and minutes, and `--pcap file` reads one
-  file instead of the ring (a frozen incident's hour, a capture from
-  elsewhere). The device's episodes from
+  the difference between seconds and minutes, `--pcap file` reads one
+  file instead of the ring (a capture from elsewhere), and `--incident
+  name` reads a frozen incident whole, with the names and the event log
+  frozen in it. Each silence says how much of it the recorder was not
+  listening for. The device's episodes from
   the event log (kept long after the packets roll off) follow, so a
   repeat offender shows as one.
 - **Device tracking without a controller** — including HomeKit-only
@@ -59,14 +61,19 @@ question: *why did this device go offline?*
   auto-naming live. The pcaps are stored exactly as received, so the key
   is applied on read and payloads at rest stay encrypted.
 - **Incident freeze**: `threadwatch freeze my-label` snapshots the ring
-  buffer before it rolls over; with `freeze_on_critical` in config.toml
-  the recorder does it by itself when a storm fires (the one critical
-  event today), at most once per six hours. `threadwatch incidents`
-  lists and deletes them; what an incident holds and how to analyse one
-  is in docs/ANALYSIS.md.
+  buffer before it rolls over, with the inventory, the configuration
+  (secrets blanked), the state files, the event log and a manifest, so
+  the incident reads on its own months later; with `freeze_on_critical`
+  in config.toml the recorder does it by itself when a storm fires (the
+  one critical event today), at most once per six hours. `threadwatch
+  incidents` lists and deletes them; `replay --incident` and `why
+  --incident` read one whole. What an incident holds and how to analyse
+  one is in docs/ANALYSIS.md.
 - **Offline analysis**: `threadwatch replay file.pcap` runs the whole
-  pipeline over any capture; pcaps also open in Wireshark (see
-  docs/ANALYSIS.md for a filter cookbook and the storm case study).
+  pipeline over any capture, and over several files or a directory of
+  them as one run, so what spans an hourly boundary is judged once;
+  pcaps also open in Wireshark (see docs/ANALYSIS.md for a filter
+  cookbook and the storm case study).
 
 ## What it deliberately does not do
 

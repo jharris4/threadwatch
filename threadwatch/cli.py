@@ -23,6 +23,28 @@ def _inventory_path(cfg) -> Path:
     return cfg.devices_path or cfg.config_dir / "devices.json"
 
 
+def _find_incident(cfg, want: str, parser, command: str) -> Path:
+    """The incident directory a user named: by its directory name, its
+    label as typed at freeze time, or that label's filename-safe form;
+    a path to the directory itself also works. One match, or an error."""
+    from .freeze import safe_label
+    from .review import incidents
+    as_path = Path(want)
+    if as_path.is_dir():
+        return as_path
+    want = want.strip().rstrip("/")
+    items = incidents(cfg.incidents_dir)
+    hits = ([i for i in items if i["name"] == want]
+            or [i for i in items if i["label"] == want]
+            or [i for i in items if i["label"] == safe_label(want)])
+    if not hits:
+        parser.exit(1, f"threadwatch {command}: no incident named {want!r}\n")
+    if len(hits) > 1:
+        parser.exit(1, f"threadwatch {command}: {want!r} names {len(hits)} incidents; "
+                       f"use the full name: {', '.join(i['name'] for i in hits)}\n")
+    return cfg.incidents_dir / hits[0]["name"]
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="threadwatch",
@@ -35,8 +57,12 @@ def main(argv=None) -> int:
     sub.add_parser("capture", help="run the capture daemon (foreground)")
     sub.add_parser("status", help="show the running daemon's status")
 
-    p_replay = sub.add_parser("replay", help="run detection over an existing pcap file")
-    p_replay.add_argument("pcap", type=Path)
+    p_replay = sub.add_parser("replay", help="run detection over existing pcap files, as one run")
+    p_replay.add_argument("pcap", type=Path, nargs="*",
+                          help="pcap files in order, or a directory (an incident, the ring) of them")
+    p_replay.add_argument("--incident", metavar="NAME",
+                          help="a frozen incident (name or label): its pcaps, judged with its own inventory "
+                               "and state; any pcaps given are read instead of its own")
 
     p_freeze = sub.add_parser("freeze", help="preserve the current ring buffer as an incident")
     p_freeze.add_argument("label", nargs="?", default="incident")
@@ -74,6 +100,9 @@ def main(argv=None) -> int:
     p_why = sub.add_parser("why", help="reconstruct one device's story from the ring buffer")
     p_why.add_argument("device", help="device name (from devices.json) or 16-hex extended address")
     p_why.add_argument("--pcap", type=Path, help="analyze this file instead of the ring")
+    p_why.add_argument("--incident", metavar="NAME",
+                       help="analyze a frozen incident (name or label) instead of the ring, with the "
+                            "inventory and event log frozen with it")
     p_why.add_argument("--hours", type=float,
                        help="only the ring files covering the last N hours (default: the whole ring)")
 
@@ -126,8 +155,15 @@ def main(argv=None) -> int:
 
     if args.cmd == "replay":
         from .capture import run_replay
+        paths = list(args.pcap)
+        if args.incident:
+            inc = _find_incident(cfg, args.incident, parser, "replay")
+            cfg = cfg.for_incident(inc)
+            paths = paths or [inc]
+        if not paths:
+            parser.error("give pcap files, a directory of them, or --incident NAME")
         try:
-            run_replay(cfg, args.pcap)
+            run_replay(cfg, paths)
         except CredentialsError as exc:
             parser.exit(2, f"threadwatch replay: {exc}\n")
         return 0
@@ -154,10 +190,13 @@ def main(argv=None) -> int:
         from .why import run_why
         if args.pcap and args.hours is not None:
             parser.error("--hours selects ring files; it does not apply with --pcap")
+        if args.pcap and args.incident:
+            parser.error("--pcap and --incident each say what to read; give one")
         if args.hours is not None and args.hours <= 0:
             parser.error("--hours must be positive")
+        incident = _find_incident(cfg, args.incident, parser, "why") if args.incident else None
         try:
-            return run_why(cfg, args.device, args.pcap, hours=args.hours)
+            return run_why(cfg, args.device, args.pcap, hours=args.hours, incident_dir=incident)
         except CredentialsError as exc:
             parser.exit(2, f"threadwatch why: {exc}\n")
 
@@ -243,22 +282,15 @@ def main(argv=None) -> int:
 
     if args.cmd == "incidents":
         import sys
-        from .freeze import safe_label
         from .review import fmt_bytes, incidents
         items = incidents(cfg.incidents_dir)
         if args.delete:
-            want = args.delete.strip().rstrip("/")
-            hits = ([i for i in items if i["name"] == want]
-                    or [i for i in items if i["label"] == want]
-                    or [i for i in items if i["label"] == safe_label(want)])
-            if not hits:
-                parser.exit(1, f"threadwatch incidents: no incident named {want!r}\n")
-            if len(hits) > 1:
-                parser.exit(1, f"threadwatch incidents: {want!r} names {len(hits)} incidents; "
-                               f"use the full name: {', '.join(i['name'] for i in hits)}\n")
-            target = cfg.incidents_dir / hits[0]["name"]
+            target = _find_incident(cfg, args.delete, parser, "incidents")
+            if target.parent.resolve() != cfg.incidents_dir.resolve():
+                parser.exit(1, f"threadwatch incidents: {target} is not under {cfg.incidents_dir}\n")
+            size = next((i["bytes"] for i in items if i["name"] == target.name), 0)
             shutil.rmtree(target)
-            print(f"deleted {target} ({fmt_bytes(hits[0]['bytes'])})")
+            print(f"deleted {target} ({fmt_bytes(size)})")
             return 0
         if not items:
             print("no frozen incidents (threadwatch freeze <label> makes one)")

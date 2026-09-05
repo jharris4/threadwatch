@@ -289,6 +289,45 @@ class RunWhyRingTest(unittest.TestCase):
     def _frames_in_table(text):
         return sum(int(row[2]) for row in RunWhyTest._rows(None, text))
 
+    def test_an_incident_is_read_with_its_own_names_and_history(self):
+        # An incident frozen months ago, read on a box whose inventory has
+        # moved on: the names, the event log and the recorder's coverage
+        # are the incident's own. The silence between its two files was
+        # one the recorder slept through for an hour, and the story says so.
+        import contextlib
+        import io
+        import json
+        from threadwatch.why import run_why
+        inc = self.cfg.incidents_dir / "20260903T100000_storm"
+        inc.mkdir(parents=True)
+        for hours_ago, seq0 in ((3, 0), (1, 100)):
+            self._ring_file(hours_ago, self._frames(hours_ago, 5, seq0))
+        for p in self.cfg.ring_dir.iterdir():
+            p.rename(inc / p.name)
+        self.cfg.ring_dir.rmdir()
+        (inc / "devices.json").write_text(json.dumps([{"name": "Frozen AQ", "extendedAddress": self.DEV}]))
+        from threadwatch.events import EventLog
+        log = EventLog(inc / "events")
+        log.emit("recorder_started", "notice", self.now - 1.5 * 3600, cause="unknown", gap_s=3600,
+                 last_frame_ts=self.now - 2.5 * 3600, stopped_ts=None, exit_code=None, note="n")
+        log.emit("device_quiet", "warning", self.now - 2 * 3600, addr=self.DEV, name="Frozen AQ",
+                 silent_for_s=1800, last_seen=self.now - 2.5 * 3600, reception="good")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            rc = run_why(self.cfg, "Frozen AQ", None, hours=None, incident_dir=inc)
+        text = out.getvalue()
+        self.assertEqual(rc, 0)
+        self.assertIn(f"analyzed incident {inc.name}: 2 ring file(s)", text)
+        self.assertIn(f"=== Frozen AQ ({self.DEV}) ===", text)
+        self.assertIn("(recorder not listening for 60m of it)", text)
+        self.assertIn("Frozen AQ quiet for", text)                     # the incident's log, not the live one
+        self.assertFalse((self.cfg.data_dir / "state").exists())       # nothing written to the live state
+        # --hours counts back from the incident's newest file, not from now.
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as cm:
+                run_why(self.cfg, self.DEV, None, hours=0.5, incident_dir=inc / "nothing-here")
+        self.assertIn("no pcap files in incident", str(cm.exception))
+
     def test_no_ring_is_said_plainly(self):
         with self.assertRaises(SystemExit) as cm:
             self._run()

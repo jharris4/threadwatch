@@ -18,7 +18,7 @@ from .events import NullEventLog
 from .names import DeviceNames
 from .pcap import PcapStreamReader, is_poll
 from .pipeline import Pipeline, load_decryptor
-from .review import devices_history, fmt_episode
+from .review import coverage, devices_history, episode_blind_s, fmt_duration, fmt_episode
 
 HISTORY_ROWS = 20
 
@@ -60,6 +60,34 @@ def select_recent(files: list[Path], hours: float | None, now: float | None = No
 event_history = devices_history   # every address of a rotating device, newest first
 
 
+def newest_hour_end(files: list[Path]) -> float | None:
+    """When the newest ring-named file's hour ends: what "the last N
+    hours" of a frozen incident counts back from, since its files stop
+    where the freeze was, not now."""
+    import time as _t
+    ends = []
+    for path in files:
+        try:
+            ends.append(_t.mktime(_t.strptime(path.name, RING_NAME)) + 3600)
+        except ValueError:
+            continue
+    return max(ends) if ends else None
+
+
+def blind_during(events_dir: Path, a: float, b: float) -> float:
+    """How much of the span a..b the recorder was not listening for, from
+    the log's coverage (docs/REVIEW.md): a silence the recorder slept
+    through is not the device's."""
+    from .events import day_of, next_day
+    import time as _t
+    total, day, last = 0.0, day_of(a), day_of(b)
+    now = max(b, _t.time())
+    while day <= last:
+        total += episode_blind_s({"start": a, "end": b}, coverage(events_dir, day, now), now)
+        day = next_day(day)
+    return total
+
+
 def print_history(events_dir: Path, addrs: list[str], now: float | None = None) -> None:
     episodes = event_history(events_dir, addrs, now)
     if not episodes:
@@ -76,10 +104,15 @@ def print_history(events_dir: Path, addrs: list[str], now: float | None = None) 
 
 
 def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
-            hours: float | None = None) -> int:
+            hours: float | None = None, incident_dir: Path | None = None) -> int:
     """Print the device's story. Returns 0, or 1 when some of the files
     could not be read (the report then covers the rest); exits with a
-    message when none could."""
+    message when none could. With ``incident_dir`` the story is the frozen
+    incident's: its pcaps, and (cfg.for_incident) its inventory and event
+    log, so the names and the history are the ones current when it was
+    frozen."""
+    if incident_dir is not None:
+        cfg = cfg.for_incident(incident_dir)
     addrs, display = resolve_target(cfg, target)
     addr_set = set(addrs)
     decryptor = load_decryptor(cfg)
@@ -92,6 +125,14 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
 
     if pcap_file:
         files = [pcap_file]
+    elif incident_dir is not None:
+        ring = sorted(incident_dir.glob("*.pcap"))
+        if not ring:
+            raise SystemExit(f"no pcap files in incident {incident_dir.name}")
+        files = select_recent(ring, hours, now=newest_hour_end(ring))
+        if not files:
+            raise SystemExit(f"no files in the incident's last {hours:g} h (it spans "
+                             f"{ring[0].name[12:23]} to {ring[-1].name[12:23]})")
     else:
         ring = sorted(cfg.ring_dir.glob("threadwatch-*.pcap"))
         if not ring:
@@ -196,7 +237,8 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
               "what follows covers the rest only")
     if not pcap_file:
         window = f"last {hours:g} h: " if hours is not None else ""
-        print(f"analyzed {window}{len(files)} ring file(s), {files[0].name[12:23]} to {files[-1].name[12:23]}")
+        source = f"incident {incident_dir.name}: " if incident_dir is not None else ""
+        print(f"analyzed {source}{window}{len(files)} ring file(s), {files[0].name[12:23]} to {files[-1].name[12:23]}")
     if first_ts is None:
         print("No frames from this device in the analyzed window.")
         print("Interpretation: either out of range of the dongle, silent (dead "
@@ -223,8 +265,11 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
     if gaps:
         print("\nsilences (>30 min):")
         for a, b in gaps[-10:]:
+            # A silence the recorder was not there for is not the device's.
+            blind = blind_during(cfg.events_dir, a, b)
+            deaf = f"  (recorder not listening for {fmt_duration(blind)} of it)" if blind >= 60 else ""
             print(f"  {_t.strftime('%m-%d %H:%M', _t.localtime(a))} -> "
-                  f"{_t.strftime('%m-%d %H:%M', _t.localtime(b))}  ({round((b-a)/60)} min)")
+                  f"{_t.strftime('%m-%d %H:%M', _t.localtime(b))}  ({round((b-a)/60)} min){deaf}")
     if mle_events:
         print("\nrejoin-related MLE (attach attempts):")
         for ts, cmd in mle_events[-10:]:

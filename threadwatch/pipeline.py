@@ -1387,7 +1387,7 @@ class Pipeline:
     def _freeze_now(self, label: str) -> None:
         from .freeze import freeze_ring
         try:
-            dest, count = freeze_ring(self.cfg, label)
+            dest, count = freeze_ring(self.cfg, label, trigger="phase_locked_storm")
         except Exception as exc:
             # Nothing was kept (freeze_ring removes a half copy), so the
             # six-hour cooldown armed for this attempt must not stand: the

@@ -63,17 +63,22 @@ quiet channel the timers spread out naturally.
 
 ## Replaying a capture
 
-`bin/threadwatch replay file.pcap` runs the whole pipeline over one pcap
+`bin/threadwatch replay file.pcap` runs the whole pipeline over a pcap
 (a ring file, an incident's hour, a capture from another dongle) and
 prints one JSON object on stdout (`credentials: loaded` goes to stderr,
-so the output pipes into `jq`). A capture that keeps the FCS on each
+so the output pipes into `jq`). Several files, or a directory of them
+(the ring, an incident), are one run in name order, which for ring files
+is hour order: a silence or a storm that spans two hourly files is judged
+once, across the boundary, as the recorder judged it.
+`replay --incident <name or label>` reads a frozen incident with the
+inventory and state frozen in it ("Frozen incidents", below). A capture that keeps the FCS on each
 frame (link type 195, or TAP with an FCS-type field) is read with it
 stripped, so its secured frames decrypt and its MLE messages verify
 as the ring's own do; the FCS itself is not checked:
 
 | field | meaning |
 | --- | --- |
-| `file`, `frames`, `duration_s` | what was read: the path, the frame count, first to last timestamp |
+| `file`, `files`, `frames`, `duration_s` | what was read: the path (null for several), every path in order, the frame count, first to last timestamp |
 | `partition` | the partition id and leader as of the last frame, as `threadwatch status` shows them (null without MLE traffic) |
 | `detector` | the storm detector's final state: baseline, the last windows, `storm_active`, `alerts_sent` |
 | `events` | every event the pipeline would have logged, in order, in the event log's record format (docs/ALERTING.md) |
@@ -99,11 +104,20 @@ newest automatic incident on disk). Each incident is one directory:
 
     data/incidents/20260901T031500_storm-at-noon/
       threadwatch-20260825-04.pcap ... threadwatch-20260901-03.pcap   every ring file, as it was
+      manifest.json          what the bundle holds: threadwatch version and commit, when and why it
+                             was frozen, channel and PAN, the hours the packets span, every file
+                             with its size, and the commands that read it
+      devices.json           the inventory as it was: the names to judge these packets by
+      config.toml            the configuration in force, with every url, header, command, token,
+                             topic, password and key blanked to "<redacted>" (credentials.toml,
+                             alerts.env and ha.env are never copied)
       status.json            the daemon's status at freeze time
       last-seen.json         the last-seen table: first/last heard, frames, RSSI per address
       observed-names.json    SRP hostnames harvested from the mesh
       frames-by-hour.json    the frame counts behind the daily summary
       border-routers.json    each border router's hostname, address and retired addresses
+      blind-spans.json       when the recorder was not listening, as far as a silence still reached
+      retransmissions.json   the retransmission detector's baseline and open elevation
       events/                a copy of the whole event log, one file per day
 
 The name is the freeze time (local, `YYYYMMDDTHHMMSS`) and the label
@@ -124,23 +138,31 @@ Nothing prunes an incident: each one is the size of the ring (about
 page list them with the hours their packets cover, and a day page says
 when an incident holds that day's packets after the ring has let it go.
 
-No command reads an incident as a whole. `replay` and `why --pcap` each
-take one pcap, so loop over the directory, or merge first:
+An incident is read as a whole, with what was frozen in it:
 
 ```bash
+bin/threadwatch replay --incident storm-at-noon              # every hour as one run: detector + events
+bin/threadwatch why "Office AQ" --incident storm-at-noon     # one device across the whole span
+bin/threadwatch why "Office AQ" --incident storm-at-noon --hours 6   # its last six hours
 INC=data/incidents/20260901T031500_storm-at-noon
-for f in "$INC"/*.pcap; do bin/threadwatch replay "$f"; done     # detector + events per hour
-bin/threadwatch why "Office AQ" --pcap "$INC"/threadwatch-20260901-02.pcap   # one device, one hour
 mergecap -w "$INC.pcap" "$INC"/*.pcap && wireshark "$INC.pcap"    # the week in one Wireshark window
 ```
 
-`replay` judges each file on its own, so a silence or a storm that spans
-two hourly files is seen twice or split; for one device across the whole
-span, `why` with the merged file is the better tool. The state files are
-plain JSON (`python3 -m json.tool "$INC"/last-seen.json`), and the copied
-event log is what `threadwatch events` would have shown at freeze time,
-readable with `jq` or any JSON-lines tool; `threadwatch events` itself
-reads only the live log.
+`--incident` takes the directory name, the label as typed at freeze time,
+or a path to the directory. Names come from the incident's own
+`devices.json` and `border-routers.json`, and `why`'s history from its
+copy of the event log: an incident read after a device rotated its
+address, or was renamed, is still judged by what was true when it was
+frozen. `why` marks each silence with how much of it the recorder was not
+listening for (from the log's coverage, docs/REVIEW.md), so a gap the
+recorder slept through is not read as the device's. `--hours` counts
+back from the incident's newest file, not from now. Nothing is written
+to the incident or to the live state; the live credentials are used, as
+they are the only ones. The state files are plain JSON
+(`python3 -m json.tool "$INC"/last-seen.json`), and the copied event log
+is what `threadwatch events` would have shown at freeze time, readable
+with `jq` or any JSON-lines tool; `threadwatch events` itself reads only
+the live log.
 
 ## RSSI
 

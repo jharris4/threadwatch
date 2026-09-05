@@ -12,6 +12,58 @@ from threadwatch.config import Config  # noqa: E402
 from threadwatch import freeze  # noqa: E402
 
 
+class BundleTest(unittest.TestCase):
+    """What travels with the packets: the inventory, the configuration
+    with its secrets blanked, and a manifest naming it all."""
+
+    def test_redaction_blanks_secret_values_and_keeps_the_shape(self):
+        import tomllib
+        text = ('[network]\nchannel = 25\nkeep_files = 168\n'
+                '[[alerts.sinks]]\nname = "phone"\ntype = "ntfy"\nurl = "https://ntfy.example/t-9f3a"   # topic\n'
+                'token = "${NTFY_TOKEN}"\nheaders = { Authorization = "Bearer hunter2", "X-Y" = "]" }\n'
+                'command = [\n  "curl", "-H", "Auth: hunter3",\n  "https://x.example/{event}",\n]\n'
+                'min_severity = "warning"\n[[heartbeats]]\nfailure_url = "https://hc.example/fail"\n'
+                '[credentials]\nnetwork_key = "00112233"\nfile = "credentials.toml"\n')
+        out = freeze.redact_config(text)
+        for secret in ("9f3a", "hunter2", "hunter3", "NTFY_TOKEN", "hc.example", "00112233"):
+            self.assertNotIn(secret, out)
+        parsed = tomllib.loads(out)
+        self.assertEqual(parsed["network"], {"channel": 25, "keep_files": 168})
+        self.assertEqual(parsed["alerts"]["sinks"], [{"name": "phone", "type": "ntfy", "url": "<redacted>",
+                                                      "token": "<redacted>", "headers": "<redacted>",
+                                                      "command": "<redacted>", "min_severity": "warning"}])
+        self.assertEqual(parsed["heartbeats"], [{"failure_url": "<redacted>"}])
+        self.assertEqual(parsed["credentials"], {"network_key": "<redacted>", "file": "credentials.toml"})
+        self.assertEqual(freeze.redact_config(""), "")
+
+    def test_the_bundle_names_everything_it_holds(self):
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "config.toml").write_text('[network]\nchannel = 15\n[[alerts.sinks]]\nurl = "https://s"\n')
+            (d / "devices.json").write_text("[]")
+            cfg = Config(data_dir=d / "data", devices_path=d / "devices.json", config_path=d / "config.toml",
+                         channel=15, pan_id=0x4e21)
+            cfg.ring_dir.mkdir(parents=True)
+            (cfg.ring_dir / "threadwatch-20260903-01.pcap").write_bytes(b"x" * 10)
+            dest, count = freeze.freeze_ring(cfg, "auto-storm", now=1_756_900_000.0, trigger="phase_locked_storm")
+            m = json.loads((dest / "manifest.json").read_text())
+            self.assertEqual((m["format"], m["label"], m["trigger"], m["channel"], m["pan_id"], m["ring_files"],
+                              m["span"], m["inventory"], m["config"], m["events_days"], m["frozen_at"]),
+                             (1, "auto-storm", "phase_locked_storm", 15, "0x4e21", 1,
+                              ["20260903-01", "20260903-01"], "devices.json", "config.toml", 0, 1_756_900_000.0))
+            self.assertEqual(sorted(m["files"]), ["config.toml", "devices.json", "threadwatch-20260903-01.pcap"])
+            self.assertNotIn("manifest.json", m["files"])                # written last, after the listing
+            self.assertNotIn("https://s", (dest / "config.toml").read_text())
+            self.assertIn("read_with", m)
+            # Nothing to copy: the manifest says so instead of failing.
+            bare = Config(data_dir=d / "data2")
+            bare.ring_dir.mkdir(parents=True)
+            dest, _ = freeze.freeze_ring(bare, "bare")
+            m = json.loads((dest / "manifest.json").read_text())
+            self.assertEqual((m["inventory"], m["config"], m["span"], m["files"]), (None, None, None, {}))
+
+
 class FreezeTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

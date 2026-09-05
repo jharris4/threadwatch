@@ -475,8 +475,30 @@ def _write_status(cfg, port, total, started, pipe: Pipeline, ring, decryptor,
     tmp.replace(cfg.state_dir / "status.json")
 
 
-def run_replay(cfg: Config, pcap_path: Path) -> None:
-    """Run the full pipeline over an existing pcap; print events + summary."""
+def replay_files(paths: list[Path]) -> list[Path]:
+    """The pcaps a replay reads, in order: a file as given, a directory
+    (an incident, or the ring) as every pcap in it by name, which for
+    ring files is by hour. Nothing to read is an error, not an empty run."""
+    out: list[Path] = []
+    for p in paths:
+        if p.is_dir():
+            found = sorted(p.glob("*.pcap"))
+            if not found:
+                raise SystemExit(f"threadwatch replay: no pcap files in {p}")
+            out.extend(found)
+        else:
+            out.append(p)
+    if not out:
+        raise SystemExit("threadwatch replay: nothing to read")
+    return out
+
+
+def run_replay(cfg: Config, pcap_path: Path | list[Path]) -> None:
+    """Run the full pipeline over existing pcaps, one file or several in
+    order (a directory is every pcap in it), as one run: a silence or a
+    storm that spans two hourly files is judged once, across the
+    boundary, as the recorder judged it. Prints events + summary."""
+    files = replay_files(pcap_path if isinstance(pcap_path, list) else [pcap_path])
     events = NullEventLog()
     decryptor = load_decryptor(cfg)
     print("[threadwatch] credentials: loaded", file=sys.stderr, flush=True)   # stdout is the JSON
@@ -490,30 +512,32 @@ def run_replay(cfg: Config, pcap_path: Path) -> None:
     # then recovers, is only found by looking between the frames, not
     # once at the end.
     last_tick = 0.0
-    try:
-        with open(pcap_path, "rb") as fh:
-            for frame in PcapStreamReader(fh):
-                if first is None:
-                    first = frame.ts
-                last = frame.ts
-                pipe.ingest(frame)
-                total += 1
-                now = frame.ts
-                if now < last_tick:
-                    last_tick = now       # stamps stepped back: keep ticking from here
-                if now - last_tick >= TICK_S:
-                    if periodic_due(last_tick, now):
-                        pipe.periodic(now)
-                    last_tick = now
-    except (OSError, PcapFormatError) as exc:
-        # A path that does not exist, cannot be read, or is not a pcap:
-        # one line and exit 1 (as `why` does), not a traceback and not a
-        # zero-frame JSON that reads as a quiet capture.
-        raise SystemExit(f"threadwatch replay: could not read {pcap_path}: {exc}")
+    for path in files:
+        try:
+            with open(path, "rb") as fh:
+                for frame in PcapStreamReader(fh):
+                    if first is None:
+                        first = frame.ts
+                    last = frame.ts
+                    pipe.ingest(frame)
+                    total += 1
+                    now = frame.ts
+                    if now < last_tick:
+                        last_tick = now       # stamps stepped back: keep ticking from here
+                    if now - last_tick >= TICK_S:
+                        if periodic_due(last_tick, now):
+                            pipe.periodic(now)
+                        last_tick = now
+        except (OSError, PcapFormatError) as exc:
+            # A path that does not exist, cannot be read, or is not a pcap:
+            # one line and exit 1 (as `why` does), not a traceback and not a
+            # zero-frame JSON that reads as a quiet capture.
+            raise SystemExit(f"threadwatch replay: could not read {path}: {exc}")
     if last:
         pipe.periodic(last)
     out = {
-        "file": str(pcap_path),
+        "file": str(files[0]) if len(files) == 1 else None,
+        "files": [str(f) for f in files],
         "frames": total,
         "duration_s": round(last - first, 1) if first else 0,
         "partition": pipe.partition_status(),

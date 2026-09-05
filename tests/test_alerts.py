@@ -745,3 +745,30 @@ class AlertTestCommandTest(unittest.TestCase):
         self.assertEqual(dispatcher.deliver_now({**REC, "severity": "critical"}, ignore_cooldown=True),
                          [(good, None), (broken, "HTTP 500"), (quiet, None)])
         self.assertEqual(len([r for r in self.ok.requests if r["path"] == "/a"]), 4)
+
+
+class CooldownDefaultsTest(unittest.TestCase):
+    """Five minutes per event name, per sink, is the rate limit that turns
+    a 40-device outage into two messages. Every way of building a sink
+    must land on it, the legacy webhook_url shorthand included: that one
+    is built straight from the dataclass, so a changed default there is
+    a phone that buzzes once per device."""
+
+    def test_every_way_of_building_a_sink_gets_five_minutes(self):
+        self.assertEqual(alerts.Sink.__dataclass_fields__["cooldown_s"].default, 300.0)
+        self.assertEqual(alerts.HttpSink(name="h", url="http://x").cooldown_s, 300.0)
+        self.assertEqual(alerts.CommandSink(name="c", command=["true"]).cooldown_s, 300.0)
+        legacy = alerts.build_sinks({"webhook_url": "http://x"}, print)[0]
+        self.assertEqual(legacy.cooldown_s, 300.0)
+        self.assertEqual(alerts.build_sinks({"sinks": [{"url": "http://x"}]}, print)[0].cooldown_s, 300.0)
+        self.assertEqual(alerts.build_sinks({"sinks": [{"type": "command", "command": "true"}]}, print)[0].cooldown_s, 300.0)
+        self.assertEqual(alerts.build_sinks({"sinks": [{"url": "http://x", "cooldown_s": 0}]}, print)[0].cooldown_s, 0.0)
+
+    def test_the_legacy_sink_holds_a_repeat_for_five_minutes(self):
+        legacy = alerts.build_sinks({"webhook_url": "http://x"}, print)[0]
+        now = 1_700_000_000.0
+        self.assertTrue(legacy.wants(REC, now))
+        self.assertFalse(legacy.wants(REC, now + 1))
+        self.assertFalse(legacy.wants(REC, now + 299))
+        self.assertEqual(legacy.next_digest_at(), now + 300)
+        self.assertTrue(legacy.wants(REC, now + 300))

@@ -125,6 +125,16 @@ def capture_stalled(age: float, timeout: float = STALL_TIMEOUT_S) -> bool:
     return age > timeout
 
 
+def capture_healthy(last_frame_mono: Optional[float], now: float,
+                    timeout: float = STALL_TIMEOUT_S) -> Optional[bool]:
+    """The heartbeat's answer: unknown (None) until this run has heard a
+    frame, then healthy while the last one is fresher than the stall
+    timeout, so the beat stops before the watchdog exits."""
+    if last_frame_mono is None:
+        return None
+    return now - last_frame_mono < timeout
+
+
 def run_capture(cfg: Config) -> None:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "vendor"))
     from nrf802154_sniffer import Nrf802154Sniffer
@@ -238,8 +248,7 @@ def run_capture(cfg: Config) -> None:
     # restart loop that never hears one cannot keep a monitor reassured.
     # Once the stall timeout passes the watchdog exits anyway.
     HeartbeatRunner(heartbeats,
-                    healthy=lambda: None if beat["last_frame_mono"] is None
-                    else time.monotonic() - beat["last_frame_mono"] < 180.0,
+                    healthy=lambda: capture_healthy(beat["last_frame_mono"], time.monotonic()),
                     log=_log)
 
     # Exit status: 0 for a requested stop, otherwise non-zero so the journal

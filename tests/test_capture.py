@@ -10,7 +10,8 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch.capture import STALL_TIMEOUT_S, _write_status, capture_stalled, last_frame_on_record  # noqa: E402
+from threadwatch.capture import (STALL_TIMEOUT_S, _write_status, capture_healthy, capture_stalled,  # noqa: E402
+                                 last_frame_on_record)
 from threadwatch.config import Config  # noqa: E402
 from threadwatch.crypto import Decryptor  # noqa: E402
 from threadwatch.events import NullEventLog  # noqa: E402
@@ -128,3 +129,18 @@ class StallWatchdogTest(unittest.TestCase):
         self.assertTrue(capture_stalled(181.0))
         self.assertTrue(capture_stalled(181.0, STALL_TIMEOUT_S))
         self.assertFalse(capture_stalled(181.0, 1800.0))    # the timeout is the whole decision
+
+
+class HeartbeatHealthTest(unittest.TestCase):
+    """What the liveness heartbeat tells the monitor. Unknown until this run
+    has heard a frame (a restart loop that never hears one must not keep a
+    monitor reassured), then healthy only while the last frame is fresher
+    than the stall timeout: widened, the recorder beats "healthy" through
+    an outage, the one thing the heartbeat exists to prevent."""
+
+    def test_health_is_unknown_before_a_frame_and_gone_at_the_stall_timeout(self):
+        self.assertIsNone(capture_healthy(None, 5000.0))
+        self.assertTrue(capture_healthy(1000.0, 1179.0))
+        self.assertFalse(capture_healthy(1000.0, 1180.0))
+        self.assertFalse(capture_healthy(1000.0, 1181.0))
+        self.assertTrue(capture_healthy(1000.0, 1181.0, 1800.0))   # the timeout is the whole decision

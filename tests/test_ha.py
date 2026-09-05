@@ -502,6 +502,33 @@ class RunImportTest(unittest.TestCase):
         ha_mod.HomeAssistant, ha_mod.thread_devices, ha_mod.thread_dataset, mdns_mod.browse = self.saved
         self.tmp.cleanup()
 
+    def test_the_inventory_lock_is_held_for_the_whole_run(self):
+        # BUG-12: an import overlapping an adopt is the other lost-update
+        # pair; both take names.inventory_lock, import for the whole run.
+        import contextlib
+        import threadwatch.importer as importer_mod
+        from threadwatch.importer import run_import
+        held = []
+
+        @contextlib.contextmanager
+        def recording(path):
+            held.append(("locked", path.name))
+            yield
+            held.append(("released", path.name))
+
+        saved = importer_mod.inventory_lock
+        importer_mod.inventory_lock = recording
+        try:
+            lines = []
+            run_import(self.cfg, self.d / "devices.json", use_ha=False, use_mdns=False, out=lines.append)
+            self.assertEqual(held, [("locked", "devices.json"), ("released", "devices.json")])
+            held.clear()
+            run_import(self.cfg, self.d / "devices.json", use_ha=False, use_mdns=False, devices=False,
+                       out=lines.append)
+            self.assertEqual(held, [])                       # nothing to write: nothing to lock
+        finally:
+            importer_mod.inventory_lock = saved
+
     def test_a_malformed_inventory_is_named_before_anything_is_asked(self):
         # A stray null the recorder skips must not become an AttributeError
         # deep in the planner: the file and entry are named, nothing written.

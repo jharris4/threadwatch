@@ -30,7 +30,7 @@ import json
 from pathlib import Path
 from typing import Callable, Optional
 
-from .names import _norm, entry_addresses, read_inventory
+from .names import _norm, entry_addresses, inventory_lock, read_inventory
 
 
 def _addresses(entry: dict) -> list[str]:
@@ -175,7 +175,21 @@ def run_import(cfg, inventory_path: Path, *, write: bool = False, url: Optional[
                out: Callable[[str], None] = print) -> int:
     """The whole command. Raises ha.HAError for anything Home Assistant
     related that stops the import; mDNS finding nothing is reported, not
-    fatal, because the recorder host may simply be on another VLAN."""
+    fatal, because the recorder host may simply be on another VLAN. The
+    inventory is read and written under its lock (names.inventory_lock),
+    held for the whole run, so an `adopt` meanwhile waits its turn rather
+    than losing its edit to the write here."""
+    kw = dict(write=write, url=url, env_file=env_file, dataset_id=dataset_id, use_ha=use_ha,
+              use_mdns=use_mdns, mdns_seconds=mdns_seconds, devices=devices, credentials=credentials, out=out)
+    if not devices:
+        return _import(cfg, inventory_path, **kw)
+    with inventory_lock(inventory_path):
+        return _import(cfg, inventory_path, **kw)
+
+
+def _import(cfg, inventory_path: Path, *, write: bool, url: Optional[str], env_file: Optional[Path],
+            dataset_id: Optional[str], use_ha: bool, use_mdns: bool, mdns_seconds: float,
+            devices: bool, credentials: bool, out: Callable[[str], None]) -> int:
     from .ha import HomeAssistant, connection_settings, current_key, thread_dataset, thread_devices, write_private
     from .pipeline import credentials_path
 

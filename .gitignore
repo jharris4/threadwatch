@@ -1,5 +1,6 @@
 config/config.toml
 config/devices.json
+config/devices.json.lock
 data/
 .venv-flash/
 .nrfutil-bin/

@@ -201,6 +201,43 @@ class AdoptTest(unittest.TestCase):
             self.assertEqual(entry["note"], "rotates")
             self.assertEqual(DeviceNames(inv).name(TV2), "Living Room Apple TV")
 
+    def test_two_adopts_at_once_both_land(self):
+        # BUG-12: adopt read, changed and replaced the file with nothing to
+        # stop two of them reading the same base and the later write
+        # discarding the earlier, acknowledged, change.
+        import threading
+        from threadwatch import names as names_mod
+        with tempfile.TemporaryDirectory() as d:
+            inv = Path(d) / "devices.json"
+            real = names_mod.read_inventory
+            both_read = threading.Barrier(2)
+
+            def read_then_wait(path):
+                entries = real(path)
+                try:
+                    both_read.wait(0.5)         # met only when nothing serialises the two transactions
+                except threading.BrokenBarrierError:
+                    pass
+                return entries
+
+            msgs = {}
+
+            def run(addr, name):
+                msgs[name] = adopt(inv, addr, name)
+
+            names_mod.read_inventory = read_then_wait
+            try:
+                threads = [threading.Thread(target=run, args=a) for a in (("0000000000000001", "A"),
+                                                                            ("0000000000000002", "B"))]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join(5)
+            finally:
+                names_mod.read_inventory = real
+            self.assertEqual(sorted(msgs.values()), ["added 'A' = 0000000000000001", "added 'B' = 0000000000000002"])
+            self.assertEqual(sorted(e["name"] for e in json.loads(inv.read_text())), ["A", "B"])
+
     def test_already_listed(self):
         with tempfile.TemporaryDirectory() as d:
             inv = Path(d) / "devices.json"

@@ -46,11 +46,14 @@ to a device already listed under that name).
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
+import os
 import re
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 
 _EXT_ADDR = re.compile(r"^[0-9a-f]{16}$")
@@ -490,6 +493,25 @@ def read_inventory(inventory_path: Path) -> list[dict]:
     return entries
 
 
+@contextlib.contextmanager
+def inventory_lock(inventory_path: Path) -> Iterator[None]:
+    """Hold the inventory's lock across a read-modify-write of the file.
+    `adopt` and `import` both take it, so two edits at once queue instead
+    of the later one replacing the file with a copy that never saw the
+    earlier one's change (the atomic replace protects readers from a half
+    written file, not writers from each other). The lock is a file beside
+    the inventory, held with flock, so it works across processes and is
+    released with the process that took it."""
+    inventory_path.parent.mkdir(parents=True, exist_ok=True)
+    lock = inventory_path.with_name(inventory_path.name + ".lock")
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
 def adopt(inventory_path: Path, addr: str, name: str) -> str:
     """Add ``addr`` to the inventory under ``name`` and rewrite the file.
 
@@ -506,6 +528,11 @@ def adopt(inventory_path: Path, addr: str, name: str) -> str:
     name = name.strip()
     if not name:
         raise ValueError("a device name is required")
+    with inventory_lock(inventory_path):
+        return _adopt(inventory_path, n, name)
+
+
+def _adopt(inventory_path: Path, n: str, name: str) -> str:
     entries = read_inventory(inventory_path)
     for entry in entries:
         if n in [_norm(a) for a in entry_addresses(entry)]:

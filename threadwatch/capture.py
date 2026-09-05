@@ -251,14 +251,7 @@ def run_capture(cfg: Config) -> None:
         # Also keeps status.json fresh when the channel is merely quiet.
         while True:
             time.sleep(30)
-            age = time.monotonic() - (beat["last_frame_mono"] or started_mono)
-            if beat["ring"] is not None:
-                try:
-                    _write_status(cfg, port, beat["total"], started, pipe,
-                                  beat["ring"], decryptor, last_frame_age=age,
-                                  last_frame_ts=beat["last_frame"] or prior_frame)
-                except Exception as exc:   # a full disk must not take the stall check with it
-                    _log(f"status.json not written: {exc}")
+            age = status_tick(cfg, port, beat, started, started_mono, pipe, decryptor, prior_frame, _log)
             verdict = watchdog_verdict(age, ring_open=beat["ring"] is not None,
                                        sniffer_alive=sniffer.thread.is_alive())
             if verdict == EXIT_SNIFFER_DIED:
@@ -349,6 +342,25 @@ def run_capture(cfg: Config) -> None:
         # processes that outlive _stop(); everything of ours is closed and
         # saved by now, so end the process outright rather than hang.
         os._exit(exit_code)
+
+
+def status_tick(cfg, port, beat: dict, started: float, started_mono: float, pipe: Pipeline,
+                decryptor, prior_frame: Optional[float], log) -> float:
+    """One watchdog tick: refresh status.json once the ring is open, and
+    return the stall clock's reading (seconds since this run's last frame,
+    or since it started). The file's last_frame_ts is when a frame was
+    last heard by any run: this run's, else the stamp the previous run's
+    status.json carried (prior_frame), else None. Never the time now: a
+    stalled recorder reports a stale frame, which is the fact a reader of
+    the file needs."""
+    age = time.monotonic() - (beat["last_frame_mono"] or started_mono)
+    if beat["ring"] is not None:
+        try:
+            _write_status(cfg, port, beat["total"], started, pipe, beat["ring"], decryptor,
+                          last_frame_age=age, last_frame_ts=beat["last_frame"] or prior_frame)
+        except Exception as exc:   # a full disk must not take the stall check with it
+            log(f"status.json not written: {exc}")
+    return age
 
 
 def last_frame_on_record(state_dir: Path) -> Optional[float]:

@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from threadwatch.capture import (EXIT_SNIFFER_DIED, EXIT_STALLED, PERIODIC_S, STALL_TIMEOUT_S, TICK_S,  # noqa: E402
                                  _write_status, capture_healthy, capture_stalled, last_frame_on_record,
-                                 periodic_due, watchdog_verdict)
+                                 periodic_due, status_tick, watchdog_verdict)
 from threadwatch.config import Config  # noqa: E402
 from threadwatch.crypto import Decryptor  # noqa: E402
 from threadwatch.events import NullEventLog  # noqa: E402
@@ -193,3 +193,60 @@ class PeriodicTickTest(unittest.TestCase):
                     ran.append(now - self.B)
                 last_tick = now
         self.assertEqual(ran, [30, 60, 90, 120, 150, 180, 210, 240, 270, 300])
+
+
+class StatusTickTest(unittest.TestCase):
+    """The watchdog's status.json refresh. last_frame_ts is the stamp of
+    the last frame any run heard: this run's, else the one the previous
+    run's file recorded, else None. Stamping the current time instead
+    would make a stalled recorder look fresh to doctor, the web header
+    and the next run's blindness accounting, all of which read it."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cfg = Config(data_dir=Path(self.tmp.name) / "data")
+        self.pipe = Pipeline(self.cfg, NullEventLog(), Decryptor(network_key=bytes(16)), ephemeral=True)
+        self.ring = SimpleNamespace(current_path=self.cfg.ring_dir / "threadwatch-20260904-10.pcap")
+        self.logs = []
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _tick(self, beat, prior_frame, started_mono):
+        age = status_tick(self.cfg, "/dev/x", beat, time.time() - 3600, started_mono,
+                          self.pipe, self.pipe.decryptor, prior_frame, self.logs.append)
+        path = self.cfg.state_dir / "status.json"
+        return age, (json.loads(path.read_text()) if path.exists() else None)
+
+    def test_last_frame_ts_is_a_frame_the_recorder_heard_never_the_time_now(self):
+        mono = time.monotonic()
+        prior = time.time() - 7200                                    # the previous run's last frame
+        # Before the ring is open nothing is written, but the stall clock runs from start-up.
+        age, st = self._tick({"last_frame": None, "last_frame_mono": None, "total": 0, "ring": None}, prior, mono - 170)
+        self.assertAlmostEqual(age, 170.0, delta=2.0)
+        self.assertIsNone(st)
+        # Open, nothing heard this run: the earlier run's stamp is carried, and the age says so.
+        age, st = self._tick({"last_frame": None, "last_frame_mono": None, "total": 0, "ring": self.ring}, prior, mono - 170)
+        self.assertAlmostEqual(age, 170.0, delta=2.0)
+        self.assertEqual((st["last_frame_ts"], st["last_frame_age_s"], st["frames_total"]), (prior, round(age, 1), 0))
+        self.assertLess(st["last_frame_ts"], time.time() - 7000)
+        # A frame heard this run, fifty seconds ago, is the stamp whatever an earlier run recorded.
+        heard = time.time() - 50
+        age, st = self._tick({"last_frame": heard, "last_frame_mono": mono - 50, "total": 12, "ring": self.ring},
+                             prior, mono - 170)
+        self.assertAlmostEqual(age, 50.0, delta=2.0)
+        self.assertEqual((st["last_frame_ts"], st["frames_total"]), (heard, 12))
+        # No run has ever heard one: None, not now.
+        _age, st = self._tick({"last_frame": None, "last_frame_mono": None, "total": 0, "ring": self.ring}, None, mono - 170)
+        self.assertIsNone(st["last_frame_ts"])
+        self.assertEqual(self.logs, [])
+
+    def test_a_status_file_that_cannot_be_written_is_logged_and_the_stall_clock_still_runs(self):
+        (self.cfg.state_dir / "status.tmp").mkdir(parents=True)          # the temp file's name is taken
+        mono = time.monotonic()
+        age, st = self._tick({"last_frame": None, "last_frame_mono": mono - 200, "total": 3, "ring": self.ring},
+                             None, mono - 300)
+        self.assertAlmostEqual(age, 200.0, delta=2.0)
+        self.assertIsNone(st)
+        self.assertEqual(len(self.logs), 1)
+        self.assertTrue(self.logs[0].startswith("status.json not written: "), self.logs)

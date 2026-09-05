@@ -1561,3 +1561,28 @@ class AckPairingWindowTest(unittest.TestCase):
             pipe.ingest(poll(t + 10, SENSOR, 3))
             pipe.ingest(ack(t + 10.001, 3))
             self.assertEqual((stats.acked, stats.acked_polls, stats.poll_pending_seq), (2, 2, None))
+
+
+class SummaryWindowTest(unittest.TestCase):
+    """The daily summary reports the last 24 hours: which devices were
+    heard in them, how many frames (whole hourly buckets that overlap
+    the window) and which events. An hour would report most of the mesh
+    as unheard every morning."""
+
+    def test_the_summary_counts_the_last_24_hours_and_nothing_older(self):
+        with tempfile.TemporaryDirectory() as d:
+            pipe = Pipeline(Config(data_dir=Path(d) / "data"), NullEventLog(), test_decryptor(), ephemeral=True)
+            hour = 1_700_000_000 // 3600
+            now = hour * 3600 + 600.0                                 # ten past an hour
+            for i in range(11):
+                pipe.ingest(frame(now - 25.5 * 3600 + i, STRANGER))   # bucket ends before the window: out
+            for i in range(7):
+                pipe.ingest(frame(now - 23.9 * 3600 + i, SENSOR))     # heard 23.9 h ago: in
+            for i in range(5):
+                pipe.ingest(frame(now - 600 + i, ROUTER))
+            s = pipe.summary(now)
+            self.assertEqual((s["frames_24h"], s["devices_heard_24h"], s["devices_tracked"]), (12, 2, 3))
+            self.assertEqual(s["events_24h"], {"critical": 0, "warning": 0, "notice": 0, "info": 2})   # two first_seen
+            self.assertTrue(s["note"].startswith("last 24 h: 12 frames from 2 of 3 devices"), s["note"])
+            s = pipe.summary(now + 0.2 * 3600)                        # 24.1 h after the sensor: out
+            self.assertEqual((s["frames_24h"], s["devices_heard_24h"]), (12, 1))

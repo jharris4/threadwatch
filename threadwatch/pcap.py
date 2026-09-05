@@ -15,6 +15,8 @@ DLT_TAP = 283
 DLT_NOFCS = 230
 
 PCAP_MAGIC_LE_US = 0xA1B2C3D4  # microsecond timestamps, little-endian file
+# Match the writer's snapshot limit, independently of untrusted file headers.
+MAX_RECORD_BYTES = 0xFFFF
 
 
 class PcapFormatError(Exception):
@@ -64,7 +66,7 @@ def _record_is_plausible(incl: int, snaplen: int) -> bool:
     extended but never written. Every frame the sniffer emits has at least
     a TAP or MAC header, so a zero length is the end of the good data, and
     so is a length past the file's own snaplen."""
-    return 0 < incl <= (snaplen or 0xFFFFFFFF)
+    return 0 < incl <= min(snaplen or MAX_RECORD_BYTES, MAX_RECORD_BYTES)
 
 
 def complete_length(path) -> int:
@@ -136,7 +138,7 @@ class PcapWriter:
     def __init__(self, stream: BinaryIO, dlt: int):
         self.stream = stream
         self.dlt = dlt
-        stream.write(struct.pack("<LHHIILL", PCAP_MAGIC_LE_US, 2, 4, 0, 0, 0x0000FFFF, dlt))
+        stream.write(struct.pack("<LHHIILL", PCAP_MAGIC_LE_US, 2, 4, 0, 0, MAX_RECORD_BYTES, dlt))
 
     def write(self, frame: Frame) -> None:
         ts_sec = int(frame.ts)

@@ -635,3 +635,33 @@ class TimeoutDefaultsTest(unittest.TestCase):
             alerts.Dispatcher([sink], print).deliver_now(REC)
             alerts.HeartbeatRunner([beat], healthy=lambda: True, log=print, start=False).push_all()
         self.assertEqual([(c.args[0], c.args[2]) for c in bounded.call_args_list], [(sink, 10.0), (beat, 10.0)])
+
+
+class DigestWindowTest(unittest.TestCase):
+    """The cooldown pages the first event and holds the rest for one digest
+    when the window ends. Its content is well covered; this is its timing
+    and its severity, which decide whether the digest reads as a page."""
+
+    def test_a_digest_is_due_when_its_window_ends_not_later(self):
+        sink = alerts.HttpSink(name="t", url="http://x", cooldown_s=300)
+        t = 1_700_000_000.0
+        self.assertTrue(sink.wants(REC, t))                                   # paged; the window opens
+        self.assertFalse(sink.wants({**REC, "name": "Freezer Outlet"}, t + 1))  # held back
+        self.assertEqual(sink.next_digest_at(), t + 300)
+        self.assertEqual(sink.due_digests(t + 299), [])
+        digests = sink.due_digests(t + 300)
+        self.assertEqual([(d["event"], d["count"], d["ts"]) for d in digests], [("device_quiet", 1, t + 300)])
+        self.assertEqual(sink._pending, {})
+        self.assertIsNone(sink.next_digest_at())
+        self.assertFalse(sink.wants({**REC, "name": "Dining AQ"}, t + 301))   # the digest opened the next window
+        self.assertEqual(sink.next_digest_at(), t + 600)
+
+    def test_a_digest_carries_the_most_severe_event_it_stands_for(self):
+        # A sink with its floor at notice holds back a mixed batch; the one
+        # record that stands for them must read as urgent as the worst.
+        batch = [{**REC, "severity": s, "name": n, "ts": REC["ts"] + i}
+                 for i, (s, n) in enumerate((("notice", "Porch"), ("critical", "Stove Light"), ("warning", "Dining AQ")))]
+        d = alerts.digest_record("device_quiet", batch, 300, REC["ts"] + 300)
+        self.assertEqual((d["severity"], d["count"], d["digest"]), ("critical", 3, True))
+        self.assertEqual((d["first_ts"], d["last_ts"]), (REC["ts"], REC["ts"] + 2))
+        self.assertEqual(alerts.digest_record("x", batch[:1], 300, 0)["severity"], "notice")

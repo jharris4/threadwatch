@@ -197,6 +197,24 @@ class FreezeTest(unittest.TestCase):
             frames = list(PcapStreamReader(fh))
         self.assertEqual([(f.ts, f.raw) for f in frames], [(1_700_000_000.25, b"\x01\x02\x03\x04\x05")])
 
+    def test_a_dead_freeze_with_a_label_ending_in_lock_is_discarded_not_fatal(self):
+        # safe_label keeps periods, so `threadwatch freeze debug.lock` stages
+        # a directory whose name ends in the lock suffix. Cleanup used to
+        # skip it as a lock, then open it as one and raise IsADirectoryError
+        # on every start until someone removed it by hand.
+        staging = self.cfg.incidents_dir / freeze.STAGING_DIR
+        left = staging / "20260905T120000_debug.lock"
+        left.mkdir(parents=True)
+        (left / "threadwatch-20260905-11.pcap").write_bytes(b"x")
+        (staging / (left.name + freeze.LOCK_SUFFIX)).write_bytes(b"")       # its own lock, nobody holds it
+        self.assertEqual(freeze.discard_partials(self.cfg.incidents_dir), ["debug.lock"])
+        self.assertEqual(list(staging.iterdir()), [])
+        # And a finished freeze with that label is a whole incident.
+        dest, count = freeze.freeze_ring(self.cfg, "debug.lock", now=1_700_000_000)
+        self.assertEqual(count, 3)
+        self.assertEqual(freeze.discard_partials(self.cfg.incidents_dir), [])
+        self.assertTrue(dest.is_dir())
+
     def test_a_label_ending_in_partial_is_a_whole_incident_like_any_other(self):
         # BUG-01: safe_label keeps periods, so "test.partial" used to name a
         # finished incident the way a half copy was named; the listing hid

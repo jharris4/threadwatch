@@ -143,22 +143,28 @@ def discard_partials(incidents_dir: Path) -> list[str]:
     if not staging.is_dir():
         return []
     labels = []
+    # What is a half copy and what is a lock is told by kind, never by
+    # name: safe_label keeps periods, so a user can freeze "debug.lock" and
+    # leave a staging directory whose name ends in the lock suffix. Read by
+    # suffix, that directory was skipped here and then opened as a lock
+    # file below, and the IsADirectoryError stopped every start after it.
     for d in sorted(staging.iterdir()):
-        if d.name.endswith(LOCK_SUFFIX):
+        if not d.is_dir():
             continue
         lock = d.with_name(d.name + LOCK_SUFFIX)
         fd = _take_lock(lock, wait=False)
         if fd is None:
             continue            # a freeze still running in another process
         try:
-            if d.is_dir():
-                shutil.rmtree(d, ignore_errors=True)
-                labels.append(d.name.partition("_")[2] or d.name)
+            shutil.rmtree(d, ignore_errors=True)
+            labels.append(d.name.partition("_")[2] or d.name)
             lock.unlink(missing_ok=True)
         finally:
             os.close(fd)
     for stray in staging.glob("*" + LOCK_SUFFIX):
         # A lock left by a run that died before making its directory.
+        if not stray.is_file():
+            continue
         fd = _take_lock(stray, wait=False)
         if fd is not None:
             stray.unlink(missing_ok=True)

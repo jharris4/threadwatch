@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch.capture import (EXIT_SNIFFER_DIED, EXIT_STALLED, PERIODIC_S, STALL_TIMEOUT_S, TICK_S,  # noqa: E402
+from threadwatch.capture import (EXIT_SNIFFER_DIED, EXIT_STALLED, PERIODIC_S, STALL_TIMEOUT_S, TICK_S, Housekeeping,  # noqa: E402
                                  _write_status, capture_healthy, capture_stalled, last_frame_on_record,
                                  periodic_due, status_tick, watchdog_verdict)
 from threadwatch.config import Config  # noqa: E402
@@ -185,14 +185,28 @@ class PeriodicTickTest(unittest.TestCase):
         self.assertTrue(periodic_due(B + 20, B + 300))        # a gap: due at once, not once per missed period
 
     def test_the_loop_runs_it_ten_times_in_five_minutes_of_frames(self):
-        ran, last_tick = [], 0.0
+        ran, clock = [], Housekeeping()
         for i in range(301):                                  # a frame a second, as the main loop sees them
-            now = self.B + i
-            if now - last_tick >= TICK_S:
-                if periodic_due(last_tick, now):
-                    ran.append(now - self.B)
-                last_tick = now
+            if clock.due(self.B + i, 5000.0 + i):
+                ran.append(i)
         self.assertEqual(ran, [30, 60, 90, 120, 150, 180, 210, 240, 270, 300])
+
+    def test_housekeeping_goes_on_after_a_clock_step_either_way(self):
+        # BUG-05: with the ticks spaced on the frame clock, a step back of
+        # an hour (NTP correcting a Pi that booted on a saved time, or a
+        # manual set) held every periodic call until the wall clock had
+        # caught up with the last tick. The monotonic clock spaces them.
+        for step in (-3600.0, 3600.0):
+            with self.subTest(step=step):
+                ran, clock = [], Housekeeping()
+                for i in range(120):
+                    clock.due(self.B + i, 5000.0 + i)
+                for i in range(120, 421):                     # the clock steps between two frames
+                    if clock.due(self.B + i + step, 5000.0 + i):
+                        ran.append(i)
+                # The tick that sees the step is a new period (a call at
+                # once, not a wait), then one per PERIODIC_S as before.
+                self.assertEqual(ran, list(range(120, 421, PERIODIC_S)))
 
 
 class StatusTickTest(unittest.TestCase):

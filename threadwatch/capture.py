@@ -174,6 +174,28 @@ def periodic_due(last_tick: float, now: float) -> bool:
     return bool(last_tick) and int(last_tick) // PERIODIC_S != int(now) // PERIODIC_S
 
 
+class Housekeeping:
+    """The main loop's tick clock. Ticks are spaced by the monotonic clock,
+    which a step of the host clock in either direction cannot stretch: on
+    the frame clock alone, a step back of an hour held every quiet check,
+    link check and state save until the wall clock had caught up with the
+    last tick. Which PERIODIC_S period a tick falls in is still judged on
+    the frame clock (periodic_due), the clock the pipeline is handed."""
+
+    def __init__(self) -> None:
+        self.last_tick = 0.0             # frame clock at the last tick
+        self.last_mono: Optional[float] = None
+
+    def due(self, now: float, mono: float) -> bool:
+        """Called per frame with its wall-clock stamp and the monotonic
+        clock: True when Pipeline.periodic(now) should run."""
+        if self.last_mono is not None and mono - self.last_mono < TICK_S:
+            return False
+        run = periodic_due(self.last_tick, now)
+        self.last_tick, self.last_mono = now, mono
+        return run
+
+
 def capture_healthy(last_frame_mono: Optional[float], now: float,
                     timeout: float = STALL_TIMEOUT_S) -> Optional[bool]:
     """The heartbeat's answer: unknown (None) until this run has heard a
@@ -240,7 +262,7 @@ def run_capture(cfg: Config) -> None:
     total = 0
     started = time.time()
     started_mono = time.monotonic()
-    last_tick = 0.0
+    housekeeping = Housekeeping()
     ring = None
     # Shared with the watchdog thread; benign races (status snapshot only).
     # last_frame is the wall clock (None until the first frame), for the
@@ -309,11 +331,8 @@ def run_capture(cfg: Config) -> None:
                 beat["last_frame"] = frame.ts
                 beat["last_frame_mono"] = time.monotonic()
                 beat["total"] = total
-                now = frame.ts
-                if now - last_tick >= TICK_S:
-                    if periodic_due(last_tick, now):
-                        pipe.periodic(now)
-                    last_tick = now
+                if housekeeping.due(frame.ts, beat["last_frame_mono"]):
+                    pipe.periodic(frame.ts)
         # The sniffer closed its end of the FIFO: dongle unplugged or the
         # sniffer process died. Not a clean stop.
         _log("capture stream ended (dongle unplugged? sniffer died?); exiting for supervisor restart")

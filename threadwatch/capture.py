@@ -15,7 +15,7 @@ from typing import Optional
 from .alerts import HeartbeatRunner, build_heartbeats, build_sinks
 from .config import Config
 from .events import EventLog, NullEventLog
-from .pcap import PcapStreamReader, PcapWriter, Frame, complete_length
+from .pcap import PcapFormatError, PcapStreamReader, PcapWriter, Frame, complete_length
 from .pipeline import Pipeline, load_decryptor
 
 
@@ -406,13 +406,19 @@ def run_replay(cfg: Config, pcap_path: Path) -> None:
     pipe.detector.cfg.alert_cooldown_s = 0
     total = 0
     first = last = None
-    with open(pcap_path, "rb") as fh:
-        for frame in PcapStreamReader(fh):
-            if first is None:
-                first = frame.ts
-            last = frame.ts
-            pipe.ingest(frame)
-            total += 1
+    try:
+        with open(pcap_path, "rb") as fh:
+            for frame in PcapStreamReader(fh):
+                if first is None:
+                    first = frame.ts
+                last = frame.ts
+                pipe.ingest(frame)
+                total += 1
+    except (OSError, PcapFormatError) as exc:
+        # A path that does not exist, cannot be read, or is not a pcap:
+        # one line and exit 1 (as `why` does), not a traceback and not a
+        # zero-frame JSON that reads as a quiet capture.
+        raise SystemExit(f"threadwatch replay: could not read {pcap_path}: {exc}")
     if last:
         pipe.periodic(last)
     out = {

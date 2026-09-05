@@ -187,6 +187,16 @@ class ReplayTest(CliCase):
         written = sorted(p.name for p in (self.d / "data").rglob("*") if p.is_file())
         self.assertEqual(written, [])                                 # ephemeral: nothing under data/
 
+    def test_a_pcap_that_cannot_be_read_is_one_line_and_exit_1(self):
+        (self.d / "credentials.toml").write_text('[credentials]\nnetwork_key = "00112233445566778899aabbccddeeff"\n')
+        junk = self.d / "notes.txt"
+        junk.write_text("not a capture")
+        for path, reason in ((self.d / "missing.pcap", "No such file or directory"), (junk, "no pcap global header")):
+            code, out, _err = self.run_cli("replay", str(path))      # SystemExit's code is the message: exit 1
+            self.assertTrue(str(code).startswith(f"threadwatch replay: could not read {path}: "), code)
+            self.assertIn(reason, str(code))
+            self.assertEqual(out, "")                                # no JSON that reads as an empty capture
+
     def test_replay_without_credentials_exits_2_with_the_reason(self):
         code, out, err = self.run_cli("replay", str(self._pcap()))
         self.assertEqual((code, out), (2, ""))

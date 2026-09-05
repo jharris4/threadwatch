@@ -298,6 +298,48 @@ class ReplayTest(CliCase):
             self.assertIn(reason, str(code))
             self.assertEqual(out, "")                                # no JSON that reads as an empty capture
 
+    def _write_pcap(self, name, frames, dlt):
+        from threadwatch.pcap import Frame, PcapWriter
+        pcap = self.d / name
+        with open(pcap, "wb") as fh:
+            w = PcapWriter(fh, dlt)
+            for ts, raw in frames:
+                w.write(Frame(ts=ts, raw=raw, psdu=raw, rssi=None, channel=None, lqi=None))
+        return pcap
+
+    def test_replay_finds_a_silence_that_ends_before_the_file_does(self):
+        # BUG-03: replay ran the periodic checks once, at EOF, so a device
+        # that fell silent and came back inside the file was never quiet.
+        from threadwatch.pcap import DLT_NOFCS
+        (self.d / "config.toml").write_text(f'[capture]\ndata_dir = "{self.d / "data"}"\n[quiet]\nsilence_s = 60\n')
+        (self.d / "credentials.toml").write_text('[credentials]\nnetwork_key = "00112233445566778899aabbccddeeff"\n')
+        frames = [(self.T, self._psdu(self.DEV, 0))]
+        frames += [(self.T + 30 * i, self._psdu(self.OTHER, i)) for i in range(1, 7)]     # T+30 .. T+180
+        frames.append((self.T + 210, self._psdu(self.DEV, 7)))
+        code, out, _err = self.run_cli("replay", str(self._write_pcap("quiet.pcap", frames, DLT_NOFCS)))
+        self.assertEqual(code, 0)
+        events = [(e["event"], e["addr"]) for e in json.loads(out)["events"] if e.get("addr") == self.DEV]
+        self.assertEqual(events, [("device_first_seen", self.DEV), ("device_quiet", self.DEV),
+                                  ("device_returned", self.DEV)])
+
+    def test_replay_finds_a_link_drop_that_holds_and_then_recovers(self):
+        from threadwatch.pcap import DLT_TAP
+        (self.d / "config.toml").write_text(f'[capture]\ndata_dir = "{self.d / "data"}"\n'
+                                            '[link]\ndrop_db = 8\nhold_s = 60\n')
+        (self.d / "credentials.toml").write_text('[credentials]\nnetwork_key = "00112233445566778899aabbccddeeff"\n')
+
+        def tap(rssi, seq):
+            return struct.pack("<HHHHf", 0, 12, 1, 4, rssi) + self._psdu(self.DEV, seq & 0xff)
+
+        levels = [-50.0] * 300 + [-70.0] * 150 + [-50.0] * 120       # settle, sink, come back
+        frames = [(self.T + i, tap(level, i)) for i, level in enumerate(levels)]
+        code, out, _err = self.run_cli("replay", str(self._write_pcap("link.pcap", frames, DLT_TAP)))
+        self.assertEqual(code, 0)
+        link = [(e["event"], e["ts"] - self.T) for e in json.loads(out)["events"]
+                if e["event"].startswith("rssi_")]
+        self.assertEqual([e for e, _ in link], ["rssi_degradation", "rssi_recovered"])
+        self.assertTrue(300 < link[0][1] < 450 < link[1][1] < 570, link)   # each inside the file, not at EOF
+
     def test_replay_without_credentials_exits_2_with_the_reason(self):
         code, out, err = self.run_cli("replay", str(self._pcap()))
         self.assertEqual((code, out), (2, ""))

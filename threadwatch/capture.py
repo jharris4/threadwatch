@@ -415,6 +415,12 @@ def run_replay(cfg: Config, pcap_path: Path) -> None:
     pipe.detector.cfg.alert_cooldown_s = 0
     total = 0
     first = last = None
+    # The housekeeping the live loop runs on the frame clock (quiet checks,
+    # link assessment) runs here on the packets' own clock at the same
+    # cadence: a silence that ends before EOF, or a drop that holds and
+    # then recovers, is only found by looking between the frames, not
+    # once at the end.
+    last_tick = 0.0
     try:
         with open(pcap_path, "rb") as fh:
             for frame in PcapStreamReader(fh):
@@ -423,6 +429,13 @@ def run_replay(cfg: Config, pcap_path: Path) -> None:
                 last = frame.ts
                 pipe.ingest(frame)
                 total += 1
+                now = frame.ts
+                if now < last_tick:
+                    last_tick = now       # stamps stepped back: keep ticking from here
+                if now - last_tick >= TICK_S:
+                    if periodic_due(last_tick, now):
+                        pipe.periodic(now)
+                    last_tick = now
     except (OSError, PcapFormatError) as exc:
         # A path that does not exist, cannot be read, or is not a pcap:
         # one line and exit 1 (as `why` does), not a traceback and not a

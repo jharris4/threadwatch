@@ -538,3 +538,86 @@ class SummaryEpisodeTest(unittest.TestCase):
         self.assertEqual([(e["kind"], e["title"], e["detail"]) for e in eps],
                          [("summary", "daily summary", "last 24 h: 1 frame"),
                           ("summary", "daily summary", "last 24 h: 2 frames")])
+
+
+class EveryEventKindTest(unittest.TestCase):
+    """The day page is group_episodes over everything the pipeline emits.
+    Five of its event kinds had never been through the grouping, so a
+    broken title, a detail read off a missing field, or a grouping rule
+    that swallowed a row would have shown up on the page and nowhere
+    else."""
+
+    def test_foreign_pan_sightings_group_per_pan_and_source_within_a_day(self):
+        recs = [rec("possible_foreign_pan", "notice", T0, pan="0x58bc", src="3c1a", dominant_pan="0x4e21"),
+                rec("possible_foreign_pan", "notice", T0 + 3600, pan="0x58bc", src="3c1a", dominant_pan="0x4e21"),
+                rec("possible_foreign_pan", "notice", T0 + 7200, pan="0x1234", src="0a0b", dominant_pan="0x4e21"),
+                rec("possible_foreign_pan", "notice", T0 + 2 * 86400, pan="0x58bc", src="3c1a", dominant_pan="0x4e21")]
+        eps = group_episodes(recs)
+        self.assertEqual([(e["kind"], e["title"], e["detail"], e["count"], e["start"], e["end"]) for e in eps],
+                         [("foreign_pan", "foreign PAN 0x58bc from 3c1a", "ours is 0x4e21", 2, T0, T0 + 3600),
+                          ("foreign_pan", "foreign PAN 0x1234 from 0a0b", "ours is 0x4e21", 1, T0 + 7200, T0 + 7200),
+                          ("foreign_pan", "foreign PAN 0x58bc from 3c1a", "ours is 0x4e21", 1,
+                           T0 + 2 * 86400, T0 + 2 * 86400)])           # a day later: a new sighting
+        self.assertEqual(eps[0]["addr"], "3c1a")                       # the source stands in for an address
+        self.assertEqual(eps[0]["events"], recs[:2])
+
+    def test_join_scan_bursts_within_half_an_hour_are_one_row(self):
+        recs = [rec("join_scan_activity", "notice", T0, count_60s=5, src="1234"),
+                rec("join_scan_activity", "notice", T0 + 600, count_60s=7, src="1234"),
+                rec("join_scan_activity", "notice", T0 + 600 + 1801, count_60s=6, src="5678")]
+        eps = group_episodes(recs)
+        self.assertEqual([(e["kind"], e["title"], e["detail"], e["count"], e["end"]) for e in eps],
+                         [("join_scan", "join-scan beacons", "2 bursts", 2, T0 + 600),
+                          ("join_scan", "join-scan beacons", "6 in 60 s", 1, T0 + 2401)])
+
+    def test_each_partition_or_leader_change_is_its_own_row(self):
+        recs = [rec("partition_or_leader_change", "warning", T0 + i * 60,
+                    previous={"partition": 12345, "leader_router": 3, "leader": "Hall TV"},
+                    current={"partition": 67890, "leader_router": 5, "leader": "Study Hub"},
+                    note="the mesh split, merged or elected a new leader") for i in range(2)]
+        eps = group_episodes(recs)
+        self.assertEqual([(e["kind"], e["severity"], e["title"], e["detail"], e["count"]) for e in eps],
+                         [("partition", "warning", "partition or leader change",
+                           "partition 12345 leader r3 -> partition 67890 leader r5", 1)] * 2)
+        self.assertEqual([e["start"] for e in eps], [T0, T0 + 60])
+
+    def test_storm_freeze_and_alert_test_rows(self):
+        eps = group_episodes([
+            rec("phase_locked_storm", "critical", T0, period_s=80.5, onsets=3, baseline_frames_per_window=250.0,
+                note="traffic floods recurring every 80 s"),
+            rec("incident_frozen", "info", T0 + 5, label="auto-storm", note="6 ring files kept as 20260902T120005_auto-storm"),
+            rec("incident_freeze_failed", "warning", T0 + 10, label="auto-storm", note="could not freeze the ring"),
+            rec("alert_test", "warning", T0 + 20, name="Test device", note="threadwatch alert-test from pi"),
+        ])
+        self.assertEqual([(e["kind"], e["severity"], e["title"], e["detail"]) for e in eps],
+                         [("storm", "critical", "phase-locked storm",
+                           "period 80.5s, onsets 3, baseline 250.0 frames/window"),
+                          ("frozen", "info", "incident frozen", "6 ring files kept as 20260902T120005_auto-storm"),
+                          ("frozen", "warning", "incident freeze failed", "could not freeze the ring"),
+                          ("test", "warning", "alert test", "threadwatch alert-test from pi")])
+
+    def test_an_event_without_a_grouping_rule_is_a_row_named_after_it(self):
+        recs = [rec("clock_step", "info", T0, step_s=7200, note="the host clock jumped forward 120 min"),
+                rec("configured_pan_silent", "warning", T0 + 1, pan="0x4e21", note="no frame on PAN 0x4e21"),
+                rec("dominant_pan_changed", "notice", T0 + 2, pan="0x4e21", note="PAN 0x4e21 adopted"),
+                rec("credentials_stale", "warning", T0 + 3, failed=40, note="nothing decrypts"),
+                rec("border_router_address_changed", "notice", T0 + 4, addr=TV2, name="Hall TV", note="rotated"),
+                rec("border_router_unlisted", "notice", T0 + 5, addr=TV1, hostname="hub.local", note="not in devices.json")]
+        eps = group_episodes(recs)
+        self.assertEqual([(e["kind"], e["title"], e["severity"], e["detail"], e["count"]) for e in eps],
+                         [(r["event"], r["event"], r["severity"], r["note"], 1) for r in recs])
+        self.assertEqual([e["addr"] for e in eps[-2:]], [TV2, TV1])
+
+    def test_everything_the_pipeline_emits_has_a_row(self):
+        import re
+        source = (Path(__file__).resolve().parent.parent / "threadwatch" / "pipeline.py").read_text()
+        emitted = sorted(set(re.findall(r'events\.emit\(\s*"([a-z_]+)"', source)))
+        self.assertGreaterEqual(len(emitted), 20, emitted)
+        for ev in emitted:
+            # The fields every record carries, plus the one number a title
+            # formats (rssi_degradation's drop_db, which the pipeline always sends).
+            r = rec(ev, "notice", T0, addr=AQ, name="Basement AQ", note="n", drop_db=6.0)
+            eps = group_episodes([r], now=T0 + 60)
+            self.assertEqual(len(eps), 1, ev)
+            self.assertTrue(eps[0]["title"], ev)
+            self.assertEqual(eps[0]["events"], [r], ev)

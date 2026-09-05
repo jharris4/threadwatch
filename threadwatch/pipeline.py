@@ -205,6 +205,13 @@ class Pipeline:
             for addr, row in sorted(self.seen.table.items(), key=lambda kv: kv[1].get("rloc16_ts") or 0):
                 if row.get("rloc16"):
                     self.decryptor.short_to_ext[row["rloc16"]] = addr
+                if row.get("starved"):
+                    # A starvation announced by an earlier run and not yet
+                    # closed: the row remembers it (as quiet_reported does
+                    # for a silence) so the first answered poll closes it,
+                    # and so that this run's unanswered polls do not
+                    # announce the same unbroken episode again.
+                    self.devices.setdefault(addr, DeviceStats()).starved = True
             last_alive = self._last_frame_heard()
             if last_alive is not None:
                 self._blind.append((last_alive, now - last_alive))

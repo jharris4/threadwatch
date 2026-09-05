@@ -757,6 +757,30 @@ class PollStarvationTest(unittest.TestCase):
         pipe2.ingest(ack(t + 330.001, 203))
         self.assertEqual(len(self._events(pipe2, "poll_answered")), 1)   # once
 
+    def test_an_open_starvation_is_not_announced_again_by_every_restart(self):
+        pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
+        t = self._answered_polls(pipe, 1_700_000_000.0, 5)
+        for i in range(12):
+            pipe.ingest(poll(t + 10 * i, SENSOR, 100 + i))
+        self.assertEqual(len(self._events(pipe, "poll_starvation")), 1)
+        pipe.seen.save()
+        for run in range(3):                                  # the watchdog restarts the daemon every 3 min
+            pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
+            t += 200
+            for i in range(12):                               # still nobody answers
+                pipe.ingest(poll(t + 10 * i, SENSOR, (run * 20 + i) & 0xFF))
+            self.assertEqual(self._events(pipe, "poll_starvation"), [], run)
+            self.assertTrue(pipe.seen.table[SENSOR]["starved"])
+            pipe.seen.save()
+        pipe.ingest(poll(t + 300, SENSOR, 250))
+        pipe.ingest(ack(t + 300.001, 250))
+        self.assertEqual(len(self._events(pipe, "poll_answered")), 1)    # closed once, by the ACK
+        self.assertNotIn("starved", pipe.seen.table[SENSOR])
+        # A new episode after the close is announced again.
+        for i in range(12):
+            pipe.ingest(poll(t + 400 + 10 * i, SENSOR, 30 + i))
+        self.assertEqual(len(self._events(pipe, "poll_starvation")), 1)
+
     def test_starvation_that_begins_right_after_a_restart_is_announced(self):
         pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
         t = self._answered_polls(pipe, 1_700_000_000.0, 5)

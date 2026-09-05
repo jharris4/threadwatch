@@ -52,11 +52,22 @@ flash once, not per boot.
 
 ## Verify
 
+The flash is good when the dongle enumerates as an **nRF 802154
+Sniffer** (above): `bin/flash-dongle.sh` lists it itself, and a
+`/dev/ttyACM*` / `/dev/cu.usbmodem*` port appears. On the recorder
+host, once `INSTALL.md` is done:
+
 ```bash
-bin/threadwatch capture   # should print: capturing channel N from /dev/...
+bin/threadwatch doctor    # the "dongle" line names the port; other lines say what is still missing
+bin/threadwatch capture   # prints: capturing channel N from /dev/...
 # Ctrl-C after a few seconds; or check frames_total:
 bin/threadwatch status
 ```
+
+`capture` needs the Python packages and the Thread network key
+(`INSTALL.md`, `docs/CREDENTIALS.md`) and exits before it touches the
+dongle without them; that is not a failed flash. `doctor` is read-only
+and names each missing piece.
 
 You can also open the pcaps under `data/ring/` in Wireshark — with the
 dongle near an active Thread mesh you'll see MLE/data/ack traffic

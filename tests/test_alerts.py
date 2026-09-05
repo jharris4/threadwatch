@@ -127,6 +127,39 @@ class SinkBuildTests(unittest.TestCase):
         with self.assertRaises(alerts.ConfigError):
             alerts.build_sinks({"sinks": [{"type": "carrier-pigeon"}]}, print)
 
+    def test_a_command_sink_is_built_from_a_string_or_a_list(self):
+        # A string is split like a shell would; a list is taken as given,
+        # every element a str; ${VAR} expands in either form.
+        os.environ["TW_CMD_TOKEN"] = "tk_9"
+        try:
+            sinks = alerts.build_sinks({"sinks": [
+                {"type": "command", "command": "notify-send -u 'Thread alert' ${TW_CMD_TOKEN}"},
+                {"type": "command", "name": "list", "command": ["curl", "-m", 5, "${TW_CMD_TOKEN}"],
+                 "min_severity": "critical", "cooldown_s": 60, "timeout_s": 3},
+            ]}, print)
+        finally:
+            os.environ.pop("TW_CMD_TOKEN", None)
+        self.assertEqual([type(s) for s in sinks], [alerts.CommandSink, alerts.CommandSink])
+        self.assertEqual(sinks[0].name, "command-0")                  # named after its type and index
+        self.assertEqual(sinks[0].command, ["notify-send", "-u", "Thread alert", "tk_9"])
+        self.assertEqual((sinks[0].min_severity, sinks[0].cooldown_s, sinks[0].timeout_s), (2, 300.0, 10.0))
+        self.assertEqual(sinks[1].command, ["curl", "-m", "5", "tk_9"])
+        self.assertEqual((sinks[1].name, sinks[1].min_severity, sinks[1].cooldown_s, sinks[1].timeout_s),
+                         ("list", 3, 60.0, 3.0))
+
+    def test_a_command_sink_without_a_command_is_refused_by_name(self):
+        for raw in ({"type": "command", "name": "hook"},
+                    {"type": "command", "name": "hook", "command": ""},
+                    {"type": "command", "name": "hook", "command": "   "},
+                    {"type": "command", "name": "hook", "command": []}):
+            with self.assertRaises(alerts.ConfigError) as cm:
+                alerts.build_sinks({"sinks": [raw]}, print)
+            self.assertEqual(str(cm.exception), "alert sink 'hook': command is required", raw)
+        msgs = []
+        self.assertEqual(alerts.build_sinks({"sinks": [{"type": "command", "command": "run ${TW_NOT_SET_CMD}"}]},
+                                            msgs.append), [])           # unset variable: disabled, not built
+        self.assertIn("TW_NOT_SET_CMD", msgs[0])
+
     def test_cooldown_is_per_sink_and_per_event(self):
         a = alerts.HttpSink(name="a", url="http://x", cooldown_s=300)
         b = alerts.HttpSink(name="b", url="http://x", cooldown_s=0)

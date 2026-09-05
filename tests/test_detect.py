@@ -55,6 +55,22 @@ class StormLatchTest(unittest.TestCase):
         self.assertEqual(len(det.counts), det.counts.maxlen)
         self.assertFalse(det.in_flood or det.storm_active)
 
+    def test_time_going_backwards_restarts_the_window_clock(self):
+        det = Detector(DetectorConfig(alert_cooldown_s=0))
+        t0 = 1_700_000_000.0
+        for i in range(300):
+            det.add_frame(t0 + i / 30)
+        det.add_frame(0xFFFFFFFF + 0.5)                             # one corrupt record...
+        det.add_frame(t0 + 10.5)                                    # ...and the file carries on
+        self.assertEqual(det.window_start, t0 + 10.5)               # the window clock came back
+        self.assertEqual(det.window_count, 1)
+        for i in range(600):
+            det.add_frame(t0 + 11 + i / 10)                         # a minute of ordinary traffic
+        self.assertEqual(det.window_start, t0 + 70.5)               # six windows closed again...
+        self.assertEqual(list(det.counts)[-3:], [100, 100, 100])    # ...with their frames in them
+        det.add_frame(t0 + 71 - 0.5)                                # a little out of order: no reset
+        self.assertEqual((det.window_start, det.window_count), (t0 + 70.5, 6))
+
     def test_a_short_gap_still_closes_every_window(self):
         det = Detector(DetectorConfig(alert_cooldown_s=0))
         det.add_frame(1000.0)

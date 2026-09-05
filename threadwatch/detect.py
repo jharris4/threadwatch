@@ -44,6 +44,15 @@ class Detector:
         w = self.cfg.window_seconds
         if self.window_start == 0.0:
             self.window_start = ts
+        if self.window_start - ts >= w:
+            # Time went backwards by a window or more: the clock was stepped
+            # back, or the record before this one carried a corrupt future
+            # stamp and the window clock followed it. Left there, every
+            # frame from now on would land "before" the open window and no
+            # window would ever close again. Start the window clock over at
+            # this frame; the frames counted so far in a window that spans
+            # a discontinuity are not worth judging.
+            self.window_start, self.window_count = ts, 0
         if ts - self.window_start >= w:
             self._close_window()                  # the window that had the frames
             self.window_start += w

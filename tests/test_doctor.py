@@ -163,6 +163,45 @@ class DoctorTest(unittest.TestCase):
         self.assertEqual(checks[0][:2], ("FAIL", "alerts"))
         self.assertIn("heartbeats", checks[0][2])
 
+    def test_one_crashing_check_is_a_warning_line_and_hides_nothing(self):
+        import contextlib
+        import io
+
+        def broken(*_a, **_k):
+            raise RuntimeError("boom")
+
+        with mock.patch.object(doctor, "check_dongle", broken), mock.patch.object(doctor, "check_clock", broken):
+            checks = doctor.run_doctor(self.cfg, find_port=lambda: "/dev/x", now=time.time())
+        crashed = [c for c in checks if c[1] == "doctor"]
+        self.assertEqual(crashed, [(doctor.WARN, "doctor", "check crashed: RuntimeError: boom")] * 2)
+        subjects = [c[1] for c in checks]
+        self.assertNotIn("dongle", subjects)
+        self.assertNotIn("clock", subjects)
+        for s in ("config", "inventory", "credentials", "capture", "ring", "last-seen", "disk", "writable",
+                  "alerts", "web"):                                       # every other check still ran
+            self.assertIn(s, subjects)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(doctor.print_report(crashed), 0)              # a crashed check is not a failure
+        self.assertEqual(out.getvalue().splitlines(),
+                         ["warn doctor       check crashed: RuntimeError: boom"] * 2 + ["0 failing, 2 warning(s)"])
+
+    def test_print_report_exits_one_only_for_a_failing_check(self):
+        import contextlib
+        import io
+        cases = [([("ok", "config", "fine")], 0, "all good"),
+                 ([("ok", "config", "fine"), (doctor.WARN, "ring", "thin")], 0, "0 failing, 1 warning(s)"),
+                 ([(doctor.WARN, "ring", "thin"), (doctor.FAIL, "alerts", "refused"), (doctor.FAIL, "web", "down")],
+                  1, "2 failing, 1 warning(s)"),
+                 ([], 0, "all good")]
+        for checks, code, last_line in cases:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(doctor.print_report(checks), code, checks)
+            lines = out.getvalue().splitlines()
+            self.assertEqual(lines[-1], last_line)
+            self.assertEqual(lines[:-1], [f"{lvl:4s} {subj:12s} {text}" for lvl, subj, text in checks])
+
     def test_last_seen_check_reads_the_table_and_notices_one_kept_aside(self):
         path = self.cfg.state_dir / "last-seen.json"
         self.assertEqual(doctor.check_last_seen(self.cfg)[0][:2], ("ok", "last-seen"))

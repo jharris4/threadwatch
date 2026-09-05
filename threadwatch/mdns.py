@@ -67,11 +67,13 @@ def build_query(questions: list[tuple[str, int]], unicast_reply: bool = True) ->
     return head + b"".join(encode_name(n) + struct.pack(">HH", t, qclass) for n, t in questions)
 
 
-def read_name(data: bytes, off: int, depth: int = 0) -> tuple[str, int]:
+def read_name(data: bytes, off: int, depth: int = 0,
+              end: Optional[int] = None) -> tuple[str, int]:
     """A possibly compressed name at ``off``: (name, offset after it)."""
     labels: list[str] = []
+    limit = len(data) if end is None else min(end, len(data))
     while True:
-        if off >= len(data):
+        if off < 0 or off >= limit:
             raise ValueError("truncated name")
         n = data[off]
         if n == 0:
@@ -79,10 +81,18 @@ def read_name(data: bytes, off: int, depth: int = 0) -> tuple[str, int]:
         if n & 0xC0 == 0xC0:
             if depth > 16:
                 raise ValueError("compression loop")
+            if off + 2 > limit:
+                raise ValueError("truncated compression pointer")
             ptr = struct.unpack(">H", data[off:off + 2])[0] & 0x3FFF
+            # The pointer must fit this record; its target can be elsewhere
+            # in the message, as ordinary DNS compression requires.
             tail, _ = read_name(data, ptr, depth + 1)
             return ".".join(labels + ([tail] if tail else [])), off + 2
+        if n & 0xC0:
+            raise ValueError("unsupported label encoding")
         off += 1
+        if off + n > limit:
+            raise ValueError("truncated label")
         labels.append(clean_text(data[off:off + n], LABEL_MAX))
         off += n
 
@@ -92,6 +102,8 @@ def parse_txt(rdata: bytes) -> dict[str, bytes]:
     off = 0
     while off < len(rdata):
         n = rdata[off]
+        if off + 1 + n > len(rdata):
+            raise ValueError("truncated TXT item")
         item = rdata[off + 1:off + 1 + n]
         off += 1 + n
         if not item:
@@ -112,21 +124,25 @@ def parse_message(data: bytes) -> list[tuple[str, int, object]]:
     for _ in range(qd):
         _, off = read_name(data, off)
         off += 4
+        if off > len(data):
+            raise ValueError("truncated question")
     out: list[tuple[str, int, object]] = []
     for _ in range(an + ns + ar):
         name, off = read_name(data, off)
         if off + 10 > len(data):
-            break
+            raise ValueError("truncated resource record")
         rtype, _rclass, _ttl, rdlen = struct.unpack(">HHIH", data[off:off + 10])
         off += 10
+        if off + rdlen > len(data):
+            raise ValueError("truncated resource data")
         rdata = data[off:off + rdlen]
         rstart = off
         off += rdlen
         if rtype == TYPE_PTR:
-            out.append((name, rtype, read_name(data, rstart)[0]))
+            out.append((name, rtype, read_name(data, rstart, end=off)[0]))
         elif rtype == TYPE_SRV and len(rdata) >= 6:
             port = struct.unpack(">H", rdata[4:6])[0]
-            out.append((name, rtype, (port, read_name(data, rstart + 6)[0])))
+            out.append((name, rtype, (port, read_name(data, rstart + 6, end=off)[0])))
         elif rtype == TYPE_TXT:
             out.append((name, rtype, parse_txt(rdata)))
         elif rtype == TYPE_A and len(rdata) == 4:

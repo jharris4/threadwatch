@@ -46,6 +46,35 @@ class TapBoundaryTest(unittest.TestCase):
                     json.dumps(pipe.seen.table, allow_nan=False)
 
 
+class DnsBoundaryTest(unittest.TestCase):
+    def message(self, kind, declared, payload):
+        return (struct.pack('>HHHHHH', 0, 0x8400, 0, 1, 0, 0)
+                + encode_name('router.local')
+                + struct.pack('>HHIH', kind, 1, 120, declared) + payload)
+
+    def test_truncated_rdata_is_rejected_even_if_prefix_is_parseable(self):
+        payload = b'\x0bxa=' + bytes(range(8))
+        with self.assertRaises(ValueError):
+            parse_message(self.message(TYPE_TXT, len(payload) + 1, payload))
+
+    def test_truncated_txt_item_cannot_supply_an_address(self):
+        payload = b'\xffxa=' + bytes(range(8))
+        with self.assertRaises(ValueError):
+            parse_message(self.message(TYPE_TXT, len(payload), payload))
+
+    def test_ptr_name_cannot_extend_past_its_rdata(self):
+        # Trailing bytes outside the record currently finish its name.
+        payload = encode_name('other.local')
+        with self.assertRaises(ValueError):
+            parse_message(self.message(TYPE_PTR, 1, payload))
+
+    def test_reserved_label_encoding_is_not_an_ordinary_label(self):
+        with self.assertRaises(ValueError):
+            read_name(b'\x40' + b'a' * 64 + b'\x00', 0)
+
+    def test_valid_compression_can_point_outside_rdata(self):
+        msg = self.message(TYPE_PTR, 2, b'\xc0\x0c')
+        self.assertEqual(parse_message(msg), [('router.local', TYPE_PTR, 'router.local')])
 
 
 class PcapAllocationTest(unittest.TestCase):

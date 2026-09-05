@@ -539,6 +539,20 @@ class RunImportTest(unittest.TestCase):
         self.assertIn("devices.json: entry 2 is null, not a device object", str(cm.exception))
         self.assertIsNone(json.loads(inv.read_text())[1])
 
+    def test_credentials_only_import_does_not_need_a_readable_inventory(self):
+        # `import --no-devices --write` is the way back to a network key
+        # after losing credentials.toml; it neither reads nor writes
+        # devices.json, so a broken one must not stand in its way.
+        inv = self.d / "devices.json"
+        inv.write_text("[invalid")
+        lines = []
+        run_import(self.cfg, inv, devices=False, use_mdns=False, write=True, out=lines.append)
+        self.assertIn("network key", "\n".join(lines))
+        self.assertIn('network_key = "00112233445566778899aabbccddeeff"', (self.d / "credentials.toml").read_text())
+        self.assertEqual(inv.read_text(), "[invalid")
+        with self.assertRaises(ValueError):                  # importing devices still names the problem
+            run_import(self.cfg, inv, use_mdns=False, out=lines.append)
+
     def test_plan_then_write(self):
         lines = []
         run_import(self.cfg, self.d / "devices.json", out=lines.append)

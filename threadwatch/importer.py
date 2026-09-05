@@ -193,7 +193,11 @@ def _import(cfg, inventory_path: Path, *, write: bool, url: Optional[str], env_f
     from .ha import HomeAssistant, connection_settings, current_key, thread_dataset, thread_devices, write_private
     from .pipeline import credentials_path
 
-    existing = read_inventory(inventory_path)   # ValueError, naming the entry, for a malformed file
+    # ValueError, naming the entry, for a malformed file: only when the
+    # inventory is being imported into. Fetching the network key (the
+    # --no-devices recovery path) neither reads nor writes it, and must not
+    # wait on an unrelated repair.
+    existing = read_inventory(inventory_path) if devices else []
     planned, changes = existing, []
     wrote = False
 

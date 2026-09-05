@@ -41,11 +41,23 @@ class Detector:
     last_alert_details: dict = field(default_factory=dict)
 
     def add_frame(self, ts: float) -> None:
+        w = self.cfg.window_seconds
         if self.window_start == 0.0:
             self.window_start = ts
-        while ts - self.window_start >= self.cfg.window_seconds:
-            self._close_window()
-            self.window_start += self.cfg.window_seconds
+        if ts - self.window_start >= w:
+            self._close_window()                  # the window that had the frames
+            self.window_start += w
+            # Every window from here to ts is empty, and once the history is
+            # full of empty ones another changes nothing: skip straight to
+            # the last history's worth of them. A replayed file with a
+            # corrupt timestamp, or a host clock stepped from 1970 to now,
+            # is otherwise a step per ten seconds, minutes of spinning.
+            empties = int((ts - self.window_start) // w)
+            if empties > self.counts.maxlen:
+                self.window_start += (empties - self.counts.maxlen) * w
+            while ts - self.window_start >= w:
+                self._close_window()
+                self.window_start += w
         self.window_count += 1
 
     def _baseline(self) -> float:

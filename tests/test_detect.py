@@ -41,6 +41,28 @@ class StormLatchTest(unittest.TestCase):
         self.assertTrue(active[370])
         self.assertFalse(det.storm_active)    # three missed periods later
 
+    def test_a_timestamp_jump_costs_a_history_not_a_step_per_window(self):
+        import time
+        det = Detector(DetectorConfig(alert_cooldown_s=0))
+        for i in range(300):
+            det.add_frame(1_700_000_000.0 + i / 30)                 # one busy window
+        t0 = time.monotonic()
+        det.add_frame(0xFFFFFFFF + 0.5)                             # a corrupt record 2.6e9 s on
+        self.assertLess(time.monotonic() - t0, 1.0)                 # was ~16 min of spinning
+        self.assertLess(0xFFFFFFFF + 0.5 - det.window_start, 10)    # the window clock caught up
+        self.assertEqual(det.window_count, 1)
+        self.assertEqual(det._baseline(), 0.0)                      # a history of empty windows
+        self.assertEqual(len(det.counts), det.counts.maxlen)
+        self.assertFalse(det.in_flood or det.storm_active)
+
+    def test_a_short_gap_still_closes_every_window(self):
+        det = Detector(DetectorConfig(alert_cooldown_s=0))
+        det.add_frame(1000.0)
+        det.add_frame(1000.0 + 65)                                  # 6 whole windows on
+        self.assertEqual(list(det.counts), [1, 0, 0, 0, 0, 0])
+        self.assertEqual(det.window_start, 1060.0)
+        self.assertEqual(det.window_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

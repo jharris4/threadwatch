@@ -147,6 +147,57 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class ReportSuggestTest(CliCase):
+    """The recorder files the hostnames it harvests in observed-names.json;
+    `threadwatch report --suggest` turns them into inventory entries."""
+
+    DEV = "26976e7f7d20964a"
+
+    def test_the_recorder_writes_observed_names_and_report_suggests_them(self):
+        from threadwatch import config as config_mod
+        from threadwatch.crypto import Decryptor
+        from threadwatch.events import NullEventLog
+        from threadwatch.pcap import Frame
+        from threadwatch.pipeline import Pipeline
+        cfg = config_mod.load(Path(self.cfg))
+        names_file = cfg.state_dir / "observed-names.json"
+        t = 1_756_800_000.0
+
+        def run(ephemeral):
+            pipe = Pipeline(cfg, NullEventLog(), Decryptor(network_key=bytes(16)), ephemeral=ephemeral)
+            for i in range(5):
+                pipe.ingest(Frame(ts=t + i, raw=b"", psdu=b"", rssi=-60.0, channel=None, lqi=None, ftype=1,
+                                  seq=i, dst_pan=0x4e21, dst="0000", src_pan=0x4e21, src=self.DEV))
+            for _ in range(3):
+                pipe._note_observed_name(self.DEV, "office-aq-1a2b.local")
+            pipe._note_observed_name(self.DEV, "junk-once.x[L(")
+            pipe.periodic(t + 60)
+            pipe.seen.save()
+            return pipe
+
+        run(ephemeral=True)                                          # replay: the live state is not touched
+        self.assertFalse(names_file.exists())
+        self.assertFalse((cfg.state_dir / "last-seen.json").exists())
+        run(ephemeral=False)
+        self.assertEqual(json.loads(names_file.read_text()),
+                         {self.DEV: {"office-aq-1a2b.local": 3, "junk-once.x[L(": 1}})
+        self.assertFalse(names_file.with_suffix(".tmp").exists())   # written whole, then renamed into place
+
+        code, out, err = self.run_cli("report", "--suggest")
+        self.assertEqual(code, 0, err)
+        entries = json.loads(out)
+        self.assertEqual([(e["name"], e["extendedAddress"]) for e in entries],
+                         [("office-aq-1a2b.local", self.DEV.upper())])
+        self.assertIn("5 frames since ", entries[0]["note"])
+        self.assertIn("advertised as office-aq-1a2b.local", entries[0]["note"])
+        self.assertNotIn("junk-once", entries[0]["note"])           # seen once: a regex false positive
+        self.assertIn("1 entry to fill in and paste into devices.json", err)
+        # Named, the address leaves the unknown list and nothing is suggested.
+        self.assertEqual(self.run_cli("adopt", self.DEV, "Office AQ")[0], 0)
+        code, out, err = self.run_cli("report", "--suggest")
+        self.assertEqual((code, json.loads(out), err), (0, [], ""))
+
+
 class ReplayTest(CliCase):
     """`threadwatch replay <pcap>` runs the whole pipeline over a file and
     prints one JSON object: what a storm looked like, what it would have

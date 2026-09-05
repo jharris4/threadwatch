@@ -3,6 +3,7 @@
 import json
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -88,3 +89,40 @@ class RetentionTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(hasattr(time, "tzset"), "needs time.tzset to switch zones")
+class DayArithmeticTest(unittest.TestCase):
+    """next_day and prev_day step whole local calendar days, and a local
+    day is 23, 24 or 25 hours long. They add 36 h and subtract 12 h so
+    that both DST transitions land in the neighbouring day; 24 h either
+    way turns the 25-hour day into its own successor, and the day pages
+    and the day bounds every reader uses are built on them."""
+
+    ZONES = ("America/New_York", "Europe/London", "Australia/Sydney")
+
+    def test_every_day_of_a_dst_year_steps_to_its_neighbours(self):
+        import datetime
+        import os
+        from threadwatch.events import day_bounds, next_day, prev_day
+        saved = os.environ.get("TZ")
+        try:
+            for zone in self.ZONES:
+                os.environ["TZ"] = zone
+                time.tzset()
+                lengths = set()
+                d = datetime.date(2026, 1, 1)
+                while d.year == 2026:
+                    day = d.isoformat()
+                    self.assertEqual(next_day(day), (d + datetime.timedelta(days=1)).isoformat(), (zone, day))
+                    self.assertEqual(prev_day(day), (d - datetime.timedelta(days=1)).isoformat(), (zone, day))
+                    start, end = day_bounds(day)
+                    lengths.add(round((end - start) / 3600))
+                    d += datetime.timedelta(days=1)
+                self.assertEqual(lengths, {23, 24, 25}, zone)     # both transitions were in the year
+        finally:
+            if saved is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = saved
+            time.tzset()

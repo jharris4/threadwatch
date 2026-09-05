@@ -453,6 +453,35 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertAlmostEqual(wall[ROUTER], outage + 34 * 60, delta=5)
         self.assertAlmostEqual(wall[STRANGER], outage + 31.5 * 60, delta=5)
 
+    def test_a_clock_step_back_is_not_charged_against_the_quiet_timer(self):
+        # A host that booted ahead of time, corrected by NTP while recording:
+        # every stamp taken before the correction sat the step ahead of the
+        # clock, and a silence had to make the step up before it counted.
+        T = time.time()
+        pipe = self._pipe()
+        clock = {"wall": T, "mono": 0.0}
+        pipe._wall, pipe._mono, pipe._clock = (lambda: clock["wall"]), (lambda: clock["mono"]), (T, 0.0)
+        pipe.ingest(frame(T, ROUTER))
+        clock.update(wall=T + 600, mono=600.0)
+        pipe.periodic(T + 600)                                   # ten minutes in, all quiet
+        self.assertEqual(self._quiet(pipe), [])
+        clock.update(wall=T + 600 - 1800 + 20, mono=620.0)       # the clock steps back 30 min; 20 s later, a check
+        pipe.ingest(frame(clock["wall"] - 5, SENSOR))            # heard after the step, stamped by the new clock
+        pipe.periodic(clock["wall"])
+        steps = [r for r in pipe.events.records if r["event"] == "clock_step"]
+        self.assertEqual([r["step_s"] for r in steps], [-1800])
+        self.assertIn("jumped back 30 min", steps[0]["note"])
+        self.assertEqual(pipe.seen.table[ROUTER]["last_seen"], T - 1800)          # moved with the clock
+        self.assertEqual(pipe.seen.table[SENSOR]["last_seen"], clock["wall"] - 5)   # left where it is
+        self.assertAlmostEqual(pipe.silence_s(pipe.seen.table[ROUTER], clock["wall"]), 620, delta=1)
+        clock.update(wall=clock["wall"] + 20 * 60 + 40, mono=620.0 + 20 * 60 + 40)
+        pipe.periodic(clock["wall"])                             # 31 min of actual silence
+        self.assertEqual(self._quiet(pipe), [ROUTER])
+        rec = [r for r in pipe.events.records if r["event"] == "device_quiet"][0]
+        self.assertAlmostEqual(rec["unheard_s"], 31 * 60, delta=5)
+        self.assertAlmostEqual(rec["silent_for_s"], 31 * 60, delta=5)
+        self.assertEqual(len([r for r in pipe.events.records if r["event"] == "clock_step"]), 1)
+
     def test_a_restart_loop_that_hears_nothing_does_not_announce_every_device(self):
         # The mesh (or the dongle) died two hours ago. Since then the
         # watchdog has restarted the recorder every three minutes, and every

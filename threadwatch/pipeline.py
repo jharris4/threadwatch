@@ -352,16 +352,66 @@ class Pipeline:
         blindness) then sits the whole step behind the clock, and every
         device would cross its quiet threshold on the same tick. The step
         is measured against the monotonic clock and credited as blindness
-        to everything heard before it."""
+        to everything heard before it.
+
+        A step back (a host that booted ahead of time, corrected while
+        recording) leaves every stamp taken before it the whole step ahead
+        of the clock, and a silence has to make the step up before it
+        counts: the quiet alert came a step late. Blindness cannot say
+        that (its sum is clamped at zero, and stamps from either side of
+        the step overlap), so the stamps are moved instead (_rewind)."""
         wall, mono = self._wall(), self._mono()
         step = (wall - self._clock[0]) - (mono - self._clock[1])
+        since_check = mono - self._clock[1]
         self._clock = (wall, mono)
-        if step < self.CLOCK_STEP_MIN_S:
+        if abs(step) < self.CLOCK_STEP_MIN_S:
             return
-        self._blind.append((wall - step, step))
+        if step > 0:
+            self._blind.append((wall - step, step))
+            self.events.emit("clock_step", "info", now, step_s=round(step),
+                             note=(f"the host clock jumped forward {round(step / 60)} min (NTP after boot?); "
+                                   "silences that span the jump are not counted against any device"))
+            return
+        self._rewind(wall, -step, since_check)
         self.events.emit("clock_step", "info", now, step_s=round(step),
-                         note=(f"the host clock jumped forward {round(step / 60)} min (NTP after boot?); "
-                               "silences that span the jump are not counted against any device"))
+                         note=(f"the host clock jumped back {round(-step / 60)} min (NTP correcting a clock that "
+                               "ran ahead?); every stamp taken before the jump was moved back with it, so "
+                               "silences are counted as heard"))
+
+    # The stamps a last-seen row carries on the wall clock.
+    ROW_STAMPS = ("first_seen", "last_seen", "rloc16_ts", "rssi_heard_ts", "rssi_ref_ts",
+                  "starve_confirm_at", "quiet_reported_ts")
+    STATS_STAMPS = ("last_poll_ts", "ack_pending_ts", "poll_pending_ts", "unanswered_since", "confirm_at")
+
+    def _rewind(self, now: float, back: float, since_check: float) -> None:
+        """Move every stamp taken before a backward step of ``back`` seconds
+        back with the clock: last-seen rows, blindness, the retransmission
+        elevation and its cooldowns, the per-device poll state. A stamp is
+        from before the step when it is later than now, or older than the
+        last check: a frame stamped by the corrected clock is at most
+        ``since_check`` old. The stamps in between are left where they
+        are: a device last heard in that band about ``back`` before the
+        step keeps its silence short by the step until it is heard again,
+        rather than a device heard since being charged the whole step."""
+        def before(t) -> bool:
+            return isinstance(t, (int, float)) and not isinstance(t, bool) and (t > now or t < now - since_check)
+
+        for row in self.seen.table.values():
+            for key in self.ROW_STAMPS:
+                if before(row.get(key)):
+                    row[key] -= back
+        self.seen._dirty = True
+        self._blind = [(since - back if before(since) else since, length) for since, length in self._blind]
+        for stats in self.devices.values():
+            for attr in self.STATS_STAMPS:
+                t = getattr(stats, attr)
+                if t and before(t):
+                    setattr(stats, attr, t - back)
+        for attr in ("_retrans_since", "_retrans_alerted", "_retrans_paged", "_retrans_up", "_retrans_closed",
+                     "_win_start"):
+            t = getattr(self, attr)
+            if t and before(t):
+                setattr(self, attr, t - back)
 
     # ------------------------------------------------------- quiet policy
 

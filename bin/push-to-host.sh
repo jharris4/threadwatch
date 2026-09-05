@@ -10,7 +10,10 @@
 # that it also carries config/config.toml, config/devices.json,
 # config/credentials.toml and config/alerts.env, which git deliberately never
 # sees, and it lets you deploy an uncommitted change. data/ on the host is
-# never touched.
+# never touched, and a config/ file the host has but this workstation does
+# not (a fresh clone, a second machine, a credentials.toml written on the
+# host by `threadwatch import`) is left in place rather than deleted: for
+# the network key that may be the only copy.
 #
 # What deploys is what git tracks, plus config/. Everything else in the working
 # tree -- caches, scratch notes, data/, .venv/ -- stays on the workstation. That
@@ -39,9 +42,13 @@ if [ -n "$UNCOMMITTED_CODE" ]; then
   echo "  commit them if they belong on the host." >&2
 fi
 
+# --delete removes what the workstation lacks; the protect filter exempts
+# config/ on the receiving side, so a file there is only ever overwritten by
+# a newer workstation copy, never removed. Remove one on the host by hand.
 rsync -a --delete \
   --exclude-from "$EXCLUDES" \
   --exclude 'data/' --exclude '.git/' \
+  --filter 'P /config/***' \
   "$REPO/" "$TARGET:$DEST_DIR/"
 ssh "$TARGET" "chmod 400 $DEST_DIR/config/credentials.toml $DEST_DIR/config/alerts.env $DEST_DIR/config/ha.env 2>/dev/null || true"
 echo "pushed to $TARGET:$DEST_DIR"

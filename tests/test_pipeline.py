@@ -578,6 +578,47 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual(self._quiet(pipe2), [])  # not announced a second time
         self.assertEqual(pipe2.quiet_reported, {SENSOR})
 
+    def test_a_silence_flagged_as_announced_but_never_logged_is_announced_at_the_next_start(self):
+        # The flag is saved before the event is appended (so an outage
+        # right after cannot re-announce). Killed between the two, the
+        # last run left the flag and no record: the next start trusted the
+        # flag, and the silence had neither an event nor an alert.
+        from threadwatch.events import EventLog, day_of, read_day
+        now = time.time()
+        pipe = Pipeline(self.cfg, EventLog(self.cfg.events_dir), stub_decryptor())
+        pipe.ingest(frame(now - 40 * 60, SENSOR))
+        pipe.ingest(frame(now, ROUTER))
+
+        def cut_short(*a, **kw):
+            raise OSError("killed between the save and the append")
+        pipe.events.emit = cut_short
+        with self.assertRaises(OSError):
+            pipe.periodic(now)
+        self.assertTrue(json.loads(pipe.seen.state_path.read_text())[SENSOR]["quiet_reported"])
+        self.assertEqual([r for r in read_day(self.cfg.events_dir, day_of(now)) if r["event"] == "device_quiet"], [])
+        self._status(updated=now, last_frame_ts=now)
+        pipe2 = Pipeline(self.cfg, EventLog(self.cfg.events_dir), stub_decryptor())
+        quiet = [r for r in read_day(self.cfg.events_dir, day_of(now)) if r["event"] == "device_quiet"]
+        self.assertEqual([r["addr"] for r in quiet], [SENSOR])
+        self.assertEqual(pipe2.quiet_reported, {SENSOR})
+        self.assertEqual(json.loads(pipe2.seen.state_path.read_text())[SENSOR]["quiet_reported_ts"], quiet[0]["ts"])
+        # The record is there now: a further start announces nothing again.
+        Pipeline(self.cfg, EventLog(self.cfg.events_dir), stub_decryptor())
+        quiet = [r for r in read_day(self.cfg.events_dir, day_of(now)) if r["event"] == "device_quiet"]
+        self.assertEqual(len(quiet), 1)
+        # And the ordinary case, announced and logged, is not announced twice either.
+        pipe3 = Pipeline(self.cfg, EventLog(self.cfg.events_dir), stub_decryptor())
+        pipe3.ingest(frame(now + 60, SENSOR))                 # returned
+        pipe3.ingest(frame(now + 60, ROUTER))
+        pipe3.seen.save()
+        self.assertNotIn("quiet_reported_ts", pipe3.seen.table[SENSOR])
+        pipe3.periodic(now + 60 + 31 * 60)                    # quiet again, announced and logged
+        self._status(updated=now + 60 + 31 * 60, last_frame_ts=now + 60 + 31 * 60)
+        Pipeline(self.cfg, EventLog(self.cfg.events_dir), stub_decryptor())
+        quiet = [r for r in read_day(self.cfg.events_dir, day_of(now)) + read_day(self.cfg.events_dir, day_of(now + 3600))
+                 if r["event"] == "device_quiet"]
+        self.assertEqual(len({r["ts"] for r in quiet}), 2)
+
     def test_replay_neither_reads_nor_writes_live_state(self):
         now = time.time()
         live = self._pipe()

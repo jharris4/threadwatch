@@ -83,6 +83,13 @@ class EventLog:
     def path_for(self, ts: float) -> Path:
         return self.dir / f"{day_of(ts)}.jsonl"
 
+    def on_record(self, event: str, ts: float, addr: str) -> bool:
+        """Is there a record of this event, at this stamp, for this address,
+        in the log on disk? The recovery pass asks before trusting a flag
+        the last run persisted about an event it may never have appended."""
+        return any(r.get("event") == event and r.get("addr") == addr and r.get("ts") == ts
+                   for r in read_day(self.dir, day_of(ts)))
+
     def emit(self, event: str, severity: str = "info", ts: Optional[float] = None,
              **fields) -> dict:
         record = {"ts": ts if ts is not None else time.time(),
@@ -110,6 +117,9 @@ class NullEventLog(EventLog):
                   "event": event, "severity": severity, **fields}
         self.records.append(record)
         return record
+
+    def on_record(self, event: str, ts: float, addr: str) -> bool:
+        return True       # nothing durable to reconcile against
 
 
 # ------------------------------------------------------------------ reading

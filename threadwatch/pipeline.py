@@ -258,6 +258,7 @@ class Pipeline:
                 if row.get("rotated_to"):
                     continue          # an Apple hub's old address: retired, not quiet
                 if self.silence_s(row, now) <= self.quiet_threshold_s(addr):
+                    row.pop("quiet_reported_ts", None)
                     if row.pop("quiet_reported", None):
                         # Heard again after its announced silence, but the
                         # recorder died before saying so: close the silence
@@ -267,8 +268,18 @@ class Pipeline:
                         announced += 1
                     continue
                 if row.get("quiet_reported"):
-                    self.quiet_reported.add(addr)
-                elif dominant is None or row.get("pan") in (None, dominant):
+                    # The flag is saved before the event is appended, so a
+                    # run killed between the two left a silence flagged as
+                    # announced that nobody was told about. The flag names
+                    # the record it stands for; a flag without its record
+                    # is announced now.
+                    stamp = row.get("quiet_reported_ts")
+                    if stamp is None or self.events.on_record("device_quiet", stamp, addr):
+                        self.quiet_reported.add(addr)
+                        continue
+                    row.pop("quiet_reported", None)
+                    row.pop("quiet_reported_ts", None)
+                if dominant is None or row.get("pan") in (None, dominant):
                     self._report_quiet(addr, row, now, persist=False)
                     announced += 1
             if announced:
@@ -670,6 +681,7 @@ class Pipeline:
             if who in self.quiet_reported:
                 self.quiet_reported.discard(who)
                 self.seen.table[who].pop("quiet_reported", None)
+                self.seen.table[who].pop("quiet_reported_ts", None)
                 self.events.emit("device_returned", "notice", ts, addr=who,
                                  name=self.names.name(who))
                 # Persist at once: a crash before the next 30 s save would
@@ -1493,6 +1505,7 @@ class Pipeline:
                 old_row = self.seen.table.get(prev)
                 if old_row is not None:
                     old_row["rotated_to"] = ext
+                    old_row.pop("quiet_reported_ts", None)
                     was_quiet = old_row.pop("quiet_reported", None) or prev in self.quiet_reported
                     self.quiet_reported.discard(prev)
                     self.seen._dirty = True
@@ -1567,6 +1580,7 @@ class Pipeline:
         passes persist=False and saves once for the batch it announces."""
         self.quiet_reported.add(addr)
         row["quiet_reported"] = True
+        row["quiet_reported_ts"] = now      # the record this flag stands for (checked at the next start)
         self.seen._dirty = True
         if persist:
             self.seen.save()

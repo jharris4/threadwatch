@@ -648,6 +648,37 @@ class LinkEpisodeTest(unittest.TestCase):
 
 
 class StarvedEpisodeTest(unittest.TestCase):
+    def test_the_page_confirming_a_starvation_leaves_it_open(self):
+        # BUG-06: the confirmed warning that follows the notice used to set
+        # the episode's end, so an outage read as over the moment the
+        # detector escalated it, and day_episodes dropped it from later days.
+        recs = [
+            rec("poll_starvation", "notice", T0 + 60, addr=AQ, name="AQ", unanswered_polls=10, acked_polls=200,
+                since=T0, confirmed=False),
+            rec("poll_starvation", "warning", T0 + 660, addr=AQ, name="AQ", unanswered_polls=40, acked_polls=200,
+                since=T0, confirmed=True),
+        ]
+        eps = group_episodes(recs, now=T0 + 1200)
+        self.assertEqual(len(eps), 1)
+        self.assertIsNone(eps[0]["end"])
+        self.assertEqual((eps[0]["count"], eps[0]["severity"]), (2, "warning"))
+        self.assertEqual(eps[0]["title"], "AQ polls unanswered for 20m (still unanswered)")
+        closed = group_episodes(recs + [rec("poll_answered", "notice", T0 + 900, addr=AQ, name="AQ")], now=T0 + 1200)
+        self.assertEqual((closed[0]["end"], closed[0]["count"]), (T0 + 900, 2))
+        self.assertEqual(closed[0]["title"], "AQ polls unanswered for 15m")
+
+    def test_a_repeated_degradation_record_leaves_the_drop_open(self):
+        recs = [
+            rec("rssi_degradation", "notice", T0, addr=AQ, name="AQ", rssi_dbm=-70.0,
+                reference_dbm=-60.0, drop_db=10.0, since=T0 - 1800),
+            rec("rssi_degradation", "notice", T0 + 3600, addr=AQ, name="AQ", rssi_dbm=-72.0,
+                reference_dbm=-60.0, drop_db=12.0, since=T0 - 1800),
+        ]
+        eps = group_episodes(recs, now=T0 + 5400)
+        self.assertEqual(len(eps), 1)
+        self.assertIsNone(eps[0]["end"])
+        self.assertEqual(eps[0]["title"], "AQ signal down 10 dB for 2h00m (still down)")
+
     def test_starvation_and_answer_are_one_row(self):
         eps = group_episodes([
             rec("poll_starvation", "warning", T0, addr=AQ, name="AQ", unanswered_polls=10, acked_polls=200,

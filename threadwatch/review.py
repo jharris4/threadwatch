@@ -78,8 +78,14 @@ def group_episodes(records: list[dict], now: Optional[float] = None) -> list[dic
         return ep
 
     def bump(ep, rec):
+        """Another record of an episode. Its end moves to the record for
+        the kinds whose end is their last occurrence; an episode that is
+        open (end None: a starvation or link drop not yet recovered) stays
+        open, since a repeat, or the page confirming it, is not the
+        recovery that closes it."""
         ep["count"] += 1
-        ep["end"] = rec["ts"]
+        if ep["end"] is not None:
+            ep["end"] = rec["ts"]
         ep["events"].append(rec)
         if SEVERITY_RANK.get(rec["severity"], 0) > SEVERITY_RANK.get(ep["severity"], 0):
             ep["severity"] = rec["severity"]

@@ -87,12 +87,16 @@ question: *why did this device go offline?*
 1. `SETUP.md` — flash the dongle with the sniffer firmware, once, from
    the recorder host itself or any 64-bit Linux or Mac machine (or with
    Nordic's Programmer app anywhere).
-2. `INSTALL.md` — set up the recorder host: clone, one setup script,
-   systemd units; Docker and Raspberry-Pi-from-scratch variants included.
-3. `cp config/config.example.toml config/config.toml` and set your
-   channel; optionally seed `config/devices.json` with your device names.
-4. `bin/threadwatch capture` (or enable the systemd unit).
-5. `bin/threadwatch doctor` says whether the box is fit to record.
+2. `INSTALL.md` — set up the recorder host: clone, one setup script
+   (which creates `config/config.toml` from the example), systemd
+   units; Docker and Raspberry-Pi-from-scratch variants included.
+3. Set your channel in `config/config.toml`, and create
+   `config/credentials.toml` with the Thread network key
+   (`docs/CREDENTIALS.md`; with Home Assistant, `bin/threadwatch import
+   --write` writes it and seeds `config/devices.json` with your device
+   names). The recorder does not start without the key.
+4. `bin/threadwatch doctor` says whether the box is fit to record.
+5. `bin/threadwatch capture` (or enable the systemd unit).
 6. When something feels wrong: `bin/threadwatch status`, and
    `bin/threadwatch freeze` before the evidence rolls off.
 

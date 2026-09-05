@@ -19,7 +19,7 @@ channel = 25
 
 [capture]
 # serial_port = "/dev/ttyACM0"   # leave unset to auto-detect the dongle
-# data_dir = "~/threadwatch-data"  # default: <repo>/data
+# data_dir = "~/threadwatch-data"  # default: <repo>/data; ~ and ${HOME}-style variables expand
 keep_files = 168                  # hourly ring files to retain (168 = 1 week)
 # keep_gb = 4                     # ...and never more than this much on disk (oldest go first)
 # Copy the ring into data/incidents/ by itself when a critical event
@@ -36,7 +36,8 @@ inventory = "devices.json"
 # Silence before a device_quiet alert. Sleepy end devices poll every few
 # seconds and routers advertise every few, so from the sniffer's point of
 # view neither is quiet for long: one window serves both. Raise it only if
-# your devices genuinely sleep for long stretches.
+# your devices genuinely sleep for long stretches. (Older files' end_device_s
+# and router_s are still read; the larger of them stands in for silence_s.)
 silence_s = 1800           # 30 min
 # Devices the sniffer hears below this average RSSI are logged at notice
 # (not paged) when quiet: at the edge of range, silence is usually fading.
@@ -74,7 +75,7 @@ flood_min_frames = 400     # absolute floor so small meshes don't false-alarm
 period_min_s = 40.0        # phase-lock signature: flood onsets recurring
 period_max_s = 180.0       #   with a stable period in this range
 period_onsets = 3          # consecutive periodic onsets before alerting
-alert_cooldown_s = 1800.0
+alert_cooldown_s = 1800.0  # seconds between phase_locked_storm events while a storm rumbles on
 
 [border_routers]
 # Apple hubs (Apple TV, HomePod) change their Thread extended address on

@@ -128,20 +128,29 @@ credentials.toml too (docs/HOME-ASSISTANT.md).
       pcap.py      classic-pcap I/O + 802.15.4 MAC header parsing
       pipeline.py  the shared per-frame health pipeline (detectors, stats)
       detect.py    flood / phase-lock storm detector
-      crypto.py    optional Thread decryption (MLE, 6LoWPAN, SRP names)
+      link.py      slow link degradation (rssi_degradation)
+      crypto.py    Thread decryption (MLE, 6LoWPAN, SRP names)
       events.py    append-only event log, one file per day
       review.py    events -> episodes, day index, device summaries
       web.py       read-only review pages (threadwatch web)
       alerts.py    alert sinks (http/command/ntfy preset) + heartbeats
       names.py     address->name inventory, last-seen tracking
+      mdns.py      border routers over mDNS (threadwatch border-routers)
+      ha.py        Home Assistant websocket client (names, network key)
+      importer.py  threadwatch import: devices.json + credentials.toml from HA and mDNS
+      freeze.py    ring buffer -> incident (threadwatch freeze, freeze_on_critical)
       why.py       per-device history reconstruction
       doctor.py    preflight checks (threadwatch doctor)
+      config.py    config.toml loading
       capture.py   live daemon (ring buffer) + replay
       cli.py       command-line interface
+    tests/         unittest suite (python3 -m unittest)
     vendor/        Nordic's sniffer extcap module (BSD, unmodified)
     firmware/      sniffer firmware hex + prebuilt DFU package
-    bin/           threadwatch CLI shim, flash-dongle.sh
+    bin/           threadwatch CLI shim, flash-dongle.sh, setup-host.sh (host install),
+                   push-to-host.sh (deploy a checkout to the recorder)
     systemd/       service unit templates (capture, web review)
     Dockerfile, compose.yaml   the container alternative (docs/DOCKER.md)
-    config/        examples for config.toml and devices.json
-    docs/          analysis cookbook, alerting, Docker, Home Assistant extension
+    config/        examples for config.toml, devices.json, alerts.env, ha.env
+    docs/          analysis cookbook, alerting, credentials, Docker, Home Assistant, review pages
+    .github/       CI: the test suite on push and pull request

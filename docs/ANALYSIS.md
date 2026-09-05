@@ -61,6 +61,32 @@ quiet channel the timers spread out naturally.
 3. Record the mapping in `config/devices.json`. Keep old addresses —
    some devices (Apple TVs) rotate their extended address.
 
+## Replaying a capture
+
+`bin/threadwatch replay file.pcap` runs the whole pipeline over one pcap
+(a ring file, an incident's hour, a capture from another dongle) and
+prints one JSON object on stdout (`credentials: loaded` goes to stderr,
+so the output pipes into `jq`):
+
+| field | meaning |
+| --- | --- |
+| `file`, `frames`, `duration_s` | what was read: the path, the frame count, first to last timestamp |
+| `partition` | the partition id and leader as of the last frame, as `threadwatch status` shows them (null without MLE traffic) |
+| `detector` | the storm detector's final state: baseline, the last windows, `storm_active`, `alerts_sent` |
+| `events` | every event the pipeline would have logged, in order, in the event log's record format (docs/ALERTING.md) |
+| `crypto` | the decryption counters and `key_sequence` (docs/OPERATIONS.md, "Reading threadwatch status"): all zero decrypted means the key does not fit this capture |
+
+It is read-only in every direction. The pipeline runs in its ephemeral
+mode: it starts from an empty last-seen table (so the first frame from
+every device is a `device_first_seen`, and no `device_quiet` refers to
+history from before the file), writes nothing under `data/state`, browses
+no mDNS, freezes nothing, and sends nothing to any alert sink; the events
+are collected in memory and printed. Running it against a live recorder's
+ring file, on the recorder itself, disturbs neither the recorder nor the
+household. One difference from live: the storm detector's alert cooldown
+is zeroed, so every `phase_locked_storm` in the file shows rather than
+the first per half hour.
+
 ## Frozen incidents
 
 `threadwatch freeze <label>` copies the ring before it rolls over, and so

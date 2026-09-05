@@ -125,6 +125,25 @@ def capture_stalled(age: float, timeout: float = STALL_TIMEOUT_S) -> bool:
     return age > timeout
 
 
+# The watchdog's exit codes, so the journal says which way the capture went.
+EXIT_STALLED = 2            # no frames for STALL_TIMEOUT_S
+EXIT_SNIFFER_DIED = 4       # the sniffer thread died before delivering any data
+
+
+def watchdog_verdict(age: float, ring_open: bool, sniffer_alive: bool) -> Optional[int]:
+    """What the watchdog does on this tick: an exit code, or None to keep
+    waiting. A sniffer thread that died before the ring opened never got
+    the serial port (held by a stale process, or gone after enumeration):
+    left alone, the main thread sits in the FIFO open for the whole stall
+    timeout behind a misleading message. With the ring open, a dead
+    sniffer closes the FIFO and the main loop leaves on its own."""
+    if not ring_open and not sniffer_alive:
+        return EXIT_SNIFFER_DIED
+    if capture_stalled(age):
+        return EXIT_STALLED
+    return None
+
+
 def capture_healthy(last_frame_mono: Optional[float], now: float,
                     timeout: float = STALL_TIMEOUT_S) -> Optional[bool]:
     """The heartbeat's answer: unknown (None) until this run has heard a
@@ -219,15 +238,14 @@ def run_capture(cfg: Config) -> None:
                                   last_frame_ts=beat["last_frame"] or prior_frame)
                 except Exception as exc:   # a full disk must not take the stall check with it
                     _log(f"status.json not written: {exc}")
-            if beat["ring"] is None and not sniffer.thread.is_alive():
-                # The serial open failed (port held by a stale process, gone
-                # after enumeration): the main thread would sit in the FIFO
-                # open for the whole stall timeout with a misleading message.
+            verdict = watchdog_verdict(age, ring_open=beat["ring"] is not None,
+                                       sniffer_alive=sniffer.thread.is_alive())
+            if verdict == EXIT_SNIFFER_DIED:
                 _log("sniffer thread died before delivering any data (serial port busy or gone? "
                      "see the traceback above); exiting for supervisor restart")
                 events.close()      # the start-up quiet announcements, if any
-                os._exit(4)
-            if capture_stalled(age):
+                os._exit(EXIT_SNIFFER_DIED)
+            if verdict == EXIT_STALLED:
                 _log(f"no frames for {age:.0f}s - capture stalled (host slept? "
                      "dongle gone?); exiting for supervisor restart")
                 # The main thread is blocked in the FIFO read, so nothing is
@@ -239,7 +257,7 @@ def run_capture(cfg: Config) -> None:
                         step()
                     except Exception:
                         pass
-                os._exit(2)
+                os._exit(EXIT_STALLED)
 
     threading.Thread(target=_watchdog, daemon=True).start()
 

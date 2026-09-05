@@ -10,8 +10,8 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch.capture import (STALL_TIMEOUT_S, _write_status, capture_healthy, capture_stalled,  # noqa: E402
-                                 last_frame_on_record)
+from threadwatch.capture import (EXIT_SNIFFER_DIED, EXIT_STALLED, STALL_TIMEOUT_S, _write_status,  # noqa: E402
+                                 capture_healthy, capture_stalled, last_frame_on_record, watchdog_verdict)
 from threadwatch.config import Config  # noqa: E402
 from threadwatch.crypto import Decryptor  # noqa: E402
 from threadwatch.events import NullEventLog  # noqa: E402
@@ -144,3 +144,21 @@ class HeartbeatHealthTest(unittest.TestCase):
         self.assertFalse(capture_healthy(1000.0, 1180.0))
         self.assertFalse(capture_healthy(1000.0, 1181.0))
         self.assertTrue(capture_healthy(1000.0, 1181.0, 1800.0))   # the timeout is the whole decision
+
+
+class WatchdogVerdictTest(unittest.TestCase):
+    """The watchdog's two ways out. A sniffer thread dead before any data
+    is the serial port busy or gone (a second capture started by hand, a
+    dongle unplugged between enumeration and open): exit at once, or the
+    main thread waits on a FIFO nothing will ever write, behind a "no
+    frames" message three minutes later that blames the wrong thing."""
+
+    def test_a_dead_sniffer_exits_at_once_and_a_stall_at_the_timeout(self):
+        self.assertEqual((EXIT_STALLED, EXIT_SNIFFER_DIED), (2, 4))
+        self.assertEqual(watchdog_verdict(30.0, ring_open=False, sniffer_alive=False), EXIT_SNIFFER_DIED)
+        self.assertIsNone(watchdog_verdict(30.0, ring_open=False, sniffer_alive=True))    # still opening the port
+        self.assertIsNone(watchdog_verdict(30.0, ring_open=True, sniffer_alive=False))    # the FIFO closes: main loop's exit
+        self.assertIsNone(watchdog_verdict(30.0, ring_open=True, sniffer_alive=True))
+        self.assertEqual(watchdog_verdict(181.0, ring_open=True, sniffer_alive=True), EXIT_STALLED)
+        self.assertEqual(watchdog_verdict(181.0, ring_open=False, sniffer_alive=True), EXIT_STALLED)   # alive, never delivered
+        self.assertEqual(watchdog_verdict(181.0, ring_open=False, sniffer_alive=False), EXIT_SNIFFER_DIED)

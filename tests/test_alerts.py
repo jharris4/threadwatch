@@ -612,3 +612,26 @@ class HeartbeatLoopTest(unittest.TestCase):
             clock.step(2)
             self.assertEqual(len(logs), 2)
             clock.stop()
+
+
+class TimeoutDefaultsTest(unittest.TestCase):
+    """Ten seconds is how long one unreachable sink can hold the dispatcher,
+    and every record behind it, per record. It is the bound _bounded
+    enforces, for sinks and heartbeats alike."""
+
+    def test_sinks_and_heartbeats_wait_ten_seconds_by_default(self):
+        self.assertEqual(alerts.HttpSink(name="h", url="http://x").timeout_s, 10.0)
+        self.assertEqual(alerts.CommandSink(name="c", command=["true"]).timeout_s, 10.0)
+        self.assertEqual(alerts.build_sinks({"webhook_url": "http://x"}, print)[0].timeout_s, 10.0)
+        self.assertEqual(alerts.build_sinks({"sinks": [{"url": "http://x"}]}, print)[0].timeout_s, 10.0)
+        self.assertEqual(alerts.build_sinks({"sinks": [{"url": "http://x", "timeout_s": 2}]}, print)[0].timeout_s, 2.0)
+        self.assertEqual(alerts.Heartbeat(name="b", url="http://x").timeout_s, 10.0)
+        self.assertEqual(alerts.build_heartbeats([{"url": "http://x"}], print)[0].timeout_s, 10.0)
+
+    def test_the_default_is_the_deadline_every_send_and_beat_runs_under(self):
+        sink = alerts.HttpSink(name="h", url="http://x")
+        beat = alerts.Heartbeat(name="b", url="http://x")
+        with mock.patch.object(alerts, "_bounded", return_value=None) as bounded:
+            alerts.Dispatcher([sink], print).deliver_now(REC)
+            alerts.HeartbeatRunner([beat], healthy=lambda: True, log=print, start=False).push_all()
+        self.assertEqual([(c.args[0], c.args[2]) for c in bounded.call_args_list], [(sink, 10.0), (beat, 10.0)])

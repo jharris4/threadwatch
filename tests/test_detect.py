@@ -265,3 +265,26 @@ class BaselineQuartileTest(unittest.TestCase):
         self.assertEqual(det._baseline(), 5)            # two windows: the busier one is the quarter
         det.calm.append(6)
         self.assertEqual(det._baseline(), 5.5)
+
+
+class AlertCooldownTest(unittest.TestCase):
+    """A storm that keeps going is one alert per half hour on the frame
+    clock, not one per onset: the pipeline's phase_locked_storm event and
+    the page behind it follow alerts_sent. With no cooldown an 80 s storm
+    is a page every 80 s for as long as it lasts."""
+
+    def test_a_storm_that_keeps_going_is_one_alert_per_half_hour(self):
+        self.assertEqual(DetectorConfig().alert_cooldown_s, 1800.0)
+        det = Detector(DetectorConfig())
+        floods = set(range(200, 2500, 80))                  # an onset every 80 s, for forty minutes
+        sent = {}
+        for w in range(0, 2500, 10):
+            n = 1500 if w in floods else 250
+            for i in range(n):
+                det.add_frame(w + i / n)
+            sent[w] = det.alerts_sent
+        self.assertEqual(sent[370], 1)                      # locked at the third onset (360)
+        self.assertEqual(sent[2150], 1)                     # every onset since was inside the cooldown
+        self.assertEqual(sent[2210], 2)                     # the first onset past 360 + 1800 s
+        self.assertEqual(det.alerts_sent, 2)                # and the three after it are inside the next
+        self.assertTrue(det.storm_active)

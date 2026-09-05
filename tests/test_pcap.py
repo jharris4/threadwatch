@@ -182,6 +182,19 @@ class TapHeaderTest(_ut.TestCase):
         self.assertEqual(f.psdu, raw[28:])
         self.assertEqual((f.ftype, f.seq, f.src, f.dst), (3, 242, "3c1a", "3c00"))
 
+    def test_an_address_cut_short_is_no_address_not_a_short_one(self):
+        from threadwatch.pcap import DLT_NOFCS, parse_frame
+        # Data frame, PAN compression, extended destination and source.
+        head = struct.pack("<H", 0x0001 | 0x0040 | (3 << 10) | (3 << 14)) + b"\x07" + struct.pack("<H", 0x4e21)
+        dst, src = bytes(range(0x50, 0x58)), bytes(range(0xa0, 0xa8))
+        whole = parse_frame(0.0, head + dst + src, DLT_NOFCS)
+        self.assertEqual((len(whole.dst), len(whole.src)), (16, 16))
+        for cut in range(1, 9):                       # anywhere inside the source address
+            f = parse_frame(0.0, (head + dst + src)[:-cut], DLT_NOFCS)
+            self.assertEqual((f.dst, f.src, f.src_pan), (whole.dst, None, 0x4e21), cut)
+        f = parse_frame(0.0, (head + dst)[:-2], DLT_NOFCS)   # inside the destination
+        self.assertEqual((f.dst_pan, f.dst, f.src), (0x4e21, None, None))
+
     def test_well_formed_tap_header_still_parses(self):
         import struct
         body = (struct.pack("<HH", 0, 20)                       # version/reserved, tap_len

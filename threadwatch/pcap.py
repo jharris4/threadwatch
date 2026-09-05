@@ -188,12 +188,23 @@ def _parse_mac(f: Frame) -> None:
     dst_mode = (fcf >> 10) & 0x3
     src_mode = (fcf >> 14) & 0x3
     off = 3
+
+    def address(n: int) -> str:
+        # A slice never raises: a frame cut short inside an extended
+        # address would read back as 4 hex digits, which is a short
+        # address to everything downstream (identity, RLOC16 learning,
+        # parent naming). Fewer bytes than declared is no address.
+        chunk = p[off:off + n]
+        if len(chunk) < n:
+            raise struct.error("address cut short")
+        return _addr_hex(chunk)
+
     try:
         if dst_mode in (2, 3):
             f.dst_pan = struct.unpack("<H", p[off:off + 2])[0]
             off += 2
             n = 2 if dst_mode == 2 else 8
-            f.dst = _addr_hex(p[off:off + n])
+            f.dst = address(n)
             off += n
         if src_mode in (2, 3):
             if not (pan_comp and dst_mode in (2, 3)):
@@ -202,7 +213,7 @@ def _parse_mac(f: Frame) -> None:
             elif f.dst_pan is not None:
                 f.src_pan = f.dst_pan
             n = 2 if src_mode == 2 else 8
-            f.src = _addr_hex(p[off:off + n])
+            f.src = address(n)
             off += n
         if f.ftype == 3 and not (fcf & 0x0008) and off < len(p):
             f.cmd = p[off]   # 0x04 data request (poll), 0x07 beacon request

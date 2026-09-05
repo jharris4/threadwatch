@@ -146,8 +146,9 @@ class PcapWriter:
         ts_usec = int(round((frame.ts - ts_sec) * 1e6))
         if ts_usec >= 1_000_000:   # rounding carried into the next second
             ts_sec, ts_usec = ts_sec + 1, ts_usec - 1_000_000
-        self.stream.write(struct.pack("<LLLL", ts_sec, ts_usec, len(frame.raw), len(frame.raw)))
-        self.stream.write(frame.raw)
+        # One write per record, so a reader copying the file sees a record
+        # whole or not at all once the stream is flushed.
+        self.stream.write(struct.pack("<LLLL", ts_sec, ts_usec, len(frame.raw), len(frame.raw)) + frame.raw)
 
 
 def parse_frame(ts: float, data: bytes, dlt: int) -> Frame:

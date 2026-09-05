@@ -64,6 +64,14 @@ class RingWriter:
         if hour != self.current_hour:
             self._rotate(hour)
         self.writer.write(frame)
+        # Hand each record to the OS as it is written. A freeze (manual ones
+        # run in another process) copies the active file through its own
+        # handle and sees only what has left this buffer: without this, the
+        # packets right before an incident's trigger, or the whole file
+        # early in the hour, were missing from the snapshot. This is a
+        # write(2) per frame, not a sync: the kernel still writes the card
+        # back on its own schedule.
+        self.fh.flush()
 
     def _rotate(self, hour: str) -> None:
         if self.fh:
@@ -94,6 +102,7 @@ class RingWriter:
                       "with no usable pcap header; starting the hour's file over", flush=True)
             self.fh = open(self.current_path, "wb")
             self.writer = PcapWriter(self.fh, self.dlt)
+        self.fh.flush()                     # the header, so an early freeze copies a readable pcap
         self._prune()
 
     def _prune(self) -> None:

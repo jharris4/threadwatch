@@ -94,6 +94,27 @@ class FreezeTest(unittest.TestCase):
         self.assertEqual(freeze.discard_partials(self.cfg.incidents_dir), [])
         self.assertEqual(freeze.discard_partials(self.cfg.incidents_dir / "missing"), [])
 
+    def test_a_freeze_right_after_a_write_holds_that_record(self):
+        # BUG-02: the ring writer buffered records in Python; a freeze copies
+        # the active file through its own handle and saw a zero-byte pcap
+        # early in the hour, or an older tail later in it.
+        from threadwatch.capture import RingWriter
+        from threadwatch.pcap import Frame, PcapStreamReader
+        for f in self.cfg.ring_dir.glob("*.pcap"):
+            f.unlink()
+        ring = RingWriter(self.cfg.ring_dir, keep_files=10, dlt=230)
+        try:
+            ring.write(Frame(ts=1_700_000_000.25, raw=b"\x01\x02\x03\x04\x05", psdu=b"",
+                             rssi=None, channel=None, lqi=None))
+            dest, count = freeze.freeze_ring(self.cfg, "now", now=1_700_000_010)
+        finally:
+            ring.close()
+        self.assertEqual(count, 1)
+        copied = next(dest.glob("threadwatch-*.pcap"))
+        with open(copied, "rb") as fh:
+            frames = list(PcapStreamReader(fh))
+        self.assertEqual([(f.ts, f.raw) for f in frames], [(1_700_000_000.25, b"\x01\x02\x03\x04\x05")])
+
     def test_a_label_ending_in_partial_is_a_whole_incident_like_any_other(self):
         # BUG-01: safe_label keeps periods, so "test.partial" used to name a
         # finished incident the way a half copy was named; the listing hid

@@ -120,6 +120,7 @@ class Pipeline:
         self._foreign_reported: set[int] = set()
         self._last_src_by_pan: dict[int, Optional[str]] = {}
         self._unheard_logged: set[str] = set()      # mDNS addresses never heard on air, complained about once
+        self._stale_logged: set[tuple] = set()      # (hostname, address) stale mDNS answers, complained about once
         self._pending_routers: dict[str, dict] = {}  # ext -> the mDNS record waiting for that address to be heard
         self.partition: Optional[tuple] = None
         self._crypto_mark = (0, 0)          # (decrypted, failed) when decryption last worked
@@ -399,6 +400,13 @@ class Pipeline:
                 self._poll_sent(who, stats, f.seq, ts, f.dst)
             was_new = who not in self.seen.table
             self.seen.touch(who, ts, f.ftype, pan=pan, rssi=f.rssi)
+            if self.seen.table[who].pop("rotated_to", None):
+                # Retired as a hub's old address, yet on air: it is live,
+                # whatever mDNS said, so its silences count again. A retired
+                # row is skipped by every quiet check, so nothing else could
+                # bring it back.
+                print(f"[threadwatch] {self.names.name(who) or who} heard on air after its address was "
+                      "retired: judged again", flush=True)
             if len(f.src) == 4:
                 self._note_rloc16(who, f.src, ts)
             pending = self._pending_routers.pop(who, None)
@@ -991,6 +999,19 @@ class Pipeline:
             name = entry.get("name") if entry else None
             prev = (rec.get("addr") or "").lower() or None
             changed = prev is not None and prev != ext
+            if changed:
+                # mDNS is cached and reflected as well as unauthenticated: a
+                # record naming an address the hub used before, while the
+                # one it has now is the one heard on air more recently, is
+                # a stale answer, not a rotation back. Believing it would
+                # retire the live address, and nothing else would judge it.
+                old_row, new_row = self.seen.table.get(prev), self.seen.table[ext]
+                if old_row is not None and old_row.get("last_seen", 0) > new_row.get("last_seen", 0):
+                    if (host, ext) not in self._stale_logged:
+                        self._stale_logged.add((host, ext))
+                        print(f"[threadwatch] mdns: {r.get('instance') or host} advertises {ext}, but {prev} "
+                              "was heard on air more recently; stale record, ignored", flush=True)
+                    continue
             new = {"addr": ext, "name": name, "instance": r.get("instance"), "vendor": r.get("vendor"),
                    "model": r.get("model"), "since": now if (changed or not rec) else rec.get("since", now),
                    "seen": now, "previous": list(rec.get("previous") or []), "announced": rec.get("announced", False)}
@@ -999,6 +1020,10 @@ class Pipeline:
             if entry is not None:
                 self.names.learn(ext, entry)
             if changed:
+                # The address it rotated to is live by definition, even if
+                # it was itself retired once (an A -> B -> A sequence).
+                if self.seen.table[ext].pop("rotated_to", None):
+                    self.seen._dirty = True
                 old_row = self.seen.table.get(prev)
                 if old_row is not None:
                     old_row["rotated_to"] = ext

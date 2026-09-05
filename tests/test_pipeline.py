@@ -960,6 +960,46 @@ class BorderRouterTest(unittest.TestCase):
         self.assertEqual((pipe.routers[self.HOST]["addr"], pipe.names.name(self.NEW)), (self.NEW, "Living Room Apple TV"))
         self.assertEqual(pipe.seen.table[self.OLD]["rotated_to"], self.NEW)
 
+    def test_a_stale_answer_naming_an_old_address_does_not_retire_the_live_one(self):
+        # The hub used OLD, rebooted, and uses NEW; both have been heard on
+        # air. A reflector's cache (or a replay) then answers a browse with
+        # the OLD record. Whichever address was heard on air last is the
+        # live one: the stale record is ignored, NEW stays judged, and OLD
+        # stays retired.
+        import contextlib
+        import io
+        pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
+        t = time.time() - 7200
+        pipe.ingest(frame(t, self.OLD))
+        pipe._apply_border_routers([self.router(self.HOST, self.OLD)], t)
+        pipe.ingest(frame(t + 600, self.NEW))
+        pipe._apply_border_routers([self.router(self.HOST, self.NEW)], t + 700)
+        self.assertEqual(pipe.seen.table[self.OLD]["rotated_to"], self.NEW)
+        pipe.ingest(frame(t + 800, self.NEW))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            for tick in (900, 1500):
+                pipe._apply_border_routers([self.router(self.HOST, self.OLD)], t + tick)
+        self.assertEqual(out.getvalue().count("stale record, ignored"), 1)
+        self.assertNotIn("rotated_to", pipe.seen.table[self.NEW])
+        self.assertEqual(pipe.seen.table[self.OLD]["rotated_to"], self.NEW)
+        self.assertEqual(pipe.routers[self.HOST]["addr"], self.NEW)
+        self.assertEqual(len([r for r in pipe.events.records if r["event"] == "border_router_address_changed"]), 1)
+        pipe.periodic(t + 7000)                             # NEW silent since t+800: that is the silence to report
+        self.assertEqual([r["addr"] for r in pipe.events.records if r["event"] == "device_quiet"], [self.NEW])
+        # A retired address heard on air is live, whatever mDNS said, and
+        # its silences count again.
+        with contextlib.redirect_stdout(io.StringIO()):
+            pipe.ingest(frame(t + 7100, self.OLD))
+        self.assertNotIn("rotated_to", pipe.seen.table[self.OLD])
+        pipe.periodic(t + 7100 + 31 * 60)
+        self.assertEqual([r["addr"] for r in pipe.events.records if r["event"] == "device_quiet"], [self.NEW, self.OLD])
+        # And a genuine rotation back (NEW -> OLD, OLD now the one on air)
+        # retires NEW and leaves OLD judged, not both retired.
+        pipe._apply_border_routers([self.router(self.HOST, self.OLD)], t + 7200)
+        self.assertEqual(pipe.seen.table[self.NEW]["rotated_to"], self.OLD)
+        self.assertNotIn("rotated_to", pipe.seen.table[self.OLD])
+
     def test_a_rotation_closes_the_silence_announced_for_the_old_address(self):
         from threadwatch.review import group_episodes
         pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())

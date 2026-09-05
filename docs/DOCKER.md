@@ -69,6 +69,9 @@ The review pages are on port 8080 (`ports:` in `compose.yaml` to change).
 - `./data` holds the ring, state and incidents, exactly as native.
 - `config/alerts.env` is loaded as the container's environment when
   present, the equivalent of the systemd unit's `EnvironmentFile`.
+- Everything in `config/` is read when a container starts: after editing
+  `config.toml`, `credentials.toml` or `devices.json`, `docker compose
+  restart capture` (and `web` for `[web]`).
 - The image contains no config or secrets (`.dockerignore`).
 
 ## Everyday commands

@@ -1,5 +1,7 @@
 # threadwatch configuration. Copy to config.toml and edit.
 # config.toml and devices.json are gitignored: they describe YOUR network.
+# Read once at start: restart the daemon (and the web pages, for [web])
+# after editing; nothing here is picked up while it runs.
 
 [network]
 # Thread channel (802.15.4 channel 11-26). Find yours via your border router

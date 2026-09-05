@@ -34,6 +34,12 @@ create `config/credentials.toml` with the Thread **network key**
 (docs/CREDENTIALS.md says where to find it): the recorder does not start
 without it. Log out and in once if the group membership was new.
 
+All three files (`config.toml`, `credentials.toml`, `devices.json`) are
+read once, when a process starts: the daemon never re-reads them, so an
+edit takes effect at the next `sudo systemctl restart threadwatch`
+(and `threadwatch-web` for `[web]`, which the pages read at their own
+start). Until then the old channel, thresholds, sinks and names stand.
+
 **Without setup-host.sh**, the equivalent by hand is: install pyserial
 and cryptography (or `python3 -m venv .venv && .venv/bin/pip install -r
 requirements.txt`, which `bin/threadwatch` picks up automatically), add

@@ -38,7 +38,7 @@ from .detect import Detector
 from .events import EventLog, day_of, prune_days, read_day
 from .link import assess as assess_link
 from .names import _EXT_ADDR, DeviceNames, LastSeen, load_border_routers, reception
-from .pcap import BROADCAST_PAN, Frame
+from .pcap import BROADCAST_PAN, Frame, is_poll
 
 MLE_REJOIN_COMMANDS = {"Parent Request", "Child ID Request", "Announce"}
 
@@ -652,7 +652,7 @@ class Pipeline:
                     else 0.95 * stats.rssi_ewma + 0.05 * f.rssi
                 stats.rssi_min = f.rssi if stats.rssi_min is None else min(stats.rssi_min, f.rssi)
                 stats.rssi_max = f.rssi if stats.rssi_max is None else max(stats.rssi_max, f.rssi)
-            if f.ftype == 3 and f.cmd in (None, 4):   # data request (poll); secured ones carry no cmd
+            if is_poll(f):
                 if stats.last_poll_ts is not None:
                     stats.poll_intervals.append(ts - stats.last_poll_ts)
                 stats.last_poll_ts = ts
@@ -660,6 +660,12 @@ class Pipeline:
                 self._poll_sent(who, stats, f.seq, ts, f.dst)
             was_new = who not in self.seen.table
             self.seen.touch(who, ts, f.ftype, pan=pan, rssi=f.rssi)
+            if is_poll(f):
+                # Polls by name for the review pages: the row's count of
+                # type-3 frames takes in every MAC command, beacon requests
+                # and all, and was labelled polls.
+                row = self.seen.table[who]
+                row["polls"] = row.get("polls", 0) + 1
             if self.seen.table[who].pop("rotated_to", None):
                 # Retired as a hub's old address, yet on air: it is live,
                 # whatever mDNS said, so its silences count again. A retired

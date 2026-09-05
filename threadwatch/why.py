@@ -16,7 +16,7 @@ from pathlib import Path
 from .config import Config
 from .events import NullEventLog
 from .names import DeviceNames
-from .pcap import PcapStreamReader
+from .pcap import PcapStreamReader, is_poll
 from .pipeline import Pipeline, load_decryptor
 from .review import devices_history, fmt_episode
 
@@ -160,7 +160,7 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
                     h["frames"] += 1
                     if f.ftype in (1, 3) and f.dst not in (None, "ffff"):   # unicast only: broadcasts are never ACKed
                         h["tx"] += 1
-                    if f.ftype == 3:
+                    if is_poll(f):
                         h["polls"] += 1
                     if f.rssi is not None:
                         h["rssi"].append(f.rssi)

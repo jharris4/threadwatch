@@ -2258,6 +2258,35 @@ class SummaryWindowTest(unittest.TestCase):
             time.tzset()
 
 
+class PollCountTest(unittest.TestCase):
+    """The review rows' poll count is the pipeline's: a Data Request (MAC
+    command 4, or a secured command, which carries no id), not every MAC
+    command. The row's type-3 count takes in beacon requests and the
+    like, and was labelled polls."""
+
+    def test_only_data_requests_are_polls_on_the_row_and_in_the_review(self):
+        from threadwatch.review import device_rows
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "devices.json").write_text("[]")
+            cfg = Config(data_dir=Path(d) / "data", devices_path=Path(d) / "devices.json")
+            pipe = Pipeline(cfg, NullEventLog(), stub_decryptor())
+            t0 = 1_700_000_000.0
+            cmd = lambda ts, c, dst="0000": Frame(ts=ts, raw=b"", psdu=b"", rssi=-60.0, channel=None, lqi=None,
+                                                  ftype=3, seq=int(ts - t0), dst_pan=OWN_PAN, dst=dst, src_pan=OWN_PAN,
+                                                  src=SENSOR, cmd=c)
+            pipe.ingest(cmd(t0, 4))                 # a poll
+            pipe.ingest(cmd(t0 + 1, None))          # secured: no readable id, a poll
+            pipe.ingest(cmd(t0 + 2, 7, "ffff"))     # a beacon request
+            row = pipe.seen.table[SENSOR]
+            self.assertEqual((row["polls"], row["types"]["3"], pipe.devices[SENSOR].polls), (2, 3, 2))
+            rows = device_rows(pipe.seen, pipe.names, cfg.quiet_min_rssi_dbm, now=t0 + 10)
+            self.assertEqual([r["polls"] for r in rows if r["addr"] == SENSOR], [2])
+            # A row saved before polls were counted by name shows what it always did.
+            del row["polls"]
+            rows = device_rows(pipe.seen, pipe.names, cfg.quiet_min_rssi_dbm, now=t0 + 10)
+            self.assertEqual([r["polls"] for r in rows if r["addr"] == SENSOR], [3])
+
+
 class FramesByHourLoadTest(unittest.TestCase):
     """frames-by-hour.json is the frame count the summary and the review
     pages draw across a restart. Loading keeps the newest 26 hourly

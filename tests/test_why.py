@@ -128,11 +128,14 @@ class RunWhyTest(unittest.TestCase):
     def _at(stamp, plus=0.0):
         return time.mktime(time.strptime(stamp, "%Y-%m-%d %H:%M")) + plus
 
-    def _psdu(self, addr, seq, ftype=1, dst="0000"):
+    def _psdu(self, addr, seq, ftype=1, dst="0000", cmd=4):
+        """A data frame, or (ftype 3) an unsecured MAC command: a data
+        request (4, a poll) unless another command id is given."""
         import struct
         fcf = ftype | 0x0040 | (2 << 10) | (1 << 12) | (3 << 14)   # pan compressed, short dst, ext src
+        payload = bytes([cmd, 0x33]) if ftype == 3 else b"\x7f\x33"
         return (struct.pack("<HBH", fcf, seq, 0x4e21) + bytes.fromhex(dst)[::-1]
-                + bytes.fromhex(addr)[::-1] + b"\x7f\x33")
+                + bytes.fromhex(addr)[::-1] + payload)
 
     @staticmethod
     def _ack(seq):
@@ -177,6 +180,9 @@ class RunWhyTest(unittest.TestCase):
             frames.append((self._at(f"2026-09-03 08:{10 + i:02d}"), self._psdu(self.DEV, 10 + i)))
         frames.append((self._at("2026-09-03 08:10", 0.002), self._ack(10)))     # ACK for the first
         frames.append((self._at("2026-09-03 08:20"), self._psdu(self.DEV, 20, ftype=3)))   # a poll
+        # A beacon request (MAC command 7, a join scan) is a MAC command
+        # but not a poll: it used to be counted as one.
+        frames.append((self._at("2026-09-03 08:15"), self._psdu(self.DEV, 21, ftype=3, dst="ffff", cmd=7)))
         for i in range(10):                                   # the rest of the mesh, same hour
             frames.append((self._at(f"2026-09-03 08:{30 + i:02d}"), self._psdu(self.OTHER, 40 + i)))
         frames.append((self._at("2026-09-03 08:31", 0.002), self._ack(41)))     # and an ACK of theirs
@@ -184,7 +190,7 @@ class RunWhyTest(unittest.TestCase):
         text = self._run(frames)
         rows = self._rows(text)
         # date, hour, frames, polls, tx, acked
-        self.assertEqual(rows[0][:6], ["09-03", "08h", "5", "1", "5", "1"])
+        self.assertEqual(rows[0][:6], ["09-03", "08h", "6", "1", "5", "1"])
         self.assertEqual(rows[1][:6], ["09-03", "09h", "1", "0", "1", "0"])
         self.assertIn(f"=== {self.DEV} ({self.DEV}) ===", text)
         self.assertIn("silences (>30 min):", text)

@@ -327,7 +327,9 @@ def device_rows(seen: LastSeen, names: DeviceNames, min_rssi_dbm: float,
             "rssi_dbm": rssi,
             "reception": reception(rssi, min_rssi_dbm),
             "pan": row.get("pan"),
-            "polls": row.get("types", {}).get("3", 0),
+            # A row from before polls were counted by name carries every
+            # MAC command under type 3, beacon requests and all.
+            "polls": row.get("polls", row.get("types", {}).get("3", 0)),
             "quiet": bool(row.get("quiet_reported")),
             "degraded": bool(row.get("rssi_degraded")),
         })

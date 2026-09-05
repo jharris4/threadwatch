@@ -156,6 +156,16 @@ class PcapWriter:
         self.stream.write(struct.pack("<LLLL", ts_sec, ts_usec, len(frame.raw), len(frame.raw)) + frame.raw)
 
 
+def is_poll(f: "Frame") -> bool:
+    """Is this frame a Data Request, the MAC command a sleepy end device
+    polls its parent with? The command id is 4; a secured command carries
+    no readable id, and the secured MAC commands a Thread device sends are
+    its polls. The one place this is decided: the live pipeline, `why` and
+    the review rows count polls with it, so a beacon request (command 7,
+    a join scan) is a poll to none of them."""
+    return f.ftype == 3 and f.cmd in (None, 4)
+
+
 def parse_frame(ts: float, data: bytes, dlt: int) -> Frame:
     rssi = channel = lqi = None
     psdu = data

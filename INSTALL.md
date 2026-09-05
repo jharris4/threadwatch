@@ -152,11 +152,38 @@ and the last `--config` wins.
 
 ## Without systemd (macOS, or a Linux without it)
 
-Everything runs the same; you supply the supervisor. `bin/threadwatch
-capture` and `bin/threadwatch web` in two terminals is enough for desk
-use; on macOS a launchd job keeps them up. `doctor` reports "no systemd
-here (not checked)" and moves on. `bin/flash-dongle.sh` works on both Mac
-architectures (`SETUP.md`).
+Everything runs the same; you supply the supervisor. `setup-host.sh` is
+Linux-only (it wants root, a distro package manager, a serial group and
+systemd), so the steps are by hand, and on macOS they are all of them:
+
+```bash
+git clone https://github.com/jharris4/threadwatch.git && cd threadwatch
+python3 --version                    # 3.11 or newer; else: brew install python
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # bin/threadwatch picks .venv up
+cp config/config.example.toml config/config.toml                     # set your channel
+# config/credentials.toml with the network key: docs/CREDENTIALS.md (chmod 600)
+bin/threadwatch doctor               # dongle: nRF 802.15.4 sniffer at /dev/cu.usbmodem...
+```
+
+There is no serial group on macOS: the dongle's port is
+`/dev/cu.usbmodem*` and any user can open it; auto-detection prefers the
+`cu.` name. `doctor`'s `clock` line reads "macOS keeps time itself (not
+checked)" and `services` "no systemd here (not checked)"; both are fine.
+Then, in two terminals:
+
+```bash
+bin/threadwatch capture              # Ctrl-C stops it cleanly
+bin/threadwatch web                  # http://localhost:8080/
+```
+
+That is enough for desk use. Nothing in the repo keeps them running
+across a logout or a reboot, or restarts the capture after its stall
+watchdog exits (docs/OPERATIONS.md, "Exit codes"): for an always-on Mac
+that is a launchd agent per command, with `KeepAlive` so the watchdog's
+exit is a restart, which you write yourself. A sleeping Mac stalls the
+capture every time it sleeps, so a desk recorder wants sleep off while it
+records. Docker on macOS cannot pass the dongle through (docs/DOCKER.md).
+`bin/flash-dongle.sh` works on both Mac architectures (`SETUP.md`).
 
 ## Appendix: a Raspberry Pi from scratch
 

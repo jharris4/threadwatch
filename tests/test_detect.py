@@ -237,3 +237,31 @@ class PeriodicitySpreadTest(unittest.TestCase):
         self.assertFalse(self._after([200, 260, 360]).storm_active)     # 60 s and 100 s: spread 40 = mean / 2
         self.assertFalse(self._after([200, 250, 360]).storm_active)     # 50 s and 110 s
         self.assertTrue(self._after([200, 280, 360]).storm_active)      # the real thing: 80 s twice
+
+
+class BaselineQuartileTest(unittest.TestCase):
+    """The flood threshold is a multiple of the baseline, and the baseline
+    is the median of the calm history with its busiest quarter left out.
+    Counted in, a storm's own floods lift the median, and the bar that
+    should catch the next burst rises with it."""
+
+    def test_the_busiest_quarter_of_the_history_is_left_out(self):
+        det = Detector(DetectorConfig())
+        det.calm.extend(range(100, 500, 10))            # forty windows, 100 to 490 frames
+        self.assertEqual(det._baseline(), 245.0)        # the median of the thirty lowest, not of all forty (295)
+        det.calm.clear()
+        det.calm.extend([250] * 28 + [1500] * 12)       # a calm mesh with a burst in every third window
+        self.assertEqual(det._baseline(), 250.0)
+        det.calm.clear()
+        det.calm.extend([5000] * 300 + [250] * 90)      # only the last baseline_windows count
+        self.assertEqual(det._baseline(), 250.0)
+
+    def test_a_tiny_history_keeps_at_least_one_window(self):
+        det = Detector(DetectorConfig())
+        self.assertEqual(det._baseline(), 0.0)
+        det.calm.append(5)
+        self.assertEqual(det._baseline(), 5)
+        det.calm.append(1000)
+        self.assertEqual(det._baseline(), 5)            # two windows: the busier one is the quarter
+        det.calm.append(6)
+        self.assertEqual(det._baseline(), 5.5)

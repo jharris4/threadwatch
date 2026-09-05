@@ -181,6 +181,7 @@ class Pipeline:
         self._pruned_day: Optional[str] = None       # local day the event log was last pruned on
         self._resolve_after: dict[str, float] = {}   # short addr -> next attempt ts
         self._verify_after: dict[str, float] = {}    # short addr -> next re-check of its mapping
+        self._foreign_after: dict[tuple, float] = {}  # (short addr, other PAN) -> next MIC check against it
         self.extra_candidates: list[str] = []        # ext addrs to try first in the nonce search (why)
         self.mle_names_path = cfg.state_dir / "observed-names.json"
         self.observed_names = {}
@@ -424,6 +425,28 @@ class Pipeline:
             return None
         ext = self.decryptor.short_to_ext.get(src)
         if ext:
+            # A short address is unique within one PAN only. A frame from
+            # another PAN bearing the short address one of our devices
+            # holds is a neighbour's device until its MIC says otherwise:
+            # taken on the cached mapping, it would stamp our device with
+            # the foreign PAN (ending its quiet checks) and its frames and
+            # signal. So the cooldown fast path below is not for it: the
+            # MIC is checked, rate-limited per (address, PAN) so a busy
+            # neighbour costs one attempt every RESOLVE_RETRY_S, and a
+            # failure leaves the mapping alone (our device still holds the
+            # address on our PAN) and the frame unattributed. A device that
+            # really moved to that PAN passes the check, and its row's PAN
+            # follows it.
+            pan = f.src_pan if f.src_pan != BROADCAST_PAN else None
+            known = self.seen.table.get(ext, {}).get("pan")
+            if known is None:
+                known = self.dominant_pan()
+            if pan is not None and known is not None and pan != known:
+                key = (src, pan)
+                if f.ts < self._foreign_after.get(key, 0.0) or not self.decryptor.resolvable(f.psdu):
+                    return None
+                self._foreign_after[key] = f.ts + self.RESOLVE_RETRY_S
+                return ext if self.decryptor.verify_short(f.psdu, ext) else None
             # A short address is reassigned when a parent restarts, so the
             # cached mapping is re-checked against the MIC now and then and
             # dropped when it no longer fits; the new holder then resolves.

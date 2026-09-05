@@ -27,19 +27,21 @@ PAN = 0x4e21
 
 
 def secured_frame(src_ext: str, src_short: str, counter: int, ftype: int = 1,
-                  payload: bytes = b"\x7f\x33\xf0\x11\x22", sequence: int = 0) -> bytes:
+                  payload: bytes = b"\x7f\x33\xf0\x11\x22", sequence: int = 0,
+                  pan: int = PAN, key: bytes = KEY) -> bytes:
     """An 802.15.4 frame with short source addressing, secured as Thread does
     (ENC-MIC-32, key index mode) under a key sequence, plus a trailing FCS.
     ftype 3 builds a data request: the command id (0x04) is authenticated
-    but not encrypted, and the encrypted payload is empty."""
+    but not encrypted, and the encrypted payload is empty. Another PAN and
+    network key make a neighbour's frame."""
     fcf = ftype | 0x0008 | 0x0040 | (2 << 10) | (1 << 12) | (2 << 14)
-    header = struct.pack("<HBH", fcf, counter & 0xFF, PAN) + bytes.fromhex("00cc")[::-1] \
+    header = struct.pack("<HBH", fcf, counter & 0xFF, pan) + bytes.fromhex("00cc")[::-1] \
         + bytes.fromhex(src_short)[::-1]
     aux = bytes([0x0D]) + struct.pack("<L", counter) + bytes([(sequence & 0x7f) + 1])   # level 5, key mode 1
     open_part = header + aux + (b"\x04" if ftype == 3 else b"")
     if ftype == 3:
         payload = b""
-    _mle, mac_key = derive_keys(KEY, sequence)
+    _mle, mac_key = derive_keys(key, sequence)
     nonce = bytes.fromhex(src_ext) + struct.pack(">L", counter) + bytes([5])
     body = AESCCM(mac_key, tag_length=4).encrypt(nonce, payload, open_part)
     return open_part + body + b"\x00\x00"
@@ -197,6 +199,40 @@ class ResolveShortTest(unittest.TestCase):
             self.assertEqual((pipe.seen.table[SED]["rloc16"], pipe.seen.table[OTHER]["rloc16"]), ("c829", "c829"))
             self.assertLess(pipe.seen.table[SED]["rloc16_ts"], pipe.seen.table[OTHER]["rloc16_ts"])
             self.assertEqual(pipe.seen.table[SED]["last_seen"], t0 + 2)
+
+    def test_a_neighbours_frame_sharing_a_short_address_is_not_our_device(self):
+        # Short addresses are unique per PAN. With the local mapping for
+        # c829 verified and inside its re-check cooldown, a frame from
+        # another PAN (another network key) using c829 used to be handed
+        # the cached identity: the local row took the foreign PAN, its
+        # quiet checks stopped, and the neighbour's frames counted as its.
+        with tempfile.TemporaryDirectory() as tmp:
+            dd = Path(tmp)
+            (dd / "devices.json").write_text(json.dumps([{"name": "Front Door", "extendedAddress": SED}]))
+            cfg = Config(data_dir=dd / "data", devices_path=dd / "devices.json")
+            cfg.pan_id = PAN
+            pipe = Pipeline(cfg, NullEventLog(), Decryptor(network_key=KEY))
+            t0 = 1_700_000_000.0
+            self.assertEqual(pipe.ingest(parse_frame(t0, secured_frame(SED, "c829", 1, ftype=3), 195)), SED)
+            self.assertEqual(pipe.ingest(parse_frame(t0 + 1, secured_frame(SED, "c829", 2, ftype=3), 195)), SED)
+            self.assertLess(t0 + 2, pipe._verify_after["c829"])           # the cooldown fast path is open
+            foreign = bytes(range(16, 32))
+            for i in range(20):
+                who = pipe.ingest(parse_frame(t0 + 2 + i, secured_frame(OTHER, "c829", 900 + i, ftype=3,
+                                                                        pan=0x58bc, key=foreign), 195))
+                self.assertIsNone(who)
+            row = pipe.seen.table[SED]
+            self.assertEqual((row["pan"], row["frames"], row["last_seen"]), (PAN, 2, t0 + 1))
+            self.assertEqual(pipe.devices[SED].polls, 2)
+            self.assertEqual(pipe.decryptor.short_to_ext, {"c829": SED})   # the local mapping survives
+            self.assertLessEqual(pipe.decryptor.stats["mac_failed"], 1)    # one MIC check per 30 s, not per frame
+            pipe.periodic(t0 + 2000)
+            self.assertEqual([r["addr"] for r in pipe.events.records if r["event"] == "device_quiet"], [SED])
+            # The device itself moving to another PAN still passes the MIC
+            # check and is followed there.
+            self.assertEqual(pipe.ingest(parse_frame(t0 + 2100, secured_frame(SED, "c829", 3, ftype=3, pan=0x58bc),
+                                                     195)), SED)
+            self.assertEqual(pipe.seen.table[SED]["pan"], 0x58bc)
 
     def test_truncated_unsecured_plaintext_does_not_crash_ingest(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -446,3 +446,62 @@ class DeliveryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AlertChainTest(unittest.TestCase):
+    """config.toml -> config.load -> build_sinks -> EventLog -> Pipeline ->
+    the HTTP body a sink receives. Every link has its own tests; this is
+    the chain, which is the recorder's whole promise: page me when the
+    mesh breaks. A renamed table, sinks not passed through, a severity
+    dropped on the way to the dispatcher, all leave green tests and a
+    silent phone without it."""
+
+    def test_a_quiet_device_reaches_the_configured_sink_with_its_name(self):
+        from threadwatch import config as config_mod
+        from threadwatch.crypto import Decryptor
+        from threadwatch.pcap import Frame
+        from threadwatch.pipeline import Pipeline
+
+        def frame(ts, src, rssi):
+            return Frame(ts=ts, raw=b"", psdu=b"", rssi=rssi, channel=None, lqi=None, ftype=1,
+                         seq=int(ts) & 0xFF, dst_pan=0x4e21, dst="0000", src_pan=0x4e21, src=src)
+
+        srv = _Server()
+        self.addCleanup(srv.close)
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "devices.json").write_text(json.dumps([
+                {"name": "Living Room AQ", "extendedAddress": "1669674dd15cf0fa"},
+                {"name": "Porch Sensor", "extendedAddress": "b62c32bf669272db"}]))
+            (d / "config.toml").write_text(
+                "[network]\npan_id = \"0x4e21\"\n"
+                f"[capture]\ndata_dir = \"{d / 'data'}\"\n"
+                "[devices]\ninventory = \"devices.json\"\n"
+                "[quiet]\nsilence_s = 60\n"
+                "[border_routers]\nbrowse_s = 0\n"
+                "[summary]\nhour = -1\n"
+                "[[alerts.sinks]]\nname = \"home-assistant\"\ntype = \"http\"\n"
+                f"url = \"{srv.url}/api/webhook/threadwatch\"\n"
+                "min_severity = \"notice\"\ncooldown_s = 0\n")
+            logs = []
+            cfg = config_mod.load(d / "config.toml")
+            sinks = alerts.build_sinks(cfg.alerts_raw, logs.append)
+            self.assertEqual([s.name for s in sinks], ["home-assistant"])
+            log = EventLog(cfg.events_dir, sinks)
+            pipe = Pipeline(cfg, log, Decryptor(network_key=bytes(16)))
+            t0 = 1_700_000_000.0
+            for i in range(40):
+                pipe.ingest(frame(t0 + i, "1669674dd15cf0fa", -60.0))
+                pipe.ingest(frame(t0 + i, "b62c32bf669272db", -88.0))   # barely heard: a notice, not a page
+            pipe.periodic(t0 + 2 * 60)                                  # both silent past the 60 s window
+            log.close()
+            reqs = srv.wait(2)
+            self.assertEqual(logs, [])
+            self.assertEqual({r["path"] for r in reqs}, {"/api/webhook/threadwatch"})
+            quiet = sorted((json.loads(r["body"]) for r in reqs if json.loads(r["body"])["event"] == "device_quiet"),
+                           key=lambda b: b["name"])
+            self.assertEqual([(b["name"], b["event"], b["severity"]) for b in quiet],
+                             [("Living Room AQ", "device_quiet", "warning"),
+                              ("Porch Sensor", "device_quiet", "notice")])
+            self.assertEqual([r["event"] for r in read_all(cfg.events_dir) if r["event"] == "device_quiet"],
+                             ["device_quiet", "device_quiet"])

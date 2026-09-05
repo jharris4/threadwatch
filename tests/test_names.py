@@ -378,3 +378,32 @@ class MalformedInventoryTest(unittest.TestCase):
         self.assertEqual(names.name("00112233445566aa"), "5")
         with self.assertRaises(ValueError):
             names.resolve("nothing-matches-this")
+
+
+class SaveIntervalTest(unittest.TestCase):
+    """last-seen.json is what every quiet decision is computed from after a
+    restart; maybe_save writes it every 30 s while anything changed. A
+    crash costs at most that much history."""
+
+    def test_the_table_is_saved_every_30_s_while_dirty(self):
+        import json
+        import tempfile
+        import time
+        from pathlib import Path
+        from threadwatch.names import LastSeen
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "last-seen.json"
+            seen = LastSeen(path)
+            seen.touch("b62c32bf669272db", 1000.0, 1)
+            seen.maybe_save()                                  # never saved: at once
+            first = path.read_text()
+            seen.touch("b62c32bf669272db", 1001.0, 1)
+            seen.maybe_save()                                  # a moment later: not yet
+            self.assertEqual(path.read_text(), first)
+            seen._last_save = time.time() - 29
+            seen.maybe_save()
+            self.assertEqual(path.read_text(), first)
+            seen._last_save = time.time() - 31
+            seen.maybe_save()
+            self.assertEqual(json.loads(path.read_text())["b62c32bf669272db"]["last_seen"], 1001.0)
+            self.assertEqual(LastSeen.maybe_save.__defaults__, (30.0,))

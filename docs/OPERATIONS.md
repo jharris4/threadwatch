@@ -91,6 +91,12 @@ the line; under Docker, `docker compose ps` and the log.
 | 3 | `capture stream ended` | the sniffer closed the stream: dongle unplugged, or its process died |
 | 4 | `sniffer thread died before delivering any data` | the serial port could not be opened: held by another process, or gone |
 
+Every way out but a kill leaves `data/state/last-exit.json` saying which
+of these it was; the next start logs a `recorder_started` event with that
+cause and the time it was not listening, which is how a day page tells
+the recorder's outage from a device's silence (docs/REVIEW.md, "Coverage").
+A start that finds no note (a power cut, a SIGKILL) says the end is unknown.
+
 Every non-zero exit asks the supervisor for a restart, and the systemd
 unit gives one after ten seconds plus a two-second wait for udev. The
 stall exit is the designed answer to a host sleep, a dongle that
@@ -246,6 +252,8 @@ it up if you care about the history; nothing else holds it.
                              elevation in progress, so a restart mid-incident keeps its baseline
         blind-spans.json     when the recorder was not listening (its own outages, clock steps),
                              kept while a device's silence still reaches back over one
+        last-exit.json       how the last run ended (stopped, stalled, crashed, ...) and when; the
+                             next start reads it into its recorder_started event and removes it
         border-routers.json  mDNS hostname -> current address of each border router, with the
                              addresses it retired (how a rebooted Apple hub keeps its name)
         capture.fifo         the pipe the sniffer writes into; recreated at every start

@@ -252,6 +252,7 @@ class Pipeline:
                 # (the watchdog restart loop) lies inside this one.
                 self._blind = [span for span in self._blind if span[0] < last_alive]
                 self._blind.append((last_alive, now - last_alive))
+            self._announce_start(now, last_alive)
             dominant = self.dominant_pan()       # best guess before any frame arrives
             announced = 0
             for addr, row in self.seen.table.items():
@@ -287,6 +288,72 @@ class Pipeline:
             self._save_blind()
 
     BLIND_MAX = 64
+
+    # The note capture.record_exit leaves about how the last run ended.
+    EXIT_FILE = "last-exit.json"
+    # How a start describes the end of the run before it, by the reason
+    # the note carries; a note-less end (power cut, SIGKILL, a run that
+    # could not write one) is "unknown".
+    ENDED = {"stopped": "the last run was stopped",
+             "stalled": "the last run left when no frames arrived for 3 min (stalled)",
+             "sniffer_died": "the last run left when its sniffer thread died",
+             "stream_ended": "the last run left when the capture stream ended (dongle unplugged?)",
+             "crashed": "the last run crashed",
+             "unknown": "the last run left no note of how it ended (power cut, or killed)"}
+
+    def _announce_start(self, now: float, last_alive: Optional[float]) -> None:
+        """One record per start: how long the recorder was not listening
+        (since the last frame any run heard) and why the last run ended,
+        read from the note it left (capture.record_exit) and removed here,
+        so the next start cannot read this run's end off the one before.
+        The review's coverage is built from these records, together with
+        the clock steps: they are what tells a recorder outage from a
+        device's silence on a day page. Info for a stop that was asked
+        for and for the first start ever; notice when the last run ended
+        any other way, since a restart the supervisor had to make is
+        worth a line on the phone (a restart loop is digested by the
+        sinks' cooldown)."""
+        path = self.cfg.state_dir / self.EXIT_FILE
+        ended = None
+        try:
+            ended = json.loads(path.read_text())
+        except (OSError, ValueError):
+            pass
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        if not isinstance(ended, dict):
+            ended = {}
+        reason = ended.get("reason")
+        cause = reason if isinstance(reason, str) and reason else "unknown"
+        stopped = ended.get("ts")
+        if not isinstance(stopped, (int, float)) or isinstance(stopped, bool):
+            stopped = None
+        if last_alive is None:
+            gap = None
+            if not ended:
+                cause = "first_start"
+        else:
+            gap = max(0.0, now - last_alive)
+            # A note stamped before the last frame, or after now (a clock
+            # that stepped back across the restart), says nothing usable
+            # about when the run ended.
+            if stopped is not None and not last_alive <= stopped <= now:
+                stopped = None
+        if cause == "first_start":
+            note = "first start: no earlier frame on record"
+        else:
+            ended_how = self.ENDED.get(cause, f"the last run ended with {cause}")
+            if gap is None:
+                note = f"{ended_how}; no frame on record before this start"
+            else:
+                off = "" if stopped is None else f", off for {round((now - stopped) / 60)} min"
+                note = (f"not listening for {round(gap / 60)} min since the last frame at "
+                        f"{time.strftime('%H:%M', time.localtime(last_alive))}{off}; {ended_how}")
+        severity = "info" if cause in ("stopped", "first_start") else "notice"
+        self.events.emit("recorder_started", severity, now, cause=cause, gap_s=None if gap is None else round(gap),
+                         last_frame_ts=last_alive, stopped_ts=stopped, exit_code=ended.get("code"), note=note)
 
     def _load_blind(self) -> list[tuple[float, float]]:
         try:

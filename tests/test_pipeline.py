@@ -559,7 +559,7 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual(self._quiet(pipe2), [])
         self.assertEqual(pipe2.quiet_reported, {SENSOR})
         pipe2.ingest(frame(now, SENSOR))
-        self.assertEqual([r["event"] for r in pipe2.events.records], ["device_returned"])
+        self.assertEqual([r["event"] for r in pipe2.events.records], ["recorder_started", "device_returned"])
         self.assertNotIn("quiet_reported", pipe2.seen.table[SENSOR])
 
     def test_an_announced_silence_survives_a_crash_before_the_next_save(self):
@@ -641,7 +641,8 @@ class QuietPolicyTest(unittest.TestCase):
         pipe.seen.save()
         pipe2 = self._pipe()
         ev = [(r["event"], r["ts"]) for r in pipe2.events.records]
-        self.assertEqual(ev, [("device_returned", now - 60)])
+        self.assertEqual(ev[0][0], "recorder_started")
+        self.assertEqual(ev[1:], [("device_returned", now - 60)])
         self.assertNotIn("quiet_reported", pipe2.seen.table[SENSOR])
         self.assertEqual(pipe2.quiet_reported, set())
 
@@ -1556,6 +1557,81 @@ class RetransmissionConfirmTest(unittest.TestCase):
         self.assertEqual([(e["title"], e["count"]) for e in eps], [("retransmissions: Basement AQ -> Irrigation", 1)])
 
 
+class RecorderStartTest(unittest.TestCase):
+    """Every start says how long the recorder was not listening and how
+    the run before it ended, from the note capture.record_exit left."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        (d / "devices.json").write_text("[]")
+        self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json")
+        self.cfg.state_dir.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _start(self, at):
+        from unittest import mock
+        with mock.patch("threadwatch.pipeline.time.time", lambda: at):
+            pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        starts = [r for r in pipe.events.records if r["event"] == "recorder_started"]
+        self.assertEqual(len(starts), 1)
+        return pipe, starts[0]
+
+    def _note(self, **fields):
+        (self.cfg.state_dir / "last-exit.json").write_text(json.dumps(fields))
+
+    def _status(self, **fields):
+        (self.cfg.state_dir / "status.json").write_text(json.dumps(fields))
+
+    def test_the_first_start_ever_says_so(self):
+        _pipe, rec = self._start(1_700_000_000.0)
+        self.assertEqual((rec["severity"], rec["cause"], rec["gap_s"], rec["last_frame_ts"], rec["stopped_ts"]),
+                         ("info", "first_start", None, None, None))
+        self.assertIn("first start", rec["note"])
+
+    def test_a_stall_restart_carries_the_gap_the_cause_and_when_the_run_left(self):
+        T = 1_700_000_000.0
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        pipe.ingest(frame(T, ROUTER))
+        pipe.seen.save()
+        self._status(updated=T + 180, last_frame_ts=T)
+        self._note(ts=T + 190, code=2, reason="stalled", last_frame_ts=T)
+        _pipe, rec = self._start(T + 2400)
+        self.assertEqual((rec["severity"], rec["cause"], rec["gap_s"], rec["last_frame_ts"],
+                          rec["stopped_ts"], rec["exit_code"]),
+                         ("notice", "stalled", 2400, T, T + 190, 2))
+        self.assertIn("not listening for 40 min", rec["note"])
+        self.assertIn("off for 37 min", rec["note"])
+        self.assertIn("stalled", rec["note"])
+        # The note is consumed: the next start does not read this run's
+        # end off the one before, and without a note the end is unknown.
+        self.assertFalse((self.cfg.state_dir / "last-exit.json").exists())
+        _pipe, rec = self._start(T + 2500)
+        self.assertEqual((rec["severity"], rec["cause"], rec["stopped_ts"]), ("notice", "unknown", None))
+        self.assertIn("power cut", rec["note"])
+
+    def test_a_requested_stop_is_only_information(self):
+        T = 1_700_000_000.0
+        self._status(updated=T + 5, last_frame_ts=T)
+        self._note(ts=T + 5, code=0, reason="stopped", last_frame_ts=T)
+        _pipe, rec = self._start(T + 60)
+        self.assertEqual((rec["severity"], rec["cause"], rec["gap_s"], rec["stopped_ts"]), ("info", "stopped", 60, T + 5))
+
+    def test_a_note_stamped_outside_the_gap_or_unreadable_is_not_trusted(self):
+        T = 1_700_000_000.0
+        self._status(updated=T, last_frame_ts=T)
+        self._note(ts=T - 100, code=0, reason="stopped")           # before the last frame: another clock
+        _pipe, rec = self._start(T + 60)
+        self.assertEqual((rec["cause"], rec["stopped_ts"]), ("stopped", None))
+        self.assertNotIn("off for", rec["note"])
+        (self.cfg.state_dir / "last-exit.json").write_text("{not json")
+        _pipe, rec = self._start(T + 120)
+        self.assertEqual((rec["cause"], rec["severity"]), ("unknown", "notice"))
+        self.assertFalse((self.cfg.state_dir / "last-exit.json").exists())
+
+
 class EventRetentionTest(unittest.TestCase):
     def test_the_recorder_prunes_the_log_once_a_day_and_replay_never(self):
         import contextlib
@@ -1571,15 +1647,15 @@ class EventRetentionTest(unittest.TestCase):
                 pipe = Pipeline(cfg, log, stub_decryptor())
                 pipe.periodic(now)
                 days = sorted(p.stem for p in cfg.events_dir.glob("*.jsonl"))
-                self.assertEqual(len(days), 2)                         # 6 and 1 days ago
+                self.assertEqual(len(days), 3)                         # 6 and 1 days ago, and today's start
                 log.emit("e", "info", now - 20 * 86400)
                 pipe.periodic(now + 60)                                # same day: not again
-                self.assertEqual(len(list(cfg.events_dir.glob("*.jsonl"))), 3)
+                self.assertEqual(len(list(cfg.events_dir.glob("*.jsonl"))), 4)
                 pipe.periodic(now + 86400)                             # the next day: pruned
-                self.assertEqual(len(list(cfg.events_dir.glob("*.jsonl"))), 2)
+                self.assertEqual(len(list(cfg.events_dir.glob("*.jsonl"))), 3)
                 log.emit("e", "info", now - 20 * 86400)
                 Pipeline(cfg, log, stub_decryptor(), ephemeral=True).periodic(now + 2 * 86400)
-                self.assertEqual(len(list(cfg.events_dir.glob("*.jsonl"))), 3)   # replay touches nothing
+                self.assertEqual(len(list(cfg.events_dir.glob("*.jsonl"))), 4)   # replay touches nothing
 
 
 class ObservedNamesTest(unittest.TestCase):

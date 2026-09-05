@@ -10,9 +10,9 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch.capture import (EXIT_SNIFFER_DIED, EXIT_STALLED, PERIODIC_S, STALL_TIMEOUT_S, TICK_S, Housekeeping,  # noqa: E402
-                                 _write_status, capture_healthy, capture_stalled, last_frame_on_record,
-                                 periodic_due, status_tick, watchdog_verdict)
+from threadwatch.capture import (EXIT_FILE, EXIT_SNIFFER_DIED, EXIT_STALLED, PERIODIC_S, STALL_TIMEOUT_S, TICK_S,  # noqa: E402
+                                 Housekeeping, _write_status, capture_healthy, capture_stalled,
+                                 last_frame_on_record, periodic_due, record_exit, status_tick, watchdog_verdict)
 from threadwatch.config import Config  # noqa: E402
 from threadwatch.crypto import Decryptor  # noqa: E402
 from threadwatch.events import NullEventLog  # noqa: E402
@@ -45,6 +45,29 @@ class StatusFileTest(unittest.TestCase):
         self.assertEqual(st["current_file"], str(self.ring.current_path))
         (self.cfg.state_dir / "status.json").write_text("{not json")
         self.assertIsNone(last_frame_on_record(self.cfg.state_dir))
+
+
+class ExitNoteTest(unittest.TestCase):
+    """The note a run leaves about how it ended, for the next start's
+    recorder_started record and the review's coverage."""
+
+    def test_every_exit_path_leaves_its_reason_and_the_last_frame(self):
+        with tempfile.TemporaryDirectory() as d:
+            state = Path(d)
+            heard = time.time() - 200
+            for code, reason in ((0, "stopped"), (1, "crashed"), (EXIT_STALLED, "stalled"),
+                                 (3, "stream_ended"), (EXIT_SNIFFER_DIED, "sniffer_died"), (7, "exit_7")):
+                self.assertEqual(record_exit(state, code, heard, now=heard + 190), reason)
+                note = json.loads((state / EXIT_FILE).read_text())
+                self.assertEqual((note["code"], note["reason"], note["last_frame_ts"], note["ts"]),
+                                 (code, reason, heard, heard + 190))
+            self.assertEqual(sorted(p.name for p in state.iterdir()), [EXIT_FILE])   # written whole, renamed in
+            self.assertEqual(record_exit(state, 0, None), "stopped")                # a run that heard nothing
+            self.assertIsNone(json.loads((state / EXIT_FILE).read_text())["last_frame_ts"])
+
+    def test_a_note_that_cannot_be_written_is_not_fatal(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertIsNone(record_exit(Path(d) / "missing" / "state", EXIT_STALLED, None))
 
 
 class StatusConsumersTest(unittest.TestCase):

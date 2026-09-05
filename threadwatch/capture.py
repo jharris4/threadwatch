@@ -161,6 +161,34 @@ def capture_stalled(age: float, timeout: float = STALL_TIMEOUT_S) -> bool:
 # The watchdog's exit codes, so the journal says which way the capture went.
 EXIT_STALLED = 2            # no frames for STALL_TIMEOUT_S
 EXIT_SNIFFER_DIED = 4       # the sniffer thread died before delivering any data
+# How a run ended, by its exit code, as the note it leaves for the next
+# start says it (record_exit). Every other code is "exit_<code>".
+EXIT_REASONS = {0: "stopped", 1: "crashed", EXIT_STALLED: "stalled", 3: "stream_ended",
+                EXIT_SNIFFER_DIED: "sniffer_died"}
+EXIT_FILE = "last-exit.json"
+
+
+def record_exit(state_dir: Path, code: int, last_frame_ts: Optional[float] = None,
+                now: Optional[float] = None) -> Optional[str]:
+    """Leave a note of how this run ended for the next start to read:
+    the Pipeline announces the restart with the cause and the gap, and
+    the review's coverage tells the recorder's own outage from a
+    device's silence by it. Written whole and renamed into place. A run
+    that never got to write one (a power cut, a SIGKILL) leaves nothing,
+    which the next start reads as an end it knows nothing about, and the
+    start that reads the note removes it, so it can only ever describe
+    the run just before. Returns the reason written, None when the file
+    could not be (a full disk must not keep the process from leaving)."""
+    reason = EXIT_REASONS.get(code, f"exit_{code}")
+    record = {"ts": now if now is not None else time.time(), "code": code, "reason": reason,
+              "last_frame_ts": last_frame_ts}
+    try:
+        tmp = state_dir / "last-exit.tmp"
+        tmp.write_text(json.dumps(record))
+        tmp.replace(state_dir / EXIT_FILE)
+    except OSError:
+        return None
+    return reason
 
 
 def watchdog_verdict(age: float, ring_open: bool, sniffer_alive: bool) -> Optional[int]:
@@ -306,6 +334,7 @@ def run_capture(cfg: Config) -> None:
             if verdict == EXIT_SNIFFER_DIED:
                 _log("sniffer thread died before delivering any data (serial port busy or gone? "
                      "see the traceback above); exiting for supervisor restart")
+                record_exit(cfg.state_dir, EXIT_SNIFFER_DIED, beat["last_frame"] or prior_frame)
                 events.close()      # the start-up quiet announcements, if any
                 os._exit(EXIT_SNIFFER_DIED)
             if verdict == EXIT_STALLED:
@@ -315,7 +344,9 @@ def run_capture(cfg: Config) -> None:
                 # being written: keep the last frames and what they taught us,
                 # deliver the alerts still queued or held for a digest, and
                 # take the sniffer's child (which holds the port) with us.
-                for step in (lambda: beat["ring"].fh.flush(), pipe.seen.save, events.close, sniffer._stop):
+                for step in (lambda: beat["ring"].fh.flush(), pipe.seen.save,
+                             lambda: record_exit(cfg.state_dir, EXIT_STALLED, beat["last_frame"] or prior_frame),
+                             events.close, sniffer._stop):
                     try:
                         step()
                     except Exception:
@@ -380,6 +411,7 @@ def run_capture(cfg: Config) -> None:
         if ring:
             ring.close()
         fifo_path.unlink(missing_ok=True)
+        record_exit(cfg.state_dir, exit_code, beat["last_frame"] or prior_frame)
         # os._exit skips thread joins: the alert thread's queue and the
         # digests its cooldowns hold would go with it.
         events.close()

@@ -231,3 +231,33 @@ class RingHourNamingTest(_ut.TestCase):
             now = time.mktime(time.strptime("2026-09-04 09:40:00", "%Y-%m-%d %H:%M:%S"))
             recent = select_recent(sorted(Path(d).glob("*.pcap")), 0.5, now)
             self.assertEqual([p.name for p in recent], ["threadwatch-20260904-09.pcap"])
+
+
+class PanCompressionTest(_ut.TestCase):
+    """PAN ID compression (FCF bit 6) means the source PAN is the
+    destination's and is left off the wire, which is only so when there
+    is a destination. With the bit set and no destination address the
+    source PAN is on the wire, and a parser that skipped it would read
+    the PAN bytes as the start of the address and invent a device."""
+
+    SRC = bytes(range(0xa0, 0xa8))
+
+    def _frame(self, fcf, body):
+        from threadwatch.pcap import DLT_NOFCS, parse_frame
+        return parse_frame(0.0, struct.pack("<H", fcf) + b"\x07" + body, DLT_NOFCS)
+
+    def test_compression_without_a_destination_leaves_the_source_pan_on_the_wire(self):
+        f = self._frame(0x0001 | 0x0040 | (0 << 10) | (3 << 14), struct.pack("<H", 0x4e21) + self.SRC)
+        self.assertEqual((f.dst_pan, f.dst, f.src_pan, f.src), (None, None, 0x4e21, "a7a6a5a4a3a2a1a0"))
+        # A MAC command the same way: the command id follows the address it found.
+        f = self._frame(0x0003 | 0x0040 | (0 << 10) | (3 << 14), struct.pack("<H", 0x4e21) + self.SRC + b"\x04")
+        self.assertEqual((f.src_pan, f.src, f.cmd), (0x4e21, "a7a6a5a4a3a2a1a0", 4))
+
+    def test_compression_with_a_destination_copies_its_pan(self):
+        f = self._frame(0x0001 | 0x0040 | (2 << 10) | (3 << 14), struct.pack("<H", 0x4e21) + b"\x00\xcc" + self.SRC)
+        self.assertEqual((f.dst_pan, f.dst, f.src_pan, f.src), (0x4e21, "cc00", 0x4e21, "a7a6a5a4a3a2a1a0"))
+
+    def test_no_compression_reads_both_pans(self):
+        f = self._frame(0x0001 | (2 << 10) | (2 << 14),
+                        struct.pack("<H", 0x4e21) + b"\x00\xcc" + struct.pack("<H", 0x58bc) + b"\x1a\x3c")
+        self.assertEqual((f.dst_pan, f.dst, f.src_pan, f.src), (0x4e21, "cc00", 0x58bc, "3c1a"))

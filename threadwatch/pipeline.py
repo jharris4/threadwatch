@@ -151,6 +151,16 @@ class Pipeline:
         # after a restart still counts the whole day, not just this run.
         self.frames_by_hour_path = cfg.state_dir / "frames-by-hour.json"
         self._frames_by_hour: dict[int, int] = {} if ephemeral else self._load_frames_by_hour()
+        if not ephemeral:
+            # A freeze the last run did not finish (os._exit unwinds no
+            # thread) is a half copy nothing marks as such: discard it and
+            # say so, and let the cooldown below see only whole incidents,
+            # so the storm still running gets its snapshot.
+            from .freeze import discard_partials
+            for label in discard_partials(cfg.incidents_dir):
+                self.events.emit("incident_freeze_failed", "warning", time.time(), label=label,
+                                 note=(f"the freeze for {label} was cut short when the recorder last stopped; "
+                                       "the half copy was discarded, and the next storm event tries again"))
         self._last_auto_freeze = 0.0 if ephemeral else self._last_auto_freeze_on_disk()
         # How a critical event freezes the ring: in the background, so the
         # copy (gigabytes on a Pi) never stalls capture. Tests swap it.

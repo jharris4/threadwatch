@@ -17,6 +17,12 @@ from pathlib import Path
 
 STATE_FILES = ("status.json", "last-seen.json", "observed-names.json", "frames-by-hour.json")
 _LABEL = re.compile(r"[^A-Za-z0-9._-]+")
+# A copy in progress is built under this suffix and renamed into place only
+# once whole. The capture daemon leaves through os._exit on every path,
+# which unwinds nothing: a freeze it interrupts must not be findable as an
+# incident (review.incidents skips the suffix), and a leftover is discarded
+# at the next start (discard_partials).
+PARTIAL_SUFFIX = ".partial"
 
 
 def safe_label(label: str) -> str:
@@ -31,7 +37,8 @@ def freeze_ring(cfg, label: str = "incident", now: float | None = None) -> tuple
     label is reduced to filename-safe characters (safe_label)."""
     label = safe_label(label)
     stamp = time.strftime("%Y%m%dT%H%M%S", time.localtime(now or time.time()))
-    dest = cfg.incidents_dir / f"{stamp}_{label}"
+    final = cfg.incidents_dir / f"{stamp}_{label}"
+    dest = final.with_name(final.name + PARTIAL_SUFFIX)
     dest.mkdir(parents=True, exist_ok=False)
     count = 0
     try:
@@ -57,4 +64,20 @@ def freeze_ring(cfg, label: str = "incident", now: float | None = None) -> tuple
         # ring its space back) and let the caller report and retry.
         shutil.rmtree(dest, ignore_errors=True)
         raise
-    return dest, count
+    dest.rename(final)
+    return final, count
+
+
+def discard_partials(incidents_dir: Path) -> list[str]:
+    """Remove the half copies a previous run left behind (a freeze cut short
+    by a restart or the stall watchdog) and return their labels. Nothing in
+    one can be trusted to be whole, and the ring it was copied from is
+    still there for the retry."""
+    if not incidents_dir.exists():
+        return []
+    labels = []
+    for d in sorted(incidents_dir.iterdir()):
+        if d.is_dir() and d.name.endswith(PARTIAL_SUFFIX):
+            shutil.rmtree(d, ignore_errors=True)
+            labels.append(d.name[:-len(PARTIAL_SUFFIX)].partition("_")[2] or d.name)
+    return labels

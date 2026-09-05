@@ -570,6 +570,27 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual(frozen, ["auto-storm"])
         self.assertEqual(Pipeline(self.cfg, NullEventLog(), test_decryptor(), ephemeral=True)._last_auto_freeze, 0.0)
 
+    def test_a_freeze_cut_short_by_the_last_run_does_not_hold_the_cooldown(self):
+        self.cfg.freeze_on_critical = True
+        t0 = 1_700_000_000.0
+        stamp = time.strftime("%Y%m%dT%H%M%S", time.localtime(t0 - 600))
+        half = self.cfg.incidents_dir / f"{stamp}_auto-storm.partial"     # the run died 10 min ago, mid-copy
+        half.mkdir(parents=True)
+        (half / "threadwatch-20231114-21.pcap").write_bytes(b"ring")
+        pipe = self._pipe()
+        failed = [r for r in pipe.events.records if r["event"] == "incident_freeze_failed"]
+        self.assertEqual([r["label"] for r in failed], ["auto-storm"])
+        self.assertIn("cut short", failed[0]["note"])
+        self.assertFalse(half.exists())
+        self.assertEqual(pipe._last_auto_freeze, 0.0)
+        frozen = []
+        pipe.freezer = frozen.append
+        pipe.detector.storm_active = True
+        pipe.detector.last_alert_details = {"period": 80.5, "onsets": [1.0, 2.0, 3.0]}
+        pipe.detector.add_frame = lambda ts: setattr(pipe.detector, "storm_active", True)
+        pipe.ingest(frame(t0, ROUTER))                     # the storm still running is frozen now
+        self.assertEqual(frozen, ["auto-storm"])
+
     def test_a_failed_freeze_is_retried_after_a_hold_not_six_hours(self):
         from threadwatch import freeze as freeze_mod
         self.cfg.freeze_on_critical = True

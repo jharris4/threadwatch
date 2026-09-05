@@ -456,7 +456,7 @@ def incidents(incidents_dir: Path) -> list[dict]:
         return []
     out = []
     for d in incidents_dir.iterdir():
-        if not d.is_dir():
+        if not d.is_dir() or d.name.endswith(".partial"):      # freeze.PARTIAL_SUFFIX: a copy still running, or cut short
             continue
         stamp, _, label = d.name.partition("_")
         try:

@@ -30,17 +30,23 @@ import json
 from pathlib import Path
 from typing import Callable, Optional
 
-from .names import entry_addresses, read_inventory
+from .names import _norm, entry_addresses, read_inventory
 
 
 def _addresses(entry: dict) -> list[str]:
-    return [a.upper() for a in entry_addresses(entry)]
+    """Every address an entry lists, in the one form addresses are matched
+    in here: the loader's normalisation (colons out), upper-cased. The
+    inventory accepts 00:11:22:... and the sources send 001122...; matched
+    as written, an entry in the colon form was never found by its
+    address and a second entry was made for the same device."""
+    return [_norm(str(a)).upper() for a in entry_addresses(entry)]
 
 
 def _add_address(entry: dict, addr: str) -> int:
     """Append an address to an entry, moving to the list form. Returns
-    how many addresses the entry now has."""
-    addrs = _addresses(entry)
+    how many addresses the entry now has. The addresses already there
+    are kept as written."""
+    addrs = entry_addresses(entry)
     entry.pop("extendedAddress", None)
     entry["extendedAddresses"] = addrs + [addr]
     return len(addrs) + 1

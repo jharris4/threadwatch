@@ -351,6 +351,31 @@ class PlanInventoryTest(unittest.TestCase):
                          ["Contact Sensor", "Living Room Apple TV", "Back Door", "Garage Door"])
 
 
+    def test_a_colon_formatted_address_is_the_same_address(self):
+        # BUG-07: the loader takes 00:11:22:... but the importer matched
+        # addresses as written, so HA's 001122... never found the entry and
+        # a second one was made, taking the name and stranding the note.
+        import tempfile
+        from threadwatch.importer import plan_border_routers
+        from threadwatch.names import DeviceNames
+        existing = [{"name": "Old name", "extendedAddress": "00:11:22:33:44:55:66:77", "note": "retain me"}]
+        planned, changes = plan_inventory(existing, [{"name": "New name", "addr": "0011223344556677"}])
+        self.assertEqual(changes, ["rename 'Old name' -> 'New name' (0011223344556677)"])
+        self.assertEqual(planned, [{"name": "New name", "extendedAddress": "00:11:22:33:44:55:66:77",
+                                    "note": "retain me"}])                      # as written, note kept
+        with tempfile.TemporaryDirectory() as d:
+            inv = Path(d) / "devices.json"
+            inv.write_text(json.dumps(planned))
+            names = DeviceNames(inv)
+            self.assertEqual(names.name("0011223344556677"), "New name")
+            self.assertEqual(names.resolve("New name")[0], ["0011223344556677"])
+        # The border-router merge matches by address the same way.
+        planned, changes = plan_border_routers(existing, [{"hostname": "hub.local", "ext": "0011223344556677",
+                                                           "instance": "Hub"}])
+        self.assertEqual(changes, ["Old name: border router hub.local"])
+        self.assertEqual(_addrs(planned[0]), ["00:11:22:33:44:55:66:77"])
+
+
 def _addrs(entry):
     from threadwatch.names import entry_addresses
     return entry_addresses(entry)

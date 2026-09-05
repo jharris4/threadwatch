@@ -1,10 +1,15 @@
+import errno
 import struct
 import sys
+import time
+import types
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from threadwatch import mdns  # noqa: E402
 from threadwatch.mdns import (SERVICE, clean_text, TYPE_A, TYPE_PTR, TYPE_SRV, TYPE_TXT, build_query,  # noqa: E402
                               collect_routers, encode_name, parse_message, read_name)
 
@@ -102,6 +107,101 @@ class WireTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             read_name(b"\xc0\x00", 0)
         self.assertEqual(parse_message(b"\x00" * 5), [])
+
+
+class BrowseTest(unittest.TestCase):
+    """browse() over fake sockets: what arrives from the LAN is whatever the
+    LAN sends, and one bad datagram must not end the browse."""
+
+    def _browse(self, inbox, group_bind_fails=False, timeout=0.3):
+        made = []
+
+        class FakeSock:
+            def __init__(self, *_a):
+                self.inbox = inbox if not made else []          # the query socket is made first
+                self.sent, self.closed = [], False
+                made.append(self)
+
+            def setsockopt(self, *_a):
+                pass
+
+            def bind(self, addr):
+                if group_bind_fails and addr[1] == mdns.MDNS_PORT:
+                    raise OSError(errno.EADDRINUSE, "Address already in use")
+
+            def sendto(self, data, addr):
+                self.sent.append((data, addr))
+
+            def recvfrom(self, _n):
+                item = self.inbox.pop(0)
+                if isinstance(item, Exception):
+                    raise item
+                return item, ("192.0.2.9", mdns.MDNS_PORT)
+
+            def close(self):
+                self.closed = True
+
+        def fake_select(socks, _w, _x, wait):
+            ready = [s for s in socks if s.inbox]
+            if not ready:
+                time.sleep(min(wait, 0.02))
+            return ready, [], []
+
+        fake_socket = types.SimpleNamespace(**{k: getattr(mdns.socket, k) for k in dir(mdns.socket)
+                                               if not k.startswith("__")})
+        fake_socket.socket = FakeSock
+        log = []
+        with mock.patch.object(mdns, "socket", fake_socket), \
+                mock.patch.object(mdns, "select", types.SimpleNamespace(select=fake_select)):
+            found = mdns.browse(timeout=timeout, log=log.append)
+        return found, made, log
+
+    def _answers(self):
+        service = encode_name(SERVICE)
+        full = encode_name("OTB." + SERVICE)
+        ptr_only = response([rr(service, TYPE_PTR, b"\x03OTB" + b"\xc0\x0c")])
+        details = response([rr(full, TYPE_SRV, struct.pack(">HHH", 0, 0, 49153) + encode_name("otbr.local")),
+                            rr(full, TYPE_TXT, txt(b"xa=" + EXT, b"nn=MyHome")),
+                            rr(encode_name("otbr.local"), TYPE_A, bytes([192, 0, 2, 73]))])
+        return ptr_only, details
+
+    def test_a_refused_read_and_a_cut_datagram_do_not_end_the_browse(self):
+        ptr_only, details = self._answers()
+        cut = struct.pack(">HHHHHH", 0, 0x8400, 0, 1, 0, 0) + b"\x05abc"   # one answer, name cut short
+        self.assertRaises(ValueError, parse_message, cut)
+        found, made, log = self._browse([OSError(errno.ECONNREFUSED, "Connection refused"), cut, ptr_only, details])
+        self.assertEqual([(r["instance"], r["hostname"], r["port"], r["ext"], r["network_name"], r["addresses"])
+                          for r in found],
+                         [("OTB", "otbr.local", 49153, EXT.hex(), "MyHome", ["192.0.2.73"])])
+        self.assertEqual(log, [])
+        query, group = made
+        self.assertTrue(query.closed and group.closed)
+        self.assertEqual(query.inbox, [])                                    # everything was read
+        # Two service queries at the start, then the SRV/TXT of the instance
+        # the PTR-only answer left incomplete; nothing more once complete.
+        sent = [data for data, addr in query.sent]
+        self.assertEqual([addr for _d, addr in query.sent], [(mdns.MDNS_GROUP, mdns.MDNS_PORT)] * 3)
+        self.assertEqual(sent[:2], [build_query([(SERVICE, TYPE_PTR)]),
+                                    build_query([(SERVICE, TYPE_PTR)], unicast_reply=False)])
+        self.assertEqual(sent[2], build_query([("otb." + SERVICE, TYPE_SRV), ("otb." + SERVICE, TYPE_TXT)]))
+        self.assertEqual(group.sent, [])
+
+    def test_without_the_multicast_group_the_browse_says_so_and_carries_on(self):
+        ptr_only, details = self._answers()
+        found, made, log = self._browse([ptr_only, details], group_bind_fails=True)
+        self.assertEqual([r["hostname"] for r in found], ["otbr.local"])
+        self.assertEqual(len(log), 1)
+        self.assertIn("not listening on the multicast group", log[0])
+        self.assertIn("unicast replies only", log[0])
+        self.assertEqual(len(made), 2)
+        self.assertTrue(all(s.closed for s in made))   # the group socket too: a browse every 10 min must not leak one
+
+    def test_nothing_answering_is_an_empty_list_after_the_timeout(self):
+        t0 = time.monotonic()
+        found, made, log = self._browse([], timeout=0.2)
+        self.assertEqual((found, log), ([], []))
+        self.assertGreaterEqual(time.monotonic() - t0, 0.2)
+        self.assertEqual(len(made[0].sent), 2)                              # asked once; nothing to ask about
 
 
 if __name__ == "__main__":

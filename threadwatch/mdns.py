@@ -192,6 +192,7 @@ def browse(service: str = SERVICE, timeout: float = 4.0, log=lambda m: None) -> 
     # Responders that recently multicast the same records may answer on the
     # group instead of unicast: listen there too, sharing 5353 with any
     # local mDNS daemon.
+    group_sock = None
     try:
         group_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         group_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -202,6 +203,8 @@ def browse(service: str = SERVICE, timeout: float = 4.0, log=lambda m: None) -> 
         group_sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
         socks.append(group_sock)
     except OSError as exc:
+        if group_sock is not None:
+            group_sock.close()      # the recorder browses every few minutes: never leak one
         log(f"mdns: not listening on the multicast group ({exc}); unicast replies only")
     records: list[tuple[str, int, object]] = []
     asked_detail: set[str] = set()

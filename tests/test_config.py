@@ -42,5 +42,33 @@ class KeepGbTest(unittest.TestCase):
             self.assertEqual(len(list(Path(d).glob("*.pcap"))), 3)
 
 
+class ReadOnlyStateDirTest(unittest.TestCase):
+    """The web container mounts data/ read-only; before capture has run
+    there is no state directory, and a reader must not die creating it."""
+
+    def test_a_state_dir_that_cannot_be_created_is_a_path_not_a_crash(self):
+        import os
+        import stat
+        from threadwatch.config import Config
+        from threadwatch.web import Site
+        with tempfile.TemporaryDirectory() as d:
+            data = Path(d) / "data"
+            data.mkdir()
+            os.chmod(data, stat.S_IRUSR | stat.S_IXUSR)      # data:ro, no state/ yet
+            try:
+                if os.access(data, os.W_OK):
+                    self.skipTest("running as root: directory permissions do not bind")
+                cfg = Config(data_dir=data)
+                self.assertEqual(cfg.state_dir, data / "state")   # no EROFS/EACCES out of the property
+                self.assertFalse(cfg.state_dir.exists())
+                site = Site(cfg)
+                for path in ("/", "/status", "/devices", "/api/status"):
+                    code, _ctype, body = site.respond(path)
+                    self.assertEqual(code, 200, path)
+                self.assertIn(b"has not run here", site.respond("/status")[2])
+            finally:
+                os.chmod(data, stat.S_IRWXU)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -692,7 +692,10 @@ def make_server(cfg, bind: str, port: int) -> ThreadingHTTPServer:
 
 def serve(cfg, bind: str = "0.0.0.0", port: int = 8080) -> None:
     httpd = make_server(cfg, bind, port)
-    print(f"[threadwatch] web: http://{bind}:{httpd.server_port}/ (state {cfg.state_dir})", flush=True)
+    state = cfg.state_dir
+    print(f"[threadwatch] web: http://{bind}:{httpd.server_port}/ (state {state})"
+          + ("" if state.is_dir() else ": does not exist yet, so the pages are empty until "
+                                       "threadwatch capture has started"), flush=True)
     # In the container this process is PID 1, which the kernel does not
     # deliver a default-action signal to: without a handler, stop is ignored.
     # shutdown() must not run on the thread inside serve_forever, or it

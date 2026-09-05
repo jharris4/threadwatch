@@ -74,7 +74,16 @@ class Config:
     @property
     def state_dir(self) -> Path:
         d = self.data_dir / "state"
-        d.mkdir(parents=True, exist_ok=True)
+        # Created on first use for whoever writes there (the recorder). A
+        # reader on a read-only mount (the web container, data:ro) cannot
+        # create it and must not die trying: a missing state directory
+        # means capture has not run yet, which every reader copes with as
+        # empty state, and whoever writes fails at its own write with the
+        # real path in the message.
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
         return d
 
     @property

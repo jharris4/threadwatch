@@ -2,6 +2,8 @@
 
 import contextlib
 import io
+import json
+import struct
 import sys
 import tempfile
 import unittest
@@ -143,6 +145,53 @@ class EventsFilterTest(CliCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReplayTest(CliCase):
+    """`threadwatch replay <pcap>` runs the whole pipeline over a file and
+    prints one JSON object: what a storm looked like, what it would have
+    alerted, without touching the live recorder's state."""
+
+    DEV, OTHER = "26976e7f7d20964a", "b62c32bf669272db"
+    T = 1_756_800_000.0
+
+    def _psdu(self, addr, seq):
+        fcf = 1 | 0x0040 | (2 << 10) | (1 << 12) | (3 << 14)      # data, pan compressed, short dst, ext src
+        return struct.pack("<HBH", fcf, seq, 0x4e21) + b"\x00\x00" + bytes.fromhex(addr)[::-1] + b"\x7f\x33"
+
+    def _pcap(self):
+        from threadwatch.pcap import DLT_NOFCS, Frame, PcapWriter
+        pcap = self.d / "storm.pcap"
+        with open(pcap, "wb") as fh:
+            w = PcapWriter(fh, DLT_NOFCS)
+            for i in range(6):
+                psdu = self._psdu(self.DEV if i % 2 else self.OTHER, i)
+                w.write(Frame(ts=self.T + i, raw=psdu, psdu=psdu, rssi=None, channel=None, lqi=None))
+        return pcap
+
+    def test_replay_prints_the_run_as_json_and_writes_no_state(self):
+        (self.d / "credentials.toml").write_text('[credentials]\nnetwork_key = "00112233445566778899aabbccddeeff"\n')
+        code, out, err = self.run_cli("replay", str(self._pcap()))
+        self.assertEqual(code, 0)
+        self.assertIn("[threadwatch] credentials: loaded", err)      # stdout is the JSON alone
+        run = json.loads(out)
+        self.assertEqual(sorted(run), ["crypto", "detector", "duration_s", "events", "file", "frames", "partition"])
+        self.assertEqual((run["file"], run["frames"], run["duration_s"], run["partition"]),
+                         (str(self.d / "storm.pcap"), 6, 5.0, None))
+        self.assertEqual(run["detector"]["storm_active"], False)
+        self.assertIsNone(run["crypto"]["key_sequence"])            # nothing in the file is secured
+        self.assertIn("mac_decrypted", run["crypto"])
+        self.assertEqual([(e["event"], e["addr"]) for e in run["events"] if e["event"] == "device_first_seen"],
+                         [("device_first_seen", self.OTHER), ("device_first_seen", self.DEV)])
+        self.assertTrue(all(e["ts"] >= self.T for e in run["events"]))
+        written = sorted(p.name for p in (self.d / "data").rglob("*") if p.is_file())
+        self.assertEqual(written, [])                                 # ephemeral: nothing under data/
+
+    def test_replay_without_credentials_exits_2_with_the_reason(self):
+        code, out, err = self.run_cli("replay", str(self._pcap()))
+        self.assertEqual((code, out), (2, ""))
+        self.assertTrue(err.startswith("threadwatch replay: "), err)
+        self.assertIn("credentials", err)
 
 
 class ConfigValidationTest(unittest.TestCase):

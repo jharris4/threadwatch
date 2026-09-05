@@ -1,19 +1,26 @@
 """Event log day rolling, episode grouping, and the web review pages."""
 
+import contextlib
+import io
 import json
+import os
+import signal
 import sys
 import tempfile
 import threading
 import time
 import unittest
+import urllib.error
 import urllib.request
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from threadwatch.config import Config  # noqa: E402
 from threadwatch.events import EventLog, day_bounds, day_of, list_days, migrate_legacy, read_day  # noqa: E402
 from threadwatch.review import day_episodes, day_index, device_history, group_episodes  # noqa: E402
+from threadwatch import web  # noqa: E402
 from threadwatch.web import make_server  # noqa: E402
 
 AQ = "26976e7f7d20964a"
@@ -514,6 +521,90 @@ class DayViewTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WebServerTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cfg = Config(data_dir=Path(self.tmp.name) / "data")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    @staticmethod
+    def _get(base, path):
+        try:
+            with urllib.request.urlopen(base + path, timeout=5) as r:
+                return r.status, dict(r.headers), r.read().decode()
+        except urllib.error.HTTPError as exc:
+            return exc.code, dict(exc.headers), exc.read().decode()
+
+    def test_a_page_that_raises_is_a_500_and_the_server_goes_on_serving(self):
+        real = web.Site.respond
+
+        def respond(site, path, query_string=""):
+            if path == "/boom":
+                raise RuntimeError("the template broke")
+            return real(site, path, query_string)
+
+        httpd = make_server(self.cfg, "127.0.0.1", 0)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{httpd.server_port}"
+        try:
+            with mock.patch.object(web.Site, "respond", respond):
+                status, headers, body = self._get(base, "/boom?x=1")
+                self.assertEqual((status, body), (500, "error: RuntimeError: the template broke"))
+                self.assertEqual((headers["Content-Type"], headers["Content-Length"], headers["Cache-Control"]),
+                                 ("text/plain", str(len(body)), "no-store"))
+                self.assertEqual(self._get(base, "/")[0], 200)                       # still up
+                self.assertEqual(self._get(base, "/boom")[0], 500)                   # and again, every time
+            self.assertEqual(self._get(base, "/no-such-page")[0], 404)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+    def _serve(self, cfg):
+        """serve() in this thread, as the container runs it (PID 1 and
+        all): the reply and SIGTERM come from a helper thread."""
+        out = io.StringIO()
+        got = {}
+
+        def client():
+            deadline = time.time() + 5
+            while "web: http://" not in out.getvalue() and time.time() < deadline:
+                time.sleep(0.01)
+            line = out.getvalue()
+            port = int(line.split("http://127.0.0.1:")[1].split("/")[0])
+            got["status"] = self._get(f"http://127.0.0.1:{port}", "/")[0]
+            os.kill(os.getpid(), signal.SIGTERM)                           # what `docker stop` sends
+
+        previous = signal.getsignal(signal.SIGTERM)
+        t = threading.Thread(target=client, daemon=True)
+        try:
+            with contextlib.redirect_stdout(out):
+                t.start()
+                web.serve(cfg, "127.0.0.1", 0)                            # returns once SIGTERM shuts it down
+        finally:
+            signal.signal(signal.SIGTERM, previous)
+        t.join(5)
+        return got.get("status"), out.getvalue()
+
+    def test_serve_prints_its_address_answers_and_stops_on_sigterm(self):
+        status, printed = self._serve(self.cfg)
+        self.assertEqual(status, 200)
+        self.assertRegex(printed, r"^\[threadwatch\] web: http://127\.0\.0\.1:\d+/ \(state .*/data/state\)\n$")
+        self.assertNotIn("does not exist yet", printed)
+
+    @unittest.skipIf(os.geteuid() == 0, "root can always create the state directory")
+    def test_serve_says_when_the_state_directory_cannot_exist_yet(self):
+        os.makedirs(self.cfg.data_dir)
+        os.chmod(self.cfg.data_dir, 0o500)                                # the web container's data:ro
+        try:
+            status, printed = self._serve(self.cfg)
+        finally:
+            os.chmod(self.cfg.data_dir, 0o700)
+        self.assertEqual(status, 200)
+        self.assertIn("does not exist yet, so the pages are empty until threadwatch capture has started", printed)
 
 
 class FmtEpisodeTest(unittest.TestCase):

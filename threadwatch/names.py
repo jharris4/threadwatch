@@ -395,10 +395,18 @@ def rotation_hints(unknown: list[dict], table: dict[str, dict], names: DeviceNam
     return hints
 
 
+# A harvested hostname is a suggestion only once it has been seen this
+# often: the scraper (crypto.Decryptor.harvest_names) is a regex that
+# also matches random ciphertext now and then, and a real SRP name recurs
+# as its lease is renewed.
+MIN_SIGHTINGS = 2
+
+
 def suggest_entries(unknown: list[dict], observed: dict[str, dict[str, int]],
                     hints: Optional[dict[str, dict]] = None) -> list[dict]:
     """A devices.json entry per unknown address from a LastSeen report, ready
-    to paste. The name is the most-sighted harvested hostname, or blank
+    to paste. The name is the most-sighted harvested hostname seen at least
+    MIN_SIGHTINGS times, or blank
     (a blank name keeps the address in the unknown list until filled in);
     the note carries what the recorder knows so the entry can be matched
     to a real device (power-cycle test, OTBR's device list, ...), and a
@@ -408,7 +416,8 @@ def suggest_entries(unknown: list[dict], observed: dict[str, dict[str, int]],
     for item in unknown:
         addr = item["addr"]
         seen = observed.get(addr) or observed.get(addr.upper()) or {}
-        hostnames = [n for n, _ in sorted(seen.items(), key=lambda kv: (-kv[1], kv[0]))]
+        hostnames = [n for n, count in sorted(seen.items(), key=lambda kv: (-kv[1], kv[0]))
+                     if count >= MIN_SIGHTINGS]
         facts = [f"{item.get('frames', 0):,} frames"]
         if item.get("first_seen"):
             facts[-1] += " since " + time.strftime("%Y-%m-%d %H:%M", time.localtime(item["first_seen"]))

@@ -847,8 +847,28 @@ class Pipeline:
             if owner:
                 for n in Decryptor.harvest_names(payload):
                     if len(n) > 8 and not n.startswith("_"):
-                        self.observed_names.setdefault(owner, {})[n] = \
-                            self.observed_names.get(owner, {}).get(n, 0) + 1
+                        self._note_observed_name(owner, n)
+
+    # The name scraper is a regex over decrypted UDP payloads, most of
+    # which are ciphertext: it fires on random bytes now and then, and an
+    # address would otherwise collect a junk "name" every few hours for
+    # ever. A real SRP registration recurs (leases are renewed), so only
+    # what has been seen twice is a name to suggest (names.MIN_SIGHTINGS),
+    # and each address keeps at most this many, the least-sighted going
+    # first when a new one arrives.
+    OBSERVED_NAMES_MAX = 16
+
+    def _note_observed_name(self, owner: str, name: str) -> None:
+        seen = self.observed_names.setdefault(owner, {})
+        if name in seen:
+            seen[name] += 1
+            return
+        if len(seen) >= self.OBSERVED_NAMES_MAX:
+            weakest = min(seen, key=lambda n: (seen[n], n))
+            if seen[weakest] > 1:
+                return          # every kept name has recurred: a one-off does not displace one
+            del seen[weakest]
+        seen[name] = 1
 
     # ------------------------------------------------------- housekeeping
 

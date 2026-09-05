@@ -38,6 +38,19 @@ class SuggestTest(unittest.TestCase):
         self.assertIn("marginal reception", tv["note"])
         self.assertNotIn("advertised", tv["note"])
 
+    def test_a_name_seen_once_is_not_suggested(self):
+        # The scraper matches random ciphertext now and then; one sighting
+        # is not a hostname, and must not become the proposed name.
+        observed = {AQ: {'nwof-w.y[L(': 1, "office-aq-1a2b": 2, 'kIC.Kl5$cK': 1}}
+        aq = suggest_entries(self._report(None)["unknown"], observed)[1]
+        self.assertEqual(aq["name"], "office-aq-1a2b")
+        self.assertIn("advertised as office-aq-1a2b" + ";", aq["note"] + ";")
+        self.assertNotIn("nwof", aq["note"])
+        only_junk = {AQ: {'C%.L:Uk"E': 1}}
+        aq = suggest_entries(self._report(None)["unknown"], only_junk)[1]
+        self.assertEqual(aq["name"], "")
+        self.assertNotIn("advertised", aq["note"])
+
     def test_blank_name_from_a_pasted_suggestion_stays_unknown(self):
         with tempfile.TemporaryDirectory() as d:
             inv = Path(d) / "devices.json"

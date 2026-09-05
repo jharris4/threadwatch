@@ -908,6 +908,24 @@ class PollStarvationTest(unittest.TestCase):
         self.assertIn("edge of its range", evs[0]["note"])
 
 
+class ObservedNamesTest(unittest.TestCase):
+    def test_junk_names_do_not_accumulate_and_recurring_ones_stay(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Config(data_dir=Path(d) / "data")
+            pipe = Pipeline(cfg, NullEventLog(), test_decryptor())
+            for _ in range(3):
+                pipe._note_observed_name(SENSOR, "office-aq-1a2b.local")
+            for i in range(500):                              # a junk match every few hours, for ever
+                pipe._note_observed_name(SENSOR, f"junk{i}.x[L(")
+            seen = pipe.observed_names[SENSOR]
+            self.assertLessEqual(len(seen), Pipeline.OBSERVED_NAMES_MAX)
+            self.assertEqual(seen["office-aq-1a2b.local"], 3)
+            for i in range(20):                               # a second real name recurs and is kept
+                pipe._note_observed_name(SENSOR, "office-aq-1a2b._hap._tcp.local")
+            self.assertEqual(seen["office-aq-1a2b._hap._tcp.local"], 20)
+            self.assertLessEqual(len(seen), Pipeline.OBSERVED_NAMES_MAX)
+
+
 class CredentialsTest(unittest.TestCase):
     """No key, no recorder; a rotated key is announced, not silently endured."""
 

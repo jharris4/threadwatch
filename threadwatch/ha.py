@@ -106,16 +106,30 @@ class FrameReader:
     close. ``recv`` is any callable returning bytes (b"" at EOF)."""
 
     def __init__(self, recv: Callable[[int], bytes], send: Callable[[bytes], None], initial: bytes = b""):
-        self._recv, self._send, self._buf = recv, send, initial
+        self._recv, self._send_raw, self._buf = recv, send, initial
 
     def _exact(self, n: int) -> bytes:
         while len(self._buf) < n:
-            chunk = self._recv(max(4096, n - len(self._buf)))
+            try:
+                chunk = self._recv(max(4096, n - len(self._buf)))
+            except TimeoutError as exc:
+                # The socket timeout (ws_connect) bounds one silent read; a
+                # Home Assistant that has hung answers nothing at all, and
+                # that is a peer problem with a message, not a traceback.
+                raise HAError(f"Home Assistant stopped answering ({exc}): is it hung or restarting?") from exc
+            except OSError as exc:
+                raise HAError(f"lost the connection to Home Assistant ({exc})") from exc
             if not chunk:
                 raise HAError("Home Assistant closed the websocket")
             self._buf += chunk
         out, self._buf = self._buf[:n], self._buf[n:]
         return out
+
+    def _send(self, data: bytes) -> None:
+        try:
+            self._send_raw(data)
+        except OSError as exc:
+            raise HAError(f"lost the connection to Home Assistant ({exc})") from exc
 
     def message(self) -> str:
         """The next text message, replying to pings on the way."""
@@ -156,19 +170,34 @@ def ws_connect(url: str, path: str = "/api/websocket", timeout: float = 20.0) ->
         sock = socket.create_connection((host, port), timeout=timeout)
     except OSError as exc:
         raise HAError(f"cannot reach Home Assistant at {host}:{port} ({exc}); HA_URL wrong, or not on this network?") from exc
-    if secure:
-        sock = ssl.create_default_context().wrap_socket(sock, server_hostname=host)
     key = base64.b64encode(os.urandom(16)).decode()
-    sock.sendall((f"GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nUpgrade: websocket\r\n"
-                  f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
-    buf = b""
-    while b"\r\n\r\n" not in buf:
-        chunk = sock.recv(4096)
-        if not chunk:
-            raise HAError("Home Assistant closed the connection during the websocket handshake")
-        buf += chunk
-        if len(buf) > 65536:
-            raise HAError("websocket handshake: response too large")
+    # Every socket-level failure from here on is a peer problem the caller
+    # promised to see as HAError: a TLS refusal, a handshake that stalls
+    # (a hung Home Assistant accepts the connection and then says
+    # nothing), a connection reset.
+    try:
+        if secure:
+            sock = ssl.create_default_context().wrap_socket(sock, server_hostname=host)
+        sock.sendall((f"GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nUpgrade: websocket\r\n"
+                      f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = sock.recv(4096)
+            if not chunk:
+                raise HAError("Home Assistant closed the connection during the websocket handshake")
+            buf += chunk
+            if len(buf) > 65536:
+                raise HAError("websocket handshake: response too large")
+    except TimeoutError as exc:
+        sock.close()
+        raise HAError(f"Home Assistant at {host}:{port} accepted the connection but did not answer the websocket "
+                      f"handshake within {timeout:g} s: is it hung or restarting?") from exc
+    except HAError:
+        sock.close()
+        raise
+    except OSError as exc:
+        sock.close()
+        raise HAError(f"websocket handshake with Home Assistant at {host}:{port} failed ({exc})") from exc
     head, rest = buf.split(b"\r\n\r\n", 1)
     status = head.split(b"\r\n", 1)[0].decode(errors="replace")
     if " 101 " not in status:
@@ -220,7 +249,10 @@ class HomeAssistant:
 
     def _send_json(self, obj: dict) -> None:
         assert self._sock is not None
-        self._sock.sendall(encode_frame(0x1, json.dumps(obj).encode()))
+        try:
+            self._sock.sendall(encode_frame(0x1, json.dumps(obj).encode()))
+        except OSError as exc:
+            raise HAError(f"lost the connection to Home Assistant ({exc})") from exc
 
     def _recv_json(self) -> dict:
         assert self._reader is not None

@@ -1,4 +1,5 @@
 import json
+import socket
 import os
 import struct
 import sys
@@ -99,6 +100,41 @@ class WebSocketFramingTest(unittest.TestCase):
         self.assertEqual(json.loads(reader.message()), {"k": "v" * 70000})
         with self.assertRaises(HAError):                            # EOF
             reader.message()
+
+    def test_a_hung_or_lost_peer_is_an_haerror_not_a_traceback(self):
+        # The socket timeout fires as TimeoutError inside recv; a reset
+        # arrives as ConnectionResetError. Both reach the caller as the
+        # HAError the module promises, with the reason in the message.
+        def timing_out(n):
+            raise socket.timeout("timed out")
+        with self.assertRaises(HAError) as cm:
+            FrameReader(timing_out, lambda b: None).message()
+        self.assertIn("stopped answering", str(cm.exception))
+
+        def reset(n):
+            raise ConnectionResetError(104, "Connection reset by peer")
+        with self.assertRaises(HAError) as cm:
+            FrameReader(reset, lambda b: None).message()
+        self.assertIn("lost the connection", str(cm.exception))
+
+        def broken_pipe(self, b):
+            raise BrokenPipeError(32, "Broken pipe")
+        client = ha.HomeAssistant("ws://ha.local:8123", "token")
+        client._sock = type("Sock", (), {"sendall": broken_pipe})()
+        with self.assertRaises(HAError):
+            client._send_json({"type": "ping"})
+
+    def test_a_handshake_that_stalls_is_an_haerror(self):
+        # A server that accepts and then says nothing: the hung-HA case.
+        srv = socket.socket()
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        try:
+            with self.assertRaises(HAError) as cm:
+                ha.ws_connect(f"http://127.0.0.1:{srv.getsockname()[1]}", timeout=0.3)
+            self.assertIn("did not answer the websocket handshake", str(cm.exception))
+        finally:
+            srv.close()
 
     def test_close_frame_is_an_error_with_the_reason(self):
         sock = FakeSocket(server_frame(0x8, struct.pack(">H", 1008) + b"policy"))

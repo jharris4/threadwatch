@@ -76,7 +76,10 @@ def print_history(events_dir: Path, addrs: list[str], now: float | None = None) 
 
 
 def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
-            hours: float | None = None) -> None:
+            hours: float | None = None) -> int:
+    """Print the device's story. Returns 0, or 1 when some of the files
+    could not be read (the report then covers the rest); exits with a
+    message when none could."""
     addrs, display = resolve_target(cfg, target)
     addr_set = set(addrs)
     decryptor = load_decryptor(cfg)
@@ -134,6 +137,7 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
                     mle_events.append((f.ts, info.command_name))
 
     undecodable = 0
+    unreadable: list[tuple[Path, Exception]] = []
     for path in files:
         try:
             with open(path, "rb") as fh:
@@ -165,11 +169,25 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
                         except Exception:   # one malformed unsecured payload; keep going
                             undecodable += 1
         except Exception as exc:
-            print(f"(skipping {path}: {exc})")
+            # A file that cannot be opened or is not a pcap: said on stderr,
+            # not woven into the report. With none readable there is no
+            # report to give: "no frames from this device" would be a
+            # verdict on zero packets, delivered with exit 0 to whatever
+            # script asked, in the middle of the outage it was asked about.
+            print(f"(skipping {path}: {exc})", file=sys.stderr, flush=True)
+            unreadable.append((path, exc))
+    if unreadable and len(unreadable) == len(files):
+        path, exc = unreadable[0]
+        raise SystemExit(f"threadwatch why: could not read {path}: {exc}" if len(files) == 1 else
+                         f"threadwatch why: none of the {len(files)} ring files could be read "
+                         f"(first: {path}: {exc})")
     if undecodable:
         print(f"({undecodable} frames with undecodable payloads skipped)")
 
     print(f"=== {display} ({', '.join(addrs)}) ===")
+    if unreadable:
+        print(f"WARNING: {len(unreadable)} of {len(files)} ring file(s) could not be read (see stderr); "
+              "what follows covers the rest only")
     if not pcap_file:
         window = f"last {hours:g} h: " if hours is not None else ""
         print(f"analyzed {window}{len(files)} ring file(s), {files[0].name[12:23]} to {files[-1].name[12:23]}")
@@ -179,7 +197,7 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
               "battery / crashed radio), or transmitting under an unknown "
               "rotated address — check `threadwatch report` for unknowns.")
         print_history(cfg.events_dir, addrs)
-        return
+        return 1 if unreadable else 0
     print(f"first seen: {_t.strftime('%Y-%m-%d %H:%M:%S', _t.localtime(first_ts))}")
     print(f"last seen:  {_t.strftime('%Y-%m-%d %H:%M:%S', _t.localtime(last_ts))}"
           f"  ({round((_t.time() - last_ts) / 60, 1)} min ago)")
@@ -208,3 +226,4 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
     else:
         print("\nno rejoin-related MLE seen from this device in the window.")
     print_history(cfg.events_dir, addrs)
+    return 1 if unreadable else 0

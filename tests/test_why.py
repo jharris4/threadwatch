@@ -158,7 +158,7 @@ class RunWhyTest(unittest.TestCase):
                     w.write(Frame(ts=ts, raw=psdu, psdu=psdu, rssi=None, channel=None, lqi=None))
             out = io.StringIO()
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-                run_why(cfg, target or self.DEV, pcap)
+                self.rc = run_why(cfg, target or self.DEV, pcap)
         return out.getvalue()
 
     def _rows(self, text):
@@ -192,7 +192,38 @@ class RunWhyTest(unittest.TestCase):
         self.assertIn("no rejoin-related MLE seen from this device", text)
         self.assertIn("event log: nothing recorded for this device.", text)
 
-    def test_a_device_with_nothing_in_the_window_says_so(self):
+    def test_a_pcap_that_cannot_be_read_is_an_error_not_a_diagnosis(self):
+        # "No frames from this device" over zero examined packets, with
+        # exit 0, is the wrong answer in the middle of an outage.
+        import contextlib
+        import io
+        import tempfile
+        from threadwatch.config import Config
+        from threadwatch.why import run_why
+        with tempfile.TemporaryDirectory() as d:
+            cred = Path(d) / "credentials.toml"
+            cred.write_text('[credentials]\nnetwork_key = "00112233445566778899aabbccddeeff"\n')
+            cfg = Config(data_dir=Path(d) / "data", credentials_path=cred)
+            junk = Path(d) / "notes.txt"
+            junk.write_text("not a capture")
+            for path in (Path(d) / "missing.pcap", junk):
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    with self.assertRaises(SystemExit) as cm:
+                        run_why(cfg, self.DEV, path)
+                self.assertIn(str(path), str(cm.exception))
+                self.assertIn("could not read", str(cm.exception))
+                self.assertNotIn("No frames from this device", out.getvalue())
+                self.assertNotIn("Interpretation", out.getvalue())
+                self.assertIn(f"(skipping {path}", err.getvalue())    # the detail goes to stderr
+
+    def test_a_readable_pcap_returns_zero(self):
+        self._run([(self._at("2026-09-03 08:10"), self._psdu(self.DEV, 7))])
+        self.assertEqual(self.rc, 0)
+        self._run([(self._at("2026-09-03 08:10"), self._psdu(self.OTHER, 7))])   # a real "no frames" verdict
+        self.assertEqual(self.rc, 0)
+
+
         quiet = "72d035122fdf06f6"
         text = self._run([(self._at("2026-09-03 08:10"), self._psdu(self.OTHER, 7))], target=quiet)
         self.assertIn("No frames from this device in the analyzed window.", text)

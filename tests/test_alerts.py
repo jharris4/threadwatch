@@ -665,3 +665,83 @@ class DigestWindowTest(unittest.TestCase):
         self.assertEqual((d["severity"], d["count"], d["digest"]), ("critical", 3, True))
         self.assertEqual((d["first_ts"], d["last_ts"]), (REC["ts"], REC["ts"] + 2))
         self.assertEqual(alerts.digest_record("x", batch[:1], 300, 0)["severity"], "notice")
+
+
+class AlertTestCommandTest(unittest.TestCase):
+    """`threadwatch alert-test` is how an operator proves the sinks and
+    heartbeats in config.toml reach the phone before trusting them. It
+    runs Dispatcher.deliver_now, the one synchronous delivery path, with
+    every cooldown ignored: a test that was silently swallowed by a
+    cooldown, or that skipped a sink and still said ok, would certify an
+    alerting setup that does not page."""
+
+    def setUp(self):
+        self.ok, self.bad = _Server(), _Server(status=500)
+        self.addCleanup(self.ok.close)
+        self.addCleanup(self.bad.close)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        d = Path(self.tmp.name)
+        (d / "config.toml").write_text(
+            f"[capture]\ndata_dir = \"{d / 'data'}\"\n"
+            "[[alerts.sinks]]\nname = \"phone\"\ntype = \"http\"\n"
+            f"url = \"{self.ok.url}/hook\"\nmin_severity = \"notice\"\ncooldown_s = 300\n"
+            "[[alerts.sinks]]\nname = \"pager\"\ntype = \"http\"\n"
+            f"url = \"{self.bad.url}/page\"\nmin_severity = \"critical\"\n"
+            "[[heartbeats]]\nname = \"gatus\"\n"
+            f"url = \"{self.ok.url}/beat\"\n")
+        self.config = str(d / "config.toml")
+
+    def _run(self, *args):
+        import contextlib
+        import io
+        from threadwatch.cli import main
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = main(["--config", self.config, "alert-test", *args])
+        return code, out.getvalue().splitlines()
+
+    def test_every_eligible_sink_and_heartbeat_is_hit_once_and_the_rest_is_said(self):
+        code, lines = self._run()
+        self.assertEqual(code, 0)
+        self.assertEqual(lines[0], "sinks (2):")
+        self.assertTrue(lines[1].startswith("  ok   phone: "), lines)
+        self.assertEqual(lines[2], "  skip pager (min severity above warning)")
+        self.assertEqual(lines[3], "heartbeats (1):")
+        self.assertTrue(lines[4].startswith("  ok   gatus: "), lines)
+        self.assertEqual(len(lines), 5)
+        beat, hook = sorted(self.ok.wait(2), key=lambda r: r["path"])
+        self.assertEqual((beat["path"], hook["path"]), ("/beat", "/hook"))
+        body = json.loads(hook["body"])
+        self.assertEqual((body["event"], body["severity"], body["name"], body["addr"]),
+                         ("alert_test", "warning", "Test device", "0000000000000000"))
+        self.assertEqual(body["note"], f"threadwatch alert-test from {socket.gethostname()}")
+        self.assertAlmostEqual(body["ts"], time.time(), delta=30)
+        self.assertEqual(self.bad.requests, [])                      # a skipped sink is not contacted
+
+    def test_a_failing_sink_fails_the_command_and_cooldowns_do_not_apply(self):
+        self._run()                                                  # opens phone's 300 s cooldown window
+        code, lines = self._run("--severity", "critical", "--event", "drill", "--no-heartbeats")
+        self.assertEqual(code, 1)
+        self.assertTrue(lines[1].startswith("  ok   phone: "), lines)   # delivered again inside the cooldown
+        self.assertTrue(lines[2].startswith("  FAIL pager: "), lines)
+        self.assertTrue(lines[2].endswith(" -> HTTP 500"), lines)
+        self.assertEqual(len(lines), 3)                              # no heartbeats section
+        self.assertEqual([json.loads(r["body"])["event"] for r in self.ok.requests if r["path"] == "/hook"],
+                         ["alert_test", "drill"])
+        self.assertEqual([r["path"] for r in self.ok.requests if r["path"] == "/beat"], ["/beat"])
+        self.assertEqual(json.loads(self.bad.wait(1)[0]["body"])["severity"], "critical")
+
+    def test_deliver_now_reports_per_sink_and_honours_the_cooldown_only_when_asked(self):
+        good = alerts.HttpSink(name="good", url=self.ok.url + "/a", min_severity=1)
+        broken = alerts.HttpSink(name="broken", url=self.bad.url + "/b", min_severity=1)
+        quiet = alerts.HttpSink(name="quiet", url=self.ok.url + "/c", min_severity=3)   # critical only
+        dispatcher = alerts.Dispatcher([good, broken, quiet], [].append)
+        self.addCleanup(dispatcher.close)
+        self.assertEqual(dispatcher.deliver_now(REC), [(good, None), (broken, "HTTP 500")])
+        self.assertEqual(dispatcher.deliver_now(REC), [(good, None), (broken, "HTTP 500")])   # cooldown ignored
+        self.assertEqual(dispatcher.deliver_now(REC, ignore_cooldown=False), [(good, None), (broken, "HTTP 500")])
+        self.assertEqual(dispatcher.deliver_now(REC, ignore_cooldown=False), [])              # inside the window
+        self.assertEqual(dispatcher.deliver_now({**REC, "severity": "critical"}, ignore_cooldown=True),
+                         [(good, None), (broken, "HTTP 500"), (quiet, None)])
+        self.assertEqual(len([r for r in self.ok.requests if r["path"] == "/a"]), 4)

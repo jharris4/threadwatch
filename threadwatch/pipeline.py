@@ -1040,7 +1040,8 @@ class Pipeline:
             pan = row.get("pan")
             if dominant is not None and pan is not None and pan != dominant:
                 continue
-            verdict = assess_link(row, now, self.cfg.link_drop_db, self.cfg.link_hold_s)
+            verdict = assess_link(row, now, self.cfg.link_drop_db, self.cfg.link_hold_s,
+                                  pause_gap_s=self.quiet_threshold_s(addr))
             if verdict is None:
                 continue
             self.seen._dirty = True

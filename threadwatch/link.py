@@ -27,6 +27,19 @@ and judges the average against the reference:
 
 The reference is only taken once a device has been heard enough for its
 average to have settled.
+
+Only a fresh reception is evidence. The average moves per frame, so a row
+with no new frame since the last look says nothing new, and the hold and
+the daily refresh stand still while the device is silent: judged on the
+clock alone, a device that stopped talking on a weak signal was announced
+degraded on that stale level and, a day on, re-based to it as recovered,
+while the quiet detector said it was gone. A silence between receptions
+longer than pause_gap_s (the pipeline passes its quiet threshold, so this
+is a quiet spell by the recorder's own definition) is not counted toward
+either clock: both resume where they stood.
+
+  rssi_heard_frames,      the frame count and last_seen at the last look
+  rssi_heard_ts           that found a new frame.
 """
 
 from __future__ import annotations
@@ -35,17 +48,29 @@ from typing import Optional
 
 DAY_S = 86400.0
 WARMUP_FRAMES = 200
+PAUSE_GAP_S = 30 * 60.0
 
 
-def assess(row: dict, now: float, drop_db: float, hold_s: float) -> Optional[str]:
+def assess(row: dict, now: float, drop_db: float, hold_s: float,
+           pause_gap_s: float = PAUSE_GAP_S) -> Optional[str]:
     """Update one last-seen row's link bookkeeping. Returns "degraded" the
     moment a drop has held long enough to announce, "recovered" when an
     announced drop has ended (the signal came back, or the daily refresh
     made the lower level the new reference), else None. A drop_db of zero
-    disables it."""
+    disables it. Nothing changes on a look that finds no new frame."""
     rssi = row.get("rssi")
-    if rssi is None or drop_db <= 0 or row.get("frames", 0) < WARMUP_FRAMES:
+    frames = row.get("frames", 0)
+    if rssi is None or drop_db <= 0 or frames < WARMUP_FRAMES:
         return None
+    if frames == row.get("rssi_heard_frames"):
+        return None
+    heard = row.get("last_seen", now)
+    gap = heard - row.get("rssi_heard_ts", heard)
+    row["rssi_heard_frames"], row["rssi_heard_ts"] = frames, heard
+    if gap > pause_gap_s:
+        for key in ("rssi_low_since", "rssi_ref_ts"):
+            if key in row:
+                row[key] += gap
     ref = row.get("rssi_ref")
     if ref is None:
         row["rssi_ref"], row["rssi_ref_ts"] = rssi, now

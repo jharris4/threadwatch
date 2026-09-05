@@ -1705,32 +1705,42 @@ class LinkDegradationTest(unittest.TestCase):
     def _events(pipe, name):
         return [r for r in pipe.events.records if r["event"] == name]
 
-    def _talk(self, pipe, t0, rssi, n=300):
+    def _talk(self, pipe, t0, rssi, n=300, who=ROUTER):
+        """n seconds of a frame a second, with the periodic tick every
+        30 s as the capture loop runs it. Returns the time after."""
         for i in range(n):
-            pipe.ingest(frame(t0 + i, ROUTER, rssi=rssi))
+            pipe.ingest(frame(t0 + i, who, rssi=rssi))
+            if i % 30 == 29:
+                pipe.periodic(t0 + i + 1)
         return t0 + n
+
+    def _talk_through(self, pipe, t0, rssi, seconds, who=ROUTER):
+        """Heard for five minutes in every thirty, for ``seconds``: the
+        cadence of a device that is around, without a frame a second."""
+        t = t0
+        while t < t0 + seconds:
+            self._talk(pipe, t, rssi, 300, who)
+            t += 1800
+            pipe.periodic(t)
+        return t
 
     def test_fading_device_is_logged_then_recovers(self):
         pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
-        t = self._talk(pipe, 1_700_000_000.0, -60.0)
-        pipe.periodic(t)                                     # reference taken at -60
+        t = self._talk(pipe, 1_700_000_000.0, -60.0)         # reference taken at -60
         self.assertEqual(pipe.seen.table[ROUTER]["rssi_ref"], -60.0)
-        t = self._talk(pipe, t, -70.0)
-        pipe.periodic(t)                                     # clock starts
-        pipe.periodic(t + 20 * 60)
+        t = self._talk(pipe, t, -70.0, 20 * 60)              # the clock starts within the first minute
         self.assertEqual(self._events(pipe, "rssi_degradation"), [])
-        pipe.periodic(t + 31 * 60)
+        t = self._talk(pipe, t, -70.0, 12 * 60)
         evs = self._events(pipe, "rssi_degradation")
         self.assertEqual(len(evs), 1)
         ev = evs[0]
         self.assertEqual((ev["severity"], ev["name"], ev["reference_dbm"]), ("notice", "Hall Router", -60.0))
         self.assertGreaterEqual(ev["drop_db"], 9.0)   # the per-frame EWMA rounds to 0.1 dB and settles ~1 dB short
-        self.assertGreaterEqual(ev["low_for_s"], 31 * 60)
+        self.assertGreaterEqual(ev["low_for_s"], 30 * 60)
         self.assertIn("weaker than its usual -60 dBm", ev["note"])
-        pipe.periodic(t + 60 * 60)                           # still down: no repeat
+        t = self._talk(pipe, t, -70.0, 60 * 60)              # still down: no repeat
         self.assertEqual(len(self._events(pipe, "rssi_degradation")), 1)
-        t = self._talk(pipe, t + 60 * 60, -60.0)
-        pipe.periodic(t)
+        t = self._talk(pipe, t, -60.0)
         rec = self._events(pipe, "rssi_recovered")
         self.assertEqual(len(rec), 1)
         self.assertEqual(rec[0]["severity"], "info")
@@ -1739,12 +1749,9 @@ class LinkDegradationTest(unittest.TestCase):
     def test_daily_refresh_of_a_lasting_drop_closes_it_as_recovered(self):
         pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
         t = self._talk(pipe, 1_700_000_000.0, -60.0)
-        pipe.periodic(t)
-        t = self._talk(pipe, t, -70.0)
-        pipe.periodic(t)
-        pipe.periodic(t + 31 * 60)
+        t = self._talk(pipe, t, -70.0, 31 * 60)
         self.assertEqual(len(self._events(pipe, "rssi_degradation")), 1)
-        pipe.periodic(t + 86400 + 1)                         # a day into the drop: re-based
+        self._talk_through(pipe, t, -70.0, 86400)            # a day into the drop, still heard: re-based
         rec = self._events(pipe, "rssi_recovered")
         self.assertEqual(len(rec), 1)
         self.assertIn("reference re-based", rec[0]["note"])
@@ -1754,16 +1761,35 @@ class LinkDegradationTest(unittest.TestCase):
     def test_link_state_survives_a_restart(self):
         pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
         t = self._talk(pipe, 1_700_000_000.0, -60.0)
-        pipe.periodic(t)
         t = self._talk(pipe, t, -70.0)
-        pipe.periodic(t)
         pipe.seen.save()
         pipe2 = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
         row = pipe2.seen.table[ROUTER]
         self.assertEqual(row["rssi_ref"], -60.0)
-        self.assertEqual(row["rssi_low_since"], t)
-        pipe2.periodic(t + 31 * 60)
-        self.assertEqual(len(self._events(pipe2, "rssi_degradation")), 1)
+        self.assertLess(row["rssi_low_since"], t)
+        self._talk(pipe2, t, -70.0, 31 * 60)                 # heard on, after the restart
+        evs = self._events(pipe2, "rssi_degradation")
+        self.assertEqual(len(evs), 1)
+        self.assertLess(evs[0]["ts"], t + 30 * 60)             # the clock that started before the restart
+
+    def test_a_silent_device_is_neither_degraded_nor_rebased(self):
+        # BUG-09: with the rest of the mesh talking, a device that stopped
+        # on a weak signal was announced degraded on its stale average and,
+        # a day on, re-based to it as recovered, while it was quiet.
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t = self._talk(pipe, 1_700_000_000.0, -60.0)
+        t = self._talk(pipe, t, -70.0)                       # the clock starts, then it falls silent
+        t = self._talk_through(pipe, t, -60.0, 86400 + 3600, who=STRANGER)
+        self.assertEqual([r["event"] for r in pipe.events.records if r["event"].startswith("rssi_")], [])
+        self.assertEqual(pipe.seen.table[ROUTER]["rssi_ref"], -60.0)
+        self.assertIn(ROUTER, [r["addr"] for r in self._events(pipe, "device_quiet")])
+        # Back a day later, still weak: the hold resumes, it does not fire at once.
+        t = self._talk(pipe, t, -70.0, 20 * 60)
+        self.assertEqual(self._events(pipe, "rssi_degradation"), [])
+        self._talk(pipe, t, -70.0, 12 * 60)
+        evs = self._events(pipe, "rssi_degradation")
+        self.assertEqual(len(evs), 1)
+        self.assertLess(evs[0]["low_for_s"], 40 * 60)         # the day of silence is not held time
 
     def test_foreign_pan_devices_are_not_assessed(self):
         pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())

@@ -172,7 +172,11 @@ still heard, but its average RSSI at the sniffer has sat more than
 been heard 200 frames and refreshed once a day, so a drop that lasts a day
 becomes the new normal. `rssi_recovered` closes it, either because the
 signal came back or because the refresh re-based the reference (the note
-says which). `drop_db = 0` turns the detector off.
+says which). Both clocks run only while the device is heard: a silence
+longer than `[quiet] silence_s` between its frames counts toward neither
+the hold nor the refresh, and a device that has stopped talking is neither
+announced degraded on its last level nor re-based to it (`device_quiet`
+tells that story). `drop_db = 0` turns the detector off.
 
 `border_router_address_changed` is an Apple hub rebooting: Apple TVs and
 HomePods take a new Thread extended address every time. The recorder

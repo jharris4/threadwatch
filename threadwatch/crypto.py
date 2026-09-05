@@ -194,8 +194,13 @@ class Decryptor:
     def _decrypt_with_ext(self, sec, ext_hex: str) -> Optional[bytes]:
         key_index, counter, sec_level, open_part, secret = sec
         nonce = bytes.fromhex(ext_hex) + struct.pack(">L", counter) + bytes([sec_level])
-        # The capture may retain the 2-byte FCS at the tail; try both.
-        for trim in (2, 0):
+        # The vendored sniffer strips the FCS (DLT 230, IEEE802_15_4_NOFCS),
+        # so a frame this recorder captured decrypts untrimmed: that pass
+        # goes first. An imported capture may still carry the 2-byte FCS
+        # at the tail, so the trimmed pass follows, for those files only;
+        # tried the other way round, every ring frame paid a full key
+        # search in a pass that could never succeed.
+        for trim in (0, 2):
             body = secret[:len(secret) - trim]
             if len(body) < 4:
                 continue

@@ -2,6 +2,7 @@
 
 import sys
 import unittest
+from collections import deque
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -172,3 +173,46 @@ class FloodThresholdTest(unittest.TestCase):
         self._windows([750])
         self.assertTrue(det.in_flood)
         self.assertEqual(len(det.onsets), 1)
+
+
+class SnapshotUnderMutationTest(unittest.TestCase):
+    """snapshot() runs on the status thread while add_frame appends on the
+    capture thread: copying a deque mid-append raises "mutated during
+    iteration". The snapshot tries again, and after three collisions
+    gives a reduced answer rather than take status.json down with it."""
+
+    class _Flaky(deque):
+        """A deque whose first ``failures`` iterations collide with an append."""
+
+        def __init__(self, items, failures):
+            super().__init__(items, maxlen=360)
+            self.failures, self.iterations = failures, 0
+
+        def __iter__(self):
+            self.iterations += 1
+            if self.failures:
+                self.failures -= 1
+                raise RuntimeError("deque mutated during iteration")
+            return super().__iter__()
+
+    def _detector(self, failures):
+        det = Detector(DetectorConfig())
+        for w in range(8):
+            for i in range(250):
+                det.add_frame(w * 10 + i / 250)
+        det.calm = self._Flaky(det.calm, failures)       # _baseline iterates calm first
+        return det
+
+    def test_a_collision_or_two_is_retried_and_the_full_snapshot_returned(self):
+        for failures in (0, 1, 2):
+            det = self._detector(failures)
+            snap = det.snapshot()
+            self.assertEqual(snap, {"baseline_frames_per_window": 250.0, "recent_windows": [250] * 6,
+                                    "storm_active": False, "flood_onsets_recent": [], "alerts_sent": 0}, failures)
+            self.assertEqual(det.calm.iterations, failures + 1)
+
+    def test_three_collisions_give_the_reduced_snapshot(self):
+        det = self._detector(3)
+        self.assertEqual(det.snapshot(), {"storm_active": False, "alerts_sent": 0})
+        self.assertEqual(det.calm.iterations, 3)
+        self.assertEqual(det.snapshot()["baseline_frames_per_window"], 250.0)   # the next call is whole again

@@ -88,7 +88,17 @@ class DeviceNames:
         self.entries: list[dict] = []
         self.border_routers: dict[str, dict] = {}    # addr -> {hostname, instance, vendor, model, name}
         if inventory_path and inventory_path.exists():
-            raw = json.loads(inventory_path.read_text())
+            # The file is hand-edited (README): a trailing comma or a
+            # truncated save is the likeliest damage, and it must not stop
+            # the recorder or 500 every review page any more than a stray
+            # entry does. Said loudly, since every device is unknown until
+            # it is fixed; threadwatch doctor reports it as a failure.
+            try:
+                raw = json.loads(inventory_path.read_text())
+            except ValueError as exc:
+                print(f"[threadwatch] {inventory_path.name} is not valid JSON ({exc}): ignoring the file, "
+                      "so every device is unknown until it is fixed (threadwatch doctor checks it)", flush=True)
+                raw = []
             if not isinstance(raw, list):
                 print(f"[threadwatch] {inventory_path.name}: expected a list of devices, got "
                       f"{type(raw).__name__}; ignoring the file", flush=True)

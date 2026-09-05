@@ -286,6 +286,19 @@ class MalformedInventoryTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 names.resolve("nothing-matches-this")
 
+    def test_a_syntax_error_is_announced_and_ignored_not_fatal(self):
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as d:
+            inv = Path(d) / "devices.json"
+            inv.write_text('[{"name": "AQ", "extendedAddress": "%s"},]' % AQ.upper())   # a trailing comma
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                names = DeviceNames(inv)
+            self.assertIsNone(names.name(AQ))
+            self.assertEqual(names.entries, [])
+            self.assertIn("not valid JSON", out.getvalue())
+            self.assertIn("devices.json", out.getvalue())
+
     def test_top_level_object_is_ignored_not_fatal(self):
         names = self._names('{"a": {"name": "x"}}')
         self.assertEqual(names.entries, [])

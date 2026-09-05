@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from threadwatch.names import (DeviceNames, LastSeen, adopt, load_observed_names,  # noqa: E402
                                rotation_hints, suggest_entries)
+from tests.no_lan import setUpModule, tearDownModule  # noqa: E402, F401  (no mDNS from the suite)
 
 AQ = "26976e7f7d20964a"
 TV1 = "b62c32bf669272db"

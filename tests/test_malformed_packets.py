@@ -15,6 +15,7 @@ from threadwatch.mdns import TYPE_PTR, TYPE_TXT, encode_name, parse_message, rea
 from threadwatch.pcap import (DLT_NOFCS, DLT_TAP, PCAP_MAGIC_LE_US,
                               PcapStreamReader, complete_length, parse_frame)
 from threadwatch.pipeline import Pipeline
+from tests.no_lan import setUpModule, tearDownModule  # noqa: E402, F401  (no mDNS from the suite)
 
 
 class TapBoundaryTest(unittest.TestCase):

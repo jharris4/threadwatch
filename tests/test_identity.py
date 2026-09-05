@@ -13,6 +13,7 @@ from threadwatch.config import Config  # noqa: E402
 from threadwatch.events import NullEventLog  # noqa: E402
 from threadwatch.pcap import parse_frame  # noqa: E402
 from threadwatch.pipeline import Pipeline  # noqa: E402
+from tests.no_lan import setUpModule, tearDownModule  # noqa: E402, F401  (no mDNS from the suite)
 
 try:
     from cryptography.hazmat.primitives.ciphers.aead import AESCCM

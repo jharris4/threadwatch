@@ -12,6 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from threadwatch.cli import main  # noqa: E402
+from tests.no_lan import setUpModule, tearDownModule  # noqa: E402, F401  (no mDNS from the suite)
 
 
 class CliCase(unittest.TestCase):

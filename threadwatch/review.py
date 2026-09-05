@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from .events import day_bounds, day_of, iter_days, list_days, read_all, read_day
+from .events import day_bounds, day_of, iter_days, list_days, read_day
 from .names import DeviceNames, LastSeen, reception, rloc16_role
 
 SEVERITY_RANK = {"info": 0, "notice": 1, "warning": 2, "critical": 3}
@@ -230,14 +230,26 @@ def fmt_episode(ep: dict, stamp_fmt: str = "%m-%d %H:%M") -> str:
     return f"{stamp} [{ep['severity']:8s}] {ep['title']}{span}  {ep['detail']}"
 
 
+# How far either side of a day the day page reads, in days. An episode
+# that began before the window (a device quiet for over a month) still
+# shows, from its first record inside the window; one that closes after
+# it reads as still open. Reading the whole history instead made every
+# day page cost the whole log, which nothing bounded.
+EPISODE_WINDOW_DAYS = 31
+
+
 def day_episodes(events_dir: Path, day: str, now: Optional[float] = None) -> list[dict]:
-    """Episodes that touch a day. Grouping runs over the whole history, so a
-    silence that began days ago and is still open appears on every day it
-    covers with its real duration, and closes everywhere once the device
-    returns. The day files are small and cached (events.read_day)."""
+    """Episodes that touch a day. Grouping runs over the days around it
+    (EPISODE_WINDOW_DAYS either side), so a silence that began days ago
+    and is still open appears on every day it covers with its real
+    duration, and closes everywhere once the device returns. The day
+    files are small and cached (events.read_day)."""
     start, end = day_bounds(day)
+    first = day_of(start - EPISODE_WINDOW_DAYS * 86400)
+    last = day_of(end + EPISODE_WINDOW_DAYS * 86400)
+    records = [r for _day, recs in iter_days(events_dir, first, last) for r in recs]
     out = []
-    for ep in group_episodes(read_all(events_dir), now):
+    for ep in group_episodes(records, now):
         ep_end = ep["end"] if ep["end"] is not None else (now or time.time())
         if ep_end >= start and ep["start"] < end:
             ep["carried_over"] = ep["start"] < start   # began on an earlier day

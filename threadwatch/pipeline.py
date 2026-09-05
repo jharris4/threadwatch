@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Optional
 
 from .detect import Detector
-from .events import EventLog, day_of, read_day
+from .events import EventLog, day_of, prune_days, read_day
 from .link import assess as assess_link
 from .names import _EXT_ADDR, DeviceNames, LastSeen, load_border_routers, reception, rloc16_role
 from .pcap import BROADCAST_PAN, Frame
@@ -169,6 +169,7 @@ class Pipeline:
         # copy (gigabytes on a Pi) never stalls capture. Tests swap it.
         self.freezer = self._freeze_in_background
         self._summary_day: Optional[str] = None      # local day whose summary is settled
+        self._pruned_day: Optional[str] = None       # local day the event log was last pruned on
         self._resolve_after: dict[str, float] = {}   # short addr -> next attempt ts
         self._verify_after: dict[str, float] = {}    # short addr -> next re-check of its mapping
         self.extra_candidates: list[str] = []        # ext addrs to try first in the nonce search (why)
@@ -902,6 +903,7 @@ class Pipeline:
         self._check_links(now, dominant)
         if not self.ephemeral:
             self._maybe_summarize(now, dominant)
+            self._maybe_prune_events(now)
             if self._frames_by_hour:
                 self._save_frames_by_hour()
         if self.observed_names and not self.ephemeral:
@@ -1001,6 +1003,15 @@ class Pipeline:
         # Settled only once the record is written: a failed write (disk
         # full) leaves the day open, so the next periodic() tries again.
         self._summary_day = day
+
+    def _maybe_prune_events(self, now: float) -> None:
+        """Drop day files past [events] keep_days, once per local day."""
+        day = day_of(now)
+        events_dir = getattr(self.events, "dir", None)
+        if day == self._pruned_day or events_dir is None:
+            return
+        self._pruned_day = day
+        prune_days(events_dir, self.cfg.events_keep_days, now)
 
     def _records_of(self, day: str) -> list[dict]:
         events_dir = getattr(self.events, "dir", None)

@@ -84,6 +84,14 @@ alert_cooldown_s = 1800.0
 # doctor` says what this host sees. 0 disables.
 browse_s = 600             # 10 min
 
+[events]
+# The event log is one small file per local day (data/state/events/). Day
+# files older than this are deleted by the capture daemon, at start and
+# once a day; 0 keeps them for ever. The review pages read a month either
+# side of the day shown, so older history costs disk (and the size of
+# every frozen incident, which copies the whole log) and nothing else.
+keep_days = 365
+
 [web]
 # Review pages: bin/threadwatch web (systemd/threadwatch-web.service).
 # Read-only, no authentication: keep it on your LAN or behind your proxy.

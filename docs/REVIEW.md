@@ -81,7 +81,9 @@ The raw log is the wrong unit for people, so the pages group it:
 | `partition_or_leader_change`, `phase_locked_storm`, `daily_summary` | one row each, always |
 
 A quiet spell that started yesterday and ended today appears on both days
-with its real duration, because the day page reads the previous day too.
+with its real duration, because the day page reads a month either side of
+the day it shows (an episode older than that shows from its first record
+inside the window).
 The same grouping is available on the command line:
 
     bin/threadwatch events --episodes            # latest records, grouped
@@ -91,8 +93,10 @@ The same grouping is available on the command line:
 
 ## Storage
 
-`data/state/events/YYYY-MM-DD.jsonl`, one small file per local day, kept
-forever (a busy day is a few kilobytes). `threadwatch freeze` copies the
-whole directory into the incident. A single `events.jsonl` from before
+`data/state/events/YYYY-MM-DD.jsonl`, one small file per local day (a
+busy day is a few kilobytes), kept for `[events] keep_days` (a year by
+default; 0 keeps them for ever) and pruned by the capture daemon at start
+and once a day. `threadwatch freeze` copies the whole directory into the
+incident. A single `events.jsonl` from before
 day rolling is split into day files automatically the first time the
 capture daemon (or `threadwatch events`) runs; the web process only reads.

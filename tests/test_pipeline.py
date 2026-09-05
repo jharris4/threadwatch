@@ -932,6 +932,32 @@ class PollStarvationTest(unittest.TestCase):
         self.assertIn("edge of its range", evs[0]["note"])
 
 
+class EventRetentionTest(unittest.TestCase):
+    def test_the_recorder_prunes_the_log_once_a_day_and_replay_never(self):
+        import contextlib
+        import io
+        from threadwatch.events import EventLog
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Config(data_dir=Path(d) / "data", events_keep_days=7, summary_hour=-1)
+            log = EventLog(cfg.events_dir)
+            now = time.time()
+            for back in (30, 10, 8, 6, 1):
+                log.emit("e", "info", now - back * 86400)
+            with contextlib.redirect_stdout(io.StringIO()):
+                pipe = Pipeline(cfg, log, test_decryptor())
+                pipe.periodic(now)
+                days = sorted(p.stem for p in cfg.events_dir.glob("*.jsonl"))
+                self.assertEqual(len(days), 2)                         # 6 and 1 days ago
+                log.emit("e", "info", now - 20 * 86400)
+                pipe.periodic(now + 60)                                # same day: not again
+                self.assertEqual(len(list(cfg.events_dir.glob("*.jsonl"))), 3)
+                pipe.periodic(now + 86400)                             # the next day: pruned
+                self.assertEqual(len(list(cfg.events_dir.glob("*.jsonl"))), 2)
+                log.emit("e", "info", now - 20 * 86400)
+                Pipeline(cfg, log, test_decryptor(), ephemeral=True).periodic(now + 2 * 86400)
+                self.assertEqual(len(list(cfg.events_dir.glob("*.jsonl"))), 3)   # replay touches nothing
+
+
 class ObservedNamesTest(unittest.TestCase):
     def test_junk_names_do_not_accumulate_and_recurring_ones_stay(self):
         with tempfile.TemporaryDirectory() as d:

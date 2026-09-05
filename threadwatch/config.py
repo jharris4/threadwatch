@@ -62,6 +62,11 @@ class Config:
     # [summary] one daily_summary event per local day, at this hour (-1 off).
     summary_hour: int = 8
     summary_severity: str = "notice"
+    # [events] day files older than this are deleted by the recorder, at
+    # start and once a day. 0 keeps them for ever. The pages read a month
+    # either side of a day (review.EPISODE_WINDOW_DAYS), so history past
+    # that costs disk and the freeze copy only.
+    events_keep_days: int = 365
     web_bind: str = "0.0.0.0"                  # [web] review pages (threadwatch web)
     web_port: int = 8080
     alerts_raw: dict = field(default_factory=dict)      # [alerts] table, verbatim
@@ -167,6 +172,10 @@ def load(path: Optional[Path]) -> Config:
         if cfg.summary_severity not in ("info", "notice", "warning", "critical"):
             raise ValueError(f"[summary] severity must be info, notice, warning or critical, "
                              f"not {cfg.summary_severity!r}")
+        events = raw.get("events", {})
+        cfg.events_keep_days = int(events.get("keep_days", cfg.events_keep_days))
+        if cfg.events_keep_days < 0:
+            raise ValueError(f"[events] keep_days must be 0 (keep for ever) or more, not {cfg.events_keep_days}")
         web = raw.get("web", {})
         cfg.web_bind = str(web.get("bind", cfg.web_bind))
         cfg.web_port = int(web.get("port", cfg.web_port))

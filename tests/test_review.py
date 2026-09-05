@@ -121,6 +121,17 @@ class LongEpisodeTest(unittest.TestCase):
             self.assertEqual([e["title"] for e in eps], ["AQ quiet for 2d23h"], d)
         self.assertEqual(day_episodes(self.dir, day_of(T0 + 86400), now=T0 + 2 * 86400), [])
 
+    def test_a_day_page_reads_a_window_not_the_whole_history(self):
+        from threadwatch.review import EPISODE_WINDOW_DAYS
+        far = EPISODE_WINDOW_DAYS + 10
+        self.log.emit("device_quiet", "warning", T0 - far * 86400, addr=AQ, name="AQ", silent_for_s=1800)
+        self.log.emit("device_quiet", "warning", T0 - 2 * 86400, addr=PLUG, name="Plug", silent_for_s=1800)
+        eps = day_episodes(self.dir, day_of(T0), now=T0)
+        self.assertEqual([e["title"] for e in eps], ["Plug quiet for 2d0h (still quiet)"])
+        # On its own day the old silence is still there, with its duration.
+        eps = day_episodes(self.dir, day_of(T0 - far * 86400), now=T0)
+        self.assertEqual([e["title"] for e in eps], [f"AQ quiet for {far}d0h (still quiet)"])
+
     def test_recurring_rows_split_after_a_gap_and_stay_off_empty_days(self):
         for d in (-1, 1):
             self.log.emit("mle_rejoin_attempt", "notice", T0 + d * 86400, addr=AQ, name="AQ", command="Parent Request")

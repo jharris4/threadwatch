@@ -164,12 +164,16 @@ def list_days(events_dir: Path) -> list[str]:
 
 
 _read_cache: dict[Path, tuple[tuple, list]] = {}   # path -> ((mtime, size), records)
+# Day files the web process keeps parsed: the pages read a window of days
+# around the one shown (review.EPISODE_WINDOW_DAYS either side), and a
+# reader walking back through history must not keep every day it passed.
+READ_CACHE_MAX = 128
 
 
 def read_day(events_dir: Path, day: str) -> list[dict]:
     """Records of one day. Parsed files are cached by (mtime, size): the
-    review pages read the whole history per request, and only today's file
-    ever changes."""
+    review pages read a window of days per request, and only today's file
+    ever changes. The cache holds READ_CACHE_MAX files, oldest read first out."""
     path = events_dir / f"{day}.jsonl"
     try:
         st = path.stat()
@@ -187,8 +191,35 @@ def read_day(events_dir: Path, day: str) -> list[dict]:
                 out.append(json.loads(line))
             except ValueError:
                 continue
+    _read_cache.pop(path, None)
     _read_cache[path] = (stamp, out)
+    while len(_read_cache) > READ_CACHE_MAX:
+        del _read_cache[next(iter(_read_cache))]
     return list(out)
+
+
+def prune_days(events_dir: Path, keep_days: int, now: Optional[float] = None) -> list[str]:
+    """Delete day files older than ``keep_days`` local days (0: none), and
+    return the days deleted. Nothing else bounds the event log: the ring
+    has keep_files and keep_gb, and without this every incident freeze
+    copies the whole history and a day page's window is the only thing
+    keeping its cost flat."""
+    if keep_days <= 0:
+        return []
+    cutoff = day_of((now if now is not None else time.time()) - keep_days * 86400)
+    gone = []
+    for day in list_days(events_dir):
+        if day >= cutoff:
+            break
+        try:
+            (events_dir / f"{day}.jsonl").unlink()
+        except OSError:
+            continue
+        _read_cache.pop(events_dir / f"{day}.jsonl", None)
+        gone.append(day)
+    if gone:
+        _log(f"event log: dropped {len(gone)} day file(s) older than {keep_days} days ({gone[0]} .. {gone[-1]})")
+    return gone
 
 
 def iter_days(events_dir: Path, first: Optional[str] = None,

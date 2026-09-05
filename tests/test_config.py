@@ -42,6 +42,21 @@ class KeepGbTest(unittest.TestCase):
             self.assertEqual(len(list(Path(d).glob("*.pcap"))), 3)
 
 
+class EventsKeepDaysTest(unittest.TestCase):
+    def _load(self, text):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "config.toml"
+            path.write_text(text)
+            return config_mod.load(path)
+
+    def test_default_a_year_zero_for_ever_negative_refused(self):
+        self.assertEqual(self._load("[network]\nchannel = 25\n").events_keep_days, 365)
+        self.assertEqual(self._load("[events]\nkeep_days = 0\n").events_keep_days, 0)
+        self.assertEqual(self._load("[events]\nkeep_days = 30\n").events_keep_days, 30)
+        with self.assertRaises(ValueError):
+            self._load("[events]\nkeep_days = -1\n")
+
+
 class ReadOnlyStateDirTest(unittest.TestCase):
     """The web container mounts data/ read-only; before capture has run
     there is no state directory, and a reader must not die creating it."""

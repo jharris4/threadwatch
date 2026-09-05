@@ -214,6 +214,30 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual(self._quiet(pipe), [SENSOR])
         self.assertEqual(pipe.seen.table[STRANGER]["pan"], OTHER_PAN)
 
+    def test_a_device_calling_out_to_every_pan_stays_ours_and_stays_judged(self):
+        # A device that has lost its parent sends parent requests and
+        # announces to the broadcast PAN 0xffff. That is not a network it
+        # moved to: its row keeps the mesh PAN, its silence still counts,
+        # and 0xffff is never reported as a foreign PAN.
+        pipe = self._pipe()
+        t0 = 1_700_000_000.0
+        for i in range(10):
+            pipe.ingest(frame(t0 + i, ROUTER))
+            pipe.ingest(frame(t0 + i, SENSOR))
+        for i in range(3):
+            pipe.ingest(frame(t0 + 20 + i, SENSOR, pan=0xffff))
+        pipe.periodic(t0 + 3 * 3600)
+        self.assertEqual(pipe.seen.table[SENSOR]["pan"], OWN_PAN)
+        self.assertEqual(sorted(self._quiet(pipe)), sorted([ROUTER, SENSOR]))
+        self.assertEqual(self._foreign(pipe), [])
+        self.assertEqual(pipe.dominant_pan(), OWN_PAN)
+        # A row a pre-fix recorder stamped 0xffff is not a foreign device either.
+        pipe.seen.table[SENSOR]["pan"] = 0xffff
+        pipe.seen.save()
+        pipe2 = self._pipe()
+        self.assertNotIn("pan", pipe2.seen.table[SENSOR])
+        self.assertEqual(pipe2.dominant_pan(), OWN_PAN)
+
     @staticmethod
     def _foreign(pipe):
         return [(r["pan"], r["dominant_pan"], r["src"]) for r in pipe.events.records

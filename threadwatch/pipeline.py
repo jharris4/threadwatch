@@ -38,7 +38,7 @@ from .detect import Detector
 from .events import EventLog, day_of, read_day
 from .link import assess as assess_link
 from .names import DeviceNames, LastSeen, load_border_routers, reception, rloc16_role
-from .pcap import Frame
+from .pcap import BROADCAST_PAN, Frame
 from .review import dominant_pan
 
 MLE_REJOIN_COMMANDS = {"Parent Request", "Child ID Request", "Announce"}
@@ -109,6 +109,11 @@ class Pipeline:
         # which a neighbour's mesh happens to talk first.
         self.own_pans: dict[int, int] = {}
         for row in self.seen.table.values():
+            if row.get("pan") == BROADCAST_PAN:
+                # Stamped by a recorder from before broadcast frames were
+                # told apart from a move to another network: not a PAN.
+                del row["pan"]
+                self.seen._dirty = True
             if row.get("pan") is not None:
                 self.own_pans[row["pan"]] = self.own_pans.get(row["pan"], 0) + int(row.get("frames") or 0)
         self._foreign_reported: set[int] = set()
@@ -315,6 +320,12 @@ class Pipeline:
                 del self._frames_by_hour[old]
 
         who = self.identity(f)
+        # A frame to the broadcast PAN (a parent request, an announce, a
+        # beacon request: what a device sends when it has lost its network)
+        # names no source PAN at all. Taking 0xffff for one would move the
+        # sender to a "foreign" network and end its quiet checks, exactly
+        # when its disappearance is the thing to report.
+        pan = f.src_pan if f.src_pan != BROADCAST_PAN else None
 
         # ACK pairing: an ACK within 10 ms bearing the pending seq.
         prev = self.last_frame
@@ -349,7 +360,7 @@ class Pipeline:
                 stats.polls += 1
                 self._poll_sent(who, stats, f.seq, ts, f.dst)
             was_new = who not in self.seen.table
-            self.seen.touch(who, ts, f.ftype, pan=f.src_pan, rssi=f.rssi)
+            self.seen.touch(who, ts, f.ftype, pan=pan, rssi=f.rssi)
             if len(f.src) == 4:
                 self._note_rloc16(who, f.src, ts)
             pending = self._pending_routers.pop(who, None)
@@ -392,9 +403,9 @@ class Pipeline:
         # tie (a neighbour's three frames before ours at start-up) flags
         # nobody, so our own PAN is never the one reported, and the
         # neighbour's is reported as soon as ours pulls ahead.
-        if f.src_pan is not None:
-            self.own_pans[f.src_pan] = self.own_pans.get(f.src_pan, 0) + 1
-            self._last_src_by_pan[f.src_pan] = f.src
+        if pan is not None:
+            self.own_pans[pan] = self.own_pans.get(pan, 0) + 1
+            self._last_src_by_pan[pan] = f.src
             if len(self.own_pans) > 1:
                 dominant = self.dominant_pan()
                 lead = self.own_pans[dominant]

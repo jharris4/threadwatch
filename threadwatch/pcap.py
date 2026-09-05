@@ -21,6 +21,13 @@ class PcapFormatError(Exception):
     pass
 
 
+# The destination PAN of a frame addressed to every network on the channel
+# (a parent request, an announce, a beacon request). With PAN-ID
+# compression it reads back as the source PAN too, and says nothing about
+# which network the sender belongs to.
+BROADCAST_PAN = 0xffff
+
+
 @dataclass
 class Frame:
     ts: float                 # epoch seconds (float)

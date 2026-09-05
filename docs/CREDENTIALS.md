@@ -77,6 +77,55 @@ succeeding, the recorder logs `credentials_stale` at warning severity, so
 it pages, and repeats it every six hours until the file is updated and
 the recorder restarted.
 
+## Every file that holds a secret
+
+| file | holds | mode | travels |
+| --- | --- | --- | --- |
+| `config/credentials.toml` | the Thread network key | 0600 on a workstation, 0400 on the host | gitignored; `push-to-host.sh` carries it; never in the Docker image |
+| `config/alerts.env` | tokens for alert sinks and heartbeats (ntfy, Gatus, Gotify, ...) | 0600 / 0400 | gitignored; carried; loaded into the daemon's environment |
+| `config/ha.env` | the Home Assistant long-lived token and URL | 0600 / 0400 | gitignored; carried; read only by `threadwatch import` |
+| `config/config.toml` | a Home Assistant webhook id in a sink URL, if you use one; nothing else | ordinary | gitignored; carried |
+
+`data/` holds no secret: the pcaps are encrypted as received, the event
+log and state files carry names, addresses and MLE facts. What the
+recorder prints is safe to paste into a bug report: sink and heartbeat
+URLs appear in the journal as scheme, host and port only, a command sink
+as its program name, and `import`, `doctor`, `status` and `report` never
+print a key or a token. The three things worth checking before pasting
+are a `config.toml` with a webhook URL in it, a shell transcript that
+`cat`ted one of the files above, and a pcap you share together with the
+key that decrypts it.
+
+## If a secret leaks
+
+A config pasted whole into a bug report, a commit that went out before
+`.gitignore` did, a laptop gone: per secret,
+
+- **The network key.** Anyone holding it who can also hear your radio
+  reads your Thread control plane (not Matter payloads, which have their
+  own layer). The only remedy is a new key: re-commission the Thread
+  network from your border router (with Home Assistant's OTBR add-on,
+  create a new network in the Thread panel and re-add the devices; with a
+  standalone OTBR, a new active dataset). Then `bin/threadwatch import
+  --write`, or edit `credentials.toml` by hand, and restart the recorder;
+  until then it logs `credentials_stale`. Old pcaps stay decryptable
+  with the old key, which is what a leak means for them.
+- **The Home Assistant token.** Revoke it where it was made (your HA
+  profile, *Long-lived access tokens*), create a new one, put it in
+  `config/ha.env`. It is only ever read by `import`, so nothing to
+  restart.
+- **A sink or heartbeat token.** Revoke and reissue it at the service
+  (ntfy, Gatus, Gotify, Healthchecks, ...), update `config/alerts.env`,
+  restart the daemon so the new environment loads.
+- **A webhook id.** Change it in the HA automation and in the sink URL
+  in `config.toml`, restart the daemon; `bin/threadwatch alert-test`
+  confirms the new one.
+
+Then push the corrected files to the host (`bin/push-to-host.sh`) and
+run `bin/threadwatch doctor` there. A secret that reached git history
+stays there after the file is deleted: rotate it, and rewrite or discard
+the history only if the repository is shared.
+
 ## Decrypting old pcaps in Wireshark
 
 Wireshark can decrypt the ring pcaps too: Preferences → Protocols → IEEE

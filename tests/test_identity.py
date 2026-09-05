@@ -113,6 +113,26 @@ class KeySequenceTest(unittest.TestCase):
 
 
 @unittest.skipIf(AESCCM is None, "cryptography not installed")
+class UnsupportedSecurityTest(unittest.TestCase):
+    def test_frames_secured_some_other_way_are_counted_not_dropped_silently(self):
+        # The aux header of secured_frame's output starts at byte 9
+        # (0x0D: level 5, key id mode 1). Key id mode 2, a level other
+        # than 5, and an aux header cut short are all refused before any
+        # key is tried, and each shows in the counters.
+        d = Decryptor(network_key=KEY)
+        frame = bytearray(secured_frame(SED, "c829", 1))
+        mode2 = bytes(frame[:9]) + bytes([5 | (2 << 3)]) + bytes(frame[10:])
+        level4 = bytes(frame[:9]) + bytes([4 | (1 << 3)]) + bytes(frame[10:])
+        cut = bytes(frame[:11])
+        for psdu in (mode2, level4, cut):
+            self.assertIsNone(d.decrypt_frame(psdu, SED, None))
+        self.assertEqual(d.stats["mac_unsupported"], 3)
+        self.assertEqual((d.stats["mac_decrypted"], d.stats["mac_failed"], d.stats["plaintext"]), (0, 0, 0))
+        self.assertIsNotNone(d.decrypt_frame(bytes(frame), SED, None))    # the real one still reads
+        self.assertEqual(d.stats["mac_decrypted"], 1)
+
+
+@unittest.skipIf(AESCCM is None, "cryptography not installed")
 class ResolveShortTest(unittest.TestCase):
     def test_resolver_identifies_sender_and_caches(self):
         d = Decryptor(network_key=KEY)

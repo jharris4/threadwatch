@@ -73,7 +73,7 @@ class Decryptor:
     key_sequence: Optional[int] = None
     _keys_by_index: dict = field(default_factory=dict)  # key_index -> (sequence basis, [(seq, mle, mac)])
     stats: dict = field(default_factory=lambda: {
-        "mac_decrypted": 0, "mac_failed": 0, "mac_no_ext_addr": 0,
+        "mac_decrypted": 0, "mac_failed": 0, "mac_no_ext_addr": 0, "mac_unsupported": 0,
         "mle_decrypted": 0, "mle_failed": 0, "mle_unsecured": 0, "plaintext": 0,
         "short_resolved": 0, "short_unresolved": 0, "parse_failed": 0,
     })
@@ -117,6 +117,13 @@ class Decryptor:
         The returned bytes start at the MAC payload (after aux header)."""
         sec = self._secured_parts(psdu)
         if sec is None:
+            # Secured, but not the Thread way (a security level other than
+            # ENC-MIC-32, a key id mode other than 1), or cut before the
+            # end of its aux header: never tried, so neither decrypted nor
+            # failed. Counted apart, so status shows what the recorder saw
+            # and could not read, and a stale-credentials check judging
+            # failures against successes is not fed these.
+            self.stats["mac_unsupported"] += 1
             return None
         if sec is False:
             self.stats["plaintext"] += 1

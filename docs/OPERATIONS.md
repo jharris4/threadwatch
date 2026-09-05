@@ -203,8 +203,11 @@ show the same file.) The fields:
 
 **The crypto counters** say whether the network key is right. Per MAC
 frame: `plaintext` (unsecured, nothing to do), `mac_decrypted`,
-`mac_failed`, and `mac_no_ext_addr` (a frame from a short address the
-recorder has not yet matched to an extended one, so it could not try).
+`mac_failed`, `mac_no_ext_addr` (a frame from a short address the
+recorder has not yet matched to an extended one, so it could not try),
+and `mac_unsupported` (secured some other way than Thread's ENC-MIC-32
+with key index mode, or cut short inside its security header: never
+tried, so it counts as neither decrypted nor failed).
 Per MLE message: `mle_decrypted`, `mle_failed`, `mle_unsecured`.
 `short_resolved` / `short_unresolved` count the short-address searches
 that found and did not find a sender; `parse_failed` is frames the

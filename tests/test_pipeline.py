@@ -1610,3 +1610,25 @@ class FramesByHourLoadTest(unittest.TestCase):
             for junk in ("nonsense", json.dumps({"abc": 1}), json.dumps([1, 2])):
                 (cfg.state_dir / "frames-by-hour.json").write_text(junk)
                 self.assertEqual(Pipeline(cfg, NullEventLog(), test_decryptor())._frames_by_hour, {}, junk)
+
+
+class DeviceRssiEwmaTest(unittest.TestCase):
+    """DeviceStats.rssi_ewma is the same slow average the last-seen table
+    keeps (19 parts old to 1 part new): it feeds the marginal-reception
+    verdict on a starvation. Swapped weights would make it the last
+    sample, and one frame at the noise floor would turn a page into a
+    notice."""
+
+    def test_one_deep_sample_barely_moves_the_average(self):
+        with tempfile.TemporaryDirectory() as d:
+            pipe = Pipeline(Config(data_dir=Path(d) / "data"), NullEventLog(), test_decryptor(), ephemeral=True)
+            t0 = 1_700_000_000.0
+            for i in range(50):
+                pipe.ingest(frame(t0 + i, ROUTER, rssi=-60.0))
+            stats = pipe.devices[ROUTER]
+            self.assertEqual(stats.rssi_ewma, -60.0)
+            pipe.ingest(frame(t0 + 50, ROUTER, rssi=-95.0))
+            self.assertAlmostEqual(stats.rssi_ewma, -61.75)               # 0.95 * -60 + 0.05 * -95, not -93.25
+            self.assertEqual(stats.as_dict()["rssi_ewma"], -61.8)
+            self.assertEqual((stats.rssi_min, stats.rssi_max), (-95.0, -60.0))
+            self.assertEqual(pipe.seen.table[ROUTER]["rssi"], -61.8)      # the table's average agrees

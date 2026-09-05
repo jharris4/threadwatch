@@ -308,6 +308,45 @@ class QuietPolicyTest(unittest.TestCase):
         pipe.seen.save()
         self.assertEqual(self._pipe().dominant_pan(), OWN_PAN)   # and not the table's busiest
 
+    def test_a_configured_pan_falling_silent_on_a_busy_channel_is_a_warning(self):
+        # The mesh was migrated to a new PAN: every frame now carries it and
+        # the configured one is never heard again. Half an hour of that with
+        # the channel busy is the warning; a neighbour talking alongside our
+        # own frames is not, and neither is a quiet channel.
+        self.cfg.pan_id = OWN_PAN
+        pipe = self._pipe()
+        t0 = 1_700_000_000.0
+        silent = lambda: [r for r in pipe.events.records if r["event"] == "configured_pan_silent"]
+        for i in range(10):
+            pipe.ingest(frame(t0 + i, ROUTER))
+        for i in range(200):
+            pipe.ingest(frame(t0 + 100 + i * 9, STRANGER, pan=OTHER_PAN))
+        pipe.periodic(t0 + 31 * 60)                                  # ours spoke in this window
+        self.assertEqual(silent(), [])
+        for i in range(50):
+            pipe.ingest(frame(t0 + 31 * 60 + i * 30, STRANGER, pan=OTHER_PAN))
+        pipe.periodic(t0 + 62 * 60)                                  # too few frames to call the channel busy
+        self.assertEqual(silent(), [])
+        for i in range(200):
+            pipe.ingest(frame(t0 + 62 * 60 + i * 9, STRANGER, pan=OTHER_PAN))
+        pipe.periodic(t0 + 80 * 60)                                  # window not over yet
+        self.assertEqual(silent(), [])
+        pipe.periodic(t0 + 93 * 60)
+        self.assertEqual([(r["severity"], r["pan"], r["heard_frames"], r["busiest_pan"]) for r in silent()],
+                         [("warning", f"0x{OWN_PAN:04x}", 200, f"0x{OTHER_PAN:04x}")])
+        self.assertIn("update pan_id and restart", silent()[0]["note"])
+        for i in range(200):
+            pipe.ingest(frame(t0 + 93 * 60 + i * 9, STRANGER, pan=OTHER_PAN))
+        pipe.periodic(t0 + 124 * 60)                                 # still silent: no repeat inside six hours
+        self.assertEqual(len(silent()), 1)
+        # Without pan_id there is nothing to check against.
+        self.cfg.pan_id = None
+        pipe2 = self._pipe()
+        for i in range(200):
+            pipe2.ingest(frame(t0 + i * 9, STRANGER, pan=OTHER_PAN))
+        pipe2.periodic(t0 + 31 * 60)
+        self.assertEqual([r for r in pipe2.events.records if r["event"] == "configured_pan_silent"], [])
+
     def test_the_guessed_pan_needs_a_floor_and_a_margin_and_every_change_is_an_event(self):
         pipe = self._pipe()
         t0 = 1_700_000_000.0

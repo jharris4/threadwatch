@@ -117,6 +117,9 @@ class Pipeline:
                 self.own_pans[row["pan"]] = self.own_pans.get(row["pan"], 0) + int(row.get("frames") or 0)
         self._dominant: Optional[int] = None
         self._update_dominant(None)
+        self._pan_window: dict[int, int] = {}     # frames per source PAN since the window opened
+        self._pan_window_start: Optional[float] = None
+        self._pan_silent_evt = 0.0
         self._foreign_reported: set[int] = set()
         self._last_src_by_pan: dict[int, Optional[str]] = {}
         self._unheard_logged: set[str] = set()      # mDNS addresses never heard on air, complained about once
@@ -279,6 +282,37 @@ class Pipeline:
     def dominant_pan(self) -> Optional[int]:
         """This network's PAN: the configured one, else the guess so far."""
         return self.cfg.pan_id if self.cfg.pan_id is not None else self._dominant
+
+    # With pan_id set, the check that it still matches the mesh: a router
+    # advertises every few seconds, so our PAN never goes a window without
+    # a frame while the channel stays busy. A re-commission or a dataset
+    # migration moves every device to a new PAN, where each counts as
+    # foreign and none is judged, and nothing else would say so above a
+    # notice.
+    PAN_SILENT_WINDOW_S = 30 * 60
+    PAN_SILENT_MIN_FRAMES = 100
+    PAN_SILENT_REPEAT_S = 6 * 3600
+
+    def _check_configured_pan(self, now: float) -> None:
+        if self.cfg.pan_id is None or self._pan_window_start is None:
+            return
+        if now - self._pan_window_start < self.PAN_SILENT_WINDOW_S:
+            return
+        ours = self._pan_window.get(self.cfg.pan_id, 0)
+        others = sum(n for pan, n in self._pan_window.items() if pan != self.cfg.pan_id)
+        self._pan_window, self._pan_window_start = {}, now
+        if ours or others < self.PAN_SILENT_MIN_FRAMES or now - self._pan_silent_evt < self.PAN_SILENT_REPEAT_S:
+            return
+        self._pan_silent_evt = now
+        busiest = max(self.own_pans, key=self.own_pans.get) if self.own_pans else None
+        self.events.emit("configured_pan_silent", "warning", now, pan=f"0x{self.cfg.pan_id:04x}",
+                         heard_frames=others, window_s=self.PAN_SILENT_WINDOW_S,
+                         busiest_pan=None if busiest is None else f"0x{busiest:04x}",
+                         note=(f"no frame on PAN 0x{self.cfg.pan_id:04x} ([network] pan_id) in the last "
+                               f"{self.PAN_SILENT_WINDOW_S // 60} min while {others} were heard on other PANs. "
+                               "If the network was re-commissioned or migrated, every device now counts as "
+                               "foreign and none is judged: threadwatch import prints the dataset's PAN; "
+                               "update pan_id and restart."))
 
     def _update_dominant(self, ts: Optional[float]) -> None:
         """Adopt or replace the guessed PAN from the frame tally. ``ts`` is
@@ -452,6 +486,9 @@ class Pipeline:
         if pan is not None:
             self.own_pans[pan] = self.own_pans.get(pan, 0) + 1
             self._last_src_by_pan[pan] = f.src
+            self._pan_window[pan] = self._pan_window.get(pan, 0) + 1
+            if self._pan_window_start is None:
+                self._pan_window_start = ts
             self._update_dominant(ts)
             dominant = self.dominant_pan()
             if dominant is not None and len(self.own_pans) > 1:
@@ -775,6 +812,7 @@ class Pipeline:
         """Run every ~30 s in live capture: quiet checks, persistence."""
         self.seen.maybe_save()
         self._check_credentials(now)
+        self._check_configured_pan(now)
         if not self.ephemeral and self.cfg.border_router_browse_s > 0:
             self._poll_border_routers(now)
         # Devices on another PAN (a neighbour's mesh, an unpaired device

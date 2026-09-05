@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from threadwatch.mdns import (SERVICE, TYPE_A, TYPE_PTR, TYPE_SRV, TYPE_TXT, build_query,  # noqa: E402
+from threadwatch.mdns import (SERVICE, clean_text, TYPE_A, TYPE_PTR, TYPE_SRV, TYPE_TXT, build_query,  # noqa: E402
                               collect_routers, encode_name, parse_message, read_name)
 
 EXT = bytes.fromhex("c0ffee0000000001")
@@ -73,6 +73,28 @@ class WireTest(unittest.TestCase):
                          rr(full, TYPE_SRV, struct.pack(">HHH", 0, 0, 1) + encode_name("otbr.local"))])
         r = collect_routers(parse_message(response([rr(service, TYPE_PTR, inst)])) + parse_message(more))["otb." + SERVICE]
         self.assertEqual((r["hostname"], r["ext"], r["complete"]), ("otbr.local", None, True))
+
+    def test_names_and_txt_off_the_network_cannot_write_journal_lines(self):
+        # Anyone on the LAN answers mDNS. A hostname or instance carrying a
+        # newline would otherwise be printed as the recorder's own lines.
+        evil = b"\n[threadwatch] CRITICAL: phase_locked_storm\x1b[31m"
+        service = encode_name(SERVICE)
+        inst = bytes([len(evil)]) + evil + b"\xc0\x0c"
+        full = bytes([len(evil)]) + evil + service
+        host = b"\x0dhost\ninjected\x00"
+        records = parse_message(response([
+            rr(service, TYPE_PTR, inst),
+            rr(full, TYPE_SRV, struct.pack(">HHH", 0, 0, 1) + host),
+            rr(full, TYPE_TXT, txt(b"xa=" + bytes(8), b"vn=Ven\rdor", b"mn=" + b"M" * 250, b"nn=Net\nwork")),
+        ]))
+        (r,) = collect_routers(records).values()
+        for text in (r["instance"], r["hostname"], r["vendor"], r["model"], r["network_name"]):
+            self.assertNotRegex(text, r"[\x00-\x1f\x7f]", text)
+        self.assertEqual(r["vendor"], "Ven?dor")
+        self.assertEqual(r["hostname"], "host?injected")
+        self.assertEqual(r["model"], "M" * 250)
+        self.assertEqual(clean_text(b"M" * 400), "M" * 255)  # cut to what DNS allows
+        self.assertTrue(r["instance"].startswith("?[threadwatch] CRITICAL"))
 
     def test_truncated_or_looping_names_raise_cleanly(self):
         with self.assertRaises(ValueError):

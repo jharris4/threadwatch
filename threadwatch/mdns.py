@@ -35,6 +35,22 @@ CLASS_IN = 1
 
 # ------------------------------------------------------------------ wire
 
+# DNS allows 63 bytes per label and 255 per name or TXT value; anything
+# longer, and any control character, is not a name this recorder can have
+# heard from a border router.
+LABEL_MAX, TEXT_MAX = 63, 255
+
+
+def clean_text(raw: bytes, limit: int = TEXT_MAX) -> str:
+    """Network-supplied text made safe to print: an mDNS responder is
+    anyone on the LAN, and a newline in a hostname or an instance name
+    would let it write its own lines into the recorder's journal (a fake
+    "[threadwatch] CRITICAL:" among them) and its events. Control
+    characters become '?', and the text is cut to what DNS allows."""
+    text = raw[:limit].decode("utf-8", errors="replace")
+    return "".join("?" if (ord(c) < 0x20 or 0x7F <= ord(c) < 0xA0) else c for c in text)
+
+
 def encode_name(name: str) -> bytes:
     out = b""
     for label in name.rstrip(".").split("."):
@@ -67,7 +83,7 @@ def read_name(data: bytes, off: int, depth: int = 0) -> tuple[str, int]:
             tail, _ = read_name(data, ptr, depth + 1)
             return ".".join(labels + ([tail] if tail else [])), off + 2
         off += 1
-        labels.append(data[off:off + n].decode("utf-8", errors="replace"))
+        labels.append(clean_text(data[off:off + n], LABEL_MAX))
         off += n
 
 
@@ -154,10 +170,10 @@ def collect_routers(records: list[tuple[str, int, object]], service: str = SERVI
         info["port"] = port
         t = txt.get(full)
         info["ext"] = t["xa"].hex() if t and len(t.get("xa", b"")) == 8 else None
-        info["network_name"] = t["nn"].decode("utf-8", errors="replace") if t and "nn" in t else None
+        info["network_name"] = clean_text(t["nn"]) if t and "nn" in t else None
         info["ext_pan_id"] = t["xp"].hex() if t and len(t.get("xp", b"")) == 8 else None
-        info["vendor"] = t["vn"].decode("utf-8", errors="replace") if t and "vn" in t else None
-        info["model"] = t["mn"].decode("utf-8", errors="replace") if t and "mn" in t else None
+        info["vendor"] = clean_text(t["vn"]) if t and "vn" in t else None
+        info["model"] = clean_text(t["mn"]) if t and "mn" in t else None
         info["addresses"] = addrs.get(info["hostname"] or "", [])
         info["complete"] = bool(t) and target is not None
     return instances

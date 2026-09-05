@@ -37,7 +37,7 @@ from typing import Optional
 from .detect import Detector
 from .events import EventLog, day_of, read_day
 from .link import assess as assess_link
-from .names import DeviceNames, LastSeen, load_border_routers, reception, rloc16_role
+from .names import _EXT_ADDR, DeviceNames, LastSeen, load_border_routers, reception, rloc16_role
 from .pcap import BROADCAST_PAN, Frame
 
 MLE_REJOIN_COMMANDS = {"Parent Request", "Child ID Request", "Announce"}
@@ -1054,7 +1054,7 @@ class Pipeline:
         dirty = False
         for r in found:
             host, ext = r.get("hostname"), (r.get("ext") or "").lower()
-            if not host or len(ext) != 16:
+            if not host or not _EXT_ADDR.match(ext):
                 continue
             if ext not in self.seen.table:
                 # mDNS is unauthenticated: any host on the LAN can advertise

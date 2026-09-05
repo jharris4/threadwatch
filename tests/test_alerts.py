@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.error
 from unittest import mock
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
@@ -341,6 +342,46 @@ class DeliveryTests(unittest.TestCase):
         reqs = self.srv.wait(2)
         self.assertEqual([r["path"] for r in reqs], ["/ok?success=true", "/ok?success=false"])
         self.assertEqual(reqs[0]["headers"]["authorization"], "Bearer t")
+
+    def test_a_redirect_is_an_error_and_the_token_stays_home(self):
+        # urlopen follows a 302 and re-sends Authorization to the new host:
+        # whoever answers the configured URL could collect the token.
+        elsewhere = _Server()
+        outer = self
+
+        class Bounce(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                outer.bounced.append(self.path)
+                self.send_response(302)
+                self.send_header("Location", elsewhere.url + "/stolen")
+                self.end_headers()
+
+            do_PUT = do_GET = do_POST
+
+            def log_message(self, *a):
+                pass
+
+        self.bounced = []
+        bounce = HTTPServer(("127.0.0.1", 0), Bounce)
+        threading.Thread(target=bounce.serve_forever, daemon=True).start()
+        try:
+            url = f"http://127.0.0.1:{bounce.server_port}"
+            sink = alerts.HttpSink(name="s", url=url + "/hook", headers={"Authorization": "Bearer tk_SECRET"})
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                sink.send(REC)
+            self.assertEqual(cm.exception.code, 302)
+            hb = alerts.Heartbeat(name="h", url=url + "/beat", headers={"Authorization": "Bearer hb_SECRET"})
+            with self.assertRaises(urllib.error.HTTPError):
+                hb.push(True)
+            self.assertEqual(self.bounced, ["/hook", "/beat"])
+            time.sleep(0.2)
+            self.assertEqual(elsewhere.requests, [])                     # nothing followed the redirect
+            results = alerts.Dispatcher([sink], lambda m: None).deliver_now(REC)
+            self.assertEqual([err for _s, err in results], ["HTTP 302"])   # reported, not followed
+        finally:
+            bounce.shutdown()
+            elsewhere.close()
 
     def test_heartbeat_without_failure_url_stays_silent_when_unhealthy(self):
         hb = alerts.Heartbeat(name="hc", url=self.srv.url + "/ping")

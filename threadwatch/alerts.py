@@ -273,7 +273,7 @@ class HttpSink(Sink):
     def send(self, record: dict) -> None:
         req = urllib.request.Request(self.url, data=self.payload(record),
                                      headers=self.headers, method=self.method)
-        with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
+        with _urlopen(req, timeout=self.timeout_s) as resp:
             resp.read()
 
     def describe(self) -> str:
@@ -300,6 +300,26 @@ class CommandSink(Sink):
         rest = len(self.command) - 1
         return f"{self.name}: {shlex.quote(self.command[0]) if self.command else '<command>'}" \
             + (f" (+{rest} args)" if rest > 0 else "")
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse 3xx answers. urlopen follows them by default and re-sends the
+    request's headers, Authorization included, to wherever Location points,
+    another host or not: whoever answers a sink or heartbeat URL (its
+    operator, a MITM on a plain-http one, a DNS race for its name) could
+    collect the bearer token with one 302. None of the supported targets
+    answers a webhook with a redirect, so a 3xx is reported as the HTTP
+    error it is and the token stays with the configured host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_opener = urllib.request.build_opener(_NoRedirect())
+
+
+def _urlopen(req: urllib.request.Request, timeout: float):
+    return _opener.open(req, timeout=timeout)
 
 
 def _redact_url(url: str) -> str:
@@ -588,7 +608,7 @@ class Heartbeat:
         if data is not None and not any(k.lower() == "content-type" for k in headers):
             headers["Content-Type"] = "text/plain"
         req = urllib.request.Request(url, data=data, headers=headers, method=self.method)
-        with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
+        with _urlopen(req, timeout=self.timeout_s) as resp:
             resp.read()
         return True
 

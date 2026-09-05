@@ -211,6 +211,23 @@ class AdoptTest(unittest.TestCase):
             self.assertIn("already listed as 'Office Air Quality'", str(cm.exception))
             self.assertEqual(len(json.loads(inv.read_text())), 1)
 
+    def test_a_stray_null_is_named_not_a_traceback(self):
+        # The recorder skips a null or a bare string and keeps going; a
+        # command that rewrites the file must say which entry is wrong
+        # rather than crash, and must not drop it on the way out.
+        with tempfile.TemporaryDirectory() as d:
+            inv = Path(d) / "devices.json"
+            before = json.dumps([{"name": "Office Air Quality", "extendedAddress": AQ.upper()}, None])
+            inv.write_text(before)
+            with self.assertRaises(ValueError) as cm:
+                adopt(inv, TV1, "Living Room Apple TV")
+            self.assertIn("devices.json: entry 2 is null, not a device object", str(cm.exception))
+            self.assertEqual(inv.read_text(), before)
+            inv.write_text(json.dumps(["Hall Router"]))
+            with self.assertRaises(ValueError) as cm:
+                adopt(inv, TV1, "Living Room Apple TV")
+            self.assertIn("entry 1 is a str", str(cm.exception))
+
     def test_rejects_bad_input_without_touching_the_file(self):
         with tempfile.TemporaryDirectory() as d:
             inv = Path(d) / "devices.json"

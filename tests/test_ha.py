@@ -434,6 +434,16 @@ class RunImportTest(unittest.TestCase):
         ha_mod.HomeAssistant, ha_mod.thread_devices, ha_mod.thread_dataset, mdns_mod.browse = self.saved
         self.tmp.cleanup()
 
+    def test_a_malformed_inventory_is_named_before_anything_is_asked(self):
+        # A stray null the recorder skips must not become an AttributeError
+        # deep in the planner: the file and entry are named, nothing written.
+        inv = self.d / "devices.json"
+        inv.write_text(json.dumps([{"name": "Living Room Motion", "extendedAddress": "F00D000000000001"}, None]))
+        with self.assertRaises(ValueError) as cm:
+            run_import(self.cfg, inv, write=True, out=lambda line: None)
+        self.assertIn("devices.json: entry 2 is null, not a device object", str(cm.exception))
+        self.assertIsNone(json.loads(inv.read_text())[1])
+
     def test_plan_then_write(self):
         lines = []
         run_import(self.cfg, self.d / "devices.json", out=lines.append)

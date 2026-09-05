@@ -466,6 +466,30 @@ def suggest_entries(unknown: list[dict], observed: dict[str, dict[str, int]],
     return out
 
 
+def read_inventory(inventory_path: Path) -> list[dict]:
+    """The inventory as the commands that rewrite it (adopt, import) read
+    it: every entry a device object. A missing file is an empty inventory.
+
+    The recorder (DeviceNames) skips a stray null or bare string and keeps
+    recording; a command about to rewrite the file must neither crash on
+    one nor silently drop it, so this raises ValueError naming the file
+    and the entry, and the person editing decides."""
+    if not inventory_path.exists():
+        return []
+    try:
+        entries = json.loads(inventory_path.read_text() or "[]")
+    except ValueError as exc:
+        raise ValueError(f"{inventory_path.name} is not valid JSON ({exc})") from None
+    if not isinstance(entries, list):
+        raise ValueError(f"{inventory_path.name} is not a JSON list")
+    for i, entry in enumerate(entries, 1):
+        if not isinstance(entry, dict):
+            what = "null" if entry is None else f"a {type(entry).__name__}"
+            raise ValueError(f"{inventory_path.name}: entry {i} is {what}, not a device object "
+                             f"({{\"name\": ..., \"extendedAddress\": ...}}); fix the file first")
+    return entries
+
+
 def adopt(inventory_path: Path, addr: str, name: str) -> str:
     """Add ``addr`` to the inventory under ``name`` and rewrite the file.
 
@@ -482,11 +506,7 @@ def adopt(inventory_path: Path, addr: str, name: str) -> str:
     name = name.strip()
     if not name:
         raise ValueError("a device name is required")
-    entries = []
-    if inventory_path.exists():
-        entries = json.loads(inventory_path.read_text() or "[]")
-        if not isinstance(entries, list):
-            raise ValueError(f"{inventory_path.name} is not a JSON list")
+    entries = read_inventory(inventory_path)
     for entry in entries:
         if n in [_norm(a) for a in entry_addresses(entry)]:
             if (entry.get("name") or "").strip().lower() == name.lower():

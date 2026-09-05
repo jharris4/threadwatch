@@ -30,7 +30,7 @@ import json
 from pathlib import Path
 from typing import Callable, Optional
 
-from .names import entry_addresses
+from .names import entry_addresses, read_inventory
 
 
 def _addresses(entry: dict) -> list[str]:
@@ -151,7 +151,7 @@ def run_import(cfg, inventory_path: Path, *, write: bool = False, url: Optional[
     from .ha import HomeAssistant, connection_settings, current_key, thread_dataset, thread_devices, write_private
     from .pipeline import credentials_path
 
-    existing = json.loads(inventory_path.read_text() or "[]") if inventory_path.exists() else []
+    existing = read_inventory(inventory_path)   # ValueError, naming the entry, for a malformed file
     planned, changes = existing, []
     wrote = False
 

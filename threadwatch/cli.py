@@ -335,7 +335,7 @@ def main(argv=None) -> int:
                               dataset_id=args.dataset_id, use_ha=not args.no_ha, use_mdns=not args.no_mdns,
                               mdns_seconds=args.mdns_seconds, devices=not args.no_devices,
                               credentials=not args.no_credentials)
-        except HAError as exc:
+        except (HAError, ValueError) as exc:     # ValueError: a malformed devices.json, named
             parser.exit(1, f"threadwatch import: {exc}\n")
 
     if args.cmd == "adopt":

@@ -55,10 +55,14 @@ fi
 # --delete removes what the workstation lacks; the protect filter exempts
 # config/ on the receiving side, so a file there is only ever overwritten by
 # a newer workstation copy, never removed. Remove one on the host by hand.
+# .venv/ is the host's Python runtime (bin/threadwatch prefers it whenever
+# it exists) and is named here on its own: the git-derived exclude list only
+# covers it when this workstation happens to have one, and a push from a
+# checkout without one used to delete the host's.
 rsync -a --delete \
   --exclude-from "$EXCLUDES" \
-  --exclude 'data/' --exclude '.git/' \
-  --filter 'P /config/***' \
+  --exclude 'data/' --exclude '.git/' --exclude '.venv/' \
+  --filter 'P /config/***' --filter 'P /.venv/***' \
   "$REPO/" "$TARGET:$DEST_DIR/"
 ssh "$TARGET" "chmod 400 $DEST_DIR/config/credentials.toml $DEST_DIR/config/alerts.env $DEST_DIR/config/ha.env 2>/dev/null || true"
 echo "pushed to $TARGET:$DEST_DIR"

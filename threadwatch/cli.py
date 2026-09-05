@@ -180,7 +180,12 @@ def main(argv=None) -> int:
         floor = SEVERITY_RANK.get(args.severity or "info", 0)
 
         def wanted(rec):
-            if SEVERITY_RANK.get(rec.get("severity", "info"), 0) < floor:
+            # With --episodes the floor is applied to the episodes, after
+            # grouping (as the day page does): the notice that closes a
+            # warning (device_returned, poll_answered) is what tells a
+            # recovered incident from an open one, and filtering it out
+            # first turned every recovery into "still quiet".
+            if not args.episodes and SEVERITY_RANK.get(rec.get("severity", "info"), 0) < floor:
                 return False
             if addrs is not None:
                 who = (rec.get("addr") or rec.get("src") or "").lower()
@@ -209,7 +214,11 @@ def main(argv=None) -> int:
                 return 0
         if args.episodes:
             from .review import fmt_episode, group_episodes
-            for ep in group_episodes(records):
+            episodes = [ep for ep in group_episodes(records) if SEVERITY_RANK.get(ep["severity"], 0) >= floor]
+            if not episodes:
+                print(f"no episodes {what}" + (f" on {args.day}" if args.day else ""))
+                return 0
+            for ep in episodes:
                 print(fmt_episode(ep))
             return 0
         for e in records:

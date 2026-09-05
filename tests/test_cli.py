@@ -190,6 +190,27 @@ class EventsFilterTest(CliCase):
         self.assertEqual(code, 2)
         self.assertIn("neither a 16-hex-char address nor a known device name", err)
 
+    def test_episodes_are_grouped_before_the_severity_floor_is_applied(self):
+        # The return is a notice; filtered out before grouping, the warning
+        # it closed read as still open, while the day page said otherwise.
+        from threadwatch.config import load
+        from threadwatch.events import EventLog
+        log = EventLog(load(Path(self.cfg)).events_dir)
+        log.emit("device_returned", "notice", 1_756_800_000.0 + 1800, addr="b62c32bf669272db",
+                 name="Living Room Apple TV")
+        code, out, err = self.run_cli("events", "--episodes", "--severity", "warning")
+        self.assertEqual(code, 0, err)
+        lines = out.splitlines()
+        self.assertEqual(len(lines), 2, out)                    # the closed quiet and the storm; not the Office notice
+        self.assertIn("Living Room Apple TV quiet for 60m", lines[0])
+        self.assertNotIn("went quiet", out)
+        self.assertNotIn("Office", out)
+        self.assertIn("[critical", lines[1])
+        code, out, _ = self.run_cli("events", "--episodes", "--severity", "critical", "--device", "apple tv")
+        self.assertEqual((code, out.strip()), (0, "no episodes about 'apple tv' at critical or above"))
+        # Record-level filtering of the raw listing is unchanged.
+        self.assertEqual(self.events("--device", "apple tv", "--severity", "warning"), ["device_quiet"])
+
 
 if __name__ == "__main__":
     unittest.main()

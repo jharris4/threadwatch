@@ -68,8 +68,14 @@ The review pages are on port 8080 (`ports:` in `compose.yaml` to change).
   `devices.json`) and read-only into `web`.
 - `./data` holds the ring, state and incidents, exactly as native.
 - `config/alerts.env` is loaded as the container's environment when
-  present, the equivalent of the systemd unit's `EnvironmentFile`.
-- Everything in `config/` is read when a container starts: after editing
+  present, the equivalent of the systemd unit's `EnvironmentFile`. Compose
+  reads it when it *creates* the container, and a restart keeps the
+  environment the container was created with: after editing or rotating
+  a value in `alerts.env`, recreate it with `docker compose up -d
+  --force-recreate capture`. A plain restart leaves the old token in use
+  and a newly added variable absent, and the sink that references it
+  is reported disabled.
+- The files in `config/` are read when a container starts: after editing
   `config.toml`, `credentials.toml` or `devices.json`, `docker compose
   restart capture` (and `web` for `[web]`).
 - The image holds the code and nothing else: `.dockerignore` is an

@@ -31,6 +31,8 @@ pages read those back.
 sudo systemctl restart threadwatch                 # the recorder
 sudo systemctl restart threadwatch threadwatch-web # both, after a config or code change
 docker compose restart capture                     # the Docker equivalent
+docker compose up -d --force-recreate capture      # Docker, after editing config/alerts.env: a restart
+                                                   # keeps the environment the container was created with
 ```
 
 A restart is safe at any time. On SIGTERM the daemon saves the last-seen

@@ -1538,3 +1538,26 @@ class IngestGrowthGuardsTest(unittest.TestCase):
         self.assertEqual(len(pipe.dup_recent), 10)
         self.assertEqual({k[0] for k in pipe.dup_recent}, {senders[32]})
         self.assertTrue(all(ts >= t0 + 10 for ts in pipe.dup_recent.values()))
+
+
+class AckPairingWindowTest(unittest.TestCase):
+    """An ACK is the previous frame's only within 50 ms of it: an
+    802.15.4 ACK follows its frame inside a millisecond, and a wider
+    window would pair a poll with a later ACK meant for someone else,
+    which is exactly what poll starvation looks like on air. The window
+    decides every acked count and every starvation verdict."""
+
+    def test_an_ack_49_ms_late_is_paired_and_51_ms_is_not(self):
+        with tempfile.TemporaryDirectory() as d:
+            pipe = Pipeline(Config(data_dir=Path(d) / "data"), NullEventLog(), test_decryptor(), ephemeral=True)
+            t = 1_700_000_000.0
+            pipe.ingest(poll(t, SENSOR, 1))
+            pipe.ingest(ack(t + 0.049, 1))
+            stats = pipe.devices[SENSOR]
+            self.assertEqual((stats.acked, stats.acked_polls, stats.poll_pending_seq), (1, 1, None))
+            pipe.ingest(poll(t + 5, SENSOR, 2))
+            pipe.ingest(ack(t + 5.051, 2))
+            self.assertEqual((stats.acked, stats.acked_polls, stats.poll_pending_seq), (1, 1, 2))   # still waiting
+            pipe.ingest(poll(t + 10, SENSOR, 3))
+            pipe.ingest(ack(t + 10.001, 3))
+            self.assertEqual((stats.acked, stats.acked_polls, stats.poll_pending_seq), (2, 2, None))

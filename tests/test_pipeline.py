@@ -1487,3 +1487,54 @@ class DailySummaryTest(unittest.TestCase):
         replay = Pipeline(self.cfg, NullEventLog(), test_decryptor(), ephemeral=True)
         replay.periodic(self.DAY + 9 * 3600)
         self.assertEqual(self._summaries(replay.events), [])
+
+
+class IngestGrowthGuardsTest(unittest.TestCase):
+    """Two tables on the per-frame path would grow for as long as the
+    recorder runs without their guards: the hourly frame counts (one
+    bucket per hour for ever) and the retransmission window's (source,
+    seq) table (every pair ever heard). A Pi that records for weeks
+    notices; nothing else did."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cfg = Config(data_dir=Path(self.tmp.name) / "data")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_frames_by_hour_keeps_the_last_26_hours(self):
+        pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor(), ephemeral=True)
+        t0 = 1_700_000_000.0
+        for h in range(40):
+            for i in range(3):
+                pipe.ingest(frame(t0 + h * 3600 + i, ROUTER))
+        newest = int((t0 + 39 * 3600) // 3600)
+        self.assertEqual(sorted(pipe._frames_by_hour), list(range(newest - 25, newest + 1)))
+        self.assertEqual(set(pipe._frames_by_hour.values()), {3})
+        # The summary's window (24 h back from now, whole buckets) fits inside what is kept.
+        self.assertEqual(pipe.summary(t0 + 39 * 3600 + 3)["frames_24h"], 3 * 25)
+
+    def test_the_retransmission_table_is_pruned_to_the_last_seconds_past_8192_pairs(self):
+        pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor(), ephemeral=True)
+        t0 = 1_700_000_000.0
+        senders = ["%016x" % (0x1000 + n) for n in range(33)]          # 33 x 256 sequence numbers > 8192
+        n = 0
+        for src in senders:
+            for seq in range(256):
+                if n == 8192:
+                    break
+                f = frame(t0 + n * 0.0001, src)
+                f.seq = seq
+                pipe.ingest(f)
+                n += 1
+        self.assertEqual(len(pipe.dup_recent), 8192)                   # full, nothing pruned yet
+        for seq in range(10):                                          # ten seconds on: a new sender
+            f = frame(t0 + 10 + seq * 0.0001, senders[32])
+            f.seq = seq
+            pipe.ingest(f)
+        # The first of them tipped the table over: everything older than
+        # four seconds went, and the table holds only these ten pairs.
+        self.assertEqual(len(pipe.dup_recent), 10)
+        self.assertEqual({k[0] for k in pipe.dup_recent}, {senders[32]})
+        self.assertTrue(all(ts >= t0 + 10 for ts in pipe.dup_recent.values()))

@@ -895,9 +895,6 @@ class PollStarvationTest(unittest.TestCase):
         ev = self._events(pipe, "poll_starvation")[-1]
         self.assertEqual((ev["parent"], ev["parent_addr"]), ("Hall Router", ROUTER))
         self.assertIn("polled its parent Hall Router (0000)", ev["note"])
-        self.assertEqual(pipe.parent_of(SENSOR), None)        # the sensor has no RLOC16 on record yet
-        pipe.seen.table[SENSOR]["rloc16"] = "0007"
-        self.assertEqual(pipe.parent_of(SENSOR), {"router_id": 0, "rloc16": "0000", "addr": ROUTER, "name": "Hall Router"})
 
     def test_rearm_zero_pages_every_episode(self):
         self.cfg.poll_rearm_s = 0

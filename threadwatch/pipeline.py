@@ -37,7 +37,7 @@ from typing import Optional
 from .detect import Detector
 from .events import EventLog, day_of, prune_days, read_day
 from .link import assess as assess_link
-from .names import _EXT_ADDR, DeviceNames, LastSeen, load_border_routers, reception, rloc16_role
+from .names import _EXT_ADDR, DeviceNames, LastSeen, load_border_routers, reception
 from .pcap import BROADCAST_PAN, Frame
 
 MLE_REJOIN_COMMANDS = {"Parent Request", "Child ID Request", "Announce"}
@@ -627,17 +627,6 @@ class Pipeline:
             row["rloc16"] = short
             self.seen._dirty = True
         row["rloc16_ts"] = ts
-
-    def parent_of(self, ext: str) -> Optional[dict]:
-        """A child's parent, from its RLOC16: the router id in the top six
-        bits, and the device holding that router's address if known."""
-        role = rloc16_role((self.seen.table.get(ext) or {}).get("rloc16"))
-        if not role or role["role"] != "child":
-            return None
-        short = f"{role['router_id'] << 10:04x}"
-        addr = self.decryptor.short_to_ext.get(short)
-        return {"router_id": role["router_id"], "rloc16": short, "addr": addr,
-                "name": (self.names.name(addr) if addr else None)}
 
     def _poll_sent(self, who: str, stats: DeviceStats, seq: Optional[int], ts: float,
                    dst: Optional[str] = None) -> None:

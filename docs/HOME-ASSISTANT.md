@@ -140,15 +140,18 @@ actions:
 
 ## 3. Without the import command
 
-The OTBR add-on's REST API maps extended addresses to Thread records,
-and HA's device registry has the names. Manual route: in an SSH session
-on the HA host,
+The OTBR add-on's REST API (rooted at `/node/...` and `/diagnostics`,
+the same root `docs/CREDENTIALS.md` uses for the key) knows the mesh's
+extended addresses, and HA's device registry has the names. Manual
+route: in an SSH session on the HA host,
 
 ```bash
-curl -s http://core-openthread-border-router:8081/api/devices
+curl -s http://core-openthread-border-router:8081/diagnostics
 ```
 
-gives every `extAddress` the border router knows; cross-reference with
+gives every router's `ExtAddress` (children appear in their parent's
+`ChildTable` by id only; `ot-ctl child table` on the border router
+lists its own children's addresses); cross-reference with
 the HA UI (Settings → Devices → your Thread devices) and write
 `config/devices.json` entries. Then let `threadwatch report`'s
 unknown-address list catch newcomers and address rotations (Apple TVs

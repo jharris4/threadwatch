@@ -1240,19 +1240,32 @@ class Pipeline:
         self.seen._dirty = True
         if persist:
             self.seen.save()
-        silent = self.silence_s(row, now)
+        # silent_for_s is the wall clock since the device's last frame,
+        # which is what every other view of the silence shows (the
+        # "quiet now" card, the device rows, the day page's row, all
+        # computed from last_seen), so an alert and the pages agree.
+        # unheard_s is the part the recorder was up to witness, the
+        # figure judged against the window; blind_s is the difference,
+        # the recorder's own outage or clock step inside the silence.
+        wall = now - row["last_seen"]
+        unheard = self.silence_s(row, now)
+        blind = max(0.0, wall - unheard)
         # A device the sniffer barely hears goes "quiet" whenever the link
         # fades; log it, but do not page for it.
         rssi = row.get("rssi")
         marginal = reception(rssi, self.cfg.quiet_min_rssi_dbm) == "marginal"
+        note = ("sniffer hears this device at the edge of its range; "
+                "silence is more likely reception than failure" if marginal else
+                "no frames heard; if no mle_rejoin_attempt follows, "
+                "suspect device-internal failure rather than RF")
+        if blind >= 60:
+            note += (f" (the recorder itself was not listening for {round(blind / 60)} min of the "
+                     f"{round(wall / 60)} min: a restart, a stalled dongle or a clock step)")
         self.events.emit(
             "device_quiet", "notice" if marginal else "warning", now, addr=addr,
-            name=self.names.name(addr), silent_for_s=round(silent),
-            rssi_dbm=rssi, reception="marginal" if marginal else "good",
-            note=("sniffer hears this device at the edge of its range; "
-                  "silence is more likely reception than failure" if marginal else
-                  "no frames heard; if no mle_rejoin_attempt follows, "
-                  "suspect device-internal failure rather than RF"))
+            name=self.names.name(addr), silent_for_s=round(wall), unheard_s=round(unheard),
+            blind_s=round(blind), last_seen=row["last_seen"],
+            rssi_dbm=rssi, reception="marginal" if marginal else "good", note=note)
 
 
 class CredentialsError(RuntimeError):

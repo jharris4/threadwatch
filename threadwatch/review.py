@@ -98,11 +98,14 @@ def group_episodes(records: list[dict], now: Optional[float] = None) -> list[dic
                     ep["severity"] = rec["severity"]
                 continue
             # The record is written when the silence crosses the threshold;
-            # the silence itself began silent_for_s earlier.
+            # the silence itself began at the device's last frame, which
+            # the record carries (older records: silent_for_s before it).
+            since = rec.get("last_seen")
+            if not isinstance(since, (int, float)):
+                since = rec["ts"] - float(rec.get("silent_for_s") or 0)
             ep = new("quiet", rec, f"{_label(rec)} went quiet",
                      "sniffer hears it at the edge of range; probably fading, not failure"
-                     if marginal else "no frames heard", end=None,
-                     silent_since=rec["ts"] - float(rec.get("silent_for_s") or 0))
+                     if marginal else "no frames heard", end=None, silent_since=float(since))
             open_quiet[addr] = ep
         elif ev == "device_returned":
             addr = _addr(rec) or ""

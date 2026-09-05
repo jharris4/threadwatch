@@ -121,6 +121,19 @@ class LongEpisodeTest(unittest.TestCase):
             self.assertEqual([e["title"] for e in eps], ["AQ quiet for 2d23h"], d)
         self.assertEqual(day_episodes(self.dir, day_of(T0 + 86400), now=T0 + 2 * 86400), [])
 
+    def test_the_quiet_row_starts_at_the_last_frame_the_record_carries(self):
+        # After a recorder outage the record's silent_for_s is the wall
+        # clock and last_seen is exact; the row and the "quiet now" card
+        # (both from last_seen) then say the same. An older record without
+        # last_seen still works from silent_for_s.
+        self.log.emit("device_quiet", "warning", T0, addr=AQ, name="AQ", silent_for_s=4140, unheard_s=1800,
+                      blind_s=2340, last_seen=T0 - 4140)
+        self.log.emit("device_quiet", "warning", T0, addr=PLUG, name="Plug", silent_for_s=1800)
+        eps = {e["name"]: e for e in day_episodes(self.dir, day_of(T0), now=T0 + 60)}
+        self.assertEqual(eps["AQ"]["silent_since"], T0 - 4140)
+        self.assertEqual(eps["AQ"]["title"], "AQ quiet for 70m (still quiet)")
+        self.assertEqual(eps["Plug"]["silent_since"], T0 - 1800)
+
     def test_a_day_page_reads_a_window_not_the_whole_history(self):
         from threadwatch.review import EPISODE_WINDOW_DAYS
         far = EPISODE_WINDOW_DAYS + 10

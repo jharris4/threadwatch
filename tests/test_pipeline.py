@@ -406,7 +406,13 @@ class QuietPolicyTest(unittest.TestCase):
         pipe2.periodic(now + 29 * 60)                     # 2 + 29 min > the 30 min window
         self.assertEqual(self._quiet(pipe2), [ROUTER])
         rec = [r for r in pipe2.events.records if r["event"] == "device_quiet"][0]
-        self.assertAlmostEqual(rec["silent_for_s"], 31 * 60, delta=5)
+        self.assertAlmostEqual(rec["unheard_s"], 31 * 60, delta=5)
+        # What the pages show is the wall clock since the last frame, and
+        # the record says the same, with the outage inside it named.
+        self.assertAlmostEqual(rec["silent_for_s"], 69 * 60, delta=5)
+        self.assertAlmostEqual(rec["blind_s"], 38 * 60, delta=5)
+        self.assertEqual(rec["last_seen"], pipe2.seen.table[ROUTER]["last_seen"])
+        self.assertIn("not listening for 38 min of the 69 min", rec["note"])
 
     def test_a_clock_step_after_boot_is_the_recorders_blindness_not_the_devices(self):
         # An RTC-less Pi boots on its saved clock, about when it last heard
@@ -436,9 +442,12 @@ class QuietPolicyTest(unittest.TestCase):
         pipe2.periodic(boot + outage + 32 * 60)
         self.assertEqual(sorted(self._quiet(pipe2)), sorted([ROUTER, SENSOR, STRANGER]))
         self.assertEqual(len([r for r in pipe2.events.records if r["event"] == "clock_step"]), 1)
-        silent = {r["addr"]: r["silent_for_s"] for r in pipe2.events.records if r["event"] == "device_quiet"}
+        silent = {r["addr"]: r["unheard_s"] for r in pipe2.events.records if r["event"] == "device_quiet"}
         self.assertAlmostEqual(silent[ROUTER], 33 * 60, delta=5)   # 2 min before boot, 1 min up, 32 min since
         self.assertAlmostEqual(silent[STRANGER], 31.5 * 60, delta=5)
+        wall = {r["addr"]: r["silent_for_s"] for r in pipe2.events.records if r["event"] == "device_quiet"}
+        self.assertAlmostEqual(wall[ROUTER], outage + 34 * 60, delta=5)
+        self.assertAlmostEqual(wall[STRANGER], outage + 31.5 * 60, delta=5)
 
     def test_a_restart_loop_that_hears_nothing_does_not_announce_every_device(self):
         # The mesh (or the dongle) died two hours ago. Since then the
@@ -458,7 +467,8 @@ class QuietPolicyTest(unittest.TestCase):
         pipe2.periodic(now + 26 * 60)
         self.assertEqual(sorted(self._quiet(pipe2)), sorted([ROUTER, SENSOR]))
         rec = [r for r in pipe2.events.records if r["event"] == "device_quiet"][0]
-        self.assertAlmostEqual(rec["silent_for_s"], 31 * 60, delta=5)
+        self.assertAlmostEqual(rec["unheard_s"], 31 * 60, delta=5)
+        self.assertAlmostEqual(rec["silent_for_s"], 2 * 3600 + 31 * 60, delta=5)
         # A status file from before the stamp existed: the table's newest
         # last_seen stands in, and the same restart loop still pages nobody.
         pipe2.seen.save()

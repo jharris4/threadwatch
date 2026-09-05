@@ -152,13 +152,19 @@ class PcapWriter:
 def parse_frame(ts: float, data: bytes, dlt: int) -> Frame:
     rssi = channel = lqi = None
     psdu = data
-    if dlt == DLT_TAP and len(data) >= 4:
+    if dlt == DLT_TAP:
+        # An incomplete envelope is not a MAC frame or usable metadata.
+        if len(data) < 4:
+            return Frame(ts, data, b"", None, None, None)
         tap_len = struct.unpack("<H", data[2:4])[0]
+        if not 4 <= tap_len <= len(data):
+            return Frame(ts, data, b"", None, None, None)
         off = 4
-        while off + 4 <= min(tap_len, len(data)):
+        while off + 4 <= tap_len:
             tlv_type, tlv_len = struct.unpack("<HH", data[off:off + 4])
-            # A record cut short leaves fewer bytes than the TLV declares:
-            # measure what is actually there, not what the header claims.
+            next_off = off + 4 + ((tlv_len + 3) & ~3)
+            if next_off > tap_len:
+                break   # Never borrow bytes from the MAC payload for a TLV.
             val = data[off + 4:off + 4 + tlv_len]
             if tlv_type == 1 and len(val) >= 4:
                 rssi = struct.unpack("<f", val[:4])[0]
@@ -166,10 +172,8 @@ def parse_frame(ts: float, data: bytes, dlt: int) -> Frame:
                 channel = struct.unpack("<H", val[:2])[0]
             elif tlv_type == 10 and len(val) >= 1:
                 lqi = val[0]
-            off += 4 + ((tlv_len + 3) & ~3)
-        # A tap_len under 4 is not a header at all; slicing from it would
-        # reparse the TAP bytes as a MAC frame and invent devices and PANs.
-        psdu = data[tap_len:] if tap_len >= 4 else b""
+            off = next_off
+        psdu = data[tap_len:]
     frame = Frame(ts=ts, raw=data, psdu=psdu, rssi=rssi, channel=channel, lqi=lqi)
     _parse_mac(frame)
     return frame

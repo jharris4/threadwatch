@@ -17,6 +17,18 @@ from threadwatch.pcap import (DLT_NOFCS, DLT_TAP, PCAP_MAGIC_LE_US,
 from threadwatch.pipeline import Pipeline
 
 
+class TapBoundaryTest(unittest.TestCase):
+    def test_tlv_value_cannot_borrow_mac_payload_bytes(self):
+        raw = struct.pack('<HHHH', 0, 8, 1, 4) + struct.pack('<f', -60)
+        self.assertIsNone(parse_frame(1, raw, DLT_TAP).rssi)
+
+    def test_incomplete_tap_header_is_not_parsed_as_mac(self):
+        for raw in (b'\x01\x00\x07', struct.pack('<HHHHf', 0, 100, 1, 4, -60)):
+            with self.subTest(raw=raw):
+                f = parse_frame(1, raw, DLT_TAP)
+                self.assertIsNone(f.ftype)
+                self.assertIsNone(f.rssi)
+
 
 
 

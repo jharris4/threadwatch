@@ -53,7 +53,7 @@ serial port. Auto-detection finds it by USB id;
 
 ```bash
 bin/threadwatch doctor        # every line ok, including "services"
-bin/threadwatch status        # frames_total should be climbing
+bin/threadwatch status        # frames_total should be climbing (every field: docs/OPERATIONS.md)
 journalctl -u threadwatch -f  # live log incl. storm alerts
 ```
 

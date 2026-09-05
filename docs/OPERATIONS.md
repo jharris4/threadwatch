@@ -121,6 +121,49 @@ The daemon's own diagnostics, with what to do when one keeps appearing:
   heard`**: the LAN answered oddly; the recorder ignores the answer. Only a
   problem if a rebooted Apple hub stays unnamed (docs/HOME-ASSISTANT.md).
 
+## Reading `threadwatch status`
+
+`bin/threadwatch status` prints `data/state/status.json`, which the daemon
+rewrites every 30 seconds, plus two fields it works out on the spot:
+`status_age_s`, how old the file is, and `daemon_alive`, true when it is
+under 90 seconds old. (`/status` and `/api/status` on the review pages
+show the same file.) The fields:
+
+| field | meaning |
+| --- | --- |
+| `updated` | when the file was written (unix seconds) |
+| `last_frame_age_s` | seconds since this run last heard a frame, on the daemon's own clock; the watchdog exits at 180 |
+| `last_frame_ts` | when any run last heard a frame (unix seconds); unlike the age it spans restarts, and stays put while nothing is heard |
+| `port`, `channel` | the dongle's serial port and the channel being captured |
+| `frames_total` | frames this run; it should climb between two runs of `status` |
+| `uptime_s` | this run's age |
+| `current_file` | the ring file being written |
+| `devices_tracked` | addresses heard this run |
+| `partition` | null until the MLE layer has seen an advertisement, then `id`, `leader_router` (the leader's router id), `leader_rloc16`, and `leader_addr` / `leader_name` once that router id has been matched to a device |
+| `detector` | the storm detector: `baseline_frames_per_window` (calm frames per 10 s), `recent_windows` (the last six counts), `storm_active`, `flood_onsets_recent`, `alerts_sent` |
+| `crypto` | the decryption counters, below, and `key_sequence`, the highest Thread key sequence a frame has decrypted under (null until one has) |
+
+**The crypto counters** say whether the network key is right. Per MAC
+frame: `plaintext` (unsecured, nothing to do), `mac_decrypted`,
+`mac_failed`, and `mac_no_ext_addr` (a frame from a short address the
+recorder has not yet matched to an extended one, so it could not try).
+Per MLE message: `mle_decrypted`, `mle_failed`, `mle_unsecured`.
+`short_resolved` / `short_unresolved` count the short-address searches
+that found and did not find a sender; `parse_failed` is frames the
+6LoWPAN layer could not walk.
+
+- Healthy: `mac_decrypted` and `mle_decrypted` climb; `mac_failed` and
+  `mle_failed` climb too, more slowly, from devices on neighbouring meshes
+  and frames caught mid-air. A third of MLE failures is unremarkable when
+  another mesh is in range.
+- Wrong or rotated key: `mac_decrypted` and `mle_decrypted` stay at 0 (or
+  stop climbing) while the two `failed` counters keep going. After 200
+  such failures with no success the recorder logs `credentials_stale`
+  (docs/CREDENTIALS.md); `status` shows it sooner.
+- Sleepy devices unattributed: `mac_no_ext_addr` and `short_unresolved`
+  climbing with `short_resolved` flat means the senders are not in
+  `devices.json`, which is where the search takes its candidates.
+
 ## What lives under data/
 
 `data/` (or `[capture] data_dir`) is everything the recorder knows. Back

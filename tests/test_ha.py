@@ -3,6 +3,7 @@ import os
 import struct
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -104,6 +105,36 @@ class WebSocketFramingTest(unittest.TestCase):
         with self.assertRaises(HAError) as cm:
             FrameReader(sock.recv, sock.sendall).message()
         self.assertIn("policy", str(cm.exception))
+
+
+class CallDeadlineTest(unittest.TestCase):
+    @staticmethod
+    def _client(messages):
+        client = ha.HomeAssistant("ws://ha.local:8123", "token")
+        sent = []
+        client._sock = type("Sock", (), {"sendall": lambda self, b: sent.append(b)})()
+        client._reader = type("Reader", (), {"message": lambda self: next(messages)})()
+        return client, sent
+
+    def test_a_peer_that_streams_events_and_never_answers_is_given_up_on(self):
+        # The socket timeout bounds silence only; a Home Assistant pushing
+        # events every millisecond resets it for ever.
+        client, sent = self._client(iter(lambda: '{"type": "event", "event": {}}', None))
+        t0 = time.monotonic()
+        with self.assertRaises(HAError) as cm:
+            client.call_many([("config/device_registry/list", {}), ("matter/node_diagnostics", {"device_id": "d1"})],
+                             deadline_s=0.2)
+        self.assertLess(time.monotonic() - t0, 5.0)
+        self.assertIn("2 of 2 request(s)", str(cm.exception))
+        self.assertIn("matter/node_diagnostics", str(cm.exception))
+        self.assertEqual(len(sent), 2)                          # both commands had gone out
+
+    def test_results_arriving_before_the_deadline_are_collected(self):
+        client, _sent = self._client(iter([
+            '{"type": "event"}', '{"id": 2, "type": "result", "success": true, "result": "two"}',
+            '{"id": 1, "type": "result", "success": false, "error": {"message": "nope"}}']))
+        one, two = client.call_many([("a", {}), ("b", {})], deadline_s=5.0)
+        self.assertEqual((str(one), two), ("a: nope", "two"))
 
 
 class FakeHA:

@@ -33,6 +33,7 @@ import os
 import socket
 import ssl
 import struct
+import time
 import urllib.parse
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -233,12 +234,21 @@ class HomeAssistant:
             raise out
         return out
 
-    def call_many(self, requests: list[tuple[str, dict]]) -> list[Any]:
+    # How long the whole batch may take. The socket timeout bounds silence
+    # only: a peer that keeps sending resets it on every read, and Home
+    # Assistant does push events unasked, so without a deadline an import
+    # waiting on one result could sit in the loop for ever.
+    DEADLINE_S = 120.0
+
+    def call_many(self, requests: list[tuple[str, dict]], deadline_s: float | None = None) -> list[Any]:
         """Send every command at once and collect the results in order,
         each a result or an HAError. Home Assistant answers commands
         concurrently, and matter/node_diagnostics takes it a second or
         more per device, so 45 devices in flight together finish in the
-        time of the slowest one instead of the sum."""
+        time of the slowest one instead of the sum. Raises HAError when
+        any answer is still missing at the deadline."""
+        waited = self.DEADLINE_S if deadline_s is None else deadline_s
+        deadline = time.monotonic() + waited
         ids: dict[int, int] = {}
         for i, (type_, fields) in enumerate(requests):
             msg_id = self._next_id
@@ -248,6 +258,9 @@ class HomeAssistant:
         out: list[Any] = [None] * len(requests)
         pending = set(ids)
         while pending:
+            if time.monotonic() > deadline:
+                raise HAError(f"Home Assistant has not answered {len(pending)} of {len(requests)} request(s) "
+                              f"({', '.join(sorted({requests[ids[m]][0] for m in pending}))}) within {waited:g} s")
             reply = self._recv_json()
             msg_id = reply.get("id")
             if msg_id not in pending or reply.get("type") != "result":

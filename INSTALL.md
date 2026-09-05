@@ -59,6 +59,14 @@ journalctl -u threadwatch -f  # live log incl. storm alerts
 
 The review pages are at `http://<host>:8080/` (`[web]` in config.toml).
 
+A recorder that cannot start at all (no credentials, no dongle, a config
+it refuses) is restarted every 12 s until systemd's start limit (ten
+starts in ten minutes) settles it into `failed`, where `systemctl
+is-failed threadwatch` and `setup-host.sh` say so. Once the cause is
+fixed: `sudo systemctl reset-failed threadwatch && sudo systemctl restart
+threadwatch` (`setup-host.sh` does both). The stall watchdog's restarts
+are minutes apart and never reach the limit.
+
 ## 5. Updating
 
 ```bash

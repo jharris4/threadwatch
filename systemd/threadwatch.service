@@ -7,6 +7,17 @@ Description=threadwatch: continuous Thread/802.15.4 capture and storm detection
 # it waits for the sync itself, and no longer than that when offline.
 After=network-online.target time-sync.target
 Wants=network-online.target time-sync.target
+# A recorder that cannot start (no credentials, wrong channel, no dongle)
+# exits within seconds. systemd's default start limit is 5 starts in 10 s,
+# which RestartSec=10 plus the 2 s ExecStartPre can never reach, so such a
+# unit would restart every 12 s for ever, never "failed", and a monitor
+# watching unit state would see nothing wrong. Ten fast failures in ten
+# minutes (about two minutes of them) settle it into failed instead; the
+# stall watchdog's exits are minutes apart and never trip this. To start
+# again after the cause is fixed: systemctl reset-failed threadwatch
+# (bin/setup-host.sh does).
+StartLimitIntervalSec=600
+StartLimitBurst=10
 
 [Service]
 Type=simple

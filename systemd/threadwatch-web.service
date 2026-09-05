@@ -4,6 +4,10 @@ Description=threadwatch web: day-by-day event review pages
 # pages tell today's time from the clock.
 After=network-online.target time-sync.target
 Wants=network-online.target time-sync.target
+# As for threadwatch.service: fast repeated failures reach failed rather
+# than restarting for ever (systemctl reset-failed threadwatch-web to retry).
+StartLimitIntervalSec=600
+StartLimitBurst=10
 
 [Service]
 Type=simple

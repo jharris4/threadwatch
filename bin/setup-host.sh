@@ -130,11 +130,31 @@ CONF
   fi
   systemctl daemon-reload
   systemctl enable threadwatch threadwatch-web
+  # A unit that hit its start limit on the previous configuration stays
+  # failed until told otherwise; this run may be the fix for it.
+  systemctl reset-failed threadwatch threadwatch-web 2>/dev/null || true
   # restart, not enable --now: an already-running unit must pick up the new code
   systemctl restart threadwatch threadwatch-web
-  sleep 3
+  # For Type=simple, restart returns as soon as the process is forked: a
+  # recorder refusing its configuration dies a few seconds later. Wait
+  # past ExecStartPre (2 s) and start-up, then ask, and say so and exit
+  # non-zero when either unit is not running, so a dead recorder is not
+  # reported as "Done".
+  sleep 8
+  BROKEN=""
+  for unit in threadwatch threadwatch-web; do
+    if ! systemctl is-active --quiet "$unit"; then
+      BROKEN="$BROKEN $unit"
+    fi
+  done
   systemctl --no-pager --lines=5 status threadwatch || true
   systemctl --no-pager --lines=3 status threadwatch-web || true
+  if [ -n "$BROKEN" ]; then
+    echo >&2
+    echo "NOT RUNNING:$BROKEN. See the status above and: journalctl -u threadwatch -n 50" >&2
+    echo "After fixing the cause: systemctl reset-failed$BROKEN && systemctl restart$BROKEN" >&2
+    exit 1
+  fi
 fi
 
 cat <<DONE

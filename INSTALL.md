@@ -87,6 +87,19 @@ file still ships; a file that was never committed does not, and the script
 warns when one of those is a `.py` or lives in `bin/`. Without `--push-only`
 it also runs setup-host.sh for you.
 
+`config/` travels one way, and the workstation's copy wins. Every file
+under `config/` on the workstation overwrites the host's file of that
+name, newer or not; a file only the host has (a `credentials.toml` that
+`threadwatch import` wrote there, a `config.toml` edited over ssh) is
+left in place, never deleted, and so is everything under `data/`. So the
+workstation's `config/` is authoritative for whatever it contains: an
+edit made on the host to a file the workstation also holds is undone by
+the next push, and a workstation holding an old network key replaces the
+host's good one (the recorder then logs `credentials_stale`). Keep one
+place to edit, the workstation, and copy a host-side edit back (`scp`)
+before pushing again. A push from a clone with no secrets removes none
+from the host. To remove a config file from the host, delete it there.
+
 ## 6. Placement and storage
 
 - Put the recorder and dongle **near your Thread border router**: the

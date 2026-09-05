@@ -53,9 +53,11 @@ chmod 600 config/credentials.toml
 ```
 
 `bin/push-to-host.sh` carries the file to the capture host with the rest
-of the local config; `setup-host.sh` locks it to mode 0400 there, where
-nobody edits it (0600 here keeps it private and editable). To keep
-it somewhere else, point config.toml at it:
+of the local config, overwriting the host's copy when both machines have
+one and leaving a file that only the host has in place (INSTALL.md,
+"Updating"); `setup-host.sh` locks it to mode 0400 there, where nobody
+edits it (0600 here keeps it private and editable). To keep it somewhere
+else, point config.toml at it:
 
 ```toml
 [credentials]

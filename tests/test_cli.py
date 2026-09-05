@@ -173,6 +173,16 @@ class ConfigValidationTest(unittest.TestCase):
         cfg = self._load('[capture]\ndata_dir = "$TW_TEST_ROOT/data"\n')
         self.assertEqual(str(cfg.data_dir), "/tmp/tw-test-root/data")
 
+    def test_a_config_path_that_does_not_exist_is_one_line_not_a_traceback(self):
+        from threadwatch.cli import main
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as cm:
+            main(["--config", "/nonexistent/config.toml", "status"])
+        self.assertEqual(cm.exception.code, 2)
+        self.assertIn("threadwatch: ", err.getvalue())
+        self.assertIn("/nonexistent/config.toml", err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
+
     def test_doctor_warns_when_no_config_file_was_read(self):
         from threadwatch import doctor
         from threadwatch.config import Config

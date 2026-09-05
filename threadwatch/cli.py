@@ -109,7 +109,10 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     try:
         cfg = config_mod.load(args.config)
-    except ValueError as exc:
+    except (ValueError, OSError) as exc:
+        # ValueError covers malformed TOML and rejected values; OSError a
+        # --config path that does not exist or cannot be read (a typo, or
+        # a volume that failed to mount): one line, not five frames.
         parser.exit(2, f"threadwatch: {exc}\n")
     from .pipeline import CredentialsError
 

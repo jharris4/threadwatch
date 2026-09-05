@@ -288,3 +288,26 @@ class AlertCooldownTest(unittest.TestCase):
         self.assertEqual(sent[2210], 2)                     # the first onset past 360 + 1800 s
         self.assertEqual(det.alerts_sent, 2)                # and the three after it are inside the next
         self.assertTrue(det.storm_active)
+
+
+class StormOverTest(unittest.TestCase):
+    """A storm is over once flooding has stopped for three periods (three
+    times period_max_s, 540 s). Sooner, and the gap between two bursts
+    of one storm ends it, so the next burst is a new storm with its own
+    alert, and the calm windows inside it become the baseline."""
+
+    def test_a_storm_ends_three_periods_after_its_last_flood(self):
+        self.assertEqual(DetectorConfig().period_max_s, 180.0)
+        det = Detector(DetectorConfig(alert_cooldown_s=0))
+        active = {}
+        for w in range(0, 1000, 10):
+            n = 1500 if w in (200, 280, 360) else 250
+            for i in range(n):
+                det.add_frame(w + i / n)
+            active[w] = det.storm_active                    # after the window before w has closed
+        self.assertTrue(active[370])                        # locked at the third onset
+        self.assertTrue(active[560])                        # one period of quiet: still a storm
+        self.assertTrue(active[910])                        # window 900 closed: 540 s since the flood, not over
+        self.assertFalse(active[920])                       # window 910 closed: 550 s, over
+        self.assertFalse(det.storm_active)
+        self.assertEqual(det.alerts_sent, 1)

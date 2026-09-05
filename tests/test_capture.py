@@ -10,8 +10,9 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch.capture import (EXIT_SNIFFER_DIED, EXIT_STALLED, STALL_TIMEOUT_S, _write_status,  # noqa: E402
-                                 capture_healthy, capture_stalled, last_frame_on_record, watchdog_verdict)
+from threadwatch.capture import (EXIT_SNIFFER_DIED, EXIT_STALLED, PERIODIC_S, STALL_TIMEOUT_S, TICK_S,  # noqa: E402
+                                 _write_status, capture_healthy, capture_stalled, last_frame_on_record,
+                                 periodic_due, watchdog_verdict)
 from threadwatch.config import Config  # noqa: E402
 from threadwatch.crypto import Decryptor  # noqa: E402
 from threadwatch.events import NullEventLog  # noqa: E402
@@ -162,3 +163,33 @@ class WatchdogVerdictTest(unittest.TestCase):
         self.assertEqual(watchdog_verdict(181.0, ring_open=True, sniffer_alive=True), EXIT_STALLED)
         self.assertEqual(watchdog_verdict(181.0, ring_open=False, sniffer_alive=True), EXIT_STALLED)   # alive, never delivered
         self.assertEqual(watchdog_verdict(181.0, ring_open=False, sniffer_alive=False), EXIT_SNIFFER_DIED)
+
+
+class PeriodicTickTest(unittest.TestCase):
+    """Pipeline.periodic is where silences are judged and state is saved,
+    and the main loop runs it once per 30 s of frame time. Slower, and
+    every device_quiet lands late and a crash loses more of the table;
+    the loop only ever ran it inline, so nothing pinned the interval."""
+
+    B = 1_700_000_010.0          # a multiple of 30: the start of a period
+
+    def test_periodic_is_due_once_per_thirty_seconds_and_never_on_the_first_tick(self):
+        self.assertEqual((TICK_S, PERIODIC_S), (10.0, 30))
+        B = self.B
+        self.assertFalse(periodic_due(0.0, B))                # the loop's first tick
+        self.assertFalse(periodic_due(B, B + 10))             # still the period that began at B
+        self.assertFalse(periodic_due(B + 10, B + 20))
+        self.assertTrue(periodic_due(B + 20, B + 30))         # the next period begins
+        self.assertFalse(periodic_due(B + 30, B + 40))
+        self.assertTrue(periodic_due(B + 50, B + 60))
+        self.assertTrue(periodic_due(B + 20, B + 300))        # a gap: due at once, not once per missed period
+
+    def test_the_loop_runs_it_ten_times_in_five_minutes_of_frames(self):
+        ran, last_tick = [], 0.0
+        for i in range(301):                                  # a frame a second, as the main loop sees them
+            now = self.B + i
+            if now - last_tick >= TICK_S:
+                if periodic_due(last_tick, now):
+                    ran.append(now - self.B)
+                last_tick = now
+        self.assertEqual(ran, [30, 60, 90, 120, 150, 180, 210, 240, 270, 300])

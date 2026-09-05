@@ -144,6 +144,21 @@ def watchdog_verdict(age: float, ring_open: bool, sniffer_alive: bool) -> Option
     return None
 
 
+# The main loop looks at the frame clock every TICK_S and runs
+# Pipeline.periodic (quiet checks, link checks, the state saves, the daily
+# summary) once per PERIODIC_S of it: every quiet decision and every save
+# waits on this, so it is as slow as it can be and no slower.
+TICK_S = 10.0
+PERIODIC_S = 30
+
+
+def periodic_due(last_tick: float, now: float) -> bool:
+    """Whether a tick at `now` is the first inside a new PERIODIC_S period
+    since the tick before it. Nothing is due on the loop's first tick
+    (`last_tick` 0.0)."""
+    return bool(last_tick) and int(last_tick) // PERIODIC_S != int(now) // PERIODIC_S
+
+
 def capture_healthy(last_frame_mono: Optional[float], now: float,
                     timeout: float = STALL_TIMEOUT_S) -> Optional[bool]:
     """The heartbeat's answer: unknown (None) until this run has heard a
@@ -287,8 +302,8 @@ def run_capture(cfg: Config) -> None:
                 beat["last_frame_mono"] = time.monotonic()
                 beat["total"] = total
                 now = frame.ts
-                if now - last_tick >= 10:
-                    if last_tick and int(last_tick) // 30 != int(now) // 30:
+                if now - last_tick >= TICK_S:
+                    if periodic_due(last_tick, now):
                         pipe.periodic(now)
                     last_tick = now
         # The sniffer closed its end of the FIFO: dongle unplugged or the

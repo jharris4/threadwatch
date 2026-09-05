@@ -331,3 +331,64 @@ class RunWhyRingTest(unittest.TestCase):
         with self.assertRaises(SystemExit) as cm:                     # none readable: no report at all
             self._run(hours=2)
         self.assertIn("none of the 2 ring files could be read", str(cm.exception))
+
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_identity import AESCCM, KEY, OTHER, PAN, SED, mle_message, secured_frame  # noqa: E402
+
+
+@unittest.skipIf(AESCCM is None, "cryptography not installed")
+class WhyNetworkContextTest(unittest.TestCase):
+    """BUG-04: `why` used to identify frames without ingesting them, so an
+    MLE advertisement from another device (the one thing that carries a
+    key sequence past the decryptor's initial search) was skipped as not
+    ours, and the target's polls under that sequence resolved to nobody."""
+
+    def _run(self, frames, target):
+        import contextlib
+        import io
+        import tempfile
+        from threadwatch.config import Config
+        from threadwatch.pcap import Frame, PcapWriter
+        from threadwatch.why import run_why
+        with tempfile.TemporaryDirectory() as d:
+            cred = Path(d) / "credentials.toml"
+            cred.write_text(f'[credentials]\nnetwork_key = "{KEY.hex()}"\n')
+            cfg = Config(data_dir=Path(d) / "data", credentials_path=cred)
+            pcap = Path(d) / "window.pcap"
+            with open(pcap, "wb") as fh:
+                w = PcapWriter(fh, 195)                         # frames carry an FCS, as the sniffer's do
+                for ts, raw in frames:
+                    w.write(Frame(ts=ts, raw=raw, psdu=raw, rssi=None, channel=None, lqi=None))
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                run_why(cfg, target, pcap)
+        return out.getvalue()
+
+    @staticmethod
+    def _advertisement(src_ext, sequence, counter):
+        """A MAC-unsecured data frame to the broadcast PAN carrying an
+        MLE-secured Advertisement, as every router sends on the air."""
+        import struct
+        fcf = 1 | 0x0040 | (2 << 10) | (1 << 12) | (3 << 14)
+        header = struct.pack("<HBH", fcf, counter & 0xFF, PAN) + b"\xff\xff" + bytes.fromhex(src_ext)[::-1]
+        iphc = struct.pack(">H", 0x7F3B) + b"\x01"
+        udp = b"\xf0" + struct.pack(">HH", 19788, 19788) + b"\x00\x00"
+        src_ip = bytes.fromhex("fe80000000000000") + bytes([0x02 ^ int(src_ext[:2], 16)]) + bytes.fromhex(src_ext[2:])
+        dst_ip = bytes.fromhex("ff020000000000000000000000000001")
+        body = b"\x04" + b"\x00\x02" + bytes.fromhex("0400")   # Advertisement, Source Address 0x0400
+        # No FCS: an unsecured payload is taken as written, and the MLE
+        # MIC covers the whole of it.
+        return header + iphc + udp + mle_message(src_ext, sequence, counter, src_ip, dst_ip, body)
+
+    def test_another_devices_mle_supplies_the_sequence_the_targets_polls_need(self):
+        t0 = time.mktime(time.strptime("2026-09-03 08:10", "%Y-%m-%d %H:%M"))
+        frames = [(t0, self._advertisement(OTHER, 5000, 9)),
+                  (t0 + 5, secured_frame(SED, "c829", 10, ftype=3, sequence=5000))]
+        text = self._run(frames, SED)
+        self.assertNotIn("No frames from this device", text)
+        self.assertIn(f"=== {SED} ({SED}) ===", text)
+        row = next(l.split() for l in text.splitlines() if l.startswith("09-03 08h"))
+        self.assertEqual(row[2:4], ["1", "1"])                   # one frame, and it is a poll
+        # The advertisement itself stays the other device's frame.
+        self.assertNotIn("Advertisement", text)

@@ -442,7 +442,10 @@ class Pipeline:
 
     # ------------------------------------------------------------ ingest
 
-    def ingest(self, f: Frame) -> None:
+    def ingest(self, f: Frame) -> Optional[str]:
+        """Take one frame. Returns the extended address it was attributed
+        to (identity), or None, so a caller walking a capture for one
+        device (why) can filter on the same answer without a second pass."""
         ts = f.ts
         self.detector.add_frame(ts)
         bucket = int(ts // 3600)
@@ -610,6 +613,7 @@ class Pipeline:
             self._deep_inspect(f)
 
         self.last_frame = f
+        return who
 
     # -------------------------------------------------- poll starvation
 

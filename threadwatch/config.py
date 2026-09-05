@@ -159,7 +159,13 @@ def load(path: Optional[Path]) -> Config:
                     "period_max_s", "period_onsets", "alert_cooldown_s"):
             if key in det:
                 setattr(cfg.detector, key, det[key])
-        if int(cfg.detector.period_onsets) < 2:
+        # Kept as the int the detector slices with: a TOML 3.0 passed the
+        # check below and crashed _check_periodicity at the first storm.
+        onsets = cfg.detector.period_onsets
+        if isinstance(onsets, bool) or not isinstance(onsets, (int, float)) or onsets != int(onsets):
+            raise ValueError(f"[detect] period_onsets must be a whole number of onsets, not {onsets!r}")
+        cfg.detector.period_onsets = int(onsets)
+        if cfg.detector.period_onsets < 2:
             raise ValueError(f"[detect] period_onsets must be at least 2 (a period needs two "
                              f"onsets to measure), not {cfg.detector.period_onsets}")
         quiet = raw.get("quiet", {})

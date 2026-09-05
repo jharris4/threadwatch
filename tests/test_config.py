@@ -64,6 +64,35 @@ class ChannelTest(unittest.TestCase):
             self.assertEqual(str(cm.exception), f"[network] channel must be 11-26, not {bad}")
 
 
+class PeriodOnsetsTest(unittest.TestCase):
+    def _load(self, text):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "config.toml"
+            path.write_text(text)
+            return config_mod.load(path)
+
+    def test_a_whole_number_is_kept_as_an_int_and_anything_else_is_refused(self):
+        # A TOML 3.0 passed the "at least 2" check and reached the detector
+        # as a float, which is not a slice index: the recorder crashed at
+        # the first qualifying storm rather than at start-up.
+        from threadwatch.detect import Detector
+        cfg = self._load("[detect]\nperiod_onsets = 3\n")
+        self.assertIs(type(cfg.detector.period_onsets), int)
+        self.assertEqual(cfg.detector.period_onsets, 3)
+        det = Detector(cfg.detector)
+        det.onsets.extend([1000.0, 1080.0, 1160.0])
+        det._check_periodicity()                              # what the float used to crash
+        self.assertTrue(det.storm_active)
+        self.assertIs(type(self._load("[detect]\nperiod_onsets = 3.0\n").detector.period_onsets), int)
+        for bad in ("2.5", "true", '"3"'):
+            with self.assertRaises(ValueError) as cm:
+                self._load(f"[detect]\nperiod_onsets = {bad}\n")
+            self.assertIn("period_onsets must be a whole number", str(cm.exception))
+        with self.assertRaises(ValueError) as cm:
+            self._load("[detect]\nperiod_onsets = 1\n")
+        self.assertIn("at least 2", str(cm.exception))
+
+
 class EventsKeepDaysTest(unittest.TestCase):
     def _load(self, text):
         with tempfile.TemporaryDirectory() as d:

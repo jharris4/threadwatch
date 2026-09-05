@@ -7,7 +7,8 @@ Thread key derivation (as implemented by OpenThread and Wireshark):
     HMAC-SHA256(network_key, key_sequence_be32 || "Thread") -> 32 bytes
     bytes[0:16]  = MLE key
     bytes[16:32] = MAC key
-The 802.15.4 aux header carries key_index = (key_sequence % 127) + 1, so the
+The 802.15.4 aux header carries key_index = (key_sequence & 0x7f) + 1 (so
+indices 1-128 repeat every 128 rotations; OpenThread mac_types.cpp), so the
 sequence is recovered by trying candidates that match the observed index:
 the first few generations until a frame has decrypted, then the generations
 around the sequence that frame used. MLE messages carry the sequence
@@ -88,16 +89,16 @@ class Decryptor:
             self.key_sequence = sequence
 
     def _keys_for_index(self, key_index: int):
-        if not 1 <= key_index <= 127:
+        if not 1 <= key_index <= 128:
             return []
         cached = self._keys_by_index.get(key_index)
         if cached is None or cached[0] != self.key_sequence:
             if self.key_sequence is None:
-                seqs = [key_index - 1 + 127 * k for k in range(self.INITIAL_GENERATIONS)]
+                seqs = [key_index - 1 + 128 * k for k in range(self.INITIAL_GENERATIONS)]
             else:
-                span = 127 * self.NEARBY_GENERATIONS
+                span = 128 * self.NEARBY_GENERATIONS
                 seqs = sorted((s for s in range(max(0, self.key_sequence - span), self.key_sequence + span + 1)
-                               if (s % 127) + 1 == key_index),
+                               if (s & 0x7f) + 1 == key_index),
                               key=lambda s: abs(s - self.key_sequence))
             cached = (self.key_sequence, [(s, *derive_keys(self.network_key, s)) for s in seqs])
             self._keys_by_index[key_index] = cached

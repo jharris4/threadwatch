@@ -35,7 +35,7 @@ def secured_frame(src_ext: str, src_short: str, counter: int, ftype: int = 1,
     fcf = ftype | 0x0008 | 0x0040 | (2 << 10) | (1 << 12) | (2 << 14)
     header = struct.pack("<HBH", fcf, counter & 0xFF, PAN) + bytes.fromhex("00cc")[::-1] \
         + bytes.fromhex(src_short)[::-1]
-    aux = bytes([0x0D]) + struct.pack("<L", counter) + bytes([sequence % 127 + 1])   # level 5, key mode 1
+    aux = bytes([0x0D]) + struct.pack("<L", counter) + bytes([(sequence & 0x7f) + 1])   # level 5, key mode 1
     open_part = header + aux + (b"\x04" if ftype == 3 else b"")
     if ftype == 3:
         payload = b""
@@ -50,7 +50,7 @@ def mle_message(src_ext: str, sequence: int, counter: int, src_ip: bytes, dst_ip
     """A secured MLE message (UDP payload) as Thread sends it: security suite
     0, key id mode 2, whose key source is the key sequence itself."""
     aux = bytes([5 | (2 << 3)]) + struct.pack("<L", counter) + struct.pack(">L", sequence) \
-        + bytes([sequence % 127 + 1])
+        + bytes([(sequence & 0x7f) + 1])
     mle_key, _mac = derive_keys(KEY, sequence)
     nonce = bytes.fromhex(src_ext) + struct.pack(">L", counter) + bytes([5])
     return bytes([0]) + aux + AESCCM(mle_key, tag_length=4).encrypt(nonce, body, src_ip + dst_ip + aux)
@@ -67,21 +67,34 @@ class KeySequenceTest(unittest.TestCase):
         d = Decryptor(network_key=KEY)
         for seq in (0, 84, 1015):                        # the first eight generations: found cold
             self.assertTrue(self._decrypts(Decryptor(network_key=KEY), seq), seq)
-        self.assertFalse(self._decrypts(d, 1023))        # the ninth generation of key index 8: not searched cold
+        self.assertFalse(self._decrypts(d, 1031))        # the ninth generation of key index 8: not searched cold
         self.assertFalse(self._decrypts(d, 5000))
         d.note_key_sequence(4999)                        # ...until something says where the network is
         self.assertTrue(self._decrypts(d, 5000))
         self.assertTrue(self._decrypts(d, 4998))         # a straggler on an older key still reads
-        self.assertFalse(self._decrypts(d, 5000 + 127 * 3))   # too far to be this network's next key
+        self.assertFalse(self._decrypts(d, 5000 + 128 * 3))   # too far to be this network's next key
         self.assertEqual(d.key_sequence, 5000)
 
     def test_rotations_are_followed_past_the_initial_search(self):
         d = Decryptor(network_key=KEY)
-        self.assertTrue(self._decrypts(d, 1015))         # generation 7 of key index 127: found cold
+        self.assertTrue(self._decrypts(d, 1015))         # generation 7 of key index 120: found cold
         self.assertEqual(d.key_sequence, 1015)
         for seq in range(1016, 1016 + 400):              # then one rotation at a time, well past 1023
             self.assertTrue(self._decrypts(d, seq), seq)
         self.assertEqual(d.key_sequence, 1415)
+        self.assertEqual(d.stats["mac_failed"], 0)
+
+    def test_key_index_wraps_at_128_as_openthread_derives_it(self):
+        # OpenThread: key index = (sequence & 0x7f) + 1, so sequence 127 is
+        # index 128 and 128 is index 1 again. Read mod 127, every sequence
+        # from 127 on maps to the wrong index and nothing decrypts again.
+        for seq in (126, 127, 128, 200, 255, 256):
+            self.assertTrue(self._decrypts(Decryptor(network_key=KEY), seq), seq)
+        d = Decryptor(network_key=KEY)
+        d.note_key_sequence(126)
+        for seq in (127, 128, 129):
+            self.assertTrue(self._decrypts(d, seq), seq)
+        self.assertEqual(d.key_sequence, 129)
         self.assertEqual(d.stats["mac_failed"], 0)
 
     def test_mle_key_source_teaches_the_mac_search(self):
@@ -214,7 +227,7 @@ def secured_ext_frame(src_ext: str, counter: int, payload: bytes, sequence: int 
     fcf = 1 | 0x0008 | 0x0040 | (2 << 10) | (1 << 12) | (3 << 14)
     header = struct.pack("<HBH", fcf, counter & 0xFF, PAN) + bytes.fromhex(dst_short)[::-1] \
         + bytes.fromhex(src_ext)[::-1]
-    aux = bytes([0x0D]) + struct.pack("<L", counter) + bytes([sequence % 127 + 1])
+    aux = bytes([0x0D]) + struct.pack("<L", counter) + bytes([(sequence & 0x7f) + 1])
     open_part = header + aux
     _mle, mac_key = derive_keys(KEY, sequence)
     nonce = bytes.fromhex(src_ext) + struct.pack(">L", counter) + bytes([5])

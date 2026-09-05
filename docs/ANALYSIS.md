@@ -66,7 +66,10 @@ quiet channel the timers spread out naturally.
 `bin/threadwatch replay file.pcap` runs the whole pipeline over one pcap
 (a ring file, an incident's hour, a capture from another dongle) and
 prints one JSON object on stdout (`credentials: loaded` goes to stderr,
-so the output pipes into `jq`):
+so the output pipes into `jq`). A capture that keeps the FCS on each
+frame (link type 195, or TAP with an FCS-type field) is read with it
+stripped, so its secured frames decrypt and its MLE messages verify
+as the ring's own do; the FCS itself is not checked:
 
 | field | meaning |
 | --- | --- |

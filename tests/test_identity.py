@@ -207,8 +207,8 @@ class ResolveShortTest(unittest.TestCase):
             fcf = 1 | 0x0040 | (2 << 10) | (1 << 12) | (3 << 14)      # unsecured data, ext source
             for payload in (b"\x7f\x33\xf0", b"\x7f\x33\xf3", b"\x7f\x33\xf1\x12"):
                 psdu = struct.pack("<HBH", fcf, 1, PAN) + bytes.fromhex("00cc")[::-1] \
-                    + bytes.fromhex(SED)[::-1] + payload   # no FCS: the sniffer may strip it
-                pipe.ingest(parse_frame(1.0, psdu, 195))
+                    + bytes.fromhex(SED)[::-1] + payload   # no FCS, as the sniffer delivers them
+                pipe.ingest(parse_frame(1.0, psdu, 230))
             self.assertEqual(dec.stats["parse_failed"], 3)
 
     def test_extra_candidates_resolve_a_device_missing_from_the_inventory(self):

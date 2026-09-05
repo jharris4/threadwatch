@@ -211,6 +211,29 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class FcsTest(_ut.TestCase):
+    """A capture that keeps the FCS (DLT 195, or TAP declaring one) is read
+    as its on-air bytes: the MIC on a secured frame and the MLE MIC in an
+    unsecured one both end before the FCS, and the ring's own frames
+    (DLT 230 / TAP without the TLV) carry none to strip."""
+
+    MAC = struct.pack("<HBH", 1 | (3 << 14), 7, 0x4e21) + bytes(range(8)) + b"\x7f\x33"
+
+    def test_dlt_195_ends_in_an_fcs_and_tap_only_when_it_says_so(self):
+        from threadwatch.pcap import DLT_TAP, DLT_WITHFCS, parse_frame
+        with_fcs = self.MAC + b"\xab\xcd"
+        self.assertEqual(parse_frame(1, with_fcs, DLT_WITHFCS).psdu, self.MAC)
+        self.assertEqual(parse_frame(1, with_fcs, DLT_NOFCS).psdu, with_fcs)        # the ring: nothing to strip
+        declared = struct.pack("<HHHHI", 0, 12, 0, 1, 1) + with_fcs                 # TAP: FCS type 1, CRC-16
+        f = parse_frame(1, declared, DLT_TAP)
+        self.assertEqual((f.psdu, f.src), (self.MAC, bytes(range(8))[::-1].hex()))
+        crc32 = struct.pack("<HHHHI", 0, 12, 0, 1, 2) + self.MAC + b"\x01\x02\x03\x04"
+        self.assertEqual(parse_frame(1, crc32, DLT_TAP).psdu, self.MAC)
+        undeclared = struct.pack("<HHHHf", 0, 12, 1, 4, -60.0) + with_fcs              # the sniffer's own TAP
+        self.assertEqual(parse_frame(1, undeclared, DLT_TAP).psdu, with_fcs)
+        self.assertEqual(parse_frame(1, b"\x01", DLT_WITHFCS).psdu, b"")               # shorter than its FCS
+
+
 class RingHourNamingTest(_ut.TestCase):
     """One file per local hour. The name is a contract: `why.select_recent`
     parses it to pick a window, and per-file retention drops one hour at a

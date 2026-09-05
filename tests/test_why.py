@@ -377,9 +377,10 @@ class WhyNetworkContextTest(unittest.TestCase):
         src_ip = bytes.fromhex("fe80000000000000") + bytes([0x02 ^ int(src_ext[:2], 16)]) + bytes.fromhex(src_ext[2:])
         dst_ip = bytes.fromhex("ff020000000000000000000000000001")
         body = b"\x04" + b"\x00\x02" + bytes.fromhex("0400")   # Advertisement, Source Address 0x0400
-        # No FCS: an unsecured payload is taken as written, and the MLE
-        # MIC covers the whole of it.
-        return header + iphc + udp + mle_message(src_ext, sequence, counter, src_ip, dst_ip, body)
+        # With an FCS, as the DLT 195 file it goes into says every frame
+        # has: the reader strips it, or the MLE MIC (over the whole
+        # payload) would fail on every unsecured frame in such a capture.
+        return header + iphc + udp + mle_message(src_ext, sequence, counter, src_ip, dst_ip, body) + b"\x00\x00"
 
     def test_another_devices_mle_supplies_the_sequence_the_targets_polls_need(self):
         t0 = time.mktime(time.strptime("2026-09-03 08:10", "%Y-%m-%d %H:%M"))

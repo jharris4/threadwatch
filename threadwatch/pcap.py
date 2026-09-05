@@ -14,6 +14,11 @@ from typing import BinaryIO, Iterator, Optional
 
 DLT_TAP = 283
 DLT_NOFCS = 230
+DLT_WITHFCS = 195       # IEEE802_15_4_WITHFCS: every frame ends in a 2-byte FCS
+# TAP TLV 0 (FCS type) says whether a frame ends in one: 1 is CRC-16 (two
+# bytes), 2 CRC-32 (four). The vendored sniffer strips the FCS and writes
+# no such TLV; a capture from another tool may carry it.
+_TAP_FCS_LEN = {1: 2, 2: 4}
 
 PCAP_MAGIC_LE_US = 0xA1B2C3D4  # microsecond timestamps, little-endian file
 # Match the writer's snapshot limit, independently of untrusted file headers.
@@ -154,6 +159,13 @@ class PcapWriter:
 def parse_frame(ts: float, data: bytes, dlt: int) -> Frame:
     rssi = channel = lqi = None
     psdu = data
+    # A frame is handed on as its on-air bytes without the FCS: the
+    # decryptor's MIC covers the frame before it, and an MLE message in
+    # an unsecured frame is authenticated over the whole payload, so a
+    # trailing FCS made every advertisement in an imported capture
+    # unreadable while the secured frames still decrypted (a trimmed
+    # retry covers those).
+    fcs_len = 2 if dlt == DLT_WITHFCS else 0
     if dlt == DLT_TAP:
         # An incomplete envelope is not a MAC frame or usable metadata.
         if len(data) < 4:
@@ -176,8 +188,12 @@ def parse_frame(ts: float, data: bytes, dlt: int) -> Frame:
                 channel = struct.unpack("<H", val[:2])[0]
             elif tlv_type == 10 and len(val) >= 1:
                 lqi = val[0]
+            elif tlv_type == 0 and len(val) >= 1:
+                fcs_len = _TAP_FCS_LEN.get(val[0], 0)
             off = next_off
         psdu = data[tap_len:]
+    if fcs_len:
+        psdu = psdu[:-fcs_len] if len(psdu) > fcs_len else b""
     frame = Frame(ts=ts, raw=data, psdu=psdu, rssi=rssi, channel=channel, lqi=lqi)
     _parse_mac(frame)
     return frame

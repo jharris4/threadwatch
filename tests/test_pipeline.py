@@ -605,6 +605,34 @@ class QuietPolicyTest(unittest.TestCase):
         pipe.ingest(frame(t0, ROUTER))                     # the storm still running is frozen now
         self.assertEqual(frozen, ["auto-storm"])
 
+    def test_the_snapshot_holds_the_storm_event_that_called_for_it(self):
+        # BUG-11: the copy was started before the storm event was logged,
+        # so a worker that reached the event directory first left the
+        # incident without the record that explains it. Running the copy
+        # in the ingest thread is the worker-first order, forced.
+        from threadwatch.events import EventLog
+        from threadwatch.review import incidents
+        self.cfg.freeze_on_critical = True
+        self.cfg.ring_dir.mkdir(parents=True, exist_ok=True)
+        (self.cfg.ring_dir / "threadwatch-20231114-22.pcap").write_bytes(b"ring")
+        log = EventLog(self.cfg.events_dir)
+        pipe = Pipeline(self.cfg, log, stub_decryptor())
+        pipe.freezer = pipe._freeze_now
+        pipe.detector.storm_active = True
+        pipe.detector.storm_details = {"period": 80.5, "onsets": [1.0, 2.0, 3.0]}
+        pipe.detector.add_frame = lambda ts: setattr(pipe.detector, "storm_active", True)
+        t0 = 1_700_000_000.0
+        pipe.ingest(frame(t0, ROUTER))
+        inc = incidents(self.cfg.incidents_dir)
+        self.assertEqual([i["label"] for i in inc], ["auto-storm"])
+        copied = self.cfg.incidents_dir / inc[0]["name"] / "events" / log.path_for(t0).name
+        recs = [json.loads(line) for line in copied.read_text().splitlines()]
+        storms = [r for r in recs if r["event"] == "phase_locked_storm"]
+        self.assertEqual([r["auto_freeze"] for r in storms], ["auto-storm"])
+        # The live log has both, the storm first.
+        live = [json.loads(line) for line in log.path_for(t0).read_text().splitlines()]
+        self.assertEqual([r["event"] for r in live if r["event"] == "phase_locked_storm"], ["phase_locked_storm"])
+
     def test_a_failed_freeze_is_retried_after_a_hold_not_six_hours(self):
         from threadwatch import freeze as freeze_mod
         self.cfg.freeze_on_critical = True

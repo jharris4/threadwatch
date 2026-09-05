@@ -607,6 +607,12 @@ class Pipeline:
                                    f"the broadcast-storm signature; {keep}"
                                    if period else "phase-locked traffic floods"),
                              **self.detector.snapshot())
+            if label:
+                # The copy starts only once the event that called for it
+                # is in the log: the snapshot copies the log, and a worker
+                # that got to it first left the incident without the storm
+                # record that explains it.
+                self.freezer(label)
 
         # Credentialed visibility.
         if f.ftype == 1:
@@ -1075,20 +1081,19 @@ class Pipeline:
     AUTO_FREEZE_RETRY_S = 30 * 60      # after a failed freeze: the next storm event tries again
 
     def _auto_freeze(self, ts: float, reason: str) -> Optional[str]:
-        """Snapshot the ring for a critical event, at most once per cooldown
-        (one storm is one incident, however long it rumbles). Returns the
-        incident label, or None when off, replaying, or inside the cooldown.
-        The cooldown is armed before the copy starts, so the storm events
-        that fire while it runs do not start more copies; a copy that
-        fails shortens it to AUTO_FREEZE_RETRY_S (see _freeze_now)."""
+        """Reserve a snapshot of the ring for a critical event, at most once
+        per cooldown (one storm is one incident, however long it rumbles).
+        Returns the incident label for the caller to log and then hand to
+        self.freezer, or None when off, replaying, or inside the cooldown.
+        The cooldown is armed here, before the copy starts, so the storm
+        events that fire while it runs do not start more copies; a copy
+        that fails shortens it to AUTO_FREEZE_RETRY_S (see _freeze_now)."""
         if not self.cfg.freeze_on_critical or self.ephemeral:
             return None
         if ts - self._last_auto_freeze < self.AUTO_FREEZE_COOLDOWN_S:
             return None
         self._last_auto_freeze = ts
-        label = f"auto-{reason}"
-        self.freezer(label)
-        return label
+        return f"auto-{reason}"
 
     def _freeze_in_background(self, label: str) -> None:
         threading.Thread(target=self._freeze_now, args=(label,), daemon=True).start()

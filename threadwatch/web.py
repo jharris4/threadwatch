@@ -75,8 +75,8 @@ pre{font-size:.8em;overflow-x:auto;background:var(--card);padding:.6em;border-ra
 # tooltip on every row.
 LEGEND = [
     ("quiet", "Device quiet / returned",
-     "The recorder heard nothing from the device for longer than its window (30 min by default, "
-     "set per role in config.toml), then later heard it again. One row, with the real duration "
+     "The recorder heard nothing from the device for longer than the quiet window (30 min by "
+     "default, [quiet] silence_s in config.toml), then later heard it again. One row, with the real duration "
      "measured from the device's last frame. 'Still quiet' means it has not come back. A warning "
      "when the sniffer hears the device well; only a notice when its signal is marginal, because "
      "a device at the edge of the sniffer's range fades in and out without anything being wrong."),

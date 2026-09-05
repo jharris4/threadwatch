@@ -97,3 +97,58 @@ class DegeneratePeriodOnsetsTest(unittest.TestCase):
                 for _ in range(40):
                     det.add_frame(t); t += 0.1
                 t += 60.0
+
+
+class FloodThresholdTest(unittest.TestCase):
+    """A window is a flood at flood_multiplier x the calm baseline, but never
+    under flood_min_frames: the floor is absolute. Inverted into a ceiling
+    it would make every window on a fresh start a flood (baseline 0), and
+    ordinary busy minutes on an established mesh, and phase_locked_storm
+    would page and freeze the ring on normal traffic."""
+
+    def setUp(self):
+        self.det = Detector(DetectorConfig(alert_cooldown_s=0))    # x3, floor 400
+        self.t = 1_700_000_000.0
+        self.opened = 0
+
+    def _windows(self, counts):
+        """Feed windows of exactly these frame counts, each closed by the
+        first frame of the one after it."""
+        for n in counts:
+            for i in range(self.opened, n):
+                self.det.add_frame(self.t + i * 10 / n)
+            self.t += 10
+            self.det.add_frame(self.t)
+            self.opened = 1
+            self.assertEqual(self.det.counts[-1], n)
+        return self.det
+
+    def test_the_floor_holds_over_a_low_baseline(self):
+        det = self._windows([50] * 10)                        # baseline 50: 3x is 150
+        self.assertEqual(det._baseline(), 50)
+        self._windows([300])                                  # over 3x, under the floor
+        self.assertFalse(det.in_flood)
+        self.assertEqual(list(det.onsets), [])
+        self._windows([400])                                  # at the floor
+        self.assertTrue(det.in_flood)
+        self.assertEqual(len(det.onsets), 1)
+
+    def test_a_fresh_start_with_an_empty_baseline_is_not_all_floods(self):
+        det = self.det
+        det.add_frame(self.t)
+        det.add_frame(self.t + 65)                            # six windows on: five empty ones behind it
+        self.assertEqual(det._baseline(), 0.0)                # a ceiling here would be a threshold of 0
+        self.opened, self.t = 1, self.t + 60
+        self._windows([5])                                    # the first quiet window of traffic
+        self.assertFalse(det.in_flood)
+        self.assertEqual(list(det.onsets), [])
+
+    def test_a_high_baseline_raises_the_bar_above_the_floor(self):
+        det = self._windows([250] * 10)                       # the calm mesh of the incident: 3x is 750
+        self.assertEqual(det._baseline(), 250)
+        self._windows([600])                                  # over the floor, under 3x
+        self.assertFalse(det.in_flood)
+        self.assertEqual(list(det.onsets), [])
+        self._windows([750])
+        self.assertTrue(det.in_flood)
+        self.assertEqual(len(det.onsets), 1)

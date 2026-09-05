@@ -4,6 +4,7 @@ import os
 import struct
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -563,3 +564,145 @@ class DatasetTlvTest(unittest.TestCase):
             "channel": 25, "pan_id": 0x1234, "ext_pan_id": "0001020304050607",
             "network_name": "Home",
             "network_key": "000102030405060708090a0b0c0d0e0f"})
+
+
+def _serve(handler):
+    """A one-connection server on localhost. ``handler(conn, request)`` runs
+    on its own thread once the HTTP request head has arrived (request is
+    b"" if the client sent nothing). Returns the URL to connect to."""
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    srv.settimeout(5.0)
+
+    def run():
+        try:
+            conn, _ = srv.accept()
+        except OSError:
+            return
+        finally:
+            srv.close()
+        with conn:
+            buf = b""
+            while b"\r\n\r\n" not in buf:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+            try:
+                handler(conn, buf)
+            except OSError:
+                pass
+
+    threading.Thread(target=run, daemon=True).start()
+    return f"http://127.0.0.1:{srv.getsockname()[1]}"
+
+
+def _accept_for(request: bytes) -> str:
+    import hashlib
+    import base64
+    key = next(l.split(b":", 1)[1].strip() for l in request.split(b"\r\n") if l.lower().startswith(b"sec-websocket-key:"))
+    return base64.b64encode(hashlib.sha1(key + ha.WS_GUID.encode()).digest()).decode()
+
+
+def _upgrade(request: bytes, extra: bytes = b"") -> bytes:
+    return (b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+            b"Sec-WebSocket-Accept: " + _accept_for(request).encode() + b"\r\n\r\n" + extra)
+
+
+class HandshakeTest(unittest.TestCase):
+    """ws_connect against a real socket: the upgrade request it sends,
+    the reply it accepts, and the message for each way the reply can be
+    wrong. Every one of these is what `threadwatch import` prints when
+    HA_URL points at the wrong thing, and each was untested."""
+
+    def test_the_upgrade_request_and_a_good_reply(self):
+        seen = {}
+
+        def handler(conn, request):
+            seen["request"] = request
+            conn.sendall(_upgrade(request, extra=b"\x81\x02{}"))      # a frame arriving with the headers
+
+        url = _serve(handler)
+        sock, rest = ha.ws_connect(url)
+        sock.close()
+        self.assertEqual(rest, b"\x81\x02{}")
+        lines = seen["request"].decode().split("\r\n")
+        self.assertEqual(lines[0], "GET /api/websocket HTTP/1.1")
+        headers = {l.split(":", 1)[0].lower(): l.split(":", 1)[1].strip() for l in lines[1:] if ":" in l}
+        self.assertEqual(headers["host"], url[len("http://"):])
+        self.assertEqual((headers["upgrade"], headers["connection"], headers["sec-websocket-version"]),
+                         ("websocket", "Upgrade", "13"))
+        import base64
+        self.assertEqual(len(base64.b64decode(headers["sec-websocket-key"])), 16)
+
+    def test_each_wrong_reply_has_its_own_message(self):
+        cases = [
+            (lambda conn, req: conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"),
+             "Home Assistant refused the websocket upgrade: HTTP/1.1 200 OK (is HA_URL the HA address?)"),
+            (lambda conn, req: conn.sendall(b"HTTP/1.1 401 Unauthorized\r\n\r\n"),
+             "refused the websocket upgrade: HTTP/1.1 401 Unauthorized"),
+            (lambda conn, req: conn.sendall(b"HTTP/1.1 101 Switching Protocols\r\nSec-WebSocket-Accept: bogus\r\n\r\n"),
+             "websocket handshake: bad Sec-WebSocket-Accept"),
+            (lambda conn, req: None,                                          # closed without a word
+             "Home Assistant closed the connection during the websocket handshake"),
+            (lambda conn, req: conn.sendall(b"HTTP/1.1 101 Switching Protocols\r\nX-Pad: " + b"x" * 70000),
+             "websocket handshake: response too large"),
+        ]
+        for handler, message in cases:
+            with self.assertRaises(HAError) as cm:
+                ha.ws_connect(_serve(handler))
+            self.assertIn(message, str(cm.exception))
+
+    def test_nothing_listening_names_the_host_and_port(self):
+        probe = socket.socket()
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+        probe.close()
+        with self.assertRaises(HAError) as cm:
+            ha.ws_connect(f"http://127.0.0.1:{port}")
+        self.assertIn(f"cannot reach Home Assistant at 127.0.0.1:{port} (", str(cm.exception))
+        self.assertIn("HA_URL wrong, or not on this network?", str(cm.exception))
+
+    def _ha(self, greeting, reply_to_auth):
+        """A server that upgrades, greets, reads the auth message and answers it."""
+        seen = {}
+
+        def handler(conn, request):
+            conn.sendall(_upgrade(request))
+            conn.sendall(server_frame(0x1, json.dumps(greeting).encode()))
+            if reply_to_auth is None:
+                return
+            opcode, data = unmask(conn.recv(4096))
+            seen["auth"] = (opcode, json.loads(data))
+            conn.sendall(server_frame(0x1, json.dumps(reply_to_auth).encode()))
+            seen["after"] = conn.recv(4096)                             # the close frame, or EOF
+
+        return _serve(handler), seen
+
+    def test_connect_authenticates_with_the_token_and_close_sends_a_close_frame(self):
+        url, seen = self._ha({"type": "auth_required", "ha_version": "2026.9.0"},
+                             {"type": "auth_ok", "ha_version": "2026.9.0"})
+        with ha.HomeAssistant(url, "tok.en") as client:
+            self.assertIs(client, client.connect.__self__)
+            self.assertIsNotNone(client._sock)
+        self.assertEqual(seen["auth"], (0x1, {"type": "auth", "access_token": "tok.en"}))
+        time.sleep(0.05)
+        self.assertEqual(unmask(seen["after"]), (0x8, struct.pack(">H", 1000)))
+
+    def test_a_rejected_token_says_to_make_a_new_one(self):
+        url, _seen = self._ha({"type": "auth_required"}, {"type": "auth_invalid", "message": "Invalid access token"})
+        client = ha.HomeAssistant(url, "stale")
+        with self.assertRaises(HAError) as cm:
+            client.connect()
+        self.assertEqual(str(cm.exception), "Home Assistant rejected the token (Invalid access token); "
+                                            "create a new long-lived access token and update HA_TOKEN")
+        self.assertIsNone(client._sock)                                 # closed on the way out
+
+    def test_an_unexpected_greeting_is_named(self):
+        url, _seen = self._ha({"type": "event", "event": {}}, None)
+        client = ha.HomeAssistant(url, "tok")
+        with self.assertRaises(HAError) as cm:
+            client.connect()
+        self.assertEqual(str(cm.exception), "unexpected first message from Home Assistant: event")
+        self.assertIsNone(client._sock)

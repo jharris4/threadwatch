@@ -201,9 +201,11 @@ def ws_connect(url: str, path: str = "/api/websocket", timeout: float = 20.0) ->
     head, rest = buf.split(b"\r\n\r\n", 1)
     status = head.split(b"\r\n", 1)[0].decode(errors="replace")
     if " 101 " not in status:
+        sock.close()
         raise HAError(f"Home Assistant refused the websocket upgrade: {status} (is HA_URL the HA address?)")
     expect = base64.b64encode(hashlib.sha1((key + WS_GUID).encode()).digest()).decode()
     if expect not in head.decode(errors="replace"):
+        sock.close()
         raise HAError("websocket handshake: bad Sec-WebSocket-Accept")
     return sock, rest
 
@@ -222,14 +224,18 @@ class HomeAssistant:
         sock, rest = ws_connect(self.url)
         self._sock = sock
         self._reader = FrameReader(sock.recv, sock.sendall, rest)
-        hello = self._recv_json()
-        if hello.get("type") != "auth_required":
-            raise HAError(f"unexpected first message from Home Assistant: {hello.get('type')}")
-        self._send_json({"type": "auth", "access_token": self._token})
-        reply = self._recv_json()
-        if reply.get("type") != "auth_ok":
-            raise HAError(f"Home Assistant rejected the token ({reply.get('message', reply.get('type'))}); "
-                          "create a new long-lived access token and update HA_TOKEN")
+        try:
+            hello = self._recv_json()
+            if hello.get("type") != "auth_required":
+                raise HAError(f"unexpected first message from Home Assistant: {hello.get('type')}")
+            self._send_json({"type": "auth", "access_token": self._token})
+            reply = self._recv_json()
+            if reply.get("type") != "auth_ok":
+                raise HAError(f"Home Assistant rejected the token ({reply.get('message', reply.get('type'))}); "
+                              "create a new long-lived access token and update HA_TOKEN")
+        except BaseException:
+            self.close()            # a refused connection is not one to keep open
+            raise
         return self
 
     def close(self) -> None:

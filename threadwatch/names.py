@@ -86,7 +86,7 @@ class DeviceNames:
         self.by_addr: dict[str, dict] = {}
         self.inventory_path = inventory_path
         self.entries: list[dict] = []
-        self.border_routers: dict[str, dict] = {}    # addr -> {hostname, instance, vendor, model, name}
+        self.border_routers: dict[str, dict] = {}    # addr -> {hostname, instance, vendor, model, name, retired}
         if inventory_path and inventory_path.exists():
             # The file is hand-edited (README): a trailing comma or a
             # truncated save is the likeliest damage, and it must not stop
@@ -121,12 +121,21 @@ class DeviceNames:
             addr = _norm(str(rec.get("addr") or ""))
             if not _EXT_ADDR.match(addr):
                 continue
-            self.border_routers[addr] = {"hostname": host, "instance": rec.get("instance"),
-                                         "vendor": rec.get("vendor"), "model": rec.get("model"),
-                                         "name": rec.get("name")}
             entry = self.entry_for_border_router(host) or (self.entry_named(rec["name"]) if rec.get("name") else None)
-            if entry is not None and addr not in self.by_addr:
-                self.by_addr[addr] = entry
+            # The current address, then every address the hub retired
+            # (the recorder writes each rotation to `previous`): a retired
+            # address keeps the name, so the device page and `why` still
+            # tell the device's story across its reboots, in every process
+            # and not only the one that saw the rotation happen.
+            retired = [_norm(str(p.get("addr") or "")) for p in (rec.get("previous") or []) if isinstance(p, dict)]
+            for a, is_current in [(addr, True)] + [(a, False) for a in reversed(retired)]:
+                if not _EXT_ADDR.match(a) or a in self.border_routers:
+                    continue
+                self.border_routers[a] = {"hostname": host, "instance": rec.get("instance"),
+                                          "vendor": rec.get("vendor"), "model": rec.get("model"),
+                                          "name": rec.get("name"), "retired": not is_current}
+                if entry is not None and a not in self.by_addr:
+                    self.by_addr[a] = entry
 
     def entry_named(self, name: str) -> Optional[dict]:
         want = name.strip().lower()

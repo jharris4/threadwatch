@@ -224,6 +224,30 @@ class LearnedBorderRoutersTest(unittest.TestCase):
             self.assertNotIn("nope", names.border_routers)
             self.assertIsNone(DeviceNames(inv, Path(d) / "absent.json").name(TV2))
 
+    def test_retired_addresses_keep_their_name_in_every_process(self):
+        # The recorder writes each rotation to `previous`; a process that
+        # did not see it happen (the web pages, why, report) must still
+        # name the old addresses, or the device's history splits.
+        from threadwatch.names import DeviceNames
+        OLDER = "0011223344556677"
+        with tempfile.TemporaryDirectory() as d:
+            inv = Path(d) / "devices.json"
+            inv.write_text(json.dumps([{"name": "Living Room Apple TV", "extendedAddress": TV1.upper()}]))
+            learned = Path(d) / "border-routers.json"
+            learned.write_text(json.dumps({
+                "appletv-living-room.local": {"addr": AQ, "name": "Living Room Apple TV", "instance": "AppleTV",
+                                              "previous": [{"addr": OLDER, "until": 1.0}, {"addr": TV2, "until": 2.0},
+                                                           "junk", {"addr": "nope"}]},
+            }))
+            names = DeviceNames(inv, learned)
+            self.assertEqual([names.name(a) for a in (AQ, TV2, OLDER)], ["Living Room Apple TV"] * 3)
+            self.assertEqual(names.addresses_of(TV1), [TV1, AQ, TV2, OLDER])
+            self.assertEqual(names.resolve("living room")[0], [TV1, AQ, TV2, OLDER])
+            self.assertFalse(names.border_routers[AQ]["retired"])
+            self.assertTrue(names.border_routers[TV2]["retired"])
+            self.assertEqual(names.border_routers[OLDER]["hostname"], "appletv-living-room.local")
+            self.assertNotIn("nope", names.border_routers)
+
 
 
 class UnreadableStateTest(unittest.TestCase):

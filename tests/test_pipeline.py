@@ -1249,6 +1249,61 @@ class RetransmissionConfirmTest(unittest.TestCase):
         self.assertIn("paged if the rate is still up in 5 min", first["note"])
         self.assertNotIn("sustained_s", first)
 
+    def test_a_restart_during_an_elevation_neither_loses_the_page_nor_makes_it_normal(self):
+        # Restarted in the second elevated minute, the detector used to
+        # start its baseline from that minute's rate, and the same rate
+        # ever after was never twice the baseline: the page for a running
+        # incident was lost for as long as it ran.
+        pipe = self._pipe()
+        w = self.run_minutes(pipe, [0.05] * 30)
+        w = self.run_minutes(pipe, [0.5], start=w)
+        self.run_minutes(pipe, [0.5], start=w)                   # closes the first elevated minute: the notice
+        self.assertEqual(self._shape(self._events(pipe)), [("notice", False)])
+        again = self._pipe()                                     # the restart, on the same state directory
+        self.assertEqual(list(again.retrans_counts), list(pipe.retrans_counts))
+        self.assertEqual(again._retrans_since, pipe._retrans_since)
+        self.assertEqual((again._retrans_base, again._retrans_alerted), (0.05, pipe._retrans_alerted))
+        # Both hear the same minutes from here on (the restarted one the
+        # minute that was open at the restart too).
+        w = self.run_minutes(pipe, [0.5] * 60, start=w + 1)
+        self.run_minutes(again, [0.5] * 61, start=w - 61)
+        self.run_minutes(pipe, [0.05], start=w)
+        self.run_minutes(again, [0.05], start=w)
+        self.assertEqual(self._shape(self._events(pipe)), [("notice", False), ("warning", True)])
+        self.assertEqual(self._shape(self._events(again)), [("warning", True)])
+        page, page_again = self._events(pipe)[-1], self._events(again)[-1]
+        self.assertEqual((page_again["ts"], page_again["sustained_s"], page_again["baseline"]),
+                         (page["ts"], page["sustained_s"], page["baseline"]))
+        self.assertEqual(page["sustained_s"], 300)
+
+    def test_after_a_restart_the_page_waits_for_minutes_actually_observed(self):
+        pipe = self._pipe()
+        w = self.run_minutes(pipe, [0.05] * 10)
+        w = self.run_minutes(pipe, [0.5] * 3, start=w)
+        self.run_minutes(pipe, [0.5], start=w)                   # three elevated minutes closed, the fourth open
+        self.assertEqual(self._shape(self._events(pipe)), [("notice", False)])
+        again = self._pipe()
+        # Down for ten minutes, then the rate is still up: the elevation
+        # is the same one (no second notice), but the ten unobserved
+        # minutes count for nothing, and the page waits for five more.
+        w = self.run_minutes(again, [0.5] * 6, start=w + 10)     # minutes 23..28
+        self.run_minutes(again, [0.05] * 3, start=w)
+        evs = self._events(again)
+        self.assertEqual(self._shape(evs), [("warning", True)])
+        self.assertEqual(evs[0]["ts"], self.T + 25 * 60)         # the close of the fifth observed minute (24)
+        self.assertEqual(evs[0]["sustained_s"], 300)
+        self.assertIsNone(again._retrans_since)                  # and two calm minutes closed it
+
+    def test_retransmission_state_that_will_not_load_starts_the_detector_afresh(self):
+        pipe = self._pipe()
+        self.run_minutes(pipe, [0.05] * 3)
+        pipe.retrans_path.write_text("{")
+        again = self._pipe()
+        self.assertEqual(list(again.retrans_counts), [])
+        pipe.retrans_path.write_text(json.dumps({"closed": 1, "rates": ["x"]}))
+        self.assertEqual(list(self._pipe().retrans_counts), [])
+        self.assertEqual(self._pipe().ephemeral, False)
+
     def test_a_minute_or_two_of_interference_is_logged_and_never_paged(self):
         # 2026-09-05 05:33: a microwave. One record in the log, nothing on the phone.
         pipe = self._pipe()

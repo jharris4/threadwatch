@@ -157,6 +157,18 @@ class Pipeline:
         self._retrans_base = 0.0
         self._retrans_lull = 0
         self._retrans_confirmed = False
+        # All of the above persist (retransmissions.json) and come back at
+        # the next start. Without them a restart in the middle of an
+        # elevation made the elevated rate the whole baseline: the first
+        # minute's rate is the median of a history of one, twice that is
+        # never reached, and the same rate a minute later, however high,
+        # was normal for the rest of the incident. The close of the last
+        # window before the restart is kept so the first window after it
+        # can subtract the unobserved gap from the elevation's age.
+        self.retrans_path = cfg.state_dir / "retransmissions.json"
+        self._retrans_closed: Optional[float] = None
+        if not ephemeral:
+            self._load_retrans()
         self.quiet_reported: set[str] = set()
         # Hour bucket -> frames, last ~25 h, for the daily summary's frame
         # count. Persisted (frames-by-hour.json) so a summary sent soon
@@ -249,6 +261,33 @@ class Pipeline:
                     announced += 1
             if announced:
                 self.seen.save()
+
+    def _load_retrans(self) -> None:
+        """The retransmission detector as the last run left it (_save_retrans).
+        An unreadable file starts it afresh, as before the file existed."""
+        try:
+            raw = json.loads(self.retrans_path.read_text())
+            rates = [float(r) for r in raw["rates"]][-self.retrans_counts.maxlen:]
+            since = raw.get("since")
+            state = (None if since is None else float(since), float(raw.get("base") or 0.0),
+                     int(raw.get("lull") or 0), bool(raw.get("confirmed")),
+                     float(raw.get("alerted") or 0.0), float(raw.get("paged") or 0.0), float(raw["closed"]))
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            return
+        self.retrans_counts.extend(rates)
+        (self._retrans_since, self._retrans_base, self._retrans_lull, self._retrans_confirmed,
+         self._retrans_alerted, self._retrans_paged, self._retrans_closed) = state
+
+    def _save_retrans(self, closed: float) -> None:
+        tmp = self.retrans_path.with_suffix(".tmp")
+        try:
+            tmp.write_text(json.dumps({
+                "closed": closed, "rates": list(self.retrans_counts), "since": self._retrans_since,
+                "base": self._retrans_base, "lull": self._retrans_lull, "confirmed": self._retrans_confirmed,
+                "alerted": self._retrans_alerted, "paged": self._retrans_paged}))
+            tmp.replace(self.retrans_path)
+        except OSError as exc:
+            print(f"[threadwatch] {self.retrans_path.name} not written: {exc}", flush=True)
 
     def _load_frames_by_hour(self) -> dict[int, int]:
         try:
@@ -606,6 +645,8 @@ class Pipeline:
         if ts - self._win_start >= 60:
             if self._win_frames >= 100:
                 self._retrans_window(ts, self._win_dups / self._win_frames)
+                if not self.ephemeral:
+                    self._save_retrans(ts)
             self._win_start = ts
             self._win_dups = self._win_frames = 0
             self._win_dup_by = {}
@@ -869,7 +910,20 @@ class Pipeline:
         minute is a microwave and a storm building keeps the rate up. One
         sub-threshold minute inside an elevation does not end it; two do.
         confirm_s = 0 is the old detector: the first elevated minute pages,
-        and a long elevation pages again every 15 min."""
+        and a long elevation pages again every 15 min.
+
+        Across a restart the history, the frozen baseline and the open
+        elevation are the last run's (_load_retrans). The recorder saw
+        nothing between that run's last window and this one, so that gap
+        is not elevated time: the elevation's start moves past it, and the
+        page waits for confirm_s of minutes actually observed. Whether it
+        is still on is judged the usual way, against the frozen baseline,
+        and two calm minutes close it."""
+        if self._retrans_closed is not None:
+            gap = max(0.0, ts - 60 - self._retrans_closed)
+            self._retrans_closed = None
+            if self._retrans_since is not None:
+                self._retrans_since += gap
         self.retrans_counts.append(rate)
         median = sorted(self.retrans_counts)[len(self.retrans_counts) // 2]
         base = self._retrans_base if self._retrans_since is not None else median

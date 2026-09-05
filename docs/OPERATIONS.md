@@ -240,6 +240,8 @@ it up if you care about the history; nothing else holds it.
                              or its poll starvation has been announced
         observed-names.json  SRP hostnames harvested from the mesh (report --suggest uses them)
         frames-by-hour.json  frames per hour, the last day or so, for the daily summary
+        retransmissions.json the retransmission detector's last 30 minute rates and the
+                             elevation in progress, so a restart mid-incident keeps its baseline
         border-routers.json  mDNS hostname -> current address of each border router, with the
                              addresses it retired (how a rebooted Apple hub keeps its name)
         capture.fifo         the pipe the sniffer writes into; recreated at every start

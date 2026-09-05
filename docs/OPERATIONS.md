@@ -48,6 +48,36 @@ sudo systemctl reset-failed threadwatch && sudo systemctl restart threadwatch
 `sudo bin/setup-host.sh` does the reset and the restart itself and reports
 either unit that is not running afterwards.
 
+## Exit codes and restarts
+
+The daemon leaves with a code and a line saying why; the line is the
+authority, since two failures share code 2. Under systemd `systemctl
+status threadwatch` shows the code and `journalctl -u threadwatch -n 20`
+the line; under Docker, `docker compose ps` and the log.
+
+| exit | last line | meaning |
+| --- | --- | --- |
+| 0 | `stopped after N frames` | a requested stop (`systemctl stop`, Ctrl-C) |
+| 1 | a traceback, then `capture crashed` | an unexpected error; or, before capture began, `No nRF 802.15.4 sniffer found` or a refused `[alerts]` table |
+| 2 | `threadwatch capture: credentials.toml ...` or `threadwatch: [network] ...` | refused before capture began: no or bad network key, or a config value out of range |
+| 2 | `no frames for Ns - capture stalled` | the watchdog: three minutes without a frame after capture had begun |
+| 3 | `capture stream ended` | the sniffer closed the stream: dongle unplugged, or its process died |
+| 4 | `sniffer thread died before delivering any data` | the serial port could not be opened: held by another process, or gone |
+
+Every non-zero exit asks the supervisor for a restart, and the systemd
+unit gives one after ten seconds plus a two-second wait for udev. The
+stall exit is the designed answer to a host sleep, a dongle that
+re-enumerated or a sniffer that hung: a restart every few minutes with
+`capture stalled` between is the recorder working as intended around a
+dongle that hears nothing, not a fault in itself, and a dongle that does
+hear frames ends the loop by itself. What the restart cannot fix is a
+refused start (codes 1 and 2 before capture began): those repeat every
+twelve seconds until the unit's start limit (ten in ten minutes) settles
+it into `failed`, which is where "Restarting" above picks up. Before
+leaving on the stall path the daemon flushes the ring file, saves the
+last-seen table and delivers the alerts it holds, so a stall costs the
+frames of the stall itself and nothing on disk.
+
 ## Troubleshooting
 
 `bin/threadwatch doctor` is the first move: read-only, one line per check,

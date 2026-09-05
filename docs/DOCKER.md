@@ -24,7 +24,9 @@ ls /dev/serial/by-id/                                # find the dongle
 ```
 
 The recorder does not start without the network key (the container would
-restart forever, exit code 2 in `docker compose logs capture`);
+restart forever, `credentials.toml is missing` and exit code 2 in
+`docker compose logs capture`; the same code with `capture stalled` is
+the watchdog, not the key: docs/OPERATIONS.md, "Exit codes");
 `docs/CREDENTIALS.md` says where to find it, and `threadwatch import
 --write` (run as a one-off container, below, with `config/ha.env` holding
 a Home Assistant token) fetches it from Home Assistant along with your

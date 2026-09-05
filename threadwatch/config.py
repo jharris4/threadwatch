@@ -114,8 +114,18 @@ def load(path: Optional[Path]) -> Config:
         cfg.keep_files = int(cap.get("keep_files", cfg.keep_files))
         if cfg.keep_files < 1:
             raise ValueError(f"[capture] keep_files must be at least 1, not {cfg.keep_files}")
-        if cap.get("keep_gb"):
-            cfg.keep_bytes = int(float(cap["keep_gb"]) * 1024 ** 3)
+        if cap.get("keep_gb") is not None:
+            # A negative cap would prune every file but the one being
+            # written at each rotation (RingWriter._prune loops while the
+            # total exceeds it), and zero would be no cap at all: neither
+            # is a size to keep.
+            try:
+                keep_gb = float(cap["keep_gb"])
+            except (TypeError, ValueError):
+                raise ValueError(f"[capture] keep_gb must be a number of gigabytes, not {cap['keep_gb']!r}") from None
+            if not keep_gb > 0:
+                raise ValueError(f"[capture] keep_gb must be more than 0 (unset it for no size cap), not {keep_gb:g}")
+            cfg.keep_bytes = int(keep_gb * 1024 ** 3)
         cfg.freeze_on_critical = bool(cap.get("freeze_on_critical", cfg.freeze_on_critical))
         if raw.get("devices", {}).get("inventory"):
             cfg.devices_path = (Path(path).parent / raw["devices"]["inventory"]).resolve()

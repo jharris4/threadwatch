@@ -45,6 +45,10 @@ class RingWriter:
     small SD card is a harder limit than a week)."""
 
     def __init__(self, ring_dir: Path, keep_files: int, dlt: int, keep_bytes: Optional[int] = None):
+        if keep_bytes is not None and keep_bytes <= 0:
+            # _prune would otherwise delete every file but the current one
+            # at every rotation and call it a size cap.
+            raise ValueError(f"keep_bytes must be positive or None, not {keep_bytes}")
         self.ring_dir = ring_dir
         self.keep_files = keep_files
         self.keep_bytes = keep_bytes

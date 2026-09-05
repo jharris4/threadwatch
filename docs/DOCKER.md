@@ -42,11 +42,20 @@ docker compose run --rm --no-deps capture doctor    # all ok
 docker compose logs -f capture
 ```
 
-Doctor knows it is in a container and says so on the two checks it
-cannot make from inside one: `clock` (no `timedatectl` in the image; the
-host keeps the time) and `web` (the review pages run in their own
-container, which doctor cannot reach at 127.0.0.1). Both read `ok ...
-(not checked)`. Anything else that is not `ok` is real.
+Doctor knows it is in a container and says so on two checks it cannot
+make from inside one: `clock` reads `ok in a container: the host keeps
+the time (not checked)` (no `timedatectl` in the image) and `web` reads
+`ok review pages run in their own container (not checked from in here)`
+(doctor cannot reach the other container at 127.0.0.1).
+
+A third check, `border routers`, warns `none found over mDNS` on the
+shipped `compose.yaml`, and that warning is not about your LAN: mDNS is
+link-local multicast, and the default bridge network does not carry it
+to the LAN, so the recorder's border-router browse (`[border_routers]`
+in config.toml, which follows Apple hubs' address changes) finds
+nothing from inside the container. To have it, give the `capture`
+service `network_mode: host` in `compose.yaml`; to silence it, set
+`browse_s = 0`. Anything else that is not `ok` is real.
 
 The review pages are on port 8080 (`ports:` in `compose.yaml` to change).
 

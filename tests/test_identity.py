@@ -430,3 +430,151 @@ class UnsecuredMleTest(unittest.TestCase):
             self.assertNotIn("partition_or_leader_change", events)
             self.assertNotIn("mle_rejoin_attempt", events)
             self.assertEqual(pipe.seen.table[OTHER].get("rloc16"), None)
+
+
+def iphc_packet(*, sac=False, sam=3, src=b"", m=True, dac=False, dam=3, dst=b"",
+                tf=3, hlim=2, cid=False, pbits=0, sport=19788, dport=19788,
+                checksum_elided=False, payload=b"\xff\x09", mesh=None, frag1=False) -> bytes:
+    """A 6LoWPAN packet built from RFC 6282 field by field, independently of
+    the parser: the IPHC word, its inline header fields, the inline address
+    bytes given (`src`, `dst`), then a UDP NHC header at the given port
+    compression, and the payload. `mesh` is a hop count for an RFC 4944 mesh
+    header with 16-bit originator and final addresses in front; `frag1`
+    puts a first-fragment header in front too."""
+    iphc = (0b011 << 13) | (tf << 11) | (1 << 10) | (hlim << 8) | (int(cid) << 7) \
+        | (int(sac) << 6) | (sam << 4) | (int(m) << 3) | (int(dac) << 2) | dam
+    pkt = struct.pack(">H", iphc)
+    if cid:
+        pkt += b"\x11"                                     # context ids: src 1, dst 1
+    pkt += (b"\xa5\x5a\x5a\xa5", b"\x5a\x5a\xa5", b"\xa5", b"")[tf]
+    if hlim == 0:
+        pkt += b"\x40"                                     # hop limit inline
+    pkt += src + dst
+    nhc = 0b11110000 | (int(checksum_elided) << 2) | pbits
+    pkt += bytes([nhc])
+    if pbits == 3:
+        pkt += bytes([((sport & 0xF) << 4) | (dport & 0xF)])
+    elif pbits == 1:
+        pkt += struct.pack(">H", sport) + bytes([dport & 0xFF])
+    elif pbits == 2:
+        pkt += bytes([sport & 0xFF]) + struct.pack(">H", dport)
+    else:
+        pkt += struct.pack(">HH", sport, dport)
+    if not checksum_elided:
+        pkt += b"\xc5\x3a"
+    pkt += payload
+    if frag1:
+        pkt = struct.pack(">HH", (0b11000 << 11) | 200, 0x1234) + pkt
+    if mesh is not None:
+        head = bytes([0b10000000 | min(mesh, 0xF)]) + (bytes([mesh]) if mesh >= 0xF else b"")
+        pkt = head + bytes.fromhex("c829") + bytes.fromhex("00cc") + pkt
+    return pkt
+
+
+# Every (SAC, SAM) form: the inline bytes the sender puts on air, and the
+# source address the parser must hand back for them, given mac_src_ext=SED.
+# Context-based forms carry no reconstruction (None).
+SRC_FORMS = {
+    "full":         (False, 0, bytes.fromhex("fd00db8000000000" "0123456789abcdef"),
+                     bytes.fromhex("fd00db8000000000" "0123456789abcdef")),
+    "iid":          (False, 1, bytes.fromhex("0212345678abcdef"),
+                     LINK_LOCAL + bytes.fromhex("0212345678abcdef")),
+    "short":        (False, 2, bytes.fromhex("9c01"), LINK_LOCAL + bytes.fromhex("000000fffe009c01")),
+    "elided":       (False, 3, b"", LINK_LOCAL + bytes.fromhex("009a47566a00b543")),
+    "ctx-unspec":   (True, 0, b"", None),
+    "ctx-iid":      (True, 1, bytes.fromhex("0312345678abcdef"), None),
+    "ctx-short":    (True, 2, bytes.fromhex("9c02"), None),
+    "ctx-elided":   (True, 3, b"", None),
+}
+
+# Every (M, DAC, DAM) form the same way, given mac_dst_ext=OTHER and
+# mac_dst_short="c829" (the extended one wins when both are known).
+DST_FORMS = {
+    "mcast-full":   (True, False, 0, bytes.fromhex("ff05000000000000" "00000000000000fd"),
+                     bytes.fromhex("ff05000000000000" "00000000000000fd")),
+    "mcast-48":     (True, False, 1, bytes.fromhex("05" "1122334455"),
+                     bytes.fromhex("ff05000000000000" "0000001122334455")),
+    "mcast-32":     (True, False, 2, bytes.fromhex("03" "aabbcc"),
+                     bytes.fromhex("ff03000000000000" "0000000000aabbcc")),
+    "mcast-8":      (True, False, 3, b"\x02", bytes.fromhex("ff02000000000000" "0000000000000002")),
+    "mcast-ctx":    (True, True, 0, bytes.fromhex("334455667788"), None),
+    "ucast-full":   (False, False, 0, bytes.fromhex("fd00db8000000000" "fedcba9876543210"),
+                     bytes.fromhex("fd00db8000000000" "fedcba9876543210")),
+    "ucast-iid":    (False, False, 1, bytes.fromhex("02fedcba98765432"),
+                     LINK_LOCAL + bytes.fromhex("02fedcba98765432")),
+    "ucast-short":  (False, False, 2, bytes.fromhex("6e03"), LINK_LOCAL + bytes.fromhex("000000fffe006e03")),
+    "ucast-elided": (False, False, 3, b"", LINK_LOCAL + bytes.fromhex("d00bfcd1a12f625d")),
+    "ucast-ctx-iid":    (False, True, 1, bytes.fromhex("03fedcba98765432"), None),
+    "ucast-ctx-short":  (False, True, 2, bytes.fromhex("6e04"), None),
+    "ucast-ctx-elided": (False, True, 3, b"", None),
+}
+
+PAYLOAD = bytes(range(0x60, 0x80))    # 32 distinct bytes: a mis-sliced payload cannot match
+
+
+@unittest.skipIf(AESCCM is None, "cryptography not installed")
+class IphcAddressMatrixTest(unittest.TestCase):
+    """`udp_ports` accumulates its offset through every address branch, so
+    one wrong field width yields the wrong ports and a mis-sliced payload
+    rather than an error; MLE then fails to decrypt and the recorder
+    reports no rejoins, no partitions and no leader. Each form is encoded
+    here from the RFC, not from the parser, and the whole tuple is checked."""
+
+    def _check(self, pkt, src_ip, dst_ip, **kw):
+        r = Decryptor.udp_ports(pkt, **kw)
+        self.assertIsNotNone(r)
+        sport, dport, payload, got_src, got_dst = r
+        self.assertEqual((sport, dport), (19788, 19788))
+        self.assertEqual(payload, PAYLOAD)
+        self.assertEqual(got_src, src_ip)
+        self.assertEqual(got_dst, dst_ip)
+
+    def test_every_source_form_with_every_destination_form(self):
+        for sname, (sac, sam, src, src_ip) in SRC_FORMS.items():
+            for dname, (m, dac, dam, dst, dst_ip) in DST_FORMS.items():
+                with self.subTest(src=sname, dst=dname):
+                    pkt = iphc_packet(sac=sac, sam=sam, src=src, m=m, dac=dac, dam=dam, dst=dst,
+                                      payload=PAYLOAD)
+                    self._check(pkt, src_ip, dst_ip, mac_src_ext=SED, mac_dst_ext=OTHER,
+                                mac_dst_short="c829")
+
+    def test_elided_addresses_without_a_mac_address_to_derive_from_are_none(self):
+        pkt = iphc_packet(sam=3, m=False, dam=3, payload=PAYLOAD)
+        self._check(pkt, None, None)
+        # A short MAC destination serves when no extended one is known.
+        self._check(pkt, None, LINK_LOCAL + bytes.fromhex("000000fffe00c829"), mac_dst_short="c829")
+
+    def test_mesh_and_fragment_headers_in_front_are_stepped_over(self):
+        sac, sam, src, src_ip = SRC_FORMS["iid"]
+        m, dac, dam, dst, dst_ip = DST_FORMS["ucast-short"]
+        for label, kw in (("mesh", dict(mesh=3)), ("mesh-deep-hops", dict(mesh=0x14)),
+                          ("frag1", dict(frag1=True)), ("mesh+frag1", dict(mesh=3, frag1=True))):
+            with self.subTest(form=label):
+                pkt = iphc_packet(sac=sac, sam=sam, src=src, m=m, dac=dac, dam=dam, dst=dst,
+                                  payload=PAYLOAD, **kw)
+                self._check(pkt, src_ip, dst_ip)
+
+    def test_inline_traffic_class_hop_limit_and_context_id_are_stepped_over(self):
+        sac, sam, src, src_ip = SRC_FORMS["short"]
+        m, dac, dam, dst, dst_ip = DST_FORMS["mcast-32"]
+        for tf in range(4):
+            for hlim in (0, 1, 2, 3):
+                for cid in (False, True):
+                    with self.subTest(tf=tf, hlim=hlim, cid=cid):
+                        pkt = iphc_packet(sac=sac, sam=sam, src=src, m=m, dac=dac, dam=dam, dst=dst,
+                                          tf=tf, hlim=hlim, cid=cid, payload=PAYLOAD)
+                        self._check(pkt, src_ip, dst_ip)
+
+    def test_every_port_compression_with_and_without_the_checksum(self):
+        sac, sam, src, src_ip = SRC_FORMS["elided"]
+        m, dac, dam, dst, dst_ip = DST_FORMS["mcast-8"]
+        # Ports each compression can carry: 0xF0Bx for nibbles, 0xF0xx for a byte.
+        ports = {0: (19788, 19788), 1: (19788, 0xF0A1), 2: (0xF0A2, 19788), 3: (0xF0B1, 0xF0B2)}
+        for pbits, (sport, dport) in ports.items():
+            for elided in (False, True):
+                with self.subTest(pbits=pbits, checksum_elided=elided):
+                    pkt = iphc_packet(sac=sac, sam=sam, src=src, m=m, dac=dac, dam=dam, dst=dst,
+                                      pbits=pbits, sport=sport, dport=dport, checksum_elided=elided,
+                                      payload=PAYLOAD)
+                    r = Decryptor.udp_ports(pkt, mac_src_ext=SED)
+                    self.assertEqual(r, (sport, dport, PAYLOAD, src_ip, dst_ip))

@@ -102,6 +102,26 @@ class WebSocketFramingTest(unittest.TestCase):
         with self.assertRaises(HAError):                            # EOF
             reader.message()
 
+    def test_sixteen_bit_lengths_are_read_as_such(self):
+        # A Home Assistant result is nearly always 126..65535 bytes: the
+        # length lives in the two bytes after the header, not in the 7 bits.
+        for size in (126, 127, 300, 65535):
+            head_text, tail_text = b'{"n": %d, "pad": "' % size, b'"}'
+            payload = head_text + b"x" * (size - len(head_text) - len(tail_text)) + tail_text
+            self.assertEqual(len(payload), size)
+            head = server_frame(0x1, payload)[:4]
+            self.assertEqual((head[1] & 0x7F, struct.unpack(">H", head[2:4])[0]), (126, size))
+            sock = FakeSocket(server_frame(0x1, payload) + server_frame(0x1, b'{"after":1}'))
+            reader = FrameReader(sock.recv, sock.sendall)
+            self.assertEqual(json.loads(reader.message())["n"], size, size)
+            self.assertEqual(json.loads(reader.message()), {"after": 1})          # nothing of it left over
+        # A masked one (a peer that masks anyway) unmasks to the same text.
+        text = b"y" * 500
+        mask = b"\x12\x34\x56\x78"
+        masked = bytes(b ^ mask[i & 3] for i, b in enumerate(text))
+        sock = FakeSocket(bytes([0x81, 0x80 | 126]) + struct.pack(">H", 500) + mask + masked)
+        self.assertEqual(FrameReader(sock.recv, sock.sendall).message(), text.decode())
+
     def test_a_hung_or_lost_peer_is_an_haerror_not_a_traceback(self):
         # The socket timeout fires as TimeoutError inside recv; a reset
         # arrives as ConnectionResetError. Both reach the caller as the

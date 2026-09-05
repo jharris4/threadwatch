@@ -26,16 +26,26 @@ MODE="${2:-}"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 DEST_DIR="${DEST_DIR:-threadwatch}"   # path on the host, relative to $HOME
 
+# The exclude list comes from git, so git has to be answering: with it
+# failing (not installed, or $REPO is an exported tree rather than a clone)
+# the list would come out empty, rsync would ship .venv/, caches and every
+# scratch note, and the report at the end would still say "pushed". The
+# `|| true` below cover an empty grep, never git: its output is captured
+# first, on its own, where set -e sees a failure.
+git -C "$REPO" rev-parse --is-inside-work-tree >/dev/null \
+  || { echo "push-to-host.sh: $REPO is not a git working tree (or git is missing); nothing pushed" >&2; exit 1; }
+UNTRACKED="$(git -C "$REPO" ls-files --others --directory)"
+UNTRACKED_UNIGNORED="$(git -C "$REPO" ls-files --others --exclude-standard --directory)"
+
 # Untracked paths, ignored ones included, anchored to the transfer root. config/
 # is held back from this list: git never sees it, but the host needs it.
 EXCLUDES="$(mktemp)"
 trap 'rm -f "$EXCLUDES"' EXIT
-{ git -C "$REPO" ls-files --others --directory | grep -v '^config/' | sed 's,^,/,'; } > "$EXCLUDES" || true
+{ printf '%s\n' "$UNTRACKED" | grep -v '^config/' | grep -v '^$' | sed 's,^,/,'; } > "$EXCLUDES" || true
 
 # A new source file that was never committed would be skipped silently, which
 # looks exactly like a deploy that did not take. Notes and caches stay quiet.
-UNCOMMITTED_CODE="$(git -C "$REPO" ls-files --others --exclude-standard --directory \
-  | grep -Ev '^config/' | grep -E '\.py$|^bin/' || true)"
+UNCOMMITTED_CODE="$(printf '%s\n' "$UNTRACKED_UNIGNORED" | grep -Ev '^config/' | grep -E '\.py$|^bin/' || true)"
 if [ -n "$UNCOMMITTED_CODE" ]; then
   echo "warning: these are untracked, so they are NOT being deployed:" >&2
   printf '  %s\n' $UNCOMMITTED_CODE >&2

@@ -19,7 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from threadwatch.config import Config  # noqa: E402
 from threadwatch.events import EventLog, day_bounds, day_of, list_days, migrate_legacy, read_day  # noqa: E402
-from threadwatch.review import day_episodes, day_index, device_history, group_episodes  # noqa: E402
+from threadwatch.review import (coverage, coverage_since, day_episodes, day_index, device_history,  # noqa: E402
+                                episode_blind_s, group_episodes)
 from threadwatch import web  # noqa: E402
 from threadwatch.web import make_server  # noqa: E402
 
@@ -252,6 +253,35 @@ class DayViewTest(unittest.TestCase):
             self.assertIn("Basement AQ quiet for 2h00m", eps, day)
             self.assertEqual(eps["Basement AQ quiet for 2h00m"]["carried_over"], day == todayish)
         self.assertEqual([r["day"] for r in day_index(self.cfg.events_dir)], [todayish, yesterday])
+
+    def test_the_day_page_draws_coverage_and_marks_a_silence_nobody_heard(self):
+        log = EventLog(self.cfg.events_dir)
+        # The recorder was killed at 00:01 and came back at 00:15, inside
+        # the AQ's silence (22:30 yesterday to 00:30).
+        midnight = day_bounds(day_of(T0))[0]
+        log.emit("recorder_started", "notice", midnight + 900, cause="unknown", gap_s=840,
+                 last_frame_ts=midnight + 60, stopped_ts=None, exit_code=None, note="not listening for 14 min")
+        httpd = make_server(self.cfg, "127.0.0.1", 0)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{httpd.server_port}"
+        try:
+            def get(path):
+                with urllib.request.urlopen(base + path, timeout=5) as r:
+                    return r.read().decode()
+            body = get(f"/day/{day_of(T0)}")
+            self.assertIn('<div class="cov">', body)
+            self.assertIn('<div class="blind"', body)
+            self.assertIn("<b>00:01-00:15</b> not listening", body)
+            self.assertIn("power cut", body)
+            self.assertIn("recorder off 14m of this", body)
+            self.assertIn("recorder restarted (14m without frames)", body)
+            self.assertIn("coverage: not recorded before", get(f"/day/{day_of(T0 - 86400)}"))
+            data = json.loads(get(f"/api/day/{day_of(T0)}"))
+            self.assertEqual([(s["state"], s["start"], s["end"], s["cause"]) for s in data["coverage"]],
+                             [("blind", midnight + 60, midnight + 900, "unknown")])
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
 
     def test_now_card_lists_quiet_degraded_and_unknown_on_our_pan(self):
         from threadwatch.names import DeviceNames, LastSeen
@@ -704,6 +734,139 @@ class SummaryEpisodeTest(unittest.TestCase):
                           ("summary", "daily summary", "last 24 h: 2 frames")])
 
 
+def start(ts, last=None, stopped=None, cause="stalled", **f):
+    gap = None if last is None else round(ts - last)
+    return rec("recorder_started", "notice", ts, cause=cause, gap_s=gap, last_frame_ts=last, stopped_ts=stopped,
+               exit_code=2, note=f"note at {ts}", **f)
+
+
+class RecorderEpisodeTest(unittest.TestCase):
+    def test_first_start_restart_and_the_restart_loop(self):
+        eps = group_episodes([start(T0, cause="first_start"), start(T0 + 7200, last=T0 + 4800, stopped=T0 + 5000)])
+        self.assertEqual([(e["kind"], e["title"], e["count"]) for e in eps],
+                         [("recorder", "recorder started (first run)", 1),
+                          ("recorder", "recorder restarted (40m without frames)", 1)])
+        loop = [start(T0 + i * 210, last=T0 - 100, stopped=T0 + i * 210 - 10) for i in range(4)]
+        eps = group_episodes(loop + [start(T0 + 4 * 210 + 1801, last=T0 - 100)])
+        self.assertEqual([(e["title"], e["count"], e["detail"], e["start"], e["end"]) for e in eps],
+                         [("recorder restarted 4 times", 4, loop[-1]["note"], T0, T0 + 630),
+                          ("recorder restarted (45m without frames)", 1, f"note at {T0 + 2641}", T0 + 2641, T0 + 2641)])
+
+    def test_a_clock_step_is_a_row_either_way(self):
+        eps = group_episodes([rec("clock_step", "info", T0, step_s=7200, note="fwd"),
+                              rec("clock_step", "info", T0 + 60, step_s=-300, note="back")])
+        self.assertEqual([(e["kind"], e["title"], e["detail"]) for e in eps],
+                         [("clock", "host clock jumped forward 2h00m", "fwd"), ("clock", "host clock jumped back 5m", "back")])
+
+
+class CoverageTest(unittest.TestCase):
+    """Was the recorder there to hear the day? Built from the log."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.log = EventLog(Path(self.tmp.name) / "events")
+        self.day = day_of(T0)
+        self.start, self.end = day_bounds(self.day)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _put(self, *records):
+        for r in records:
+            self.log.emit(r["event"], r["severity"], r["ts"], **{k: v for k, v in r.items()
+                                                                  if k not in ("event", "severity", "ts")})
+
+    def _cov(self, now=None, status=None):
+        return [(s["state"], s["start"], s["end"], s["cause"], s["count"])
+                for s in coverage(self.log.dir, self.day, now or self.end + 86400, status)]
+
+    def test_a_stall_restart_is_hearing_nothing_then_not_running(self):
+        self._put(start(T0 + 2400, last=T0, stopped=T0 + 190))
+        self.assertEqual(self._cov(), [("uncertain", T0, T0 + 190, "no_frames", 1),
+                                       ("blind", T0 + 190, T0 + 2400, "stalled", 1)])
+        # A stop seconds after the last frame: only the outage.
+        self._put(start(T0 + 9000, last=T0 + 7200, stopped=T0 + 7210, cause="stopped"))
+        self.assertEqual(self._cov()[2:], [("blind", T0 + 7210, T0 + 9000, "stopped", 1)])
+
+    def test_a_start_without_a_note_is_blind_from_the_last_frame(self):
+        self._put(start(T0 + 600, last=T0, cause="unknown"), start(T0 + 5000, last=T0 + 4000, cause="nonsense"))
+        self.assertEqual(self._cov(), [("blind", T0, T0 + 600, "unknown", 1), ("blind", T0 + 4000, T0 + 5000, "unknown", 1)])
+        self.assertIn("power cut", coverage(self.log.dir, self.day, self.end)[0]["note"])
+
+    def test_the_first_start_ever_covers_nothing_before_it(self):
+        self._put(start(T0, cause="first_start"))
+        self.assertEqual(self._cov(), [])
+        self.assertEqual(coverage_since(self.log.dir), T0)
+        self.assertIsNone(coverage_since(Path(self.tmp.name) / "none"))
+
+    def test_the_restart_loop_alternates_and_touching_pieces_merge(self):
+        # Three starts from the same last frame: each run heard nothing.
+        self._put(start(T0 + 200, last=T0, stopped=T0 + 190), start(T0 + 410, last=T0, stopped=T0 + 400),
+                  start(T0 + 620, last=T0, stopped=T0 + 610))
+        self.assertEqual(self._cov(), [("uncertain", T0, T0 + 190, "no_frames", 3),
+                                       ("blind", T0 + 190, T0 + 200, "stalled", 1),
+                                       ("uncertain", T0 + 200, T0 + 400, "no_frames", 3),
+                                       ("blind", T0 + 400, T0 + 410, "stalled", 1),
+                                       ("uncertain", T0 + 410, T0 + 610, "no_frames", 3),
+                                       ("blind", T0 + 610, T0 + 620, "stalled", 1)])
+        self._put(start(T0 + 700, last=T0, stopped=T0 + 620, cause="crashed"))   # touching the last: one segment
+        self.assertEqual(self._cov()[-1], ("blind", T0 + 610, T0 + 700, "crashed", 2))
+
+    def test_a_forward_clock_step_is_blind_and_a_backward_one_is_not(self):
+        self._put(rec("clock_step", "info", T0 + 7200, step_s=3600, note="fwd"),
+                  rec("clock_step", "info", T0 + 9000, step_s=-600, note="back"))
+        self.assertEqual(self._cov(), [("blind", T0 + 3600, T0 + 7200, "clock_step", 1)])
+
+    def test_a_silent_pan_window_is_uncertain_and_an_outage_inside_it_wins(self):
+        self._put(rec("configured_pan_silent", "warning", T0 + 1800, pan="0x4e21", window_s=1800, note="n"),
+                  start(T0 + 1000, last=T0 + 500, cause="unknown"))
+        self.assertEqual(self._cov(), [("uncertain", T0, T0 + 500, "pan_silent", 1),
+                                       ("blind", T0 + 500, T0 + 1000, "unknown", 1),
+                                       ("uncertain", T0 + 1000, T0 + 1800, "pan_silent", 1)])
+
+    def test_segments_are_clipped_to_the_day_and_to_now(self):
+        # An outage that began this day and ended the next: the next day's
+        # start is what records it, and the day before contributes its
+        # clock step that ends in this day.
+        self._put(start(T0 + 86400, last=T0 + 3600, cause="unknown"),
+                  rec("clock_step", "info", self.start + 300, step_s=1200, note="fwd"))
+        self.assertEqual(self._cov(), [("blind", self.start, self.start + 300, "clock_step", 1),
+                                       ("blind", T0 + 3600, self.end, "unknown", 1)])
+        self.assertEqual(self._cov(now=T0 + 7200)[-1], ("blind", T0 + 3600, T0 + 7200, "unknown", 1))
+        self.assertEqual(coverage(self.log.dir, day_of(T0 - 86400), self.end),
+                         [{"start": self.start - 900, "end": self.start, "state": "blind", "cause": "clock_step",
+                           "note": coverage(self.log.dir, self.day, self.end)[0]["note"], "count": 1}])
+
+    def test_the_scan_forward_stops_at_a_start_whose_last_frame_is_after_the_day(self):
+        self._put(start(T0 + 86400, last=self.end + 60, cause="unknown"),       # heard after this day: stop here
+                  start(T0 + 2 * 86400, last=T0, cause="unknown"))              # never read (would cover the day)
+        self.assertEqual(self._cov(), [])
+        self._put(start(T0 + 40 * 86400, last=T0 + 3600, cause="unknown"))      # past the look-ahead
+        self.assertEqual(self._cov(), [])
+
+    def test_the_status_file_adds_the_live_tail_on_today_only(self):
+        now = time.time()
+        today = day_of(now)
+        down = {"updated": now - 400, "last_frame_age_s": 5}
+        segs = coverage(self.log.dir, today, now, down)
+        self.assertEqual([(s["state"], round(s["start"]), round(s["end"]), s["cause"]) for s in segs],
+                         [("blind", round(max(now - 400, day_bounds(today)[0])), round(now), "down")])
+        deaf = {"updated": now - 10, "last_frame_age_s": 300}
+        segs = coverage(self.log.dir, today, now, deaf)
+        self.assertEqual([(s["state"], round(s["start"]), round(s["end"]), s["cause"]) for s in segs],
+                         [("uncertain", round(max(now - 300, day_bounds(today)[0])), round(now), "no_frames")])
+        self.assertEqual(coverage(self.log.dir, day_of(now - 86400), now, down), [])
+        self.assertEqual(coverage(self.log.dir, today, now, {"updated": now - 10, "last_frame_age_s": 5}), [])
+
+    def test_how_much_of_an_episode_nobody_was_listening_for(self):
+        segs = [{"start": T0 + 600, "end": T0 + 1200, "state": "blind"},
+                {"start": T0 + 1200, "end": T0 + 1500, "state": "uncertain"},
+                {"start": T0 + 3000, "end": T0 + 4000, "state": "blind"}]
+        quiet = {"start": T0 + 1800, "end": None, "silent_since": T0}          # from the device's last frame
+        self.assertEqual(episode_blind_s(quiet, segs, now=T0 + 3500), 600 + 500)
+        self.assertEqual(episode_blind_s({"start": T0 + 1300, "end": T0 + 2000}, segs), 0)
+
+
 class EveryEventKindTest(unittest.TestCase):
     """The day page is group_episodes over everything the pipeline emits.
     Five of its event kinds had never been through the grouping, so a
@@ -761,8 +924,7 @@ class EveryEventKindTest(unittest.TestCase):
                           ("test", "warning", "alert test", "threadwatch alert-test from pi")])
 
     def test_an_event_without_a_grouping_rule_is_a_row_named_after_it(self):
-        recs = [rec("clock_step", "info", T0, step_s=7200, note="the host clock jumped forward 120 min"),
-                rec("configured_pan_silent", "warning", T0 + 1, pan="0x4e21", note="no frame on PAN 0x4e21"),
+        recs = [rec("configured_pan_silent", "warning", T0 + 1, pan="0x4e21", note="no frame on PAN 0x4e21"),
                 rec("dominant_pan_changed", "notice", T0 + 2, pan="0x4e21", note="PAN 0x4e21 adopted"),
                 rec("credentials_stale", "warning", T0 + 3, failed=40, note="nothing decrypts"),
                 rec("border_router_address_changed", "notice", T0 + 4, addr=TV2, name="Hall TV", note="rotated"),

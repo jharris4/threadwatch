@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from .events import day_bounds, day_of, iter_days, list_days, read_day
+from .events import day_bounds, day_of, iter_days, list_days, next_day, prev_day, read_day
 from .freeze import STAGING_DIR
 from .names import DeviceNames, LastSeen, reception, rloc16_role
 
@@ -25,7 +25,7 @@ SEVERITY_RANK = {"info": 0, "notice": 1, "warning": 2, "critical": 3}
 # device rejoining) is one row while its records keep coming, and a new row
 # after this much silence; without a limit a device that rejoins once a day
 # would be a single row for the whole history.
-GAP_S = {"retransmissions": 3600.0, "rejoin": 3600.0, "foreign_pan": 86400.0}
+GAP_S = {"retransmissions": 3600.0, "rejoin": 3600.0, "foreign_pan": 86400.0, "recorder": 1800.0}
 
 
 def _label(rec: dict) -> str:
@@ -68,6 +68,7 @@ def group_episodes(records: list[dict], now: Optional[float] = None) -> list[dic
     open_starved: dict[str, dict] = {}
     first_seen: Optional[dict] = None
     join_scan: Optional[dict] = None
+    recorder: Optional[dict] = None
 
     def new(kind, rec, title, detail="", **extra):
         ep = {"kind": kind, "start": rec["ts"], "end": rec["ts"], "severity": rec["severity"],
@@ -227,6 +228,23 @@ def group_episodes(records: list[dict], now: Optional[float] = None) -> list[dic
             new("summary", rec, "daily summary", rec.get("note", ""))
         elif ev == "alert_test":
             new("test", rec, "alert test", rec.get("note", ""))
+        elif ev == "recorder_started":
+            # Starts minutes apart are the watchdog's restart loop (a host
+            # asleep, a dongle gone): one row, counting them.
+            if recorder is None or rec["ts"] - recorder["end"] > GAP_S["recorder"]:
+                gap = rec.get("gap_s")
+                title = ("recorder started (first run)" if rec.get("cause") == "first_start" else
+                         "recorder started" if not isinstance(gap, (int, float)) else
+                         f"recorder restarted ({fmt_duration(gap)} without frames)")
+                recorder = new("recorder", rec, title, rec.get("note", ""))
+            else:
+                bump(recorder, rec)
+                recorder["title"] = f"recorder restarted {recorder['count']} times"
+                recorder["detail"] = rec.get("note", "")      # the latest: the longest gap
+        elif ev == "clock_step":
+            step = rec.get("step_s") or 0
+            new("clock", rec, f"host clock jumped {'forward' if step > 0 else 'back'} {fmt_duration(abs(step))}",
+                rec.get("note", ""))
         else:
             new(ev or "event", rec, ev, rec.get("note", ""))
 
@@ -273,6 +291,172 @@ def day_episodes(events_dir: Path, day: str, now: Optional[float] = None) -> lis
             ep["carried_over"] = ep["start"] < start   # began on an earlier day
             out.append(ep)
     return out
+
+
+# ------------------------------------------------------------ coverage
+#
+# Whether the recorder was listening: the answer to "was the device silent,
+# or was nothing there to hear it?" that a day page must give beside each
+# silence. Built from the log alone: every start says when its run began,
+# when the last frame before it was heard, and (from the note the run
+# before left) when that run ended; a forward clock step says how much
+# wall-clock time was never lived through; the configured PAN going silent
+# says frames were heard but none of ours.
+
+# A run that stopped this soon after its last frame was listening to a
+# quiet channel for the seconds a stop takes: not worth a segment.
+COVERAGE_MIN_S = 60.0
+# How far past a day the log is read for a start whose gap reaches back
+# into it; an outage longer than this shows on its first days only.
+COVERAGE_LOOKAHEAD_DAYS = EPISODE_WINDOW_DAYS
+# A status file this old is a daemon that is not running (it writes every
+# 30 s while alive); the header and the status page use the same figure.
+STATUS_DEAD_S = 180.0
+STATUS_QUIET_S = 120.0
+
+_BLIND_NOTES = {
+    "stopped": "the recorder was stopped",
+    "stalled": "the recorder was not running: it left after 3 min without frames and was restarted",
+    "crashed": "the recorder crashed and was restarted",
+    "sniffer_died": "the recorder lost its sniffer and was restarted",
+    "stream_ended": "the recorder lost its capture stream (dongle unplugged?) and was restarted",
+    "unknown": "the recorder was not running, and left no note of how it ended (power cut, or killed)",
+    "clock_step": "the host clock jumped forward over this: no time to hear anything in",
+    "down": "the recorder is not running now",
+}
+_UNCERTAIN_NOTES = {
+    "no_frames": "the recorder was running but heard nothing: a quiet channel, or a dongle that had stopped hearing",
+    "pan_silent": "frames were heard, but none on the configured PAN",
+}
+
+
+def coverage_records(events_dir: Path, day: str) -> list[dict]:
+    """The records coverage for ``day`` is built from: the day's own and
+    the day before (a clock step or a silent PAN window can start there),
+    then later days until a start is found whose last frame is after the
+    day, since no start after that one can reach back into it. A recorder
+    that ran a month without a restart is a month of small cached files."""
+    start, end = day_bounds(day)
+    first = prev_day(day)
+    last = day
+    for _ in range(COVERAGE_LOOKAHEAD_DAYS):
+        last = next_day(last)
+    out = []
+    for d, recs in iter_days(events_dir, first, last):
+        wanted = [r for r in recs if r.get("event") in ("recorder_started", "clock_step", "configured_pan_silent")]
+        out.extend(wanted)
+        if d > day and any(r.get("event") == "recorder_started" and
+                           (not isinstance(r.get("last_frame_ts"), (int, float)) or r["last_frame_ts"] >= end)
+                           for r in wanted):
+            break
+    return out
+
+
+def coverage_since(events_dir: Path) -> Optional[float]:
+    """When the first start on record is: before it the log cannot say
+    whether the recorder was listening (the starts were not logged), and
+    a day page from then says so rather than showing a clean day."""
+    for _day, recs in iter_days(events_dir):
+        for r in recs:
+            if r.get("event") == "recorder_started" and isinstance(r.get("ts"), (int, float)):
+                return float(r["ts"])
+    return None
+
+
+def _merge(spans: list[tuple]) -> list[dict]:
+    """Overlapping or touching spans of one state become one segment,
+    keeping the cause and note of the longest piece and counting the
+    pieces (a restart loop is one segment of many starts)."""
+    out: list[dict] = []
+    for a, b, cause, note in sorted(spans):
+        if b <= a:
+            continue
+        if out and a <= out[-1]["end"]:
+            cur = out[-1]
+            if b - a > cur["longest"]:
+                cur.update(cause=cause, note=note, longest=b - a)
+            cur["end"] = max(cur["end"], b)
+            cur["count"] += 1
+            continue
+        out.append({"start": a, "end": b, "cause": cause, "note": note, "count": 1, "longest": b - a})
+    return out
+
+
+def _subtract(segments: list[dict], holes: list[dict]) -> list[dict]:
+    """The parts of ``segments`` no hole covers, in order."""
+    out = []
+    for seg in segments:
+        pieces = [(seg["start"], seg["end"])]
+        for h in holes:
+            pieces = [p for a, b in pieces
+                      for p in ((a, min(b, h["start"])), (max(a, h["end"]), b)) if p[1] > p[0]]
+        out.extend({**seg, "start": a, "end": b} for a, b in pieces)
+    return out
+
+
+def coverage(events_dir: Path, day: str, now: Optional[float] = None,
+             status: Optional[dict] = None) -> list[dict]:
+    """The parts of ``day`` the recorder was not listening (state "blind":
+    not running, or a forward clock step) or may not have been
+    ("uncertain": running but hearing nothing, or hearing other PANs
+    only), clipped to the day and to now; whatever is left is coverage.
+    ``status`` (the daemon's status.json) adds the live tail on today's
+    page: a recorder that is down or hearing nothing right now has logged
+    nothing about it yet. Each segment: start, end, state, cause, note,
+    count (starts or steps merged into it). Sorted by start."""
+    now = now or time.time()
+    start, end = day_bounds(day)
+    blind: list[tuple] = []
+    uncertain: list[tuple] = []
+    for r in coverage_records(events_dir, day):
+        ev, ts = r.get("event"), r.get("ts")
+        if not isinstance(ts, (int, float)):
+            continue
+        if ev == "recorder_started":
+            last, stopped = r.get("last_frame_ts"), r.get("stopped_ts")
+            if not isinstance(last, (int, float)):
+                continue                      # the first start ever: nothing before it to cover
+            cause = r.get("cause") if r.get("cause") in _BLIND_NOTES else "unknown"
+            if isinstance(stopped, (int, float)) and last <= stopped <= ts:
+                if stopped - last >= COVERAGE_MIN_S:
+                    uncertain.append((last, stopped, "no_frames", _UNCERTAIN_NOTES["no_frames"]))
+                blind.append((stopped, ts, cause, _BLIND_NOTES[cause]))
+            else:
+                blind.append((last, ts, cause, _BLIND_NOTES[cause]))
+        elif ev == "clock_step":
+            step = r.get("step_s") or 0
+            if step > 0:
+                blind.append((ts - step, ts, "clock_step", _BLIND_NOTES["clock_step"]))
+        elif ev == "configured_pan_silent":
+            window = r.get("window_s") or 1800
+            uncertain.append((ts - window, ts, "pan_silent", _UNCERTAIN_NOTES["pan_silent"]))
+    if status and day == day_of(now):
+        updated = status.get("updated")
+        if isinstance(updated, (int, float)):
+            if now - updated > STATUS_DEAD_S:
+                blind.append((updated, now, "down", _BLIND_NOTES["down"]))
+            elif (status.get("last_frame_age_s") or 0) > STATUS_QUIET_S:
+                uncertain.append((now - status["last_frame_age_s"], now, "no_frames", _UNCERTAIN_NOTES["no_frames"]))
+    blind_segs = _merge(blind)
+    segs = [{**seg, "state": "blind"} for seg in blind_segs]
+    segs += [{**seg, "state": "uncertain"} for seg in _subtract(_merge(uncertain), blind_segs)]
+    out = []
+    for seg in segs:
+        a, b = max(seg["start"], start), min(seg["end"], end, now)
+        if b > a:
+            out.append({"start": a, "end": b, "state": seg["state"], "cause": seg["cause"],
+                        "note": seg["note"], "count": seg["count"]})
+    return sorted(out, key=lambda x: (x["start"], x["state"]))
+
+
+def episode_blind_s(ep: dict, segments: list[dict], now: Optional[float] = None) -> float:
+    """How much of an episode's span the recorder was not listening for
+    (blind segments only): the figure beside a silence that says how
+    much of it nobody was there to hear. A quiet spell spans from the
+    device's last frame; anything else from its first record."""
+    a = ep.get("silent_since") if isinstance(ep.get("silent_since"), (int, float)) else ep["start"]
+    b = ep["end"] if ep["end"] is not None else (now or time.time())
+    return sum(max(0.0, min(b, s["end"]) - max(a, s["start"])) for s in segments if s["state"] == "blind")
 
 
 def day_index(events_dir: Path) -> list[dict]:

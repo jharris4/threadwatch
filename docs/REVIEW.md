@@ -14,7 +14,9 @@ is no authentication: keep it on your LAN or behind your own proxy.
 ## Pages
 
 - **/** and **/day/YYYY-MM-DD**: the day's *episodes* with previous / next
-  links and a strip of recent days with their event counts. Whether the
+  links and a strip of recent days with their event counts. Under the
+  headline card, a coverage bar says whether the recorder was there to
+  hear the day ("Coverage", below). Whether the
   packets for that day still exist (ring files last a week; frozen
   incidents last forever) is shown at the top. Today's page opens with a
   *right now* card: devices quiet at this moment (the ones the recorder
@@ -60,7 +62,10 @@ is no authentication: keep it on your LAN or behind your own proxy.
 - **/api/status** (with a `storage` block), **/api/incidents**,
   **/api/days**, **/api/day/YYYY-MM-DD**, **/api/devices**,
   **/api/device/<addr or name>**:
-  the same data as JSON, for Home Assistant or anything else. `/api/days`
+  the same data as JSON, for Home Assistant or anything else. The day
+  response carries `coverage`: the segments of the day the recorder was
+  not listening (`state` `blind`) or may not have been (`uncertain`),
+  each with `start`, `end`, `cause` and a `note`. `/api/days`
   is the day strip: one row per day that has an event file, newest first,
   with `day`, `total` and a count per severity (`info`, `notice`,
   `warning`, `critical`), so a sensor that wants "warnings today" reads
@@ -99,6 +104,38 @@ The same grouping is available on the command line:
     bin/threadwatch events --day 2026-09-02      # one day, raw
     bin/threadwatch events --device "Apple TV" --severity warning -n 10   # one device, paged things only
     bin/threadwatch why "Office AQ"              # one device: ring narrative, then its episodes
+
+## Coverage
+
+A silence on a day page has two possible explanations: the device said
+nothing, or nobody was there to hear it. The recorder cannot tell them
+apart after the fact unless it kept track of itself, so every start logs
+a `recorder_started` event saying when the last frame before it was
+heard, and how and when the run before it ended (from the note each exit
+path leaves in `data/state/last-exit.json`; a power cut or a kill leaves
+none, and the start says so). A forward step of the host clock logs
+`clock_step`, and a half hour of frames from other PANs only logs
+`configured_pan_silent`.
+
+The day page draws these as a bar across the day: green while the
+recorder was listening, red where it was not (**blind**: not running, or
+a stretch of wall-clock time the clock jumped over), amber where it was
+running but may not have heard anything (**uncertain**: no frames from
+the last one to the exit the stall watchdog forced, or frames from other
+PANs only), blank for the rest of today. One line per gap follows, with
+its cause. On today's page the daemon's status file adds the live tail:
+a recorder that is down or hearing nothing right now has not logged that
+yet. A row whose span overlaps a red gap says how much of it the recorder
+was off for ("recorder off 14m of this"): a device quiet for an hour
+with the recorder off for fifty minutes of it is not much evidence
+against the device. `threadwatch events --day` prints the same gaps
+before the day's records.
+
+Days before the first `recorder_started` on record say "coverage: not
+recorded" rather than showing a clean bar, since a start that was not
+logged cannot be told from a day without one. A stall (three minutes
+without frames) cannot say whether the channel was quiet or the dongle
+had stopped hearing, which is why that stretch is amber, not red.
 
 ## Storage
 

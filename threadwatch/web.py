@@ -17,9 +17,10 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from .events import DAY_RE, day_of, next_day, prev_day
+from .events import DAY_RE, day_bounds, day_of, next_day, prev_day
 from .names import AmbiguousName, DeviceNames, LastSeen, load_names
-from .review import (DEVICE_FILTERS, DEVICE_SORTS, capture_for_day, day_episodes, day_index,
+from .review import (DEVICE_FILTERS, DEVICE_SORTS, capture_for_day, coverage, coverage_since, day_episodes, day_index,
+                     episode_blind_s,
                      days_available, device_rows, devices_history, dominant_pan,
                      fmt_bytes, fmt_duration, incidents, live_address, now_card, select_devices, storage, today)
 from .review import SEVERITY_RANK
@@ -47,6 +48,12 @@ h1{font-size:1.35em;margin:.4em 0 .5em}h2{font-size:1.05em;margin:1.4em 0 .5em;c
 .strip a.cur{border-color:var(--link);box-shadow:inset 0 0 0 1px var(--link)}
 .strip a small{display:block;color:var(--muted)}
 .strip a .w{color:var(--warning)}.strip a .c{color:var(--critical)}
+.cov{position:relative;height:14px;border:1px solid var(--line);border-radius:4px;background:var(--card);
+ overflow:hidden;margin:.3em 0 .15em}
+.cov div{position:absolute;top:0;bottom:0}.cov .on{background:var(--ok);opacity:.45}
+.cov .blind{background:var(--critical)}.cov .uncertain{background:var(--warning)}
+.covh{display:flex;justify-content:space-between;font-size:.72em;color:var(--muted);margin:0 0 .3em}
+.covl{font-size:.88em;margin:0 0 .8em}.covl li{margin:.1em 0}.covl ul{margin:.2em 0 0 1.2em;padding:0}
 table{border-collapse:collapse;width:100%;font-size:.94em}
 table.facts th{width:11em;text-transform:none;letter-spacing:0;font-size:.94em}
 th,td{text-align:left;padding:.45em .6em;border-bottom:1px solid var(--line);vertical-align:top}
@@ -131,6 +138,17 @@ LEGEND = [
      "The recorder copied the ring buffer into an incident directory by itself, because a critical "
      "event fired and [capture] freeze_on_critical is on. One per six hours at most. A failure "
      "(disk full, usually) is logged as a warning instead."),
+    ("recorder", "Recorder started / restarted",
+     "The recorder itself started: how long it had not been listening (since the last frame any run "
+     "heard) and how the run before ended. A stop that was asked for is information; a crash, a "
+     "stall (three minutes without frames, after which the recorder leaves and the supervisor "
+     "restarts it) or an end it left no note of (a power cut, a kill) is a notice. Starts minutes "
+     "apart are one row: the restart loop of a host asleep or a dongle gone. The coverage bar at "
+     "the top of the day is drawn from these."),
+    ("clock", "Host clock jumped",
+     "The host clock was stepped, usually by NTP after a boot on a Pi without a real-time clock. "
+     "Forward: the time jumped over was never lived through and counts as the recorder's own "
+     "blindness. Back: every stamp taken before the jump was moved back with it."),
     ("summary", "Daily summary",
      "Once a day (at [summary] hour in config.toml, 08:00 by default): frames captured in the "
      "last 24 hours, devices heard out of those tracked, who is quiet, unknown addresses still "
@@ -302,10 +320,46 @@ class Site:
                     f'<span class="muted">{hm(s["ts"])}</span> {esc(s.get("note", ""))}</div>')
         return out
 
+    def coverage_html(self, day: str, segs: list[dict], now: float) -> str:
+        """The day as a bar: listening in green, not listening in red,
+        running but hearing nothing in amber, and the rest of today
+        blank; under it, one line per gap."""
+        start, end = day_bounds(day)
+        until = min(end, now)
+        if until <= start:
+            return ""
+        since = coverage_since(self.cfg.events_dir)
+        if since is None or since >= until:
+            return ('<p class="muted">coverage: not recorded' +
+                    (f' before {esc(day_of(since))}' if since is not None else " yet") + '</p>')
+
+        def pct(ts):
+            return max(0.0, min(100.0, (ts - start) / (end - start) * 100))
+
+        bar = [f'<div class="on" style="left:0;width:{pct(until):.2f}%"></div>']
+        lines = []
+        for s in segs:
+            a, b = pct(s["start"]), pct(s["end"])
+            tip = esc(f'{hm(s["start"])}-{hm(s["end"])}: {s["note"]}')
+            bar.append(f'<div class="{esc(s["state"])}" style="left:{a:.2f}%;width:{max(b - a, 0.15):.2f}%" '
+                       f'title="{tip}"></div>')
+            what = "not listening" if s["state"] == "blind" else "may not have heard"
+            more = f', {s["count"]} starts' if s["cause"] not in ("clock_step", "down") and s["count"] > 1 else ""
+            lines.append(f'<li><b>{hm(s["start"])}-{hm(s["end"])}</b> {what} '
+                         f'<span class="muted">({fmt_duration(s["end"] - s["start"])}{more}): {esc(s["note"])}</span></li>')
+        out = (f'<div class="cov">{"".join(bar)}</div>'
+               f'<div class="covh"><span>00</span><span>06</span><span>12</span><span>18</span><span>24</span></div>')
+        if lines:
+            out += f'<div class="covl"><span class="k muted">coverage</span><ul>{"".join(lines)}</ul></div>'
+        else:
+            out += '<p class="covl muted">coverage: listening throughout</p>'
+        return out
+
     def day_page(self, day: str, min_severity: str = "") -> str:
         now = time.time()
         floor = SEVERITY_RANK.get(min_severity)
         eps = day_episodes(self.cfg.events_dir, day, now)
+        segs = coverage(self.cfg.events_dir, day, now, self.status())
         total = len(eps)
         if floor:
             eps = [e for e in eps if SEVERITY_RANK.get(e["severity"], 0) >= floor]
@@ -341,6 +395,10 @@ class Site:
             who = ""
             if ep.get("addr") and len(ep["addr"]) == 16:   # older rejoin rows carry a short src
                 who = f' <a class="muted" href="/device/{esc(ep["addr"])}">&#9656;</a>'
+            blind = episode_blind_s(ep, segs, now) if ep["kind"] != "recorder" else 0
+            if blind >= 60:
+                span += (f' <span class="warn" title="the recorder was not listening for this much of it">'
+                         f'&#9888; recorder off {fmt_duration(blind)} of this</span>')
             tip = LEGEND_BY_KIND.get(ep["kind"], "")
             if ep.get("carried_over"):
                 tip = "Carried over: this began on an earlier day and was still going on this one. " + tip
@@ -358,6 +416,7 @@ class Site:
                f'<p><a href="/api/day/{esc(day)}">JSON</a></p></details>')
         live = f'<span class="muted">reloads every {REFRESH_S} s</span>' if is_today else ""
         return self.page(day, f'<h1>{esc(day)}</h1>{nav}{self.strip(day)}{self.now_html(day, now)}'
+                              f'{self.coverage_html(day, segs, now)}'
                               f'<p class="muted">{pk} {live}</p>{sev}<h2>episodes</h2>{table}{raw}',
                          refresh=is_today)
 
@@ -595,7 +654,8 @@ class Site:
                 ep.pop("events", None)
             from .events import read_day
             return {"day": day, "episodes": eps, "records": read_day(self.cfg.events_dir, day),
-                    "capture": capture_for_day(self.cfg.ring_dir, self.cfg.incidents_dir, day)}
+                    "capture": capture_for_day(self.cfg.ring_dir, self.cfg.incidents_dir, day),
+                    "coverage": coverage(self.cfg.events_dir, day, status=self.status())}
         if path == "/api/devices":
             seen = self.seen()
             rows = device_rows(seen, self.names(), self.cfg.quiet_min_rssi_dbm, leader_router=self.leader_router())

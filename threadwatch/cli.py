@@ -199,6 +199,13 @@ def main(argv=None) -> int:
             if not valid_day(args.day):
                 parser.error(f"--day wants YYYY-MM-DD, not {args.day!r}")
             records = [r for r in read_day(cfg.events_dir, args.day) if wanted(r)]
+            # First, whether the recorder was there to hear the day: a
+            # silence inside one of these lines is not the device's.
+            from .review import coverage
+            for seg in coverage(cfg.events_dir, args.day):
+                a, b = (time.strftime("%H:%M", time.localtime(t)) for t in (seg["start"], seg["end"]))
+                how = "not listening" if seg["state"] == "blind" else "may not have heard"
+                print(f"{a}-{b} recorder {how}: {seg['note']}")
             if not records:
                 print(f"no events {what + ' ' if what else ''}on {args.day}")
                 return 0

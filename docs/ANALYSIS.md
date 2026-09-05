@@ -61,6 +61,55 @@ quiet channel the timers spread out naturally.
 3. Record the mapping in `config/devices.json`. Keep old addresses —
    some devices (Apple TVs) rotate their extended address.
 
+## Frozen incidents
+
+`threadwatch freeze <label>` copies the ring before it rolls over, and so
+does the recorder itself when `[capture] freeze_on_critical` is set and a
+`phase_locked_storm` fires (at most once per six hours, counted from the
+newest automatic incident on disk). Each incident is one directory:
+
+    data/incidents/20260901T031500_storm-at-noon/
+      threadwatch-20260825-04.pcap ... threadwatch-20260901-03.pcap   every ring file, as it was
+      status.json            the daemon's status at freeze time
+      last-seen.json         the last-seen table: first/last heard, frames, RSSI per address
+      observed-names.json    SRP hostnames harvested from the mesh
+      frames-by-hour.json    the frame counts behind the daily summary
+      events/                a copy of the whole event log, one file per day
+
+The name is the freeze time (local, `YYYYMMDDTHHMMSS`) and the label
+reduced to filename-safe characters: letters, digits, `.`, `_` and `-`,
+with any run of anything else replaced by `-` (`storm at noon` becomes
+`storm-at-noon`; an empty label becomes `incident`). Automatic ones are
+labelled `auto-storm`. The ring file being written is copied as it is, so
+its last record can be cut short; readers stop cleanly there.
+`border-routers.json` is not copied today. A directory ending in
+`.partial` is a copy still running or one cut short by a restart; the
+listing ignores it and the daemon deletes it at its next start.
+
+Nothing prunes an incident: each one is the size of the ring (about
+1.2 GB for a week at rest) and stays until `threadwatch incidents --delete
+<name or label>` removes it. `threadwatch incidents` and the `/incidents`
+page list them with the hours their packets cover, and a day page says
+when an incident holds that day's packets after the ring has let it go.
+
+No command reads an incident as a whole. `replay` and `why --pcap` each
+take one pcap, so loop over the directory, or merge first:
+
+```bash
+INC=data/incidents/20260901T031500_storm-at-noon
+for f in "$INC"/*.pcap; do bin/threadwatch replay "$f"; done     # detector + events per hour
+bin/threadwatch why "Office AQ" --pcap "$INC"/threadwatch-20260901-02.pcap   # one device, one hour
+mergecap -w "$INC.pcap" "$INC"/*.pcap && wireshark "$INC.pcap"    # the week in one Wireshark window
+```
+
+`replay` judges each file on its own, so a silence or a storm that spans
+two hourly files is seen twice or split; for one device across the whole
+span, `why` with the merged file is the better tool. The state files are
+plain JSON (`python3 -m json.tool "$INC"/last-seen.json`), and the copied
+event log is what `threadwatch events` would have shown at freeze time,
+readable with `jq` or any JSON-lines tool; `threadwatch events` itself
+reads only the live log.
+
 ## RSSI
 
 TAP frames carry per-frame RSSI *at the dongle*. If the dongle sits next

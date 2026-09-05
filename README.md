@@ -60,7 +60,8 @@ question: *why did this device go offline?*
   buffer before it rolls over; with `freeze_on_critical` in config.toml
   the recorder does it by itself when a storm fires (the one critical
   event today), at most once per six hours. `threadwatch incidents`
-  lists and deletes them.
+  lists and deletes them; what an incident holds and how to analyse one
+  is in docs/ANALYSIS.md.
 - **Offline analysis**: `threadwatch replay file.pcap` runs the whole
   pipeline over any capture; pcaps also open in Wireshark (see
   docs/ANALYSIS.md for a filter cookbook and the storm case study).

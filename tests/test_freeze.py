@@ -94,6 +94,88 @@ class FreezeTest(unittest.TestCase):
         self.assertEqual(freeze.discard_partials(self.cfg.incidents_dir), [])
         self.assertEqual(freeze.discard_partials(self.cfg.incidents_dir / "missing"), [])
 
+    def test_a_freeze_still_running_is_not_a_leftover_for_the_next_start(self):
+        # BUG-10: a manual freeze is another process and may overlap a
+        # recorder restart, whose start-up cleanup removed its staging
+        # directory mid-copy; the copies after that failed as "source
+        # pruned", copytree remade the directory, and the freeze reported
+        # success with a count and no packets.
+        import threading
+        from threadwatch.review import incidents
+        cfg = self.cfg
+        cfg.events_dir.mkdir(parents=True)
+        (cfg.events_dir / "2026-09-03.jsonl").write_text("")
+        copied, resume = threading.Event(), threading.Event()
+        real = shutil.copy2
+
+        def copy2(src, dst, *a, **kw):
+            out = real(src, dst, *a, **kw)
+            if src.name.endswith("-00.pcap"):
+                copied.set()
+                resume.wait(5)
+            return out
+
+        result = {}
+
+        def worker():
+            try:
+                result["ok"] = freeze.freeze_ring(cfg, "manual", now=1_700_000_000)
+            except BaseException as exc:
+                result["err"] = exc
+
+        freeze.shutil.copy2 = copy2
+        try:
+            t = threading.Thread(target=worker)
+            t.start()
+            self.assertTrue(copied.wait(5))
+            self.assertEqual(freeze.discard_partials(cfg.incidents_dir), [])     # the recorder starting: nothing to discard
+            staging = cfg.incidents_dir / freeze.STAGING_DIR
+            names = sorted(p.name for p in staging.iterdir())
+            self.assertEqual(len(names), 2, names)                              # the copy and its held lock
+            self.assertTrue(names[1] == names[0] + freeze.LOCK_SUFFIX and (staging / names[0]).is_dir(), names)
+            self.assertEqual([p.name[-7:-5] for p in (staging / names[0]).glob("*.pcap")], ["00"])   # still there
+            resume.set()
+            t.join(5)
+        finally:
+            freeze.shutil.copy2 = real
+            resume.set()
+        self.assertNotIn("err", result, result.get("err"))
+        dest, count = result["ok"]
+        self.assertEqual(count, 3)
+        self.assertEqual(sorted(p.name[-7:-5] for p in dest.glob("*.pcap")), ["00", "01", "02"])
+        self.assertTrue((dest / "events").is_dir())
+        self.assertEqual([i["label"] for i in incidents(cfg.incidents_dir)], ["manual"])
+        self.assertEqual(list((cfg.incidents_dir / freeze.STAGING_DIR).iterdir()), [])    # lock and staging gone
+        self.assertEqual(freeze.discard_partials(cfg.incidents_dir), [])
+
+    def test_a_destination_that_vanishes_mid_copy_is_a_failure_not_a_success(self):
+        real = shutil.copy2
+
+        def copy2(src, dst, *a, **kw):
+            if src.name.endswith("-01.pcap"):
+                shutil.rmtree(dst.parent)                       # something removed the staging directory
+            return real(src, dst, *a, **kw)
+
+        freeze.shutil.copy2 = copy2
+        try:
+            with self.assertRaises(FileNotFoundError):
+                freeze.freeze_ring(self.cfg, "manual")
+        finally:
+            freeze.shutil.copy2 = real
+        from threadwatch.review import incidents
+        self.assertEqual(incidents(self.cfg.incidents_dir), [])
+        self.assertEqual(len(list(self.cfg.ring_dir.glob("*.pcap"))), 3)     # the sources were all there
+
+    def test_a_dead_runs_lock_does_not_protect_its_leftover(self):
+        staging = self.cfg.incidents_dir / freeze.STAGING_DIR
+        left = staging / "20260904T200112_auto-storm"
+        left.mkdir(parents=True)
+        (left / "threadwatch-20260904-19.pcap").write_bytes(b"x")
+        (staging / (left.name + freeze.LOCK_SUFFIX)).write_bytes(b"")       # nobody holds it: the run is gone
+        (staging / ("20260904T200500_manual" + freeze.LOCK_SUFFIX)).write_bytes(b"")   # died before mkdir
+        self.assertEqual(freeze.discard_partials(self.cfg.incidents_dir), ["auto-storm"])
+        self.assertEqual(list(staging.iterdir()), [])
+
     def test_a_freeze_right_after_a_write_holds_that_record(self):
         # BUG-02: the ring writer buffered records in Python; a freeze copies
         # the active file through its own handle and saw a zero-byte pcap

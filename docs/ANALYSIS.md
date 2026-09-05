@@ -112,7 +112,8 @@ its last record can be cut short; readers stop cleanly there.
 A copy still running is built under `data/incidents/.staging/` and
 renamed into place once whole; one cut short by a restart stays there,
 where the listing never sees it, and the daemon deletes it at its next
-start.
+start. A freeze still running when the daemon starts (a manual one that
+overlaps a restart) holds a lock on its copy and is left to finish.
 
 Nothing prunes an incident: each one is the size of the ring (about
 1.2 GB for a week at rest) and stays until `threadwatch incidents --delete

@@ -243,7 +243,7 @@ class Pipeline:
             raw = json.loads(self.frames_by_hour_path.read_text())
             newest = max(int(b) for b in raw)
             return {int(b): int(n) for b, n in raw.items() if int(b) >= newest - 25}
-        except (OSError, ValueError, TypeError):
+        except (OSError, ValueError, TypeError, AttributeError):    # unreadable, or not an object of counts
             return {}
 
     def _save_frames_by_hour(self) -> None:

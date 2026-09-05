@@ -1586,3 +1586,27 @@ class SummaryWindowTest(unittest.TestCase):
             self.assertTrue(s["note"].startswith("last 24 h: 12 frames from 2 of 3 devices"), s["note"])
             s = pipe.summary(now + 0.2 * 3600)                        # 24.1 h after the sensor: out
             self.assertEqual((s["frames_24h"], s["devices_heard_24h"]), (12, 1))
+
+
+class FramesByHourLoadTest(unittest.TestCase):
+    """frames-by-hour.json is the frame count the summary and the review
+    pages draw across a restart. Loading keeps the newest 26 hourly
+    buckets: a day plus the margins the 24 h window needs. Trimmed
+    shorter, the first summary after every restart counts a fraction of
+    the day and the trend the pages draw restarts from nothing."""
+
+    def test_load_keeps_the_26_newest_hours(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Config(data_dir=Path(d) / "data")
+            cfg.state_dir.mkdir(parents=True, exist_ok=True)
+            newest = 1_700_000_000 // 3600
+            (cfg.state_dir / "frames-by-hour.json").write_text(
+                json.dumps({str(newest - i): 100 + i for i in range(40)}))
+            pipe = Pipeline(cfg, NullEventLog(), test_decryptor())
+            self.assertEqual(sorted(pipe._frames_by_hour), list(range(newest - 25, newest + 1)))
+            self.assertEqual((pipe._frames_by_hour[newest], pipe._frames_by_hour[newest - 25]), (100, 125))
+            # The first summary after the restart counts the whole day: the 25 buckets whose end is inside it.
+            self.assertEqual(pipe.summary(newest * 3600 + 600.0)["frames_24h"], sum(100 + i for i in range(25)))
+            for junk in ("nonsense", json.dumps({"abc": 1}), json.dumps([1, 2])):
+                (cfg.state_dir / "frames-by-hour.json").write_text(junk)
+                self.assertEqual(Pipeline(cfg, NullEventLog(), test_decryptor())._frames_by_hour, {}, junk)

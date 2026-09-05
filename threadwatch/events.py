@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Iterator, Optional
@@ -164,6 +165,7 @@ def list_days(events_dir: Path) -> list[str]:
 
 
 _read_cache: dict[Path, tuple[tuple, list]] = {}   # path -> ((mtime, size), records)
+_read_lock = threading.Lock()      # the cache is shared by every web request thread
 # Day files the web process keeps parsed: the pages read a window of days
 # around the one shown (review.EPISODE_WINDOW_DAYS either side), and a
 # reader walking back through history must not keep every day it passed.
@@ -180,21 +182,26 @@ def read_day(events_dir: Path, day: str) -> list[dict]:
     except OSError:
         return []
     stamp = (st.st_mtime_ns, st.st_size)
-    hit = _read_cache.get(path)
+    with _read_lock:
+        hit = _read_cache.get(path)
     if hit is not None and hit[0] == stamp:
         return list(hit[1])
     out = []
-    for line in path.read_text().splitlines():
+    for line in path.read_text().splitlines():      # the file is read outside the lock
         line = line.strip()
         if line:
             try:
                 out.append(json.loads(line))
             except ValueError:
                 continue
-    _read_cache.pop(path, None)
-    _read_cache[path] = (stamp, out)
-    while len(_read_cache) > READ_CACHE_MAX:
-        del _read_cache[next(iter(_read_cache))]
+    # Insert and evict under the lock: the web server serves each request
+    # on its own thread, and picking the oldest entry while another thread
+    # inserts or deletes raised mid-iteration.
+    with _read_lock:
+        _read_cache.pop(path, None)
+        _read_cache[path] = (stamp, out)
+        while len(_read_cache) > READ_CACHE_MAX:
+            del _read_cache[next(iter(_read_cache))]
     return list(out)
 
 

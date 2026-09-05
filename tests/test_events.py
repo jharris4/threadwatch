@@ -90,6 +90,45 @@ class RetentionTest(unittest.TestCase):
 
 
 class ReadCacheTest(unittest.TestCase):
+    def test_eviction_is_safe_across_reader_threads(self):
+        # BUG-14: every web request thread shares the cache; once full,
+        # picking the oldest entry while another thread inserted or
+        # deleted raised "dictionary changed size during iteration" or a
+        # KeyError, a 500 on the review page.
+        import sys
+        import threading
+        from threadwatch import events as events_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            days = []
+            for i in range(events_mod.READ_CACHE_MAX + 12):
+                day = day_of(TS + i * 86400)
+                (d / f"{day}.jsonl").write_text(json.dumps({"ts": TS + i * 86400, "event": "x", "severity": "info"}) + "\n")
+                days.append(day)
+            events_mod._read_cache.clear()
+            errors = []
+
+            def reader(offset):
+                try:
+                    for i in range(300):
+                        if len(read_day(d, days[(offset + i) % len(days)])) != 1:
+                            raise AssertionError("a day read back wrong")
+                except BaseException as exc:
+                    errors.append(exc)
+
+            interval = sys.getswitchinterval()
+            sys.setswitchinterval(1e-6)
+            try:
+                threads = [threading.Thread(target=reader, args=(i * 11,)) for i in range(12)]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join(60)
+            finally:
+                sys.setswitchinterval(interval)
+            self.assertEqual(errors, [])
+            self.assertLessEqual(len(events_mod._read_cache), events_mod.READ_CACHE_MAX)
+
     def test_an_unchanged_file_is_served_from_the_cache_and_any_rewrite_is_read_again(self):
         from threadwatch import events as events_mod
         with tempfile.TemporaryDirectory() as tmp:

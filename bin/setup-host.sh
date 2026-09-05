@@ -106,6 +106,28 @@ else
         -e "s|__REPO__|$REPO|g" \
         "$REPO/systemd/$unit.service" > "/etc/systemd/system/$unit.service"
   done
+  # The units start after time-sync.target. As shipped that target is
+  # reached when timesyncd has *started*, not when the clock is right, and
+  # a Pi has no RTC: it boots on its saved clock and NTP steps it forward
+  # later, so frames, events and ring files stamped before the step are
+  # wrong. systemd-time-wait-sync holds the target for an actual sync. Its
+  # own timeout is infinity, which offline would mean no capture at all;
+  # the drop-in bounds the wait, after which the recorder starts on the
+  # clock it has and its clock-step guard takes over. Nothing else on a
+  # stock host is ordered after time-sync.target, so only these units wait.
+  if systemctl cat systemd-time-wait-sync.service >/dev/null 2>&1; then
+    mkdir -p /etc/systemd/system/systemd-time-wait-sync.service.d
+    cat > /etc/systemd/system/systemd-time-wait-sync.service.d/threadwatch.conf <<'CONF'
+# Installed by threadwatch/bin/setup-host.sh: wait for the clock to be
+# NTP-synchronised before threadwatch starts, but not for ever.
+[Service]
+TimeoutStartSec=120
+CONF
+    systemctl enable systemd-time-wait-sync.service
+    echo "    systemd-time-wait-sync enabled (capture waits up to 120 s for an NTP-synchronised clock)"
+  else
+    echo "    no systemd-time-wait-sync on this host: capture starts as soon as timesyncd has, synced or not"
+  fi
   systemctl daemon-reload
   systemctl enable threadwatch threadwatch-web
   # restart, not enable --now: an already-running unit must pick up the new code

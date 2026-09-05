@@ -90,7 +90,11 @@ it also runs setup-host.sh for you.
   size when the disk is the harder limit). Set `data_dir` in config.toml
   to put it on a bigger or faster disk.
 - Keep NTP on. pcap timestamps that match your other logs are half the
-  value; `doctor` checks.
+  value; `doctor` checks. A Pi has no clock of its own and boots on the
+  time it last saved, so `setup-host.sh` also makes the services wait, up
+  to two minutes, for NTP to correct it before capture starts
+  (`systemd-time-wait-sync`); offline, capture starts anyway and the
+  recorder allows for the correction when it comes (a `clock_step` event).
 
 ## 7. Day-2 operations
 

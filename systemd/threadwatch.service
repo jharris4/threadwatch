@@ -2,8 +2,9 @@
 Description=threadwatch: continuous Thread/802.15.4 capture and storm detection
 # time-sync.target: a Pi has no RTC and boots on its saved clock; starting
 # before NTP corrects it stamps frames, events and ring files with the
-# wrong time. (To make the target wait for an actual sync rather than for
-# timesyncd to start: systemctl enable systemd-time-wait-sync.)
+# wrong time. On its own the target only waits for timesyncd to start;
+# bin/setup-host.sh enables systemd-time-wait-sync with a 120 s bound so
+# it waits for the sync itself, and no longer than that when offline.
 After=network-online.target time-sync.target
 Wants=network-online.target time-sync.target
 

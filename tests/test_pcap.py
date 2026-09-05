@@ -261,3 +261,69 @@ class PanCompressionTest(_ut.TestCase):
         f = self._frame(0x0001 | (2 << 10) | (2 << 14),
                         struct.pack("<H", 0x4e21) + b"\x00\xcc" + struct.pack("<H", 0x58bc) + b"\x1a\x3c")
         self.assertEqual((f.dst_pan, f.dst, f.src_pan, f.src), (0x4e21, "cc00", 0x58bc, "3c1a"))
+
+
+class FormatRejectionTest(unittest.TestCase):
+    """What the reader and complete_length make of a file that is not a
+    pcap of ours: a pcapng, a nanosecond pcap, a file cut inside the
+    global header, and (the one shape that is ours) a big-endian file.
+    The ring writer asks complete_length where the good data ends before
+    appending, and 0 means it starts the hour's file over: that must be
+    said, and must never happen to a file a reader can still read."""
+
+    def _reader(self, data):
+        return PcapStreamReader(io.BytesIO(data))
+
+    def test_no_header_and_foreign_magics_are_format_errors_and_zero_good_bytes(self):
+        from threadwatch.pcap import PcapFormatError
+        for data in (b"", b"\xd4\xc3\xb2\xa1" + b"\x00" * 10):          # empty, or cut inside the header
+            with self.assertRaises(PcapFormatError) as cm:
+                self._reader(data)
+            self.assertIn("no pcap global header", str(cm.exception))
+            self.assertEqual(complete_length_of(data), 0)
+        pcapng = struct.pack("<L", 0x0A0D0D0A) + b"\x00" * 28
+        with self.assertRaises(PcapFormatError) as cm:
+            self._reader(pcapng)
+        self.assertIn("unsupported pcap magic 0xa0d0d0a", str(cm.exception))
+        self.assertIn("pcapng", str(cm.exception))
+        self.assertEqual(complete_length_of(pcapng), 0)
+        nanos = struct.pack("<LHHIILL", 0xA1B23C4D, 2, 4, 0, 0, 0xFFFF, DLT_NOFCS)
+        with self.assertRaises(PcapFormatError):
+            self._reader(nanos)
+        self.assertEqual(complete_length_of(nanos), 0)
+
+    def test_a_big_endian_file_reads_whole(self):
+        raw = b"\x41\x88\x01\xcd\xab\x01\x00\x02\x00"
+        data = struct.pack(">LHHIILL", 0xA1B2C3D4, 2, 4, 0, 0, 0xFFFF, DLT_NOFCS)
+        for sec in (1, 2):
+            data += struct.pack(">LLLL", sec, 500000, len(raw), len(raw)) + raw
+        reader = self._reader(data)
+        self.assertEqual((reader.endian, reader.dlt, reader.snaplen), (">", DLT_NOFCS, 0xFFFF))
+        self.assertEqual([f.ts for f in reader], [1.5, 2.5])
+        self.assertEqual(complete_length_of(data), len(data))
+        self.assertEqual(complete_length_of(data[:-4]), len(data) - 16 - len(raw))   # the cut record is not good data
+
+    def test_the_ring_says_so_when_it_starts_an_unreadable_hour_file_over(self):
+        import contextlib
+        with tempfile.TemporaryDirectory() as d:
+            ring = RingWriter(Path(d), keep_files=5, dlt=DLT_NOFCS)
+            ring.write(frame(1_700_000_000.0)); ring.close()
+            path = ring.current_path
+            path.write_bytes(b"not a capture at all" * 5)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                ring2 = RingWriter(Path(d), keep_files=5, dlt=DLT_NOFCS)
+                ring2.write(frame(1_700_000_002.0)); ring2.close()
+            self.assertEqual(out.getvalue(), f"[threadwatch] {path.name}: 100 bytes with no usable pcap header; "
+                                             "starting the hour's file over\n")
+            with open(path, "rb") as fh:
+                self.assertEqual([round(f.ts) for f in PcapStreamReader(fh)], [1_700_000_002])
+            # An empty file (a run killed between open and header) is started over without comment.
+            path.write_bytes(b"")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                ring3 = RingWriter(Path(d), keep_files=5, dlt=DLT_NOFCS)
+                ring3.write(frame(1_700_000_003.0)); ring3.close()
+            self.assertEqual(out.getvalue(), "")
+            with open(path, "rb") as fh:
+                self.assertEqual([round(f.ts) for f in PcapStreamReader(fh)], [1_700_000_003])

@@ -86,6 +86,12 @@ class RingWriter:
             self.writer.stream = self.fh
             self.writer.dlt = self.dlt
         else:
+            if self.current_path.exists() and self.current_path.stat().st_size:
+                # Not a pcap this recorder can read (no usable global
+                # header): nothing in it is a frame to anyone, but it is
+                # not replaced in silence.
+                print(f"[threadwatch] {self.current_path.name}: {self.current_path.stat().st_size} bytes "
+                      "with no usable pcap header; starting the hour's file over", flush=True)
             self.fh = open(self.current_path, "wb")
             self.writer = PcapWriter(self.fh, self.dlt)
         self._prune()

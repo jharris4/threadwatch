@@ -121,6 +121,69 @@ The daemon's own diagnostics, with what to do when one keeps appearing:
   heard`**: the LAN answered oddly; the recorder ignores the answer. Only a
   problem if a rebooted Apple hub stays unnamed (docs/HOME-ASSISTANT.md).
 
+## What lives under data/
+
+`data/` (or `[capture] data_dir`) is everything the recorder knows. Back
+it up if you care about the history; nothing else holds it.
+
+    data/
+      ring/threadwatch-YYYYMMDD-HH.pcap   hourly captures, the oldest pruned past keep_files / keep_gb
+      incidents/<stamp>_<label>/          frozen copies of the ring (docs/ANALYSIS.md)
+      state/
+        status.json          the daemon's status, rewritten every 30 s (below)
+        last-seen.json       one row per extended address: first and last heard, frame count,
+                             PAN, average RSSI, the RLOC16 it last used, and whether its silence
+                             or its poll starvation has been announced
+        observed-names.json  SRP hostnames harvested from the mesh (report --suggest uses them)
+        frames-by-hour.json  frames per hour, the last day or so, for the daily summary
+        border-routers.json  mDNS hostname -> current address of each border router, with the
+                             addresses it retired (how a rebooted Apple hub keeps its name)
+        capture.fifo         the pipe the sniffer writes into; recreated at every start
+        events/YYYY-MM-DD.jsonl   the event log (docs/REVIEW.md, "Storage")
+
+Every state file is written whole and renamed into place, so a power cut
+leaves the previous version, never half of one. The daemon owns them:
+edit or remove one only while it is stopped, since it rewrites them every
+30 seconds and at exit.
+
+**Deleting state.** With the daemon stopped, any of these can go, at a
+price. `status.json` comes back within 30 s. `capture.fifo` is recreated
+at start. `observed-names.json` is re-learned as devices re-register
+(hours to a day). `frames-by-hour.json` costs the next daily summary an
+accurate frame count. `border-routers.json` is rebuilt at the next mDNS
+browse, but the retired addresses in it are forgotten, so an Apple hub's
+history from before its last reboot loses its name. `last-seen.json` is
+the expensive one, below. The event log and the ring are your history and
+are never worth deleting; the ring prunes itself.
+
+**A damaged last-seen table.** When `last-seen.json` does not parse the
+daemon says so in the journal, starts from an empty table, and at its
+first save moves the broken file to `last-seen.json.corrupt` (a
+`.corrupt-<epoch>` name if one is already there) instead of writing over
+it; `threadwatch doctor` reports the unreadable file as a `FAIL` and the
+kept copy as a `warn` until it is gone. What the loss costs: every
+device's first-seen date, frame counts and RSSI average; which silences
+and starvations were announced, so a device that died while the table was
+broken is never reported quiet (there is no history to judge it against)
+until it has been heard again and gone quiet again; and the short-address
+mappings that let sleepy devices be attributed from their first frame,
+which are re-learned within minutes. To put it back:
+
+```bash
+sudo systemctl stop threadwatch
+python3 -m json.tool data/state/last-seen.json.corrupt   # says where it breaks
+# fix it in an editor (a truncated tail: close the last complete row's braces),
+# until json.tool prints the table; it is one JSON object keyed by address
+mv data/state/last-seen.json.corrupt data/state/last-seen.json
+sudo systemctl start threadwatch
+bin/threadwatch doctor                                   # last-seen: N address(es) with a history
+```
+
+A file that cannot be repaired is worth nothing: delete the `.corrupt`
+copy and doctor stops warning. Either way the empty table the daemon
+started with fills itself as devices are heard, and the review pages
+carry on from the event log, which is untouched.
+
 ## The dongle stops responding
 
 Unplug it and plug it back in, on a direct port rather than a hub. It

@@ -122,6 +122,9 @@ class Pipeline:
         self._pan_silent_evt = 0.0
         self._foreign_reported: set[int] = set()
         self._last_src_by_pan: dict[int, Optional[str]] = {}
+        # All three are fed straight from mDNS answers, which anyone on the
+        # LAN can forge in any number, so each is bounded (PENDING_MAX,
+        # LOGGED_MAX): a LAN has a handful of border routers, not hundreds.
         self._unheard_logged: set[str] = set()      # mDNS addresses never heard on air, complained about once
         self._stale_logged: set[tuple] = set()      # (hostname, address) stale mDNS answers, complained about once
         self._pending_routers: dict[str, dict] = {}  # ext -> the mDNS record waiting for that address to be heard
@@ -1045,6 +1048,14 @@ class Pipeline:
         self._browse_thread = threading.Thread(target=run, name="mdns-browse", daemon=True)
         self._browse_thread.start()
 
+    # How many mDNS records can wait for their address to be heard on air,
+    # and how many addresses the once-per-address log lines remember. Past
+    # these the oldest record is dropped (a real hub's is re-advertised
+    # every browse) and the log memory starts over (a repeated line is the
+    # worst case).
+    PENDING_MAX = 32
+    LOGGED_MAX = 256
+
     def _apply_border_routers(self, found: list[dict], now: float) -> None:
         """Bind each discovered border router to an inventory entry (by its
         borderRouter hostname, by an address the entry already lists, or
@@ -1067,8 +1078,13 @@ class Pipeline:
                 # giving the hostname another address replaces it.
                 for stale in [a for a, rec in self._pending_routers.items() if rec.get("hostname") == host]:
                     del self._pending_routers[stale]
+                self._pending_routers.pop(ext, None)          # re-inserted last: the newest
                 self._pending_routers[ext] = r
+                while len(self._pending_routers) > self.PENDING_MAX:
+                    del self._pending_routers[next(iter(self._pending_routers))]
                 if ext not in self._unheard_logged:
+                    if len(self._unheard_logged) >= self.LOGGED_MAX:
+                        self._unheard_logged.clear()
                     self._unheard_logged.add(ext)
                     print(f"[threadwatch] mdns: {r.get('instance') or host} advertises {ext}, which has not "
                           "been heard on air; held until it is", flush=True)
@@ -1088,6 +1104,8 @@ class Pipeline:
                 old_row, new_row = self.seen.table.get(prev), self.seen.table[ext]
                 if old_row is not None and old_row.get("last_seen", 0) > new_row.get("last_seen", 0):
                     if (host, ext) not in self._stale_logged:
+                        if len(self._stale_logged) >= self.LOGGED_MAX:
+                            self._stale_logged.clear()
                         self._stale_logged.add((host, ext))
                         print(f"[threadwatch] mdns: {r.get('instance') or host} advertises {ext}, but {prev} "
                               "was heard on air more recently; stale record, ignored", flush=True)

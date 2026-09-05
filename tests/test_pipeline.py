@@ -1052,6 +1052,35 @@ class BorderRouterTest(unittest.TestCase):
         self.assertEqual((pipe.routers[self.HOST]["addr"], pipe.names.name(self.NEW)), (self.NEW, "Living Room Apple TV"))
         self.assertEqual(pipe.seen.table[self.OLD]["rotated_to"], self.NEW)
 
+    def test_forged_advertisements_cannot_grow_the_waiting_room_without_bound(self):
+        import contextlib
+        import io
+        pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor())
+        t = time.time() - 3600
+        pipe.ingest(frame(t, self.OLD))
+        pipe._apply_border_routers([self.router(self.HOST, self.OLD)], t)
+        forged = [self.router(f"h{i}.local", f"{i:016x}") for i in range(1000)]    # never heard on air
+        with contextlib.redirect_stdout(io.StringIO()):
+            pipe._apply_border_routers(forged, t + 1)
+            pipe._apply_border_routers([self.router(self.HOST, self.NEW)], t + 2)   # the real hub, rebooted
+        self.assertLessEqual(len(pipe._pending_routers), Pipeline.PENDING_MAX)
+        self.assertLessEqual(len(pipe._unheard_logged), Pipeline.LOGGED_MAX)
+        # The newest record still waits, and binds when its address is heard.
+        self.assertIn(self.NEW, pipe._pending_routers)
+        pipe.ingest(frame(t + 10, self.NEW))
+        self.assertEqual(pipe.names.name(self.NEW), "Living Room Apple TV")
+        self.assertEqual(pipe.routers[self.HOST]["addr"], self.NEW)
+        # The once-per-address memory is bounded too, at the price of a
+        # repeated line past the bound; within it a record is logged once.
+        few = [self.router(f"s{i}.local", f"{0xabc0000 + i:016x}") for i in range(10)]
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            pipe._apply_border_routers(forged, t + 20)
+            pipe._apply_border_routers(few, t + 30)
+            pipe._apply_border_routers(few, t + 40)
+        self.assertLessEqual(len(pipe._pending_routers), Pipeline.PENDING_MAX)
+        self.assertLessEqual(len(pipe._unheard_logged), Pipeline.LOGGED_MAX)
+        self.assertEqual(out.getvalue().count("has not been heard on air"), len(forged) + len(few))
+
     def test_a_stale_answer_naming_an_old_address_does_not_retire_the_live_one(self):
         # The hub used OLD, rebooted, and uses NEW; both have been heard on
         # air. A reflector's cache (or a replay) then answers a browse with

@@ -8,7 +8,6 @@ relative to a rolling baseline so it adapts to mesh size.
 from __future__ import annotations
 
 import statistics
-import time
 from collections import deque
 from dataclasses import dataclass, field
 
@@ -35,10 +34,13 @@ class Detector:
     window_count: int = 0
     in_flood: bool = False
     onsets: deque = field(default_factory=lambda: deque(maxlen=32))
-    last_alert: float = 0.0
+    last_alert: float | None = None      # frame time of the last counted alert
     alerts_sent: int = 0
     storm_active: bool = False
-    last_alert_details: dict = field(default_factory=dict)
+    # The storm as last measured (period, onsets): refreshed at every
+    # periodic onset, cooldown or not, so whoever reports the storm
+    # describes the one running and never an earlier one.
+    storm_details: dict = field(default_factory=dict)
 
     def add_frame(self, ts: float) -> None:
         w = self.cfg.window_seconds
@@ -107,21 +109,22 @@ class Detector:
             spread = max(gaps) - min(gaps)
             if spread <= 0.25 * mean:
                 self.storm_active = True
-                self._alert(period=mean, onsets=[round(t, 1) for t in recent])
+                self.storm_details = {"period": mean, "onsets": [round(t, 1) for t in recent]}
+                self._alert(self.window_start)
         # An off-period onset (an unrelated burst during a storm) does not
         # end the storm; _close_window clears it after three missed periods.
 
-    def _alert(self, **details) -> None:
+    def _alert(self, now: float) -> None:
         # Bookkeeping only. Notification is the Pipeline's job: it emits a
         # `phase_locked_storm` event, and the EventLog owns webhook dispatch.
         # (Printing or webhooking here would double-alert and pollute the
-        # stdout of `threadwatch replay`.)
-        now = time.time()
-        if now - self.last_alert < self.cfg.alert_cooldown_s:
+        # stdout of `threadwatch replay`.) The cooldown runs on the frame
+        # clock, as the Pipeline's does: on the wall clock a replayed day
+        # is one alert, and the two would count different storms.
+        if self.last_alert is not None and now - self.last_alert < self.cfg.alert_cooldown_s:
             return
         self.last_alert = now
         self.alerts_sent += 1
-        self.last_alert_details = details
 
     def snapshot(self) -> dict:
         # Called from the status thread while the capture thread appends:

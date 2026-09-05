@@ -537,7 +537,7 @@ class QuietPolicyTest(unittest.TestCase):
     def test_storm_event_carries_period_onsets_and_a_note(self):
         pipe = self._pipe()
         pipe.detector.storm_active = True
-        pipe.detector.last_alert_details = {"period": 80.5, "onsets": [100.0, 180.5, 261.0]}
+        pipe.detector.storm_details = {"period": 80.5, "onsets": [100.0, 180.5, 261.0]}
         pipe.ingest(frame(1_700_000_000.0, ROUTER))
         rec = [r for r in pipe.events.records if r["event"] == "phase_locked_storm"][0]
         self.assertEqual((rec["period_s"], rec["onsets"]), (80.5, 3))
@@ -549,7 +549,7 @@ class QuietPolicyTest(unittest.TestCase):
         frozen = []
         pipe.freezer = frozen.append
         pipe.detector.storm_active = True
-        pipe.detector.last_alert_details = {"period": 80.5, "onsets": [1.0, 2.0, 3.0]}
+        pipe.detector.storm_details = {"period": 80.5, "onsets": [1.0, 2.0, 3.0]}
         # The detector ends a storm when flooding stops; hold it on regardless.
         pipe.detector.add_frame = lambda ts: setattr(pipe.detector, "storm_active", True)
         t0 = 1_700_000_000.0
@@ -571,7 +571,7 @@ class QuietPolicyTest(unittest.TestCase):
         frozen = []
         pipe.freezer = frozen.append
         pipe.detector.storm_active = True
-        pipe.detector.last_alert_details = {"period": 80.5, "onsets": [1.0, 2.0, 3.0]}
+        pipe.detector.storm_details = {"period": 80.5, "onsets": [1.0, 2.0, 3.0]}
         pipe.detector.add_frame = lambda ts: setattr(pipe.detector, "storm_active", True)
         pipe.ingest(frame(t0, ROUTER))                     # 2 h after the last auto freeze: held
         pipe.ingest(frame(t0 + 5 * 3600, ROUTER))          # 7 h after it: frozen again
@@ -596,7 +596,7 @@ class QuietPolicyTest(unittest.TestCase):
         frozen = []
         pipe.freezer = frozen.append
         pipe.detector.storm_active = True
-        pipe.detector.last_alert_details = {"period": 80.5, "onsets": [1.0, 2.0, 3.0]}
+        pipe.detector.storm_details = {"period": 80.5, "onsets": [1.0, 2.0, 3.0]}
         pipe.detector.add_frame = lambda ts: setattr(pipe.detector, "storm_active", True)
         pipe.ingest(frame(t0, ROUTER))                     # the storm still running is frozen now
         self.assertEqual(frozen, ["auto-storm"])
@@ -618,7 +618,7 @@ class QuietPolicyTest(unittest.TestCase):
         try:
             pipe.freezer = pipe._freeze_now                # in this thread, so each outcome is known at once
             pipe.detector.storm_active = True
-            pipe.detector.last_alert_details = {"period": 80.5, "onsets": [1.0, 2.0, 3.0]}
+            pipe.detector.storm_details = {"period": 80.5, "onsets": [1.0, 2.0, 3.0]}
             pipe.detector.add_frame = lambda ts: setattr(pipe.detector, "storm_active", True)
             t0 = 1_700_000_000.0
             for dt in (0, 31 * 60, 2 * 3600):             # the storm event repeats every 30 min at most
@@ -640,7 +640,7 @@ class QuietPolicyTest(unittest.TestCase):
             pipe = Pipeline(self.cfg, NullEventLog(), test_decryptor(), ephemeral=ephemeral)
             pipe.freezer = lambda label: self.fail("froze")
             pipe.detector.storm_active = True
-            pipe.detector.last_alert_details = {"period": 60.0, "onsets": [1.0, 2.0, 3.0]}
+            pipe.detector.storm_details = {"period": 60.0, "onsets": [1.0, 2.0, 3.0]}
             pipe.ingest(frame(1_700_000_000.0, ROUTER))
             rec = [r for r in pipe.events.records if r["event"] == "phase_locked_storm"][0]
             self.assertIsNone(rec["auto_freeze"])

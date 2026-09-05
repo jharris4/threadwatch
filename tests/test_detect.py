@@ -41,6 +41,26 @@ class StormLatchTest(unittest.TestCase):
         self.assertTrue(active[370])
         self.assertFalse(det.storm_active)    # three missed periods later
 
+    def test_a_second_storm_reports_its_own_period_inside_the_cooldown(self):
+        # Two storms in one replayed day: 80 s bursts, a quiet hour, then
+        # 60 s bursts. The alert cooldown (default 30 min) is still running
+        # from the first storm when the second locks, and on the wall clock
+        # the whole replay is one instant. The details the pipeline reports
+        # must describe the storm running now, whatever the cooldown says.
+        det = Detector(DetectorConfig())
+        first = [200, 280, 360]
+        second = [4200, 4260, 4320]
+        for w in range(0, 4400, 10):
+            n = 1500 if any(t <= w < t + 10 for t in first + second) else 250
+            for i in range(n):
+                det.add_frame(w + i / n)
+            if w == 370:
+                self.assertAlmostEqual(det.storm_details["period"], 80.0)
+        self.assertTrue(det.storm_active)
+        self.assertAlmostEqual(det.storm_details["period"], 60.0)
+        self.assertEqual(det.storm_details["onsets"], [4200.0, 4260.0, 4320.0])
+        self.assertEqual(det.alerts_sent, 2)                      # the cooldown ran on the frame clock
+
     def test_a_timestamp_jump_costs_a_history_not_a_step_per_window(self):
         import time
         det = Detector(DetectorConfig(alert_cooldown_s=0))

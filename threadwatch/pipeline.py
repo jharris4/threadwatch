@@ -591,7 +591,7 @@ class Pipeline:
         # per-frame even when the detector's alert cooldown is zeroed).
         if self.detector.storm_active and ts - getattr(self, "_storm_evt", 0) > max(60.0, self.cfg.detector.alert_cooldown_s):
             self._storm_evt = ts
-            details = self.detector.last_alert_details
+            details = self.detector.storm_details
             period = details.get("period")
             onsets = details.get("onsets") or []
             # Docs say a "critical event" freezes the ring; the storm is the

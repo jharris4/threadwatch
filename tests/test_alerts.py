@@ -505,3 +505,110 @@ class AlertChainTest(unittest.TestCase):
                               ("Porch Sensor", "device_quiet", "notice")])
             self.assertEqual([r["event"] for r in read_all(cfg.events_dir) if r["event"] == "device_quiet"],
                              ["device_quiet", "device_quiet"])
+
+
+class _LoopStop(Exception):
+    pass
+
+
+class LoopClock:
+    """time.time()/time.sleep() for HeartbeatRunner._run under test. The
+    loop parks at every sleep; step() releases one iteration and returns
+    once the loop is parked again, the clock advanced by what it asked to
+    sleep. No real waiting, no races with the assertions."""
+
+    def __init__(self, start=1_000_000.0):
+        self.now = start
+        self.sleeps = []
+        self._go = threading.Semaphore(0)
+        self._parked = threading.Semaphore(0)
+        self._stopping = False
+
+    def time(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self._parked.release()
+        self._go.acquire()
+        if self._stopping:
+            raise _LoopStop
+        self.now += seconds
+
+    def run(self, runner):
+        def body():
+            try:
+                runner._run()
+            except _LoopStop:
+                pass
+        threading.Thread(target=body, daemon=True).start()
+        assert self._parked.acquire(timeout=3.0), "the loop never reached its first sleep"
+
+    def step(self, n=1):
+        for _ in range(n):
+            self._go.release()
+            assert self._parked.acquire(timeout=3.0), "the loop never slept again"
+
+    def stop(self):
+        self._stopping = True
+        self._go.release()
+
+
+class HeartbeatLoopTest(unittest.TestCase):
+    """HeartbeatRunner._run, the thread that keeps an external monitor
+    told. Two silent field failures live here: if the per-beat due time
+    regresses the loop hammers the monitor twice a second, and if the
+    unknown-health gate regresses to a truthiness check a restart loop
+    that has never heard a frame keeps sending healthy beats."""
+
+    def _runner(self, healthy, push, logs, interval_s=10.0):
+        hb = alerts.Heartbeat(name="hc", url="http://x/ping", interval_s=interval_s)
+        hb.push = push
+        return alerts.HeartbeatRunner([hb], healthy=healthy, log=logs.append, start=False)
+
+    def test_nothing_while_health_is_unknown_then_one_beat_per_interval(self):
+        clock, pushes, logs, state = LoopClock(), [], [], {"healthy": None}
+        runner = self._runner(lambda: state["healthy"],
+                              lambda healthy: pushes.append((clock.now, healthy)) or True, logs)
+        with mock.patch.object(alerts, "time", clock):
+            clock.run(runner)
+            clock.step(3)
+            self.assertEqual(pushes, [])                          # unknown: nothing sent...
+            self.assertEqual(clock.sleeps, [0.5] * 4)             # ...and checked again soon
+            state["healthy"] = True
+            t = clock.now + 0.5                                   # when the pending check comes round
+            clock.step()
+            self.assertEqual(pushes, [(t, True)])                 # the first frame: one beat
+            clock.step()                                          # 5 s on: not due
+            self.assertEqual(len(pushes), 1)
+            clock.step()                                          # 10 s on: due
+            self.assertEqual(pushes, [(t, True), (t + 10, True)])
+            state["healthy"] = False
+            clock.step(2)
+            self.assertEqual(pushes[-1], (t + 20, False))         # a stall goes out on the same schedule
+            self.assertEqual(len(pushes), 3)
+            self.assertEqual(logs, [])
+            clock.stop()
+
+    def test_a_failing_beat_is_logged_once_and_its_recovery_once(self):
+        clock, logs, fail = LoopClock(), [], {"on": True}
+
+        def push(healthy):
+            if fail["on"]:
+                raise urllib.error.URLError("connection refused")
+            return True
+
+        runner = self._runner(lambda: True, push, logs)
+        with mock.patch.object(alerts, "time", clock):
+            clock.run(runner)                                     # the first beat fails
+            self.assertEqual(len(logs), 1)
+            self.assertIn("'hc' failed", logs[0])
+            clock.step(4)                                         # two more misses, 10 s apart
+            self.assertEqual(len(logs), 1)                        # the edge, not every miss
+            fail["on"] = False
+            clock.step(2)                                         # the next beat lands
+            self.assertEqual(len(logs), 2)
+            self.assertIn("'hc' recovered", logs[1])
+            clock.step(2)
+            self.assertEqual(len(logs), 2)
+            clock.stop()

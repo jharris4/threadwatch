@@ -178,6 +178,8 @@ the host, where nobody edits it.
 name = "phone"                 # for journal lines and alert-test output
 type = "http"                  # http | command | ntfy (preset)
 min_severity = "warning"       # default warning
+# events = ["device_quiet", "phase_locked_storm"]   # only these names (see Choosing events)
+# ignore_events = ["poll_starvation"]               # or every name but these
 cooldown_s = 300               # per event name, per sink; default 300 (see Digests)
 timeout_s = 10                 # for the whole request, connect to reply
 enabled = true
@@ -187,6 +189,41 @@ enabled = true
 is given up on and logged, and is skipped until that request has finished,
 so one stalled endpoint never holds back the records or the other sinks
 queued behind it.
+
+### Choosing events
+
+The severity floor is one axis; the event name is the other. A sink takes
+every name by default. `events` narrows it to a list of names, and
+`ignore_events` takes every name but the listed ones; a sink has one or the
+other, not both. The filter is checked before the cooldown, so a name a sink
+does not take never opens a window and never turns up in a digest.
+
+The typical use is two sinks for two audiences: the phone takes the few
+warnings that need a person now, a chat channel or a second, silent ntfy
+topic takes everything at warning and above, and the review pages have the
+rest.
+
+```toml
+[[alerts.sinks]]
+name = "phone"
+type = "ntfy"
+url = "https://ntfy.example.net"
+topic = "alerts"
+events = ["device_quiet", "configured_pan_silent", "credentials_stale", "phase_locked_storm"]
+
+[[alerts.sinks]]
+name = "everything"
+type = "ntfy"
+url = "https://ntfy.example.net"
+topic = "threadwatch"          # muted on the phone, read when curious
+```
+
+A name in either list that the recorder does not emit is logged at start
+(`alert sink 'phone': events names event(s) the recorder does not emit: ...`),
+since a misspelt filter would otherwise fail silently: the page you meant to
+stop keeps coming. The names are the `event` column of the table above.
+`alert-test --event poll_starvation` shows which sinks take a name (`skip phone
+(does not take poll_starvation)`).
 
 ### Digests
 

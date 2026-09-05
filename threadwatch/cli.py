@@ -274,9 +274,11 @@ def main(argv=None) -> int:
         for sink, err in Dispatcher(sinks, log).deliver_now(record):
             print(f"  {'ok  ' if err is None else 'FAIL'} {sink.describe()}" + (f" -> {err}" if err else ""))
             failures += err is not None
-        skipped = [s for s in sinks if s.min_severity > ["info", "notice", "warning", "critical"].index(args.severity)]
-        for s in skipped:
-            print(f"  skip {s.name} (min severity above {args.severity})")
+        for s in sinks:
+            if s.min_severity > ["info", "notice", "warning", "critical"].index(args.severity):
+                print(f"  skip {s.name} (min severity above {args.severity})")
+            elif not s.takes_event(args.event):
+                print(f"  skip {s.name} (does not take {args.event})")
         if beats:
             print(f"heartbeats ({len(beats)}):")
             for beat, err in HeartbeatRunner(beats, healthy=lambda: True, log=log, start=False).push_all(healthy=True):

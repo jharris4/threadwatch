@@ -118,6 +118,7 @@ port = 8080
 # url = "http://homeassistant.local:8123/api/webhook/threadwatch-<random>"
 # min_severity = "warning"       # info | notice | warning | critical
 # cooldown_s = 300               # per event name, per sink; held-back events arrive as one digest
+# ignore_events = ["poll_starvation"]   # every event name but these (or events = [...] for only some)
 #
 # [[alerts.sinks]]
 # name = "phone"
@@ -126,6 +127,7 @@ port = 8080
 # topic = "alerts"
 # token = "${NTFY_TOKEN}"
 # min_severity = "warning"
+# events = ["device_quiet", "credentials_stale", "phase_locked_storm"]   # only these names reach the phone
 #
 # [[alerts.sinks]]
 # name = "local-script"

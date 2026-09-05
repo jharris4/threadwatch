@@ -234,6 +234,9 @@ class ExampleConfigTest(unittest.TestCase):
             self.assertEqual(sinks[2].headers["Authorization"], "Bearer tk_ntfy")
             self.assertEqual((sinks[1].min_severity, sinks[1].cooldown_s), (2, 300.0))
             self.assertEqual(sinks[3].command, ["/usr/local/bin/my-alert.sh"])
+            self.assertEqual((sinks[1].events, sinks[1].ignore_events), (None, frozenset({"poll_starvation"})))
+            self.assertEqual((sinks[2].events, sinks[2].ignore_events),
+                             (frozenset({"device_quiet", "credentials_stale", "phase_locked_storm"}), frozenset()))
             beats = alerts.build_heartbeats(cfg.heartbeats_raw, logs.append)
             self.assertEqual(logs, [])
             self.assertEqual([(b.name, b.interval_s) for b in beats], [("gatus", 60.0)])

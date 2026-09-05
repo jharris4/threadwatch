@@ -31,6 +31,12 @@ event name, ``digest = true``, ``count``, the names in ``note``), so a second
 failure never vanishes from the phone and a mesh-wide outage costs two
 messages rather than one per device.
 
+A sink may also take only some event names (``events``, an allowlist) or all
+but some (``ignore_events``). The filter is applied before the severity floor
+opens a cooldown window, so a filtered-out name never appears in a digest
+either. This is how one phone hears about a dead device and a storm while a
+chat channel or the review pages get every warning.
+
 Templates use Python ``str.format`` field syntax over the event record plus a
 few derived fields (see ``TEMPLATE_FIELDS``). Missing fields render as empty
 strings. When the sink's Content-Type is JSON, substituted values are
@@ -55,6 +61,18 @@ from functools import partial
 from typing import Any, Callable, Optional
 
 SEVERITIES = ("info", "notice", "warning", "critical")
+
+# Every event name the recorder emits (the table in docs/ALERTING.md; a test
+# keeps the two in step). Sink filters are checked against it so that a typo
+# is a journal line rather than a page that keeps coming.
+KNOWN_EVENTS = frozenset((
+    "device_first_seen", "device_returned", "join_scan_activity", "possible_foreign_pan",
+    "dominant_pan_changed", "configured_pan_silent", "mle_rejoin_attempt", "device_quiet",
+    "poll_starvation", "poll_answered", "rssi_degradation", "rssi_recovered",
+    "retransmission_elevation", "partition_or_leader_change", "credentials_stale", "clock_step",
+    "border_router_address_changed", "border_router_unlisted", "phase_locked_storm",
+    "incident_frozen", "incident_freeze_failed", "daily_summary", "alert_test",
+))
 
 TEMPLATE_FIELDS = {
     "event": "event name, e.g. device_quiet",
@@ -201,18 +219,31 @@ class Sink:
     min_severity: int = 2          # warning
     cooldown_s: float = 300.0      # per event name, per sink
     timeout_s: float = 10.0
+    # Which event names this sink takes: an allowlist (None = every name), then
+    # a denylist. Checked before the cooldown, so a name a sink does not want
+    # never opens a window and never appears in a digest.
+    events: Optional[frozenset] = None
+    ignore_events: frozenset = frozenset()
     _last: dict = field(default_factory=dict)      # event -> start of its current window
     _pending: dict = field(default_factory=dict)   # event -> records held back this window
     # Held while a send is in flight: a sink that has not answered is not
     # sent to again until it has (see _bounded).
     _inflight: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
+    def takes_event(self, event: str) -> bool:
+        """The event filter alone: is this name one the sink is for?"""
+        if self.events is not None and event not in self.events:
+            return False
+        return event not in self.ignore_events
+
     def wants(self, record: dict, now: float, ignore_cooldown: bool = False) -> bool:
         if _severity_index(record.get("severity", "info"), 0) < self.min_severity:
             return False
+        ev = record.get("event", "")
+        if not self.takes_event(ev):
+            return False
         if ignore_cooldown:
             return True
-        ev = record.get("event", "")
         if now - self._last.get(ev, 0.0) < self.cooldown_s:
             self._pending.setdefault(ev, []).append(record)
             return False
@@ -360,7 +391,7 @@ def _ntfy_preset(raw: dict) -> dict:
     text = "{{" + text[1:-1] + "}}"
     text = text.replace('"__PRIORITY__"', "{severity_value}")
     out = {k: v for k, v in raw.items()
-           if k in ("name", "min_severity", "cooldown_s", "timeout_s")}
+           if k in ("name", "min_severity", "cooldown_s", "timeout_s", "events", "ignore_events")}
     # A partial priority table falls back to the defaults for the rest;
     # the template splices the value unquoted, so an unmapped severity
     # would otherwise produce invalid JSON and a rejected publish.
@@ -380,6 +411,27 @@ def _ntfy_preset(raw: dict) -> dict:
 PRESETS = {"ntfy": _ntfy_preset}
 
 
+def _event_filter(raw: dict, key: str, name: str, log: Callable[[str], None]) -> Optional[frozenset]:
+    """``events`` / ``ignore_events``: a list of event names, or absent.
+
+    A name the recorder never emits is almost certainly a typo, and a typo in
+    a filter fails silently (the page you meant to stop keeps coming, or the
+    one you meant to keep never does), so unknown names get a journal line.
+    """
+    if key not in raw:
+        return None
+    value = raw[key]
+    if isinstance(value, str) or not isinstance(value, list) \
+            or not all(isinstance(v, str) and v for v in value):
+        raise ConfigError(f"alert sink '{name}': {key} must be a list of event names, "
+                          f"like [\"device_quiet\", \"phase_locked_storm\"]")
+    unknown = sorted(set(value) - KNOWN_EVENTS)
+    if unknown:
+        log(f"alert sink '{name}': {key} names event(s) the recorder does not emit: "
+            f"{', '.join(unknown)} (see docs/ALERTING.md for the list)")
+    return frozenset(value)
+
+
 def build_sink(raw: dict, index: int, log: Callable[[str], None]) -> Optional[Sink]:
     """Turn one [[alerts.sinks]] table into a Sink, or None if disabled."""
     raw = dict(raw)
@@ -397,11 +449,15 @@ def build_sink(raw: dict, index: int, log: Callable[[str], None]) -> Optional[Si
     if kind in PRESETS:
         raw = PRESETS[kind](raw)
         kind = raw["type"]
+    if "events" in raw and "ignore_events" in raw:
+        raise ConfigError(f"alert sink '{name}': give events or ignore_events, not both")
     common = dict(
         name=name,
         min_severity=_severity_index(str(raw.get("min_severity", "warning"))),
         cooldown_s=float(raw.get("cooldown_s", 300.0)),
         timeout_s=float(raw.get("timeout_s", 10.0)),
+        events=_event_filter(raw, "events", name, log),
+        ignore_events=_event_filter(raw, "ignore_events", name, log) or frozenset(),
     )
     if kind == "http":
         if not raw.get("url"):

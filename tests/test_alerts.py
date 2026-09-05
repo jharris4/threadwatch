@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import socket
 import sys
 import tempfile
@@ -170,6 +171,145 @@ class SinkBuildTests(unittest.TestCase):
         self.assertTrue(b.wants(REC, now))
         self.assertTrue(b.wants(REC, now + 1))
         self.assertFalse(a.wants({**REC, "severity": "notice"}, now + 999))
+
+
+class EventFilterTests(unittest.TestCase):
+    """``events`` takes only the listed names, ``ignore_events`` every name but them."""
+
+    NOW = 1_700_000_000.0
+
+    def test_a_sink_without_a_filter_takes_every_name(self):
+        s = alerts.HttpSink(name="a", url="http://x", cooldown_s=0)
+        for ev in sorted(alerts.KNOWN_EVENTS):
+            self.assertTrue(s.wants({**REC, "event": ev}, self.NOW), ev)
+
+    def test_an_allowlist_takes_the_listed_names_and_refuses_the_rest_at_any_severity(self):
+        s = alerts.HttpSink(name="a", url="http://x", cooldown_s=0,
+                            events=frozenset({"device_quiet", "phase_locked_storm"}))
+        self.assertTrue(s.wants(REC, self.NOW))
+        self.assertTrue(s.wants({**REC, "event": "phase_locked_storm", "severity": "critical"}, self.NOW))
+        self.assertFalse(s.wants({**REC, "event": "poll_starvation"}, self.NOW))
+        self.assertFalse(s.wants({**REC, "event": "poll_starvation", "severity": "critical"}, self.NOW))
+        self.assertFalse(s.wants({**REC, "event": "retransmission_elevation"}, self.NOW))
+
+    def test_a_denylist_refuses_the_listed_names_and_takes_the_rest(self):
+        s = alerts.HttpSink(name="a", url="http://x", cooldown_s=0,
+                            ignore_events=frozenset({"poll_starvation", "retransmission_elevation"}))
+        self.assertFalse(s.wants({**REC, "event": "poll_starvation"}, self.NOW))
+        self.assertFalse(s.wants({**REC, "event": "retransmission_elevation", "severity": "critical"}, self.NOW))
+        self.assertTrue(s.wants(REC, self.NOW))
+        self.assertTrue(s.wants({**REC, "event": "phase_locked_storm"}, self.NOW))
+
+    def test_the_severity_floor_still_applies_to_a_name_the_filter_takes(self):
+        s = alerts.HttpSink(name="a", url="http://x", cooldown_s=0, events=frozenset({"device_quiet"}))
+        self.assertFalse(s.wants({**REC, "severity": "notice"}, self.NOW))
+        self.assertTrue(s.wants({**REC, "severity": "critical"}, self.NOW))
+
+    def test_a_filtered_out_record_never_opens_a_window_or_joins_a_digest(self):
+        s = alerts.HttpSink(name="a", url="http://x", cooldown_s=300,
+                            ignore_events=frozenset({"poll_starvation"}))
+        starve = {**REC, "event": "poll_starvation"}
+        for i in range(5):
+            self.assertFalse(s.wants(starve, self.NOW + i))
+        self.assertIsNone(s.next_digest_at())
+        self.assertEqual(s.due_digests(self.NOW + 10_000), [])
+        # ...and the names it does take still get their own window and digest.
+        self.assertTrue(s.wants(REC, self.NOW))
+        self.assertFalse(s.wants(REC, self.NOW + 1))
+        self.assertEqual([d["event"] for d in s.due_digests(self.NOW + 300)], ["device_quiet"])
+
+    def test_the_filter_holds_even_when_the_cooldown_is_ignored(self):
+        # alert-test bypasses the cooldown, not the filter: a phone sink that
+        # ignores poll_starvation must not receive a test poll_starvation.
+        s = alerts.HttpSink(name="a", url="http://x", ignore_events=frozenset({"poll_starvation"}))
+        self.assertFalse(s.wants({**REC, "event": "poll_starvation"}, self.NOW, ignore_cooldown=True))
+        self.assertTrue(s.wants(REC, self.NOW, ignore_cooldown=True))
+        self.assertTrue(s.wants(REC, self.NOW, ignore_cooldown=True))
+
+    def test_takes_event_is_the_filter_alone(self):
+        s = alerts.HttpSink(name="a", url="http://x", events=frozenset({"device_quiet"}))
+        self.assertTrue(s.takes_event("device_quiet"))
+        self.assertFalse(s.takes_event("poll_starvation"))
+        self.assertTrue(alerts.HttpSink(name="b", url="http://x").takes_event("anything"))
+
+    def test_build_sink_reads_both_lists_for_http_command_and_ntfy(self):
+        http = alerts.build_sink({"type": "http", "url": "http://x",
+                                  "events": ["device_quiet", "phase_locked_storm"]}, 0, lambda m: None)
+        self.assertEqual(http.events, frozenset({"device_quiet", "phase_locked_storm"}))
+        self.assertEqual(http.ignore_events, frozenset())
+        cmd = alerts.build_sink({"type": "command", "command": "true",
+                                 "ignore_events": ["poll_starvation"]}, 0, lambda m: None)
+        self.assertIsNone(cmd.events)
+        self.assertEqual(cmd.ignore_events, frozenset({"poll_starvation"}))
+        ntfy = alerts.build_sink({"type": "ntfy", "url": "http://n", "topic": "t",
+                                  "ignore_events": ["poll_starvation", "retransmission_elevation"]},
+                                 0, lambda m: None)
+        self.assertEqual(ntfy.ignore_events, frozenset({"poll_starvation", "retransmission_elevation"}))
+        self.assertFalse(ntfy.wants({**REC, "event": "poll_starvation"}, self.NOW))
+        self.assertTrue(ntfy.wants(REC, self.NOW))
+
+    def test_a_sink_without_either_key_has_no_filter(self):
+        s = alerts.build_sink({"type": "http", "url": "http://x"}, 0, lambda m: None)
+        self.assertIsNone(s.events)
+        self.assertEqual(s.ignore_events, frozenset())
+        legacy = alerts.build_sinks({"webhook_url": "http://x"}, lambda m: None)[0]
+        self.assertIsNone(legacy.events)
+        self.assertEqual(legacy.ignore_events, frozenset())
+
+    def test_both_lists_on_one_sink_are_refused_by_message(self):
+        with self.assertRaises(alerts.ConfigError) as cm:
+            alerts.build_sink({"name": "phone", "type": "http", "url": "http://x",
+                               "events": ["device_quiet"], "ignore_events": ["poll_starvation"]},
+                              0, lambda m: None)
+        self.assertEqual(str(cm.exception), "alert sink 'phone': give events or ignore_events, not both")
+
+    def test_a_filter_that_is_not_a_list_of_names_is_refused_by_message(self):
+        for bad in ("device_quiet", ["device_quiet", 3], [""], {"a": 1}, 7):
+            with self.subTest(bad=bad), self.assertRaises(alerts.ConfigError) as cm:
+                alerts.build_sink({"name": "phone", "type": "http", "url": "http://x", "events": bad},
+                                  0, lambda m: None)
+            self.assertIn("alert sink 'phone': events must be a list of event names", str(cm.exception))
+        with self.assertRaises(alerts.ConfigError) as cm:
+            alerts.build_sink({"name": "phone", "type": "http", "url": "http://x",
+                               "ignore_events": "poll_starvation"}, 0, lambda m: None)
+        self.assertIn("ignore_events must be a list of event names", str(cm.exception))
+
+    def test_an_empty_allowlist_takes_nothing_and_an_empty_denylist_takes_everything(self):
+        none = alerts.build_sink({"type": "http", "url": "http://x", "events": []}, 0, lambda m: None)
+        self.assertFalse(none.wants(REC, self.NOW))
+        every = alerts.build_sink({"type": "http", "url": "http://x", "ignore_events": []}, 0, lambda m: None)
+        self.assertTrue(every.wants(REC, self.NOW))
+
+    def test_a_name_the_recorder_never_emits_is_a_journal_line_not_an_error(self):
+        msgs = []
+        s = alerts.build_sink({"name": "phone", "type": "http", "url": "http://x",
+                               "ignore_events": ["poll_starvations", "device_quiet", "retrans"]},
+                              0, msgs.append)
+        self.assertEqual(msgs, ["alert sink 'phone': ignore_events names event(s) the recorder does not "
+                                "emit: poll_starvations, retrans (see docs/ALERTING.md for the list)"])
+        self.assertFalse(s.wants(REC, self.NOW))                                  # the good name still works
+        self.assertTrue(s.wants({**REC, "event": "poll_starvation"}, self.NOW))   # the typo filters nothing
+        msgs.clear()
+        alerts.build_sink({"type": "http", "url": "http://x", "events": ["device_quiet"]}, 0, msgs.append)
+        self.assertEqual(msgs, [])
+
+    def test_known_events_is_the_table_in_the_alerting_docs(self):
+        doc = (Path(__file__).resolve().parent.parent / "docs" / "ALERTING.md").read_text()
+        table = doc.split("## Events", 1)[1].split("\n## ", 1)[0]
+        documented = {m.group(1) for m in re.finditer(r"^\| `([a-z_]+)` \|", table, re.M)}
+        self.assertEqual(documented, set(alerts.KNOWN_EVENTS))
+
+    def test_every_event_name_the_code_emits_is_known(self):
+        # The names detectors pass to EventLog.emit / Detector events, wherever
+        # they are spelled as a literal in the package.
+        pkg = Path(__file__).resolve().parent.parent / "threadwatch"
+        emitted = set()
+        for py in pkg.glob("*.py"):
+            src = py.read_text()
+            emitted |= set(re.findall(r'"event":\s*"([a-z_]+)"', src))
+            emitted |= set(re.findall(r'\.emit\(\s*"([a-z_]+)"', src))
+        self.assertTrue(emitted, "no emit sites found: the pattern needs updating")
+        self.assertEqual(emitted - set(alerts.KNOWN_EVENTS), set())
 
 
 class DeliveryTests(unittest.TestCase):

@@ -34,6 +34,54 @@ class CliCase(unittest.TestCase):
         return code, out.getvalue(), err.getvalue()
 
 
+class AlertTestFilterTest(CliCase):
+    """alert-test says which sinks a named event reaches and which filter it out."""
+
+    def setUp(self):
+        super().setUp()
+        (self.d / "config.toml").write_text(
+            f'[capture]\ndata_dir = "{self.d / "data"}"\n'
+            '[[alerts.sinks]]\nname = "all"\ntype = "command"\ncommand = ["true"]\n'
+            '[[alerts.sinks]]\nname = "phone"\ntype = "command"\ncommand = ["true"]\n'
+            'ignore_events = ["poll_starvation", "retransmission_elevation"]\n'
+            '[[alerts.sinks]]\nname = "storms"\ntype = "command"\ncommand = ["true"]\n'
+            'events = ["phase_locked_storm"]\nmin_severity = "critical"\n')
+
+    def test_a_filtered_out_event_is_a_skip_line_and_not_a_failure(self):
+        code, out, _ = self.run_cli("alert-test", "--no-heartbeats", "--event", "poll_starvation")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out.splitlines(), [
+            "sinks (3):",
+            "  ok   all: true",
+            "  skip phone (does not take poll_starvation)",
+            "  skip storms (min severity above warning)",
+        ])
+
+    def test_an_event_every_sink_takes_reaches_them_all(self):
+        code, out, _ = self.run_cli("alert-test", "--no-heartbeats", "--event", "device_quiet")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out.splitlines(), [
+            "sinks (3):",
+            "  ok   all: true",
+            "  ok   phone: true",
+            "  skip storms (min severity above warning)",
+        ])
+        code, out, _ = self.run_cli("alert-test", "--no-heartbeats", "--event", "phase_locked_storm",
+                                    "--severity", "critical")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out.splitlines(), ["sinks (3):", "  ok   all: true", "  ok   phone: true", "  ok   storms: true"])
+
+    def test_the_floor_is_named_before_the_filter_when_both_would_skip(self):
+        code, out, _ = self.run_cli("alert-test", "--no-heartbeats", "--event", "poll_starvation",
+                                    "--severity", "notice")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out.splitlines()[1:], [
+            "  skip all (min severity above notice)",
+            "  skip phone (min severity above notice)",
+            "  skip storms (min severity above notice)",
+        ])
+
+
 class IncidentsTest(CliCase):
     def test_list_and_delete(self):
         code, out, _ = self.run_cli("incidents")

@@ -7,6 +7,11 @@ services:
     image: threadwatch
     command: capture
     restart: unless-stopped
+    # The recorder finds border routers over mDNS, which is link-local
+    # multicast that the default bridge network never carries to the LAN;
+    # the host's network namespace does (mdns.py, [border_routers]). The
+    # daemon listens on no port of its own, so nothing else changes.
+    network_mode: host
     devices:
       # Left side: the dongle on the host. /dev/serial/by-id/usb-Nordic_Semiconductor_*
       # survives re-enumeration; a plain /dev/ttyACM0 works while there is one dongle.

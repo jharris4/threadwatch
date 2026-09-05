@@ -44,18 +44,19 @@ docker compose logs -f capture
 
 Doctor knows it is in a container and says so on two checks it cannot
 make from inside one: `clock` reads `ok in a container: the host keeps
-the time (not checked)` (no `timedatectl` in the image) and `web` reads
-`ok review pages run in their own container (not checked from in here)`
-(doctor cannot reach the other container at 127.0.0.1).
+the time (not checked)` (no `timedatectl` in the image) and, when the
+review pages do not answer at 127.0.0.1, `web` reads `ok review pages
+run in their own container (not checked from in here)`, because doctor
+cannot tell that container from one that is down. Anything else that is
+not `ok` is real.
 
-A third check, `border routers`, warns `none found over mDNS` on the
-shipped `compose.yaml`, and that warning is not about your LAN: mDNS is
-link-local multicast, and the default bridge network does not carry it
-to the LAN, so the recorder's border-router browse (`[border_routers]`
-in config.toml, which follows Apple hubs' address changes) finds
-nothing from inside the container. To have it, give the `capture`
-service `network_mode: host` in `compose.yaml`; to silence it, set
-`browse_s = 0`. Anything else that is not `ok` is real.
+The `capture` service runs on the host's network (`network_mode: host`
+in `compose.yaml`) because the recorder finds border routers over mDNS,
+which is link-local multicast that the default bridge network never
+carries to the LAN; without it `border routers` warns `none found over
+mDNS` on every host and Apple hubs' address changes go unnamed
+(`[border_routers]` in config.toml). One-off commands such as `doctor`
+and `import` inherit it. The daemon listens on no port of its own.
 
 The review pages are on port 8080 (`ports:` in `compose.yaml` to change).
 

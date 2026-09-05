@@ -48,6 +48,31 @@ sudo systemctl reset-failed threadwatch && sudo systemctl restart threadwatch
 `sudo bin/setup-host.sh` does the reset and the restart itself and reports
 either unit that is not running afterwards.
 
+## One capture process per host
+
+Exactly one `threadwatch capture` may run against a dongle and a data
+directory. Nothing stops a second one, and it does damage before it
+fails: it grabs the same auto-detected port, deletes and recreates the
+shared `capture.fifo`, and, before it has heard a frame, judges the shared
+last-seen table as if it were the recorder and sends `device_quiet` and
+`device_returned` events through the real sinks, so the household is
+paged for nothing; then its sniffer thread cannot open the port the
+service holds and it exits 4, saving the table on the way out. So before
+running capture by hand, stop the service, and start it again after:
+
+```bash
+sudo systemctl stop threadwatch
+bin/threadwatch capture        # Ctrl-C when done
+sudo systemctl start threadwatch
+```
+
+(Docker: `docker compose stop capture`.) Everything else is safe beside
+a running recorder: `doctor`, `status`, `report`, `why`, `replay`,
+`events`, `incidents`, `freeze`, `border-routers`, `alert-test`, `web`,
+and `adopt` and `import`, which write `config/` files the daemon reads
+only at its next start. `replay` and `why` run the pipeline in a mode that
+writes nothing to `data/state` and sends nothing to any sink.
+
 ## Exit codes and restarts
 
 The daemon leaves with a code and a line saying why; the line is the

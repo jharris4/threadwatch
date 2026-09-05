@@ -59,9 +59,19 @@ host, once `INSTALL.md` is done:
 
 ```bash
 bin/threadwatch doctor    # the "dongle" line names the port; other lines say what is still missing
-bin/threadwatch capture   # prints: capturing channel N from /dev/...
-# Ctrl-C after a few seconds; or check frames_total:
-bin/threadwatch status
+bin/threadwatch status    # frames_total climbing: the service is capturing already
+```
+
+If the service is running (INSTALL.md enables and starts it), `status` is
+the check and there is nothing to run by hand. To see capture start for
+yourself, stop the service first: two capture processes on one dongle
+page the household with false quiet alerts before the second one fails
+(docs/OPERATIONS.md, "One capture process per host"):
+
+```bash
+sudo systemctl stop threadwatch
+bin/threadwatch capture   # prints: capturing channel N from /dev/...; Ctrl-C after a few seconds
+sudo systemctl start threadwatch
 ```
 
 `capture` needs the Python packages and the Thread network key

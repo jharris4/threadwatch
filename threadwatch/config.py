@@ -16,6 +16,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 @dataclass
 class Config:
     channel: int = 25
+    # [network] pan_id: this network's PAN id. When set, it decides whose
+    # silences count and which PANs are foreign; when unset the recorder
+    # guesses from which PAN it hears most, which a busier neighbour on the
+    # same channel can win (see Pipeline.dominant_pan).
+    pan_id: Optional[int] = None
     serial_port: Optional[str] = None          # auto-detect when unset
     data_dir: Path = REPO_ROOT / "data"
     keep_files: int = 168                      # ring: hourly files, one week
@@ -94,6 +99,14 @@ def load(path: Optional[Path]) -> Config:
         cfg.channel = int(net.get("channel", cfg.channel))
         if not 11 <= cfg.channel <= 26:
             raise ValueError(f"[network] channel must be 11-26, not {cfg.channel}")
+        if net.get("pan_id") is not None:
+            raw_pan = net["pan_id"]
+            try:
+                cfg.pan_id = int(raw_pan, 0) if isinstance(raw_pan, str) else int(raw_pan)
+            except ValueError:
+                raise ValueError(f"[network] pan_id must be a PAN id such as \"0x4e21\", not {raw_pan!r}") from None
+            if not 0 <= cfg.pan_id <= 0xfffe:
+                raise ValueError(f"[network] pan_id must be 0x0000-0xfffe, not 0x{cfg.pan_id:x}")
         cap = raw.get("capture", {})
         cfg.serial_port = cap.get("serial_port") or None
         if cap.get("data_dir"):

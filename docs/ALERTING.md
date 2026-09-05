@@ -38,6 +38,7 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `device_returned` | notice | `addr`, `name` |
 | `join_scan_activity` | notice | `count_60s`, `src` |
 | `possible_foreign_pan` | notice | `pan`, `src`, `dominant_pan`, `note` |
+| `dominant_pan_changed` | notice when first guessed, warning when the guess changes | `pan`, `previous`, `frames`, `note` |
 | `mle_rejoin_attempt` | notice | `command`, `src`, `name` |
 | `device_quiet` | warning, or notice when `reception` is `marginal` | `addr`, `name`, `silent_for_s`, `rssi_dbm`, `reception`, `note` |
 | `poll_starvation` | warning, or notice when `reception` is `marginal` or `episode` > 1 | `addr`, `name`, `unanswered_polls`, `since`, `starved_for_s`, `acked_polls`, `rssi_dbm`, `reception`, `episode`, `since_previous_s`, `parent`, `parent_rloc16`, `parent_addr`, `note` |
@@ -66,6 +67,14 @@ are deliberately not paged: addresses whose frames carry a foreign PAN id
 at the sniffer is below `[quiet] min_rssi_dbm` (default -82) are logged at
 notice severity, because a device at the edge of the sniffer's range drops
 out for tens of minutes whenever the link fades.
+
+Which PAN is yours comes from `[network] pan_id` in config.toml (`threadwatch
+import` prints it). Without it the recorder guesses: the PAN it has heard
+the most frames on, adopted once that is ten frames and replaced only by
+one with twice as many. A busier Thread or Zigbee network on the same
+channel can win that guess, which would leave your own devices unjudged, so
+every adoption or change is a `dominant_pan_changed` event; set `pan_id`
+if it names a neighbour.
 
 `poll_starvation` is the sleepy-device failure the quiet detector cannot
 see: the device keeps polling, so it never goes quiet, but nothing

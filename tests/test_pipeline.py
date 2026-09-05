@@ -284,6 +284,54 @@ class QuietPolicyTest(unittest.TestCase):
             pipe2.ingest(frame(t0 + 40 + i * 0.05, ROUTER))
         self.assertEqual(len(self._foreign(pipe2)), 1)         # ours never flagged, theirs not repeated
 
+    @staticmethod
+    def _adopted(pipe):
+        return [(r["severity"], r["previous"], r["pan"]) for r in pipe.events.records
+                if r["event"] == "dominant_pan_changed"]
+
+    def test_a_configured_pan_is_ours_however_much_a_neighbour_talks(self):
+        # A larger mesh on the same channel out-talks ours: with pan_id set
+        # the guess is never consulted, our silences are still judged, the
+        # neighbour's never are, and its PAN is the foreign one.
+        self.cfg.pan_id = OWN_PAN
+        pipe = self._pipe()
+        t0 = 1_700_000_000.0
+        for i in range(400):
+            pipe.ingest(frame(t0 + i, STRANGER, pan=OTHER_PAN))
+        for i in range(2):
+            pipe.ingest(frame(t0 + i, ROUTER))
+        self.assertEqual(pipe.dominant_pan(), OWN_PAN)
+        self.assertEqual(self._foreign(pipe), [(f"0x{OTHER_PAN:04x}", f"0x{OWN_PAN:04x}", STRANGER)])
+        pipe.periodic(t0 + 3 * 3600)
+        self.assertEqual(self._quiet(pipe), [ROUTER])
+        self.assertEqual(self._adopted(pipe), [])
+        pipe.seen.save()
+        self.assertEqual(self._pipe().dominant_pan(), OWN_PAN)   # and not the table's busiest
+
+    def test_the_guessed_pan_needs_a_floor_and_a_margin_and_every_change_is_an_event(self):
+        pipe = self._pipe()
+        t0 = 1_700_000_000.0
+        for i in range(9):
+            pipe.ingest(frame(t0 + i, ROUTER))
+        self.assertIsNone(pipe.dominant_pan())                   # too few frames to call anything ours
+        pipe.ingest(frame(t0 + 9, ROUTER))
+        self.assertEqual(pipe.dominant_pan(), OWN_PAN)
+        self.assertEqual(self._adopted(pipe), [("notice", None, f"0x{OWN_PAN:04x}")])
+        for i in range(19):                                      # the neighbour pulls ahead, but not by enough
+            pipe.ingest(frame(t0 + 20 + i, STRANGER, pan=OTHER_PAN))
+        self.assertEqual(pipe.dominant_pan(), OWN_PAN)
+        pipe.ingest(frame(t0 + 40, STRANGER, pan=OTHER_PAN))     # twice ours: it takes over, and says so
+        self.assertEqual(pipe.dominant_pan(), OTHER_PAN)
+        self.assertEqual(self._adopted(pipe)[1], ("warning", f"0x{OWN_PAN:04x}", f"0x{OTHER_PAN:04x}"))
+        changed = [r for r in pipe.events.records if r["event"] == "dominant_pan_changed"]
+        self.assertIn("set [network] pan_id", changed[-1]["note"])
+        self.assertEqual(self._foreign(pipe), [(f"0x{OTHER_PAN:04x}", f"0x{OWN_PAN:04x}", STRANGER),   # theirs while ours led...
+                                               (f"0x{OWN_PAN:04x}", f"0x{OTHER_PAN:04x}", ROUTER)])   # ...then ours, by that guess
+        for i in range(29):                                      # ours back in the lead, 39 to 20, under double: no flap
+            pipe.ingest(frame(t0 + 50 + i, ROUTER))
+        self.assertEqual(pipe.dominant_pan(), OTHER_PAN)
+        self.assertEqual(len(self._adopted(pipe)), 2)
+
     def test_restart_announces_a_silence_nobody_reported(self):
         # The recorder heard the mesh right up to a restart (a deploy, a
         # crash) that came between the router crossing its window and the
@@ -1131,9 +1179,9 @@ class DailySummaryTest(unittest.TestCase):
         self.assertEqual(s["quiet"], [SENSOR, "Hall Router"])
         self.assertEqual(s["unknown"], [SENSOR])
         self.assertEqual(s["marginal"], [SENSOR])
-        self.assertEqual((s["events_24h"]["warning"], s["events_24h"]["notice"]), (1, 2))   # router quiet; sensor marginal quiet, foreign PAN
+        self.assertEqual((s["events_24h"]["warning"], s["events_24h"]["notice"]), (1, 3))   # router quiet; PAN adopted, sensor marginal quiet, foreign PAN
         self.assertIn(f"300 frames from 2 of 2 devices; quiet: {SENSOR}, Hall Router;", s["note"])
-        self.assertIn("1 unknown address; 1 heard marginally; events: 1 warning, 2 notice", s["note"])
+        self.assertIn("1 unknown address; 1 heard marginally; events: 1 warning, 3 notice", s["note"])
         pipe.periodic(self.DAY + 9 * 3600)                  # later the same day: no repeat
         pipe.periodic(self.DAY + 23 * 3600)
         self.assertEqual(len(self._summaries(pipe.events)), 1)

@@ -332,8 +332,11 @@ def select_devices(rows: list[dict], dominant: Optional[int], only: str = "", so
     return sorted(rows, key=s[1])
 
 
-def dominant_pan(seen: LastSeen) -> Optional[int]:
-    """This network's PAN: the one the tracked addresses send most frames on."""
+def dominant_pan(seen: LastSeen, configured: Optional[int] = None) -> Optional[int]:
+    """This network's PAN: [network] pan_id when set, else the one the
+    tracked addresses send most frames on."""
+    if configured is not None:
+        return configured
     weight: dict = {}
     for row in seen.table.values():
         if row.get("pan") is not None:
@@ -342,13 +345,13 @@ def dominant_pan(seen: LastSeen) -> Optional[int]:
 
 
 def now_card(seen: LastSeen, names: DeviceNames, events_dir: Path, min_rssi_dbm: float,
-             day: str, now: Optional[float] = None) -> dict:
+             day: str, now: Optional[float] = None, pan_id: Optional[int] = None) -> dict:
     """What matters at this moment, for the top of today's page: devices
     quiet right now (as the recorder announced them), devices whose signal
     is down, unknown addresses still to name, and the day's daily_summary
     record if one has gone out. Devices on a foreign PAN are left out."""
     now = now or time.time()
-    dominant = dominant_pan(seen)
+    dominant = dominant_pan(seen, pan_id)
     quiet, degraded, unknown = [], [], []
     for addr, row in seen.table.items():
         pan = row.get("pan")

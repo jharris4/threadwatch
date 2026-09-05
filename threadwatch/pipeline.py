@@ -39,7 +39,6 @@ from .events import EventLog, day_of, read_day
 from .link import assess as assess_link
 from .names import DeviceNames, LastSeen, load_border_routers, reception, rloc16_role
 from .pcap import BROADCAST_PAN, Frame
-from .review import dominant_pan
 
 MLE_REJOIN_COMMANDS = {"Parent Request", "Child ID Request", "Announce"}
 
@@ -116,6 +115,8 @@ class Pipeline:
                 self.seen._dirty = True
             if row.get("pan") is not None:
                 self.own_pans[row["pan"]] = self.own_pans.get(row["pan"], 0) + int(row.get("frames") or 0)
+        self._dominant: Optional[int] = None
+        self._update_dominant(None)
         self._foreign_reported: set[int] = set()
         self._last_src_by_pan: dict[int, Optional[str]] = {}
         self._unheard_logged: set[str] = set()      # mDNS addresses never heard on air, complained about once
@@ -184,7 +185,7 @@ class Pipeline:
             last_alive = self._last_frame_heard()
             if last_alive is not None:
                 self._blind_from, self._blind_s = last_alive, max(0.0, now - last_alive)
-            dominant = dominant_pan(self.seen)   # best guess before any frame arrives
+            dominant = self.dominant_pan()       # best guess before any frame arrives
             announced = 0
             for addr, row in self.seen.table.items():
                 if row.get("rotated_to"):
@@ -265,8 +266,45 @@ class Pipeline:
         (Kept as a method so a per-device rule has somewhere to go.)"""
         return self.cfg.quiet_s
 
+    # Without [network] pan_id the recorder guesses: a PAN is taken for ours
+    # once it has this many frames, and gives way only to one with this
+    # many times as many, so two networks trading the lead frame by frame
+    # do not swap whose silences count on every tick. Either way the
+    # change is an event, never silent: a busier neighbour on the same
+    # channel can win this guess, and the fix is to set pan_id.
+    DOMINANT_MIN_FRAMES = 10
+    DOMINANT_LEAD = 2
+
     def dominant_pan(self) -> Optional[int]:
-        return max(self.own_pans, key=self.own_pans.get) if self.own_pans else None
+        """This network's PAN: the configured one, else the guess so far."""
+        return self.cfg.pan_id if self.cfg.pan_id is not None else self._dominant
+
+    def _update_dominant(self, ts: Optional[float]) -> None:
+        """Adopt or replace the guessed PAN from the frame tally. ``ts`` is
+        None at start-up, when the tally is the table's history."""
+        if self.cfg.pan_id is not None or not self.own_pans:
+            return
+        leader = max(self.own_pans, key=self.own_pans.get)
+        n = self.own_pans[leader]
+        prev = self._dominant
+        if prev is None:
+            if n < self.DOMINANT_MIN_FRAMES:
+                return
+        elif leader == prev or n < self.DOMINANT_LEAD * self.own_pans.get(prev, 0):
+            return
+        self._dominant = leader
+        if ts is None:
+            print(f"[threadwatch] PAN 0x{leader:04x} taken for ours ({n} frames on record); "
+                  "set [network] pan_id in config.toml if that is wrong", flush=True)
+            return
+        self.events.emit("dominant_pan_changed", "notice" if prev is None else "warning", ts,
+                         pan=f"0x{leader:04x}", previous=None if prev is None else f"0x{prev:04x}",
+                         frames=n,
+                         note=(f"PAN 0x{leader:04x} is now taken for this network's"
+                               + ("" if prev is None else f", instead of 0x{prev:04x}")
+                               + f": it has sent the most frames ({n}). Quiet checks and foreign-PAN notices "
+                                 "follow it. If it is a neighbour's network, set [network] pan_id in "
+                                 "config.toml and restart."))
 
     # ---------------------------------------------------------- identity
 
@@ -406,9 +444,12 @@ class Pipeline:
         if pan is not None:
             self.own_pans[pan] = self.own_pans.get(pan, 0) + 1
             self._last_src_by_pan[pan] = f.src
-            if len(self.own_pans) > 1:
-                dominant = self.dominant_pan()
-                lead = self.own_pans[dominant]
+            self._update_dominant(ts)
+            dominant = self.dominant_pan()
+            if dominant is not None and len(self.own_pans) > 1:
+                # A configured PAN is ours however little it talks; a
+                # guessed one must strictly lead before anything is foreign.
+                lead = float("inf") if self.cfg.pan_id is not None else self.own_pans.get(dominant, 0)
                 for pan, n in self.own_pans.items():
                     if pan != dominant and 3 <= n < lead and pan not in self._foreign_reported:
                         self._foreign_reported.add(pan)

@@ -151,6 +151,39 @@ is fixed. One address may belong to one entry: `adopt` refuses to move an
 address already listed under another name, which is an edit for you to
 make. The daemon reads the file at start, so restart it after editing.
 
+## Developing
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # pyserial, cryptography
+.venv/bin/python3 -m unittest discover -s tests -v                     # the suite; about 300 tests, half a minute
+.venv/bin/python3 -m unittest tests.test_pipeline                      # one module
+```
+
+Python 3.11 and 3.12 are supported (3.11 is what Debian bookworm ships
+on the Pi; `tomllib` is why nothing older works). CI runs the suite on
+both and builds the Docker image on every push and pull request
+(`.github/workflows/tests.yml`); a change is done when it passes there.
+Tests are plain `unittest`, one file per module, and build their frames
+and state in temporary directories, so they need no dongle, no network
+and no secrets.
+
+The module boundaries are the layout below, and one invariant holds
+them together: there is a single per-frame `Pipeline` (pipeline.py) and
+`capture`, `replay` and `why` all run it. The daemon runs it live, with
+the event log and the sinks; the two analysis commands run it with
+`ephemeral=True`, which starts from an empty last-seen table, persists
+nothing to `data/state`, browses no mDNS, freezes nothing and sends to no
+sink (events collect in memory). A detector or a decoder is written once
+and behaves the same in all three, and an analysis command can never
+touch the live recorder's state. Keep that: a new detector goes in the
+pipeline, not in a command; anything that writes state or talks to the
+outside checks `ephemeral` first. Nordic's sniffer module under `vendor/`
+is unmodified and not covered by the suite.
+
+Commit messages say what the change does for the reader of the code, not
+what was typed; the docs are part of the change (every command, flag and
+default in them is checked against `--help` and the source).
+
 ## Repository layout
 
     threadwatch/   the Python package

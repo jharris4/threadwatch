@@ -1,7 +1,11 @@
 [Unit]
 Description=threadwatch: continuous Thread/802.15.4 capture and storm detection
-After=network-online.target
-Wants=network-online.target
+# time-sync.target: a Pi has no RTC and boots on its saved clock; starting
+# before NTP corrects it stamps frames, events and ring files with the
+# wrong time. (To make the target wait for an actual sync rather than for
+# timesyncd to start: systemctl enable systemd-time-wait-sync.)
+After=network-online.target time-sync.target
+Wants=network-online.target time-sync.target
 
 [Service]
 Type=simple

@@ -164,10 +164,15 @@ def run_capture(cfg: Config) -> None:
 
     total = 0
     started = time.time()
+    started_mono = time.monotonic()
     last_tick = 0.0
     ring = None
     # Shared with the watchdog thread; benign races (status snapshot only).
-    beat = {"last_frame": None, "total": 0, "ring": None}   # last_frame: None until the first frame
+    # last_frame is the wall clock (None until the first frame), for the
+    # record; the stall clock and the heartbeat's health run on the
+    # monotonic stamp beside it, which NTP stepping the host clock forward
+    # after boot cannot turn into a three-hour "stall".
+    beat = {"last_frame": None, "last_frame_mono": None, "total": 0, "ring": None}
     # When any run last heard a frame, carried through runs that hear
     # nothing: the next start credits the gap since then as its own
     # blindness, not the devices' silence (Pipeline._last_frame_heard).
@@ -181,8 +186,7 @@ def run_capture(cfg: Config) -> None:
         stall_timeout = 180.0
         while True:
             time.sleep(30)
-            now = time.time()
-            age = now - (beat["last_frame"] or started)
+            age = time.monotonic() - (beat["last_frame_mono"] or started_mono)
             if beat["ring"] is not None:
                 try:
                     _write_status(cfg, port, beat["total"], started, pipe,
@@ -219,8 +223,8 @@ def run_capture(cfg: Config) -> None:
     # restart loop that never hears one cannot keep a monitor reassured.
     # Once the stall timeout passes the watchdog exits anyway.
     HeartbeatRunner(heartbeats,
-                    healthy=lambda: None if beat["last_frame"] is None
-                    else time.time() - beat["last_frame"] < 180.0,
+                    healthy=lambda: None if beat["last_frame_mono"] is None
+                    else time.monotonic() - beat["last_frame_mono"] < 180.0,
                     log=_log)
 
     # Exit status: 0 for a requested stop, otherwise non-zero so the journal
@@ -238,6 +242,7 @@ def run_capture(cfg: Config) -> None:
                 pipe.ingest(frame)
                 total += 1
                 beat["last_frame"] = frame.ts
+                beat["last_frame_mono"] = time.monotonic()
                 beat["total"] = total
                 now = frame.ts
                 if now - last_tick >= 10:

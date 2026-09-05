@@ -1,7 +1,9 @@
 [Unit]
 Description=threadwatch web: day-by-day event review pages
-After=network-online.target
-Wants=network-online.target
+# time-sync.target, as for threadwatch.service: a Pi has no RTC, and the
+# pages tell today's time from the clock.
+After=network-online.target time-sync.target
+Wants=network-online.target time-sync.target
 
 [Service]
 Type=simple

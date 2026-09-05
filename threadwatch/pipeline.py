@@ -175,10 +175,16 @@ class Pipeline:
         # The recorder only witnessed silence while it was hearing frames:
         # the gap between its last frame and now (a reboot, a dead dongle,
         # the stall restart loop) is its own blindness, not the devices',
-        # and is not counted towards any silence that spans it.
-        self._blind_from, self._blind_s = time.time(), 0.0
+        # and is not counted towards any silence that spans it. Each span
+        # is (last stamp taken before it, its length); a forward step of
+        # the host clock adds one (see _check_clock). Signed, and clamped
+        # as a sum: an RTC-less Pi boots on a saved clock that can trail
+        # the last frame, and the step that follows makes up the rest.
+        self._blind: list[tuple[float, float]] = []
+        self._wall, self._mono = time.time, time.monotonic   # swapped by tests
+        self._clock = (self._wall(), self._mono())
         if not ephemeral:
-            now = time.time()
+            now = self._clock[0]
             # Short addresses learned last run: seed the decryptor so sleepy
             # devices are attributed from the first frame. A wrong seed (the
             # address was reassigned while the recorder was down) fails the
@@ -188,7 +194,7 @@ class Pipeline:
                     self.decryptor.short_to_ext[row["rloc16"]] = addr
             last_alive = self._last_frame_heard()
             if last_alive is not None:
-                self._blind_from, self._blind_s = last_alive, max(0.0, now - last_alive)
+                self._blind.append((last_alive, now - last_alive))
             dominant = self.dominant_pan()       # best guess before any frame arrives
             announced = 0
             for addr, row in self.seen.table.items():
@@ -258,9 +264,30 @@ class Pipeline:
     def silence_s(self, row: dict, now: float) -> float:
         """How long the recorder has actually heard nothing from a device."""
         silent = now - row["last_seen"]
-        if self._blind_s and row["last_seen"] <= self._blind_from:
-            silent -= self._blind_s
-        return silent
+        blind = sum(length for since, length in self._blind if row["last_seen"] <= since)
+        return silent - max(0.0, blind)
+
+    # A wall-clock jump this large against the monotonic clock is a step
+    # (NTP correcting a Pi that booted on its saved time), not slew.
+    CLOCK_STEP_MIN_S = 60.0
+
+    def _check_clock(self, now: float) -> None:
+        """A Pi has no RTC: it boots on the clock it shut down with, and
+        NTP steps it to the true time minutes later, after the recorder is
+        up. Every stamp taken before the step (last-seen rows, the start-up
+        blindness) then sits the whole step behind the clock, and every
+        device would cross its quiet threshold on the same tick. The step
+        is measured against the monotonic clock and credited as blindness
+        to everything heard before it."""
+        wall, mono = self._wall(), self._mono()
+        step = (wall - self._clock[0]) - (mono - self._clock[1])
+        self._clock = (wall, mono)
+        if step < self.CLOCK_STEP_MIN_S:
+            return
+        self._blind.append((wall - step, step))
+        self.events.emit("clock_step", "info", now, step_s=round(step),
+                         note=(f"the host clock jumped forward {round(step / 60)} min (NTP after boot?); "
+                               "silences that span the jump are not counted against any device"))
 
     # ------------------------------------------------------- quiet policy
 
@@ -814,6 +841,7 @@ class Pipeline:
 
     def periodic(self, now: float) -> None:
         """Run every ~30 s in live capture: quiet checks, persistence."""
+        self._check_clock(now)
         self.seen.maybe_save()
         self._check_credentials(now)
         self._check_configured_pan(now)

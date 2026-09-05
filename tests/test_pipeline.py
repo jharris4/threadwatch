@@ -408,6 +408,38 @@ class QuietPolicyTest(unittest.TestCase):
         rec = [r for r in pipe2.events.records if r["event"] == "device_quiet"][0]
         self.assertAlmostEqual(rec["silent_for_s"], 31 * 60, delta=5)
 
+    def test_a_clock_step_after_boot_is_the_recorders_blindness_not_the_devices(self):
+        # An RTC-less Pi boots on its saved clock, about when it last heard
+        # a frame, so the start-up pass sees a minute of outage; NTP then
+        # steps the clock forward by the real outage with the recorder up.
+        boot, outage = time.time(), 3 * 3600
+        pipe = self._pipe()
+        pipe.ingest(frame(boot - 120, ROUTER))
+        pipe.ingest(frame(boot - 60, SENSOR))
+        pipe.seen.save()
+        self._status(updated=boot - 60, last_frame_ts=boot - 60)
+        pipe2 = self._pipe()
+        self.assertEqual(self._quiet(pipe2), [])
+        clock = {"wall": boot, "mono": 0.0}
+        pipe2._wall, pipe2._mono, pipe2._clock = (lambda: clock["wall"]), (lambda: clock["mono"]), (boot, 0.0)
+        pipe2.ingest(frame(boot + 30, STRANGER))          # heard after boot, before the step
+        clock.update(wall=boot + 60 + outage, mono=60.0)  # NTP: the wall clock jumps, monotonic does not
+        pipe2.periodic(boot + 60 + outage)
+        self.assertEqual(self._quiet(pipe2), [])
+        steps = [r for r in pipe2.events.records if r["event"] == "clock_step"]
+        self.assertEqual([r["step_s"] for r in steps], [outage])
+        # From the step on, silence is counted as heard.
+        clock.update(wall=boot + outage + 28 * 60, mono=28 * 60.0)
+        pipe2.periodic(boot + outage + 28 * 60)
+        self.assertEqual(self._quiet(pipe2), [])
+        clock.update(wall=boot + outage + 32 * 60, mono=32 * 60.0)
+        pipe2.periodic(boot + outage + 32 * 60)
+        self.assertEqual(sorted(self._quiet(pipe2)), sorted([ROUTER, SENSOR, STRANGER]))
+        self.assertEqual(len([r for r in pipe2.events.records if r["event"] == "clock_step"]), 1)
+        silent = {r["addr"]: r["silent_for_s"] for r in pipe2.events.records if r["event"] == "device_quiet"}
+        self.assertAlmostEqual(silent[ROUTER], 33 * 60, delta=5)   # 2 min before boot, 1 min up, 32 min since
+        self.assertAlmostEqual(silent[STRANGER], 31.5 * 60, delta=5)
+
     def test_a_restart_loop_that_hears_nothing_does_not_announce_every_device(self):
         # The mesh (or the dongle) died two hours ago. Since then the
         # watchdog has restarted the recorder every three minutes, and every

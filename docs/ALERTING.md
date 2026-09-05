@@ -49,6 +49,7 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `retransmission_elevation` | warning, or notice when one sender-target pair is `top_share` >= 0.5 of the retries (a chronic bad link, not a storm precursor) | `rate`, `baseline`, `addr`, `name`, `top_sender`, `top_target`, `top_share`, `note` |
 | `partition_or_leader_change` | warning | `previous`, `current`, each with `partition`, `leader_router` and `leader` (the router id with the device's name once the MLE layer has matched it) |
 | `credentials_stale` | warning | `failed`, `note` |
+| `clock_step` | info | `step_s`, `note` (the host clock jumped forward, NTP after a boot without an RTC; silences spanning it are not counted) |
 | `border_router_address_changed` | notice | `addr`, `name`, `previous`, `hostname`, `note` |
 | `border_router_unlisted` | notice | `addr`, `hostname`, `note` |
 | `phase_locked_storm` | critical | detector snapshot (`period_s`, `onsets`, ...) |

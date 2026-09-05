@@ -7,6 +7,12 @@ services:
     image: threadwatch
     command: capture
     restart: unless-stopped
+    # On stop the recorder saves its state, then drains queued alerts and
+    # held digests for up to 15 s (alerts.Dispatcher.close) before it
+    # exits. Docker's default grace is 10 s, so with a sink unreachable
+    # (the very condition being recorded) the drain was cut short by
+    # SIGKILL; systemd gives it 90 s.
+    stop_grace_period: 30s
     # The recorder finds border routers over mDNS, which is link-local
     # multicast that the default bridge network never carries to the LAN;
     # the host's network namespace does (mdns.py, [border_routers]). The

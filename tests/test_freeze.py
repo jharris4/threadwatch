@@ -89,6 +89,27 @@ class FreezeTest(unittest.TestCase):
         self.assertEqual(freeze.discard_partials(self.cfg.incidents_dir), [])
         self.assertEqual(freeze.discard_partials(self.cfg.incidents_dir / "missing"), [])
 
+    def test_an_existing_incident_or_half_copy_is_never_written_into(self):
+        now = 1_756_900_000.0
+        dest, _count = freeze.freeze_ring(self.cfg, "storm", now=now)
+        before = sorted(p.name for p in dest.iterdir())
+        (dest / "threadwatch-20260903-00.pcap").write_bytes(b"kept")       # the incident as the operator left it
+        with self.assertRaises(FileExistsError) as cm:
+            freeze.freeze_ring(self.cfg, "storm", now=now)                 # the same label, the same second
+        self.assertIn(dest.name, str(cm.exception))
+        self.assertEqual(sorted(p.name for p in dest.iterdir()), before)
+        self.assertEqual((dest / "threadwatch-20260903-00.pcap").read_bytes(), b"kept")
+        self.assertEqual([p.name for p in self.cfg.incidents_dir.iterdir()], [dest.name])   # no .partial left
+        # A half copy under the same name (a freeze still running, or one
+        # a dead run left) is not a directory to add to either.
+        partial = self.cfg.incidents_dir / (dest.name.replace("storm", "quiet") + freeze.PARTIAL_SUFFIX)
+        partial.mkdir()
+        (partial / "stale.pcap").write_bytes(b"x")
+        with self.assertRaises(FileExistsError):
+            freeze.freeze_ring(self.cfg, "quiet", now=now)
+        self.assertEqual([p.name for p in partial.iterdir()], ["stale.pcap"])
+        self.assertEqual(sorted(p.name for p in self.cfg.incidents_dir.iterdir()), sorted([dest.name, partial.name]))
+
 
 if __name__ == "__main__":
     unittest.main()

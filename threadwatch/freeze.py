@@ -43,6 +43,11 @@ def freeze_ring(cfg, label: str = "incident", now: float | None = None) -> tuple
     stamp = time.strftime("%Y%m%dT%H%M%S", time.localtime(now or time.time()))
     final = cfg.incidents_dir / f"{stamp}_{label}"
     dest = final.with_name(final.name + PARTIAL_SUFFIX)
+    # Never over an incident that exists (the same label twice in one
+    # second), and never into a half copy another freeze is building or
+    # a dead run left behind: an incident is whole or it is nothing.
+    if final.exists():
+        raise FileExistsError(f"incident {final.name} already exists; nothing was copied over it")
     dest.mkdir(parents=True, exist_ok=False)
     count = 0
     try:

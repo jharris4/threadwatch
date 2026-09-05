@@ -770,7 +770,11 @@ class Pipeline:
             self.decryptor.stats["parse_failed"] += 1
             return
         if MLE_UDP_PORT in (sport, dport):
-            if not info:
+            # Only a message that passed its MIC says anything about the
+            # mesh: an unsecured one is bytes from anyone on the channel,
+            # and acting on it would let a stranger page for a partition
+            # change, invent a rejoin, or claim another device's address.
+            if not info or not info.secured:
                 return
             if info.source_addr16 is not None and src_for_mle:
                 self._note_rloc16(src_for_mle, f"{info.source_addr16:04x}", f.ts)

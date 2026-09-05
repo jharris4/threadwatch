@@ -57,6 +57,10 @@ class MleInfo:
     partition_id: Optional[int] = None
     leader_router_id: Optional[int] = None
     source_addr16: Optional[int] = None
+    # False for a security-suite-255 message: it carried no MIC, so it
+    # came from anything on the channel and proves nothing. Only the
+    # command is reported for it; its TLVs are never read.
+    secured: bool = True
 
 
 @dataclass
@@ -70,7 +74,7 @@ class Decryptor:
     _keys_by_index: dict = field(default_factory=dict)  # key_index -> (sequence basis, [(seq, mle, mac)])
     stats: dict = field(default_factory=lambda: {
         "mac_decrypted": 0, "mac_failed": 0, "mac_no_ext_addr": 0,
-        "mle_decrypted": 0, "mle_failed": 0, "plaintext": 0,
+        "mle_decrypted": 0, "mle_failed": 0, "mle_unsecured": 0, "plaintext": 0,
         "short_resolved": 0, "short_unresolved": 0, "parse_failed": 0,
     })
 
@@ -344,8 +348,16 @@ class Decryptor:
         if not udp_payload:
             return None
         suite = udp_payload[0]
-        if suite == 255:      # no security (Discovery / Announce)
-            body = udp_payload[1:]
+        if suite == 255:
+            # No security (Discovery Request/Response). Inside a MAC-unsecured
+            # frame, so anything on the channel can send one: it is reported
+            # by command only, counted apart from the authenticated ones, and
+            # teaches nothing (no partition, no leader, no short address).
+            if len(udp_payload) < 2:
+                return None
+            self.stats["mle_unsecured"] += 1
+            cmd = udp_payload[1]
+            return MleInfo(command=cmd, command_name=MLE_COMMANDS.get(cmd, f"cmd{cmd}"), secured=False)
         elif suite == 0:
             if len(udp_payload) < 11 or not src_ext_hex or not src_ip or not dst_ip:
                 return None

@@ -379,3 +379,54 @@ class ThreadKeyScheduleTest(unittest.TestCase):
         swapped = Decryptor(network_key=self.NETWORK_KEY)
         swapped._keys_by_index[1] = (None, [(0, mac_key, mle_key)])
         self.assertIsNone(swapped.decrypt_frame(self.FRAME, self.SRC_EXT, None))
+
+
+def unsecured_mle_frame(src_ext: str, body: bytes, counter: int = 1) -> bytes:
+    """A MAC-unsecured data frame carrying a security-suite-255 MLE message
+    (as Discovery does) to ff02::1, port 19788, from an extended source."""
+    fcf = 1 | 0x0040 | (2 << 10) | (1 << 12) | (3 << 14)
+    header = struct.pack("<HBH", fcf, counter & 0xFF, PAN) + b"\xff\xff" + bytes.fromhex(src_ext)[::-1]
+    iphc = struct.pack(">H", 0x7F3B) + b"\x01"                         # TF/HLIM elided, src from MAC, dst ff02::1
+    udp = b"\xf0" + struct.pack(">HH", 19788, 19788) + b"\x00\x00"      # NHC UDP, ports in full, checksum
+    return header + iphc + udp + b"\xff" + body + b"\x00\x00"
+
+
+@unittest.skipIf(AESCCM is None, "cryptography not installed")
+class UnsecuredMleTest(unittest.TestCase):
+    """A suite-255 MLE message carries no MIC, so it is anyone's bytes: it
+    must not count as decrypted, teach an address, or move the mesh state."""
+
+    BODY = (b"\x04" + b"\x00\x02" + bytes.fromhex("c829")                     # Advertisement, Source Address
+            + b"\x0b\x08" + struct.pack(">L", 999999) + b"\x40\x01\x01" + bytes([60]))   # Leader Data
+
+    def test_parse_reports_the_command_and_nothing_else(self):
+        d = Decryptor(network_key=KEY)
+        info = d.parse_mle(b"\xff" + self.BODY, OTHER, None, None)
+        self.assertEqual((info.command_name, info.secured), ("Advertisement", False))
+        self.assertIsNone(info.partition_id)
+        self.assertIsNone(info.source_addr16)
+        self.assertEqual(d.short_to_ext, {})
+        self.assertEqual((d.stats["mle_decrypted"], d.stats["mle_unsecured"]), (0, 1))
+        self.assertIsNone(d.parse_mle(b"\xff", OTHER, None, None))
+
+    def test_pipeline_ignores_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dd = Path(tmp)
+            (dd / "devices.json").write_text(json.dumps([
+                {"name": "Front Door", "extendedAddress": SED.upper(), "threadRole": "sleepy-end-device"}]))
+            cfg = Config(data_dir=dd / "data", devices_path=dd / "devices.json")
+            dec = Decryptor(network_key=KEY)
+            pipe = Pipeline(cfg, NullEventLog(), dec)
+            pipe.partition = (111111, 10)
+            t0 = 1_700_000_000.0
+            pipe.ingest(parse_frame(t0, unsecured_mle_frame(OTHER, self.BODY), 230))
+            rejoin = b"\x09" + b"\x00\x02" + bytes.fromhex("c829")             # Parent Request
+            pipe.ingest(parse_frame(t0 + 1, unsecured_mle_frame(OTHER, rejoin, 2), 230))
+            self.assertEqual(pipe.partition, (111111, 10))
+            self.assertEqual(dec.short_to_ext, {})
+            self.assertEqual(dec.stats["mle_decrypted"], 0)
+            self.assertEqual(dec.stats["mle_unsecured"], 2)
+            events = [r["event"] for r in pipe.events.records]
+            self.assertNotIn("partition_or_leader_change", events)
+            self.assertNotIn("mle_rejoin_attempt", events)
+            self.assertEqual(pipe.seen.table[OTHER].get("rloc16"), None)

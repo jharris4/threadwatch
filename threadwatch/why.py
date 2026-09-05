@@ -130,7 +130,7 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
             info = decryptor.parse_mle(r[2], ext or decryptor.short_to_ext.get(f.src), r[3], r[4])
             if info:
                 h["mle"][info.command_name] = h["mle"].get(info.command_name, 0) + 1
-                if info.command_name in ("Parent Request", "Child ID Request", "Announce"):
+                if info.secured and info.command_name in ("Parent Request", "Child ID Request", "Announce"):
                     mle_events.append((f.ts, info.command_name))
 
     undecodable = 0

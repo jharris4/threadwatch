@@ -58,7 +58,7 @@ serial port. Auto-detection finds it by USB id;
 ## 4. Check
 
 ```bash
-bin/threadwatch doctor        # every line ok, including "services"
+bin/threadwatch doctor        # every line ok, including "services"; exits 1 on any FAIL, 0 on warnings
 bin/threadwatch status        # frames_total should be climbing (every field: docs/OPERATIONS.md)
 journalctl -u threadwatch -f  # live log incl. storm alerts
 ```
@@ -126,7 +126,7 @@ from the host. To remove a config file from the host, delete it there.
 ## 7. Day-2 operations
 
 ```bash
-bin/threadwatch doctor          # dongle, key file, disk, clock, services, ring, sinks: ok/warn/FAIL
+bin/threadwatch doctor          # dongle, key file, disk, clock, services, ring, sinks: ok/warn/FAIL (exit 1 = a FAIL)
 bin/threadwatch status          # daemon alive? frames flowing? storm state?
 bin/threadwatch report          # who's gone quiet; unknown addresses to name
 bin/threadwatch adopt <addr> "<name>"   # ...and name one (report --suggest drafts entries)

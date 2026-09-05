@@ -106,7 +106,10 @@ frames of the stall itself and nothing on disk.
 ## Troubleshooting
 
 `bin/threadwatch doctor` is the first move: read-only, one line per check,
-`ok` / `warn` / `FAIL`, exit status 1 when anything fails. What each
+`ok` / `warn` / `FAIL`. Its exit status is 1 when any line is `FAIL` and
+0 otherwise; a `warn` never fails it, and a check that crashes is a
+`warn` too, so a cron job, a monitor or a CI step can run it and act on
+the status alone (`bin/threadwatch doctor || notify`). What each
 non-`ok` line means and what to do about it:
 
 | doctor line | meaning | what to do |

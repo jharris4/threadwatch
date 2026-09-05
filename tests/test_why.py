@@ -228,3 +228,106 @@ class RunWhyTest(unittest.TestCase):
         text = self._run([(self._at("2026-09-03 08:10"), self._psdu(self.OTHER, 7))], target=quiet)
         self.assertIn("No frames from this device in the analyzed window.", text)
         self.assertIn("check `threadwatch report` for unknowns", text)
+
+
+class RunWhyRingTest(unittest.TestCase):
+    """`why` without --pcap reads the ring: the files of the last --hours
+    (or all of them), says which, and carries on past one it cannot read
+    while saying that too. This is the form an operator runs during an
+    outage; the tests above only ever handed it one file."""
+
+    DEV = RunWhyTest.DEV
+    OTHER = RunWhyTest.OTHER
+
+    def setUp(self):
+        import tempfile
+        from threadwatch.config import Config
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        cred = d / "credentials.toml"
+        cred.write_text('[credentials]\nnetwork_key = "00112233445566778899aabbccddeeff"\n')
+        self.cfg = Config(data_dir=d / "data", credentials_path=cred)
+        self.now = time.time()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _hour(self, hours_ago):
+        return time.strftime("%Y%m%d-%H", time.localtime(self.now - hours_ago * 3600))
+
+    def _ring_file(self, hours_ago, frames):
+        """A ring file named for the hour, holding (ts, psdu) frames."""
+        from threadwatch.pcap import DLT_NOFCS, Frame, PcapWriter
+        self.cfg.ring_dir.mkdir(parents=True, exist_ok=True)
+        path = self.cfg.ring_dir / f"threadwatch-{self._hour(hours_ago)}.pcap"
+        with open(path, "wb") as fh:
+            w = PcapWriter(fh, DLT_NOFCS)
+            for ts, psdu in frames:
+                w.write(Frame(ts=ts, raw=psdu, psdu=psdu, rssi=None, channel=None, lqi=None))
+        return path
+
+    def _frames(self, hours_ago, n, seq0=0):
+        t0 = self.now - hours_ago * 3600
+        return [(t0 + i, RunWhyTest._psdu(self, self.DEV, seq0 + i)) for i in range(n)]
+
+    def _run(self, hours=None):
+        import contextlib
+        import io
+        from threadwatch.why import run_why
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = run_why(self.cfg, self.DEV, None, hours=hours)
+        return rc, out.getvalue(), err.getvalue()
+
+    @staticmethod
+    def _frames_in_table(text):
+        return sum(int(row[2]) for row in RunWhyTest._rows(None, text))
+
+    def test_no_ring_is_said_plainly(self):
+        with self.assertRaises(SystemExit) as cm:
+            self._run()
+        self.assertEqual(str(cm.exception), "no ring files; is the capture daemon running?")
+        self.cfg.ring_dir.mkdir(parents=True)                         # a ring directory with nothing in it
+        with self.assertRaises(SystemExit) as cm:
+            self._run(hours=2)
+        self.assertEqual(str(cm.exception), "no ring files; is the capture daemon running?")
+
+    def test_a_window_the_ring_does_not_reach_names_what_the_ring_spans(self):
+        self._ring_file(6, self._frames(6, 2))
+        self._ring_file(5, self._frames(5, 2))
+        with self.assertRaises(SystemExit) as cm:
+            self._run(hours=2)
+        self.assertEqual(str(cm.exception),
+                         f"no ring files in the last 2 h (the ring spans {self._hour(6)} to {self._hour(5)})")
+
+    def test_hours_selects_the_files_and_none_selects_them_all(self):
+        self._ring_file(5, self._frames(5, 3))
+        self._ring_file(1, self._frames(1, 4, seq0=10))
+        self._ring_file(0, self._frames(0, 5, seq0=20))
+        rc, out, _err = self._run(hours=2)
+        self.assertEqual(rc, 0)
+        self.assertIn(f"analyzed last 2 h: 2 ring file(s), {self._hour(1)} to {self._hour(0)}", out)
+        self.assertEqual(self._frames_in_table(out), 9)
+        rc, out, _err = self._run()
+        self.assertEqual(rc, 0)
+        self.assertIn(f"analyzed 3 ring file(s), {self._hour(5)} to {self._hour(0)}", out)
+        self.assertEqual(self._frames_in_table(out), 12)
+        self.assertIn("silences (>30 min):", out)                     # the 5 h file to the 1 h file
+
+    def test_a_ring_file_that_cannot_be_read_is_reported_and_the_rest_still_counts(self):
+        bad = self._ring_file(1, [])
+        bad.write_bytes(b"\x00" * 40)                                 # a power cut left NULs: no usable header
+        self._ring_file(0, self._frames(0, 5))
+        rc, out, err = self._run(hours=2)
+        self.assertEqual(rc, 1)
+        self.assertIn(f"(skipping {bad}: ", err)
+        self.assertIn("WARNING: 1 of 2 ring file(s) could not be read (see stderr); what follows covers the rest only", out)
+        self.assertIn(f"=== {self.DEV} ({self.DEV}) ===", out)
+        self.assertEqual(self._frames_in_table(out), 5)
+        self.assertNotIn("No frames from this device", out)
+        bad.unlink()
+        self._ring_file(1, []).write_bytes(b"\x00" * 40)
+        self.cfg.ring_dir.joinpath(f"threadwatch-{self._hour(0)}.pcap").write_bytes(b"junk")
+        with self.assertRaises(SystemExit) as cm:                     # none readable: no report at all
+            self._run(hours=2)
+        self.assertIn("none of the 2 ring files could be read", str(cm.exception))

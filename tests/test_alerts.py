@@ -621,6 +621,147 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class FlakySink(alerts.Sink):
+    """A sink that refuses the first ``fail`` sends, then takes the rest."""
+
+    def __init__(self, name="flaky", fail=0, **kw):
+        super().__init__(name=name, **kw)
+        self.fail = fail
+        self.sent: list[dict] = []
+
+    def send(self, record):
+        if self.fail:
+            self.fail -= 1
+            raise OSError("connection refused")
+        self.sent.append(record)
+
+
+def wait_for(cond, timeout=3.0):
+    deadline = time.time() + timeout
+    while not cond() and time.time() < deadline:
+        time.sleep(0.02)
+    return cond()
+
+
+class RecordIdTest(unittest.TestCase):
+    def test_the_same_record_has_the_same_id_and_the_log_carries_it(self):
+        self.assertEqual(alerts.record_id(REC), alerts.record_id({**REC, "note": "different"}))
+        self.assertNotEqual(alerts.record_id(REC), alerts.record_id({**REC, "ts": REC["ts"] + 1}))
+        self.assertNotEqual(alerts.record_id(REC), alerts.record_id({**REC, "addr": "0" * 16}))
+        self.assertEqual(len(alerts.record_id(REC)), 12)
+        with tempfile.TemporaryDirectory() as d:
+            log = EventLog(Path(d) / "events")
+            rec = log.emit("device_quiet", "warning", 1700000000.0, addr="x")
+            self.assertEqual(rec["id"], alerts.record_id(rec))
+            self.assertEqual(read_all(Path(d) / "events")[0]["id"], rec["id"])
+        self.assertEqual(alerts.render("{id}/{event}", REC, False), f"{alerts.record_id(REC)}/device_quiet")
+        digest = alerts.digest_record("device_quiet", [REC], 300, 1700000600.0)
+        self.assertEqual(digest["id"], alerts.record_id(digest))
+        self.assertIn("id", alerts.TEMPLATE_FIELDS)
+
+
+class RetryTest(unittest.TestCase):
+    """A send that fails is tried again with backoff until the record is
+    too old to be news; what is still refused when the process leaves is
+    spooled for the next start."""
+
+    def _dispatcher(self, sinks, spool=None, msgs=None, **kw):
+        d = alerts.Dispatcher(sinks, (msgs if msgs is not None else []).append, spool=spool,
+                              retry_delays=(0.05, 0.1), retry_cap_s=0.1, **kw)
+        self.addCleanup(d.close, 2.0)
+        return d
+
+    def test_a_failed_send_is_retried_with_backoff_and_delivered(self):
+        sink = FlakySink(fail=2)
+        msgs = []
+        d = self._dispatcher([sink], msgs=msgs)
+        d.offer({**REC, "ts": time.time()})
+        self.assertTrue(wait_for(lambda: sink.sent))
+        self.assertEqual(sink.sent[0]["event"], "device_quiet")
+        self.assertEqual([m for m in msgs if "retrying" in m],
+                         ["alert sink 'flaky' failed: OSError: connection refused; retrying in 0.05 s (attempt 1)",
+                          "alert sink 'flaky' failed: OSError: connection refused; retrying in 0.1 s (attempt 2)"])
+        self.assertTrue(wait_for(lambda: d.stats()["queued"] == 0))
+        self.assertEqual(d.stats(), {"delivered": 1, "queued": 0, "retrying": 0, "given_up": 0, "resumed": 0})
+
+    def test_a_record_too_old_to_be_news_is_given_up_not_retried(self):
+        sink = FlakySink(fail=99)
+        msgs = []
+        d = self._dispatcher([sink], msgs=msgs, stale_s=60)
+        d.offer({**REC, "ts": time.time() - 3600})
+        self.assertTrue(wait_for(lambda: d.stats()["given_up"] == 1))
+        self.assertIn("given up, the record is 1.0 h old (attempt 1)", msgs[-1])
+        self.assertEqual(sink.fail, 98)                                # one attempt
+        time.sleep(0.2)
+        self.assertEqual(sink.fail, 98)
+
+    def test_the_queue_is_retried_while_a_digest_still_goes_out_on_time(self):
+        sink = FlakySink(fail=1, cooldown_s=0.3)
+        d = self._dispatcher([sink])
+        now = time.time()
+        d.offer({**REC, "ts": now, "name": "First"})                   # fails once, retried after 0.05 s
+        d.offer({**REC, "ts": now, "name": "Second"})                  # held for the digest
+        self.assertTrue(wait_for(lambda: len(sink.sent) == 2))
+        self.assertEqual([r.get("name") for r in sink.sent], ["First", "1 more"])
+
+    def test_what_a_sink_still_refuses_at_close_is_spooled_and_sent_at_the_next_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            spool = Path(tmp) / "alert-spool.jsonl"
+            sink = FlakySink(fail=99)
+            msgs = []
+            d = alerts.Dispatcher([sink], msgs.append, spool=spool, retry_delays=(0.05,), retry_cap_s=0.05)
+            now = time.time()
+            d.offer({**REC, "ts": now, "name": "A"})
+            d.offer({**REC, "ts": now, "name": "B", "event": "poll_starvation"})
+            self.assertTrue(wait_for(lambda: sink.fail <= 96))
+            d.close()
+            self.assertFalse(d._thread.is_alive())
+            lines = [json.loads(l) for l in spool.read_text().splitlines()]
+            self.assertEqual(sorted((l["record"]["name"], l["sinks"]) for l in lines), [("A", ["flaky"]), ("B", ["flaky"])])
+            self.assertTrue(all(l["attempt"] >= 1 for l in lines))
+            self.assertIn("2 undelivered record(s) kept in alert-spool.jsonl", msgs[-1])
+            # The next start: the sink is back, a record is stale, one is
+            # for a sink no longer configured.
+            spool.write_text(spool.read_text()
+                             + json.dumps({"record": {**REC, "ts": now - 7 * 3600, "name": "old"}, "sinks": ["flaky"], "attempt": 3}) + "\n"
+                             + json.dumps({"record": {**REC, "ts": now, "name": "gone"}, "sinks": ["removed"], "attempt": 1}) + "\n"
+                             + "not json\n")
+            good = FlakySink(fail=0)
+            msgs2 = []
+            d2 = alerts.Dispatcher([good], msgs2.append, spool=spool)
+            self.addCleanup(d2.close, 2.0)
+            self.assertTrue(wait_for(lambda: len(good.sent) == 2))
+            self.assertEqual(sorted(r["name"] for r in good.sent), ["A", "B"])
+            self.assertFalse(spool.exists())
+            self.assertEqual(d2.stats()["resumed"], 2)
+            self.assertEqual(msgs2[0], "alert spool: 2 record(s) the last run could not deliver, sending now; "
+                                       "1 too old, dropped; 2 unreadable or for a sink no longer configured, dropped")
+            # Without sinks nothing can send: the spool stays for a run that has some.
+            spool.write_text(json.dumps({"record": REC, "sinks": ["flaky"], "attempt": 1}) + "\n")
+            alerts.Dispatcher([], print, spool=spool)
+            self.assertTrue(spool.exists())
+
+    def test_a_sink_still_parked_at_close_leaves_its_record_in_the_spool(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            spool = Path(tmp) / "alert-spool.jsonl"
+            gate = threading.Event()
+
+            class Parked(alerts.Sink):
+                def send(self, record):
+                    gate.wait(5)
+
+            sink = Parked(name="parked", timeout_s=5)
+            d = alerts.Dispatcher([sink], lambda m: None, spool=spool)
+            d.offer({**REC, "ts": time.time(), "name": "in flight"})
+            d.offer({**REC, "ts": time.time(), "name": "behind it", "event": "poll_starvation"})
+            time.sleep(0.1)
+            d.close(timeout=0.2)
+            lines = [json.loads(l) for l in spool.read_text().splitlines()]
+            self.assertEqual([l["record"]["name"] for l in lines], ["in flight", "behind it"])
+            gate.set()
+            d._thread.join(2)                                          # let it finish before the directory goes
+
+
 class AlertChainTest(unittest.TestCase):
     """config.toml -> config.load -> build_sinks -> EventLog -> Pipeline ->
     the HTTP body a sink receives. Every link has its own tests; this is

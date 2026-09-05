@@ -28,8 +28,20 @@ testing a sink without reassuring a heartbeat that should be failing. The
 command exits 1 when any delivery fails.
 
 Delivery runs on a background thread, never blocks capture, and never raises:
-a dead endpoint costs one journal line per failure (`alert sink 'x' failed:
-...`), not frames.
+a dead endpoint costs a journal line, not frames, and the page is not
+lost. A send that fails is tried again after 30 s, then 2 min, then 8 min,
+then every 10 min, until the record is six hours old, when it is given up
+and the journal says so (`given up, the record is 6.2 h old`): a quiet
+alert from a morning outage is still news at lunch, a daily summary from
+yesterday is not. What a sink still refuses when the recorder stops (a
+watchdog restart, a reboot, the house network down with the mesh) is
+written to `data/state/alert-spool.jsonl`, and the next start sends it,
+less what has gone stale, to the sinks it was for by name. Every record
+carries an `id` that is the same on every retry (`{id}` in templates), so
+a receiver that keeps what it has seen can drop a repeat of a page that
+did arrive. `threadwatch status` and the status page count what this run
+delivered, holds for retry, gave up and resumed from the spool;
+`threadwatch doctor` warns while a spool is waiting for a start.
 
 ## Events
 
@@ -299,6 +311,7 @@ these derived fields:
 | field | value |
 | --- | --- |
 | `{event}` `{severity}` `{ts}` | as in the record |
+| `{id}` | a stable id for the record, the same on every retry: for receivers that dedupe |
 | `{severity_index}` | 0..3 |
 | `{severity_value}` | severity looked up in the sink's `severity_values`; a severity missing from a partial table takes the nearest lower listed value (else the lowest listed); with no table, the name |
 | `{time}` | local `YYYY-MM-DD HH:MM:SS` |

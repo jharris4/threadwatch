@@ -468,6 +468,7 @@ def _write_status(cfg, port, total, started, pipe: Pipeline, ring, decryptor,
         "devices_tracked": len(pipe.devices),
         "partition": pipe.partition_status(),
         "detector": pipe.detector.snapshot(),
+        "alerts": pipe.events.dispatcher.stats(),
     }
     status["crypto"] = {**decryptor.stats, "key_sequence": decryptor.key_sequence}
     tmp = cfg.state_dir / "status.tmp"

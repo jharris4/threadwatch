@@ -208,6 +208,7 @@ show the same file.) The fields:
 | `partition` | null until the MLE layer has seen an advertisement, then `id`, `leader_router` (the leader's router id), `leader_rloc16`, and `leader_addr` / `leader_name` once that router id has been matched to a device |
 | `detector` | the storm detector: `baseline_frames_per_window` (calm frames per 10 s), `recent_windows` (the last six counts), `storm_active`, `flood_onsets_recent`, `alerts_sent` |
 | `crypto` | the decryption counters, below, and `key_sequence`, the highest Thread key sequence a frame has decrypted under (null until one has) |
+| `alerts` | this run's deliveries: `delivered`, `queued` (held for a send or a retry), `retrying` (failed at least once), `given_up` (too old to retry), `resumed` (taken from the spool the last run left; docs/ALERTING.md) |
 
 **The crypto counters** say whether the network key is right. Per MAC
 frame: `plaintext` (unsecured, nothing to do), `mac_decrypted`,
@@ -254,6 +255,8 @@ it up if you care about the history; nothing else holds it.
                              kept while a device's silence still reaches back over one
         last-exit.json       how the last run ended (stopped, stalled, crashed, ...) and when; the
                              next start reads it into its recorder_started event and removes it
+        alert-spool.jsonl    alerts a sink still refused when the last run stopped; the next start
+                             sends them and removes the file (docs/ALERTING.md)
         border-routers.json  mDNS hostname -> current address of each border router, with the
                              addresses it retired (how a rebooted Apple hub keeps its name)
         capture.fifo         the pipe the sniffer writes into; recreated at every start

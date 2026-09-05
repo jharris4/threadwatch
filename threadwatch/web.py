@@ -579,6 +579,16 @@ class Site:
                     who = (f'router id {rid}{rloc} <span class="muted">not matched to a device yet: '
                            'the leader has not sent an MLE frame this run</span>')
                 row("partition", f'{esc(part.get("id"))} &middot; leader {who}')
+            al = st.get("alerts")
+            if al:
+                parts = [f'{al.get("delivered", 0)} delivered this run']
+                if al.get("retrying"):
+                    parts.append(f'<span class="warn">{al["retrying"]} retrying</span>')
+                if al.get("given_up"):
+                    parts.append(f'<span class="bad">{al["given_up"]} given up</span>')
+                if al.get("resumed"):
+                    parts.append(f'{al["resumed"]} resumed from the last run')
+                row("alerts", ", ".join(parts))
             det = st.get("detector") or {}
             if det:
                 storm = '<span class="bad">STORM ACTIVE</span>' if det.get("storm_active") else '<span class="ok">quiet</span>'

@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 from typing import Iterator, Optional
 
-from .alerts import SEVERITIES, Dispatcher, Sink  # noqa: F401  (re-exported)
+from .alerts import SEVERITIES, SPOOL_FILE, Dispatcher, Sink, record_id  # noqa: F401  (re-exported)
 
 DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -67,7 +67,9 @@ def _close_partial_line(path: Path) -> None:
 class EventLog:
     def __init__(self, events_dir: Path, sinks: Optional[list[Sink]] = None):
         self.dir = events_dir
-        self.dispatcher = Dispatcher(sinks or [], _log)
+        # The spool sits beside the log, in data/state: what the last run
+        # could not deliver is sent at this start (alerts.Dispatcher).
+        self.dispatcher = Dispatcher(sinks or [], _log, spool=events_dir.parent / SPOOL_FILE)
         events_dir.mkdir(parents=True, exist_ok=True)
         migrate_legacy(events_dir)
 
@@ -94,6 +96,7 @@ class EventLog:
              **fields) -> dict:
         record = {"ts": ts if ts is not None else time.time(),
                   "event": event, "severity": severity, **fields}
+        record["id"] = record_id(record)
         path = self.path_for(record["ts"])
         _close_partial_line(path)
         with open(path, "a") as fh:
@@ -115,6 +118,7 @@ class NullEventLog(EventLog):
              **fields) -> dict:
         record = {"ts": ts if ts is not None else time.time(),
                   "event": event, "severity": severity, **fields}
+        record["id"] = record_id(record)
         self.records.append(record)
         return record
 

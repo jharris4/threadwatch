@@ -309,7 +309,7 @@ def load_env(path: Path) -> list[Check]:
 
 
 def check_alerts(cfg) -> list[Check]:
-    from .alerts import ConfigError, build_heartbeats, build_sinks
+    from .alerts import SPOOL_FILE, ConfigError, build_heartbeats, build_sinks
 
     def build(problems: list[str]) -> tuple[list, list]:
         # A sink or heartbeat the daemon would refuse (unknown type, no
@@ -342,6 +342,15 @@ def check_alerts(cfg) -> list[Check]:
     else:
         out.append((OK, "alerts", f"{len(sinks)} sink(s): " + ", ".join(s.name for s in sinks)
                     + "; 'threadwatch alert-test' sends through them"))
+    spool = cfg.state_dir / SPOOL_FILE
+    if spool.exists():
+        try:
+            held = sum(1 for line in spool.read_text().splitlines() if line.strip())
+        except OSError:
+            held = 0
+        if held:
+            out.append((WARN, "alerts", f"{held} record(s) the last run could not deliver are spooled in "
+                                        f"{spool.name}; the recorder sends them at its next start"))
     out.append((OK if beats else WARN, "heartbeats",
                 f"{len(beats)} monitor(s)" if beats else "none: nothing pages when the recorder itself dies"))
     return out

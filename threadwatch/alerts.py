@@ -45,6 +45,7 @@ JSON-escaped so a device name containing a quote cannot break the document.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -58,6 +59,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from functools import partial
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 SEVERITIES = ("info", "notice", "warning", "critical")
@@ -75,6 +77,7 @@ KNOWN_EVENTS = frozenset((
 ))
 
 TEMPLATE_FIELDS = {
+    "id": "a stable id for the record: the same on every retry, for receivers that dedupe",
     "event": "event name, e.g. device_quiet",
     "severity": "info | notice | warning | critical",
     "severity_index": "0..3 in the order above",
@@ -157,6 +160,7 @@ def template_fields(record: dict, severity_values: Optional[dict] = None) -> dic
         parts.append(record["note"])
     out = dict(record)
     out.update({
+        "id": record.get("id") or record_id(record),      # a record from before ids: the same one it would have
         "severity_index": idx,
         "severity_value": _severity_value(sev, idx, severity_values or {}),
         "time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(record.get("ts", time.time()))),
@@ -196,6 +200,17 @@ def _severity_index(name: str, default: int = 2) -> int:
 
 # ------------------------------------------------------------------- sinks
 
+def record_id(record: dict) -> str:
+    """A stable id for a record: the same event at the same stamp about the
+    same address has the same id however many times it is sent, so a
+    receiver that keeps what it has seen (a webhook with a store, an
+    automation keyed on it) can drop a retry of a page that did arrive.
+    Twelve hex digits of a SHA-1 over stamp, event and address."""
+    key = (f"{float(record.get('ts') or 0):.3f}|{record.get('event', '')}|"
+           f"{record.get('addr') or record.get('src') or ''}")
+    return hashlib.sha1(key.encode()).hexdigest()[:12]
+
+
 def digest_record(event: str, records: list[dict], cooldown_s: float, now: float) -> dict:
     """One record standing in for the events a cooldown held back."""
     labels: list[str] = []
@@ -207,10 +222,12 @@ def digest_record(event: str, records: list[dict], cooldown_s: float, now: float
     shown = ", ".join(labels[:6]) + (f", +{len(labels) - 6} more" if len(labels) > 6 else "")
     window = f"{cooldown_s / 60:.0f} min" if cooldown_s >= 60 else f"{cooldown_s:.0f} s"
     n = len(records)
-    return {"ts": now, "event": event, "severity": severity, "digest": True, "count": n,
-            "name": f"{n} more", "addr": None,
-            "note": f"{n} more {event} in the {window} after the last page" + (f": {shown}" if shown else ""),
-            "first_ts": records[0].get("ts"), "last_ts": records[-1].get("ts")}
+    out = {"ts": now, "event": event, "severity": severity, "digest": True, "count": n,
+           "name": f"{n} more", "addr": None,
+           "note": f"{n} more {event} in the {window} after the last page" + (f": {shown}" if shown else ""),
+           "first_ts": records[0].get("ts"), "last_ts": records[-1].get("ts")}
+    out["id"] = record_id(out)
+    return out
 
 
 @dataclass
@@ -526,27 +543,54 @@ def build_sinks(alerts_raw: dict, log: Callable[[str], None], unbuilt: Optional[
 
 # -------------------------------------------------------------- dispatcher
 
+# A send that failed is tried again after each of these delays, then every
+# RETRY_CAP_S, until the record is STALE_S old. A router rebooting or ntfy
+# restarting is minutes; a house network down with the mesh is hours; both
+# end with the page delivered late rather than not at all. A record older
+# than STALE_S when its turn comes is dropped and said so: a quiet alert
+# from yesterday's outage is no longer news, and a daily summary least of
+# all. What is still undelivered when the process leaves goes to the spool
+# file in data/state, and the next start sends it.
+RETRY_DELAYS_S = (30.0, 120.0, 480.0)
+RETRY_CAP_S = 600.0
+STALE_S = 6 * 3600.0
+SPOOL_FILE = "alert-spool.jsonl"
+
+
 class Dispatcher:
     """Delivers records to sinks from a background thread.
 
-    Delivery never blocks the capture path and never raises: a dead endpoint
-    costs one log line, not frames. The thread is a daemon and the capture
-    process leaves through os._exit, so nothing waits for it by itself:
-    ``close`` is how what it still holds (queued records, and the digests
-    the cooldowns are holding back) reaches the phone before the process
-    ends. A mesh-wide outage is exactly what the digest is for, and it is
-    also what puts the recorder into the watchdog restart loop that would
+    Delivery never blocks the capture path and never raises: a dead
+    endpoint costs a journal line, not frames, and the record is tried
+    again with backoff (RETRY_DELAYS_S) until it is STALE_S old. The
+    thread is a daemon and the capture process leaves through os._exit,
+    so nothing waits for it by itself: ``close`` is how what it still
+    holds (queued records, and the digests the cooldowns are holding
+    back) reaches the phone before the process ends, and what a sink
+    still refuses then is written to the spool for the next start. A
+    mesh-wide outage is exactly what the digest is for, and it is also
+    what puts the recorder into the watchdog restart loop that would
     otherwise discard it.
     """
 
-    def __init__(self, sinks: list[Sink], log: Callable[[str], None]):
+    def __init__(self, sinks: list[Sink], log: Callable[[str], None], spool: Optional[Path] = None,
+                 retry_delays: tuple = RETRY_DELAYS_S, retry_cap_s: float = RETRY_CAP_S,
+                 stale_s: float = STALE_S):
         self.sinks = sinks
         self.log = log
-        self._queue: list[dict] = []
+        self.spool = spool
+        self.retry_delays, self.retry_cap_s, self.stale_s = retry_delays, retry_cap_s, stale_s
+        self._queue: list[dict] = []          # {record, sinks, attempt, due}
+        self._undelivered: list[dict] = []    # for the spool: {record, sinks: [names], attempt}
+        self._inflight: Optional[dict] = None
         self._cv = threading.Condition()
         self._closing = False
         self._thread: Optional[threading.Thread] = None
+        self.delivered = 0
+        self.given_up = 0
+        self.resumed = 0
         if sinks:
+            self._load_spool()
             self._thread = threading.Thread(target=self._run, daemon=True,
                                             name="alert-dispatch")
             self._thread.start()
@@ -554,13 +598,23 @@ class Dispatcher:
     def close(self, timeout: float = 15.0) -> None:
         """Deliver everything queued, send every held-back digest now, and
         stop the thread; returns after ``timeout`` at the latest (a sink
-        that hangs must not keep the process from exiting)."""
+        that hangs must not keep the process from exiting). What a sink
+        refused, and what the thread never got to, is spooled."""
         if self._thread is None:
             return
         with self._cv:
             self._closing = True
             self._cv.notify()
         self._thread.join(timeout)
+        if self._thread.is_alive():
+            # Parked in a send: whatever is still queued, and the record
+            # in flight, would leave with the process.
+            with self._cv:
+                items = ([self._inflight] if self._inflight else []) + self._queue
+                self._undelivered.extend(self._spool_item(it) for it in items)
+                self._queue.clear()
+                self._inflight = None
+            self._write_spool()
 
     def offer(self, record: dict) -> None:
         if not self.sinks:
@@ -569,7 +623,7 @@ class Dispatcher:
         with self._cv:
             targets = [s for s in self.sinks if s.wants(record, now)]
             if targets:
-                self._queue.append({"record": record, "sinks": targets})
+                self._queue.append({"record": record, "sinks": targets, "attempt": 0, "due": now})
             self._cv.notify()   # a held-back record changes the next digest time
 
     def deliver_now(self, record: dict, ignore_cooldown: bool = True) -> list[tuple[Sink, Optional[str]]]:
@@ -588,26 +642,138 @@ class Dispatcher:
                 out.append((s, _describe_error(exc)))
         return out
 
+    def stats(self) -> dict:
+        """For status.json: what this run has delivered, holds, and gave up."""
+        with self._cv:
+            queued = len(self._queue) + (1 if self._inflight else 0)
+            retrying = sum(1 for it in self._queue if it["attempt"]) + (1 if self._inflight and self._inflight["attempt"] else 0)
+        return {"delivered": self.delivered, "queued": queued, "retrying": retrying,
+                "given_up": self.given_up, "resumed": self.resumed}
+
+    # ------------------------------------------------------------ thread
+
+    def _next_due(self, now: float) -> Optional[float]:
+        times = [it["due"] for it in self._queue]
+        times += [t for t in (s.next_digest_at() for s in self.sinks) if t is not None]
+        return min(times) if times else None
+
     def _run(self) -> None:
         while True:
             with self._cv:
-                while not self._queue and not self._closing:
-                    due = [t for t in (s.next_digest_at() for s in self.sinks) if t is not None]
-                    timeout = max(0.05, min(due) - time.time()) if due else None
-                    if not self._cv.wait(timeout=timeout):
-                        break   # a cooldown window ended: send its digest
-                item = self._queue.pop(0) if self._queue else None
-                last = self._closing and not self._queue
+                while not self._closing:
+                    now = time.time()
+                    if any(it["due"] <= now for it in self._queue):
+                        break
+                    if any(t is not None and t <= now for t in (s.next_digest_at() for s in self.sinks)):
+                        break       # a cooldown window ended: send its digest
+                    nxt = self._next_due(now)
+                    self._cv.wait(timeout=None if nxt is None else max(0.05, nxt - now))
                 now = time.time()
+                item = None
+                for i, it in enumerate(self._queue):
+                    if self._closing or it["due"] <= now:
+                        item = self._queue.pop(i)
+                        break
+                self._inflight = item
+                last = self._closing and not self._queue
                 digests = [(s, rec) for s in self.sinks for rec in s.due_digests(now, all_pending=last)]
-            sends = [(s, item["record"]) for s in item["sinks"]] if item else []
-            for s, record in sends + digests:
+            sends = [(s, item["record"], item) for s in item["sinks"]] if item else []
+            sends += [(s, rec, None) for s, rec in digests]
+            for s, record, it in sends:
                 try:
                     _bounded(s, partial(s.send, record), s.timeout_s, "send")
+                    self.delivered += 1
                 except Exception as exc:
-                    self.log(f"alert sink '{s.name}' failed: {_describe_error(exc)}")
+                    self._failed(s, record, it, exc)
+            with self._cv:
+                self._inflight = None
             if last:
+                self._write_spool()
                 return
+
+    def _failed(self, sink: Sink, record: dict, item: Optional[dict], exc: Exception) -> None:
+        """A send that raised: try again later, spool it when the process
+        is leaving, or give it up when the record is too old to be news."""
+        err = _describe_error(exc)
+        attempt = (item["attempt"] if item else 0) + 1
+        now = time.time()
+        age = now - float(record.get("ts") or now)
+        with self._cv:
+            if self._closing:
+                self._undelivered.append({"record": record, "sinks": [sink.name], "attempt": attempt})
+                self.log(f"alert sink '{sink.name}' failed: {err}; kept for the next start")
+                return
+            if age > self.stale_s:
+                self.given_up += 1
+                self.log(f"alert sink '{sink.name}' failed: {err}; given up, the record is "
+                         f"{age / 3600:.1f} h old (attempt {attempt})")
+                return
+            delay = self.retry_delays[attempt - 1] if attempt <= len(self.retry_delays) else self.retry_cap_s
+            self._queue.append({"record": record, "sinks": [sink], "attempt": attempt, "due": now + delay})
+            self._cv.notify()
+            self.log(f"alert sink '{sink.name}' failed: {err}; retrying in {delay:g} s (attempt {attempt})")
+
+    # ------------------------------------------------------------- spool
+
+    @staticmethod
+    def _spool_item(item: dict) -> dict:
+        return {"record": item["record"], "sinks": [s.name for s in item["sinks"]], "attempt": item["attempt"]}
+
+    def _write_spool(self) -> None:
+        if self.spool is None:
+            return
+        with self._cv:
+            items = list(self._undelivered)
+        if not items:
+            return
+        try:
+            tmp = self.spool.with_suffix(".tmp")
+            tmp.write_text("".join(json.dumps(it) + "\n" for it in items))
+            tmp.replace(self.spool)
+        except OSError as exc:
+            self.log(f"alert spool not written: {exc}")
+            return
+        self.log(f"alert spool: {len(items)} undelivered record(s) kept in {self.spool.name} for the next start")
+
+    def _load_spool(self) -> None:
+        """What the last run could not deliver, offered again to the sinks
+        it was for (by name: a sink since removed takes nothing), less
+        what has gone stale meanwhile. The file is removed: what fails
+        again this run is spooled again at this run's end."""
+        if self.spool is None or not self.spool.exists():
+            return
+        by_name = {s.name: s for s in self.sinks}
+        now = time.time()
+        stale = skipped = 0
+        try:
+            lines = self.spool.read_text().splitlines()
+        except OSError as exc:
+            self.log(f"alert spool not read: {exc}")
+            return
+        for line in lines:
+            try:
+                it = json.loads(line)
+                record, names, attempt = it["record"], it["sinks"], int(it.get("attempt", 0))
+            except (ValueError, KeyError, TypeError):
+                skipped += 1
+                continue
+            targets = [by_name[n] for n in names if n in by_name]
+            if not targets or not isinstance(record, dict):
+                skipped += 1
+                continue
+            if now - float(record.get("ts") or now) > self.stale_s:
+                stale += 1
+                continue
+            self._queue.append({"record": record, "sinks": targets, "attempt": attempt, "due": now})
+            self.resumed += 1
+        try:
+            self.spool.unlink()
+        except OSError:
+            pass
+        if self.resumed or stale or skipped:
+            self.log(f"alert spool: {self.resumed} record(s) the last run could not deliver, sending now"
+                     + (f"; {stale} too old, dropped" if stale else "")
+                     + (f"; {skipped} unreadable or for a sink no longer configured, dropped" if skipped else ""))
 
 
 def _bounded(target, call: Callable[[], Any], timeout_s: float, what: str) -> Any:

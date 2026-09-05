@@ -83,6 +83,27 @@ class EpisodeTest(unittest.TestCase):
         self.assertIn("still quiet", eps[0]["title"])
         self.assertIsNone(eps[0]["end"])
 
+    def test_a_row_takes_the_worst_severity_of_its_records_whatever_the_order(self):
+        # Repeats fold into one row (bump); the row's severity is the
+        # highest any record reached, and never comes back down.
+        base = dict(addr=AQ, name="AQ", unanswered_polls=12, acked_polls=40, since=T0)
+        rising = [rec("poll_starvation", "notice", T0, **base),
+                  rec("poll_starvation", "warning", T0 + 600, **base),
+                  rec("poll_starvation", "critical", T0 + 1200, **base)]
+        falling = [rec("poll_starvation", "critical", T0, **base),
+                   rec("poll_starvation", "warning", T0 + 600, **base),
+                   rec("poll_starvation", "notice", T0 + 1200, **base)]
+        for recs in (rising, falling, rising[::-1]):
+            eps = group_episodes(recs, now=T0 + 7200)
+            self.assertEqual([(e["kind"], e["count"], e["severity"]) for e in eps], [("starved", 3, "critical")])
+        eps = group_episodes(rising[:2] + [rec("poll_answered", "notice", T0 + 900, addr=AQ, name="AQ")])
+        self.assertEqual([(e["count"], e["severity"], e["end"]) for e in eps], [(2, "warning", T0 + 900)])
+        # The quiet row escalates the same way (its own fold, not bump).
+        quiet = [rec("device_quiet", "notice", T0, addr=AQ, name="AQ", reception="marginal", silent_for_s=1800),
+                 rec("device_quiet", "warning", T0 + 600, addr=AQ, name="AQ", reception="good", silent_for_s=2400)]
+        for recs in (quiet, quiet[::-1]):
+            self.assertEqual([e["severity"] for e in group_episodes(recs, now=T0 + 7200)], ["warning"])
+
     def test_repeated_retransmissions_between_a_pair_become_one_row(self):
         recs = [rec("retransmission_elevation", "notice", T0 + i * 900, rate=0.3 + i * 0.01, baseline=0.07,
                     addr=AQ, name="Basement AQ", top_sender="Basement AQ", top_target="Irrigation", top_share=0.6,

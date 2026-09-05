@@ -113,6 +113,18 @@ class RingWriter:
             self.fh.close()
 
 
+# How long the capture may go without a frame before the watchdog gives up
+# on it: long enough to sit out a quiet channel, short enough that a dead
+# dongle or a host sleep/wake costs minutes of the flight record, not more.
+STALL_TIMEOUT_S = 180.0
+
+
+def capture_stalled(age: float, timeout: float = STALL_TIMEOUT_S) -> bool:
+    """The watchdog's decision: `age` seconds since the last frame (or since
+    start-up, before any) is a stall once it passes the timeout."""
+    return age > timeout
+
+
 def run_capture(cfg: Config) -> None:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "vendor"))
     from nrf802154_sniffer import Nrf802154Sniffer
@@ -187,7 +199,6 @@ def run_capture(cfg: Config) -> None:
         # sleep/wake, dongle unplug, sniffer process death) looks alive
         # forever without this. Exit non-zero so a supervisor restarts us.
         # Also keeps status.json fresh when the channel is merely quiet.
-        stall_timeout = 180.0
         while True:
             time.sleep(30)
             age = time.monotonic() - (beat["last_frame_mono"] or started_mono)
@@ -206,7 +217,7 @@ def run_capture(cfg: Config) -> None:
                      "see the traceback above); exiting for supervisor restart")
                 events.close()      # the start-up quiet announcements, if any
                 os._exit(4)
-            if age > stall_timeout:
+            if capture_stalled(age):
                 _log(f"no frames for {age:.0f}s - capture stalled (host slept? "
                      "dongle gone?); exiting for supervisor restart")
                 # The main thread is blocked in the FIFO read, so nothing is

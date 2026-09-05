@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch.capture import _write_status, last_frame_on_record  # noqa: E402
+from threadwatch.capture import STALL_TIMEOUT_S, _write_status, capture_stalled, last_frame_on_record  # noqa: E402
 from threadwatch.config import Config  # noqa: E402
 from threadwatch.crypto import Decryptor  # noqa: E402
 from threadwatch.events import NullEventLog  # noqa: E402
@@ -113,3 +113,18 @@ class StatusConsumersTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StallWatchdogTest(unittest.TestCase):
+    """The watchdog is the only thing that notices a dead dongle, a host
+    sleep/wake or a sniffer child that stopped delivering: the main thread
+    is blocked in the FIFO read and looks alive forever. Its timeout is the
+    size of the hole a stall leaves in the flight record."""
+
+    def test_three_minutes_without_a_frame_is_a_stall(self):
+        self.assertEqual(STALL_TIMEOUT_S, 180.0)
+        self.assertFalse(capture_stalled(179.0))
+        self.assertFalse(capture_stalled(180.0))
+        self.assertTrue(capture_stalled(181.0))
+        self.assertTrue(capture_stalled(181.0, STALL_TIMEOUT_S))
+        self.assertFalse(capture_stalled(181.0, 1800.0))    # the timeout is the whole decision

@@ -216,3 +216,24 @@ class SnapshotUnderMutationTest(unittest.TestCase):
         self.assertEqual(det.snapshot(), {"storm_active": False, "alerts_sent": 0})
         self.assertEqual(det.calm.iterations, 3)
         self.assertEqual(det.snapshot()["baseline_frames_per_window"], 250.0)   # the next call is whole again
+
+
+class PeriodicitySpreadTest(unittest.TestCase):
+    """Phase lock is onsets at one period: the gaps between them may
+    spread by a quarter of their mean and no more. Wider, and two
+    unrelated bursts a minute or so apart read as a storm; the 2026-09-01
+    storm's own gaps spread by a second or two around 80.5 s."""
+
+    def _after(self, floods):
+        det = Detector(DetectorConfig(alert_cooldown_s=0))
+        for w in range(0, max(floods) + 20, 10):
+            n = 1500 if w in floods else 250
+            for i in range(n):
+                det.add_frame(w + i / n)
+        return det
+
+    def test_gaps_within_a_quarter_of_the_mean_lock_and_wider_ones_do_not(self):
+        self.assertTrue(self._after([200, 270, 360]).storm_active)      # 70 s and 90 s: spread 20 = mean 80 / 4
+        self.assertFalse(self._after([200, 260, 360]).storm_active)     # 60 s and 100 s: spread 40 = mean / 2
+        self.assertFalse(self._after([200, 250, 360]).storm_active)     # 50 s and 110 s
+        self.assertTrue(self._after([200, 280, 360]).storm_active)      # the real thing: 80 s twice

@@ -454,6 +454,28 @@ class PlanBorderRoutersTest(unittest.TestCase):
         self.assertEqual(existing[2], {"name": "HomePod Kitchen"})                  # input untouched
         self.assertEqual(plan_border_routers(planned, routers), (planned, []))       # idempotent
 
+    def test_a_second_hub_under_the_same_display_name_is_a_second_entry(self):
+        # The name fallback used to match an entry already bound to another
+        # hostname, rebind it and append the new address: two hubs read as
+        # one that rotated, and the first hub's binding was gone.
+        first = {"hostname": "hub-a.local", "ext": "1111111111111111", "instance": "HomePod"}
+        planned, _ = plan_border_routers([], [first])
+        self.assertEqual(planned, [{"name": "HomePod", "borderRouter": "hub-a.local",
+                                    "extendedAddress": "1111111111111111"}])
+        second = {"hostname": "hub-b.local", "ext": "2222222222222222", "instance": "HomePod"}
+        planned, changes = plan_border_routers(planned, [second])
+        self.assertEqual(changes, ["add 'HomePod (2222)' = 2222222222222222 (border router hub-b.local; "
+                                   "'HomePod' already names another border router)"])
+        self.assertEqual(planned, [
+            {"name": "HomePod", "borderRouter": "hub-a.local", "extendedAddress": "1111111111111111"},
+            {"name": "HomePod (2222)", "borderRouter": "hub-b.local", "extendedAddress": "2222222222222222"},
+        ])
+        self.assertEqual(plan_border_routers(planned, [first, second]), (planned, []))     # idempotent
+        # The first hub rebooting to a new address is still a rotation of its own entry.
+        planned, changes = plan_border_routers(planned, [dict(first, ext="3333333333333333")])
+        self.assertEqual(changes, ["HomePod: new address 3333333333333333 (now 2 addresses)"])
+        self.assertEqual(planned[0]["extendedAddresses"], ["1111111111111111", "3333333333333333"])
+
     def test_a_reboot_appends_the_new_address_and_keeps_the_name(self):
         entry = {"name": "Living Room Apple TV", "borderRouter": "appletv-living-room.local",
                  "extendedAddress": "C0FFEE0000000001"}

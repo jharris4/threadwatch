@@ -134,7 +134,16 @@ def plan_border_routers(entries: list[dict], routers: list[dict]) -> tuple[list[
     """Merge the border routers mDNS found. An entry is matched by its
     borderRouter hostname, then by an address it lists, then by the mDNS
     instance name; a match gains the hostname and the current address,
-    a miss becomes a new entry named after the instance."""
+    a miss becomes a new entry named after the instance.
+
+    The hostname is a router's identity; the display name is not. The
+    name fallback binds an entry written by hand before its hub was ever
+    heard, so it only matches an entry with no hostname yet: an entry
+    bound to another hostname is another hub, and a second one under
+    the same instance name (a replacement, the old one offline; a name
+    copied into the inventory) is added beside it, told apart by the
+    tail of its address, rather than rebinding the first hub's entry
+    and taking its address history."""
     entries = copy.deepcopy(entries)
     changes: list[str] = []
     for r in routers:
@@ -147,13 +156,22 @@ def plan_border_routers(entries: list[dict], routers: list[dict]) -> tuple[list[
         if entry is None:
             entry = next((e for e in entries if ext in _addresses(e)), None)
         if entry is None:
-            entry = next((e for e in entries if (e.get("name") or "").strip().lower() == label.strip().lower()), None)
+            entry = next((e for e in entries if (e.get("name") or "").strip().lower() == label.strip().lower()
+                          and not e.get("borderRouter")), None)
         if entry is None:
-            new = {"name": label, "borderRouter": host, "extendedAddress": ext}
+            taken = {(e.get("name") or "").strip().lower() for e in entries}
+            name, why = label, ""
+            if name.strip().lower() in taken:
+                for n in range(4, 17, 2):
+                    name = f"{label} ({ext[-n:]})"
+                    if name.lower() not in taken:
+                        break
+                why = f"; {label!r} already names another border router"
+            new = {"name": name, "borderRouter": host, "extendedAddress": ext}
             if model:
                 new["model"] = model
             entries.append(new)
-            changes.append(f"add {label!r} = {ext} (border router {host})")
+            changes.append(f"add {name!r} = {ext} (border router {host}{why})")
             continue
         name = entry.get("name") or label
         if str(entry.get("borderRouter") or "").rstrip(".").lower() != host:

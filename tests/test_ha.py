@@ -391,6 +391,19 @@ class RunImportTest(unittest.TestCase):
         self.assertIn("nothing to change", text)
         self.assertIn("already holds it", text)
 
+    def test_the_datasets_pan_id_is_checked_against_config(self):
+        lines = []
+        run_import(self.cfg, self.d / "devices.json", out=lines.append)
+        self.assertIn("[network] pan_id is unset; the dataset says 0xabcd", "\n".join(lines))
+        self.cfg.pan_id = 0xabcd
+        lines.clear()
+        run_import(self.cfg, self.d / "devices.json", out=lines.append)
+        self.assertNotIn("pan_id", "\n".join(lines))
+        self.cfg.pan_id = 0x4e21
+        lines.clear()
+        run_import(self.cfg, self.d / "devices.json", out=lines.append)
+        self.assertIn("! config.toml says pan_id 0x4e21; the dataset says 0xabcd", "\n".join(lines))
+
     def test_a_run_with_only_the_duplicate_name_reminder_leaves_the_file_alone(self):
         import threadwatch.ha as ha_mod
         ha_mod.thread_devices = lambda ha, log=None: [

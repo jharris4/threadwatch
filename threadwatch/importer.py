@@ -184,6 +184,13 @@ def run_import(cfg, inventory_path: Path, *, write: bool = False, url: Optional[
                 if ds.get("channel") and ds["channel"] != cfg.channel:
                     out(f"  ! config.toml says channel {cfg.channel}; the dataset says {ds['channel']}: "
                         "the recorder listens on the wrong channel until you fix [network] channel")
+                if ds.get("pan_id") is not None:
+                    if cfg.pan_id is None:
+                        out(f"  [network] pan_id is unset; the dataset says 0x{ds['pan_id']:04x}: set it and the "
+                            "recorder stops guessing which PAN is yours")
+                    elif ds["pan_id"] != cfg.pan_id:
+                        out(f"  ! config.toml says pan_id 0x{cfg.pan_id:04x}; the dataset says 0x{ds['pan_id']:04x}: "
+                            "every device counts as foreign and none is judged until you fix [network] pan_id")
                 if current_key(cred) == ds["network_key"]:
                     out(f"  network key: {cred.name} already holds it")
                 elif write:

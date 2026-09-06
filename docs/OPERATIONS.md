@@ -221,6 +221,7 @@ show the same file.) The fields:
 | field | meaning |
 | --- | --- |
 | `updated` | when the file was written (unix seconds) |
+| `version`, `commit` | the threadwatch version and git commit that is recording. This is how you tell a deploy that landed from one that did not; `bin/threadwatch --version` prints the same pair for the checkout you are standing in, and `doctor`'s `version` line for the host |
 | `last_frame_age_s` | seconds since this run last heard a frame, on the daemon's own clock; the watchdog exits at 180 |
 | `last_frame_ts` | when any run last heard a frame (unix seconds); unlike the age it spans restarts, and stays put while nothing is heard |
 | `port`, `channel` | the dongle's serial port and the channel being captured |

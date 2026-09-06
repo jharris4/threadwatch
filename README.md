@@ -123,6 +123,13 @@ question: *why did this device go offline?*
    `bin/threadwatch freeze` before the evidence rolls off
    (docs/OPERATIONS.md: logs, restarts, what every doctor line means).
 
+"Is the host running the code I pushed?" is
+`bin/threadwatch --version`, which prints the version and the git commit
+of the checkout it runs from. `doctor`'s `version` line adds when the
+unit started, and `status`, `/status` and `/api/status` carry the pair
+the running daemon was built from, which is the one that answers the
+question after a deploy that may not have landed.
+
 ## Naming devices (the human-readable problem)
 
 802.15.4 frames carry extended addresses, not names, and Thread devices

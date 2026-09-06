@@ -744,6 +744,13 @@ def make_server(cfg, bind: str, port: int) -> ThreadingHTTPServer:
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "threadwatch"
+        # A thread and an fd per connection, and nothing reaps them: a peer
+        # that vanishes without FIN/RST (a phone that sleeps mid-request, a
+        # wifi drop) would otherwise be held for the life of the process,
+        # until the accept loop hits the fd limit and the pages go dead
+        # while the process still looks healthy. handle_one_request turns
+        # the socket timeout into close_connection.
+        timeout = 30
 
         def do_GET(self):
             try:

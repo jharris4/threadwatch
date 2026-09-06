@@ -342,6 +342,14 @@ class Pipeline:
 
     BLIND_MAX = 64
 
+    # Retired border-router addresses kept per host. Every rotation used
+    # to append and nothing pruned, and each entry feeds
+    # DeviceNames.by_addr and the device history, where it multiplies a
+    # full-history scan. An Apple hub rotates on reboot, so this is years
+    # of them; what is dropped is only the name on an address nothing has
+    # heard in that long.
+    ROUTER_PREVIOUS_MAX = 32
+
     # The note capture.record_exit leaves about how the last run ended.
     EXIT_FILE = "last-exit.json"
     # How a start describes the end of the run before it, by the reason
@@ -1997,7 +2005,14 @@ class Pipeline:
                    "model": r.get("model"), "since": now if (changed or not rec) else rec.get("since", now),
                    "seen": now, "previous": list(rec.get("previous") or []), "announced": rec.get("announced", False)}
             if changed:
+                # One entry per address, newest last, and never the live
+                # one: an A -> B -> A rotation would otherwise leave two
+                # entries for A and B and grow by one on every hop.
+                retired = {prev, ext}
+                new["previous"] = [e for e in new["previous"]
+                                   if not (isinstance(e, dict) and (e.get("addr") or "").lower() in retired)]
                 new["previous"].append({"addr": prev, "until": now})
+                new["previous"] = new["previous"][-self.ROUTER_PREVIOUS_MAX:]
             if entry is not None:
                 self.names.learn(ext, entry)
             if changed:

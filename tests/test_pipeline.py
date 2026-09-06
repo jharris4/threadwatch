@@ -2230,6 +2230,29 @@ class BorderRouterTest(unittest.TestCase):
         self.assertNotIn(self.OLD, [r["addr"] for r in pipe2.events.records if r["event"] == "device_quiet"])
         self.assertEqual(pipe2.routers[self.HOST]["addr"], self.NEW)
 
+    def test_the_retired_address_list_is_bounded_and_holds_each_address_once(self):
+        # Every rotation appended and nothing pruned, and each entry feeds
+        # DeviceNames.by_addr and the device history, where it multiplies
+        # a full-history scan. Apple hubs rotate slowly, so this is years,
+        # but the list had no bound at all.
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t = time.time() - 86400
+        addrs = ["%016x" % (0xc0ffee0000000000 + i) for i in range(Pipeline.ROUTER_PREVIOUS_MAX + 5)]
+        for i, ext in enumerate(addrs):
+            pipe.ingest(frame(t + i, ext))
+            pipe._apply_border_routers([self.router(self.HOST, ext)], t + i)
+        kept = pipe.routers[self.HOST]["previous"]
+        self.assertEqual(len(kept), Pipeline.ROUTER_PREVIOUS_MAX)
+        self.assertEqual([e["addr"] for e in kept], addrs[-Pipeline.ROUTER_PREVIOUS_MAX - 1:-1])
+
+        # A -> B -> A keeps one entry per address, with the later stamp.
+        back = addrs[-2]
+        pipe.ingest(frame(t + 1000, back))
+        pipe._apply_border_routers([self.router(self.HOST, back)], t + 1000)
+        kept = pipe.routers[self.HOST]["previous"]
+        self.assertEqual(len([e for e in kept if e["addr"] == addrs[-1]]), 1)
+        self.assertNotIn(back, [e["addr"] for e in kept])           # it is the live one again
+
     def test_an_address_never_heard_on_air_is_not_believed(self):
         # Anyone on the LAN can advertise _meshcop._udp with any address in
         # it. A forged record must not retire the real row (silencing its

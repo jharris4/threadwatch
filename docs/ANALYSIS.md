@@ -97,7 +97,7 @@ the first per half hour.
 
 ## Snapshots
 
-`threadwatch snapshot <label>` copies the ring before it rolls over, and so
+`threadwatch snapshot <label>` saves the ring before it rolls over, and so
 does the recorder itself when `[record] snapshot_on_critical` is set and
 any event of `critical` severity fires — `phase_locked_storm` is the only
 one today (at most once per six hours, counted from the newest automatic

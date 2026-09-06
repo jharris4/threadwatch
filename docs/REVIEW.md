@@ -164,7 +164,7 @@ had stopped hearing, which is why that stretch is amber, not red.
 `data/state/events/YYYY-MM-DD.jsonl`, one small file per local day (a
 busy day is a few kilobytes), kept for `[events] keep_days` (a year by
 default; 0 keeps them for ever) and pruned by the recorder at start
-and once a day. `threadwatch snapshot` copies the whole directory into the
+and once a day. `threadwatch snapshot` saves the whole directory into the
 snapshot. A single `events.jsonl` from before
 day rolling is split into day files automatically the first time the
 recorder (or `threadwatch events`) runs; the web process only

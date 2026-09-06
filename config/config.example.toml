@@ -23,7 +23,7 @@ keep_hours = 168                  # ring files to retain, one per hour heard (16
                                   # reaches further back than a week after an outage)
 # keep_gb = 4                     # ...and no more than this much on disk (oldest go first; the hour
                                   # being written is never pruned, so one heavy hour can stand over it)
-# Copy the ring into data/snapshots/ by itself when a critical event
+# Save the ring into data/snapshots/ by itself when a critical event
 # (phase_locked_storm) fires, at most once per six hours (counted from the
 # newest auto-* snapshot on disk, so a restart does not reset it). Off by default:
 # a snapshot is the size of the ring. 'threadwatch snapshots' lists them.

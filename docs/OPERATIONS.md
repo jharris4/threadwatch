@@ -256,6 +256,9 @@ it up if you care about the history; nothing else holds it.
         frames-by-hour.json  frames per hour, the last day or so, for the daily summary
         retransmissions.json the retransmission detector's last 30 minute rates and the
                              elevation in progress, so a restart mid-incident keeps its baseline
+        storm.json           the storm detector's traffic windows, onsets and last page, so a
+                             restart mid-storm is not blind for five minutes and does not page
+                             the same storm again
         blind-spans.json     when the recorder was not listening (its own outages, clock steps),
                              kept while a device's silence still reaches back over one
         last-exit.json       how the last run ended (stopped, stalled, crashed, ...) and when; the
@@ -276,7 +279,8 @@ edit or remove one only while it is stopped, since it rewrites them every
 price. `status.json` comes back within 30 s. `capture.fifo` is recreated
 at start. `observed-names.json` is re-learned as devices re-register
 (hours to a day). `frames-by-hour.json` costs the next daily summary an
-accurate frame count. `border-routers.json` is rebuilt at the next mDNS
+accurate frame count. `storm.json` costs the next start about five minutes of
+blindness to a storm already running, and one repeat page for it. `border-routers.json` is rebuilt at the next mDNS
 browse, but the retired addresses in it are forgotten, so an Apple hub's
 history from before its last reboot loses its name. `last-seen.json` is
 the expensive one, below. The event log and the ring are your history and

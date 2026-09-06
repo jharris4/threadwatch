@@ -30,7 +30,8 @@ from .config import repo_commit
 # rotates its address: without it an incident cannot name the border
 # router on the very day it rebooted, the device most worth reading.
 STATE_FILES = ("status.json", "last-seen.json", "observed-names.json", "frames-by-hour.json",
-               "border-routers.json", "blind-spans.json", "retransmissions.json")
+               "border-routers.json", "blind-spans.json", "retransmissions.json",
+               "storm.json")
 # The configuration goes along with its secrets blanked: a value whose key
 # contains one of these words, anywhere in the file, is replaced by
 # "<redacted>" (a value that runs on over lines - an array, a table, a

@@ -170,6 +170,17 @@ class Pipeline:
         self._retrans_closed: Optional[float] = None
         if not ephemeral:
             self._load_retrans()
+        # The storm detector as the last run left it, for the same reason
+        # the retransmission detector is kept: a restart in the middle of
+        # a storm otherwise starts blind. The detector needs six windows
+        # before it will call anything a flood and period_onsets fresh
+        # onsets before it will call it a storm - about five minutes of a
+        # storm that is still running - and a reset last_alert lets the
+        # same storm page again inside its own cooldown.
+        self.storm_path = cfg.state_dir / "storm.json"
+        self._storm_evt = 0.0                   # last phase_locked_storm event
+        if not ephemeral:
+            self._load_storm()
         self.quiet_reported: set[str] = set()
         # Hour bucket -> frames, last ~25 h, for the daily summary's frame
         # count. Persisted (frames-by-hour.json) so a summary sent soon
@@ -436,6 +447,50 @@ class Pipeline:
             tmp.replace(self.retrans_path)
         except OSError as exc:
             print(f"[threadwatch] {self.retrans_path.name} not written: {exc}", flush=True)
+
+    def _load_storm(self) -> None:
+        """The storm detector as the last run left it (_save_storm). An
+        unreadable file starts it afresh, as before the file existed.
+
+        Nothing here needs ageing for the time the recorder was down:
+        add_frame closes one empty window per window_seconds up to the
+        history's length, so a long outage flushes the baseline and the
+        storm ends on its own three-period timeout, while a quick restart
+        keeps both.
+        """
+        try:
+            raw = json.loads(self.storm_path.read_text())
+            d = self.detector
+            counts = [int(c) for c in raw["counts"]][-d.counts.maxlen:]
+            calm = [int(c) for c in raw["calm"]][-d.calm.maxlen:]
+            onsets = [float(o) for o in raw["onsets"]][-d.onsets.maxlen:]
+            last_alert = raw.get("last_alert")
+            state = (float(raw["last_flood"]), float(raw["window_start"]), int(raw["window_count"]),
+                     bool(raw["in_flood"]), None if last_alert is None else float(last_alert),
+                     int(raw["alerts_sent"]), bool(raw["storm_active"]),
+                     dict(raw.get("storm_details") or {}), float(raw.get("storm_evt") or 0.0))
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            return
+        d.counts.extend(counts)
+        d.calm.extend(calm)
+        d.onsets.extend(onsets)
+        (d.last_flood, d.window_start, d.window_count, d.in_flood, d.last_alert,
+         d.alerts_sent, d.storm_active, d.storm_details, self._storm_evt) = state
+
+    def _save_storm(self) -> None:
+        d = self.detector
+        tmp = self.storm_path.with_suffix(".tmp")
+        try:
+            tmp.write_text(json.dumps({
+                "counts": list(d.counts), "calm": list(d.calm), "onsets": list(d.onsets),
+                "last_flood": d.last_flood, "window_start": d.window_start,
+                "window_count": d.window_count, "in_flood": d.in_flood,
+                "last_alert": d.last_alert, "alerts_sent": d.alerts_sent,
+                "storm_active": d.storm_active, "storm_details": d.storm_details,
+                "storm_evt": self._storm_evt}))
+            tmp.replace(self.storm_path)
+        except OSError as exc:
+            print(f"[threadwatch] {self.storm_path.name} not written: {exc}", flush=True)
 
     def _load_frames_by_hour(self) -> dict[int, int]:
         try:
@@ -1045,14 +1100,19 @@ class Pipeline:
                 self._retrans_thin(self._win_start, ts)
             if not self.ephemeral:
                 self._save_retrans(ts)
+                self._save_storm()
             self._win_start = ts
             self._win_dups = self._win_frames = 0
             self._win_dup_by = {}
 
         # Storm detector escalation to the event log (own cooldown, never
         # per-frame even when the detector's alert cooldown is zeroed).
-        if self.detector.storm_active and ts - getattr(self, "_storm_evt", 0) > max(60.0, self.cfg.detector.alert_cooldown_s):
+        if self.detector.storm_active and ts - self._storm_evt > max(60.0, self.cfg.detector.alert_cooldown_s):
             self._storm_evt = ts
+            if not self.ephemeral:
+                # Now, not at the next window close: this is the record a
+                # restart in the next minute must not repeat.
+                self._save_storm()
             details = self.detector.storm_details
             period = details.get("period")
             onsets = details.get("onsets") or []

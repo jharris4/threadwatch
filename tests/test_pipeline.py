@@ -2883,6 +2883,86 @@ class FramesByHourLoadTest(unittest.TestCase):
                 self.assertEqual(Pipeline(cfg, NullEventLog(), stub_decryptor())._frames_by_hour, {}, junk)
 
 
+class StormStateLoadTest(unittest.TestCase):
+    """storm.json is what the storm detector knows across a restart. Without
+    it the next start needs six windows before it will call anything a flood
+    and period_onsets fresh onsets before it will call it a storm, so a
+    storm already running is unreported for about five minutes; and with
+    last_alert and the pipeline's phase_locked_storm stamp both back at
+    zero, the same storm pages again inside its own cooldown."""
+
+    T = 1_700_000_000.0
+
+    def _cfg(self, d):
+        (d / "devices.json").write_text("[]")
+        return Config(data_dir=d / "data", devices_path=d / "devices.json")
+
+    def _in_storm(self, pipe):
+        det = pipe.detector
+        det.counts.extend([250] * 40)
+        det.calm.extend([250] * 40)
+        det.window_start = self.T
+        det.window_count = 7
+        det.last_flood = self.T - 20.0
+        det.in_flood = True
+        det.onsets.extend([self.T - 161.0, self.T - 80.5, self.T])
+        det.last_alert = self.T
+        det.alerts_sent = 1
+        det.storm_active = True
+        det.storm_details = {"period": 80.5, "onsets": [self.T]}
+        pipe._storm_evt = self.T
+
+    def test_the_running_storm_and_its_page_come_back(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._cfg(Path(tmp))
+            pipe = Pipeline(cfg, NullEventLog(), stub_decryptor())
+            self._in_storm(pipe)
+            pipe._save_storm()
+
+            after = Pipeline(cfg, NullEventLog(), stub_decryptor())
+            det = after.detector
+            self.assertTrue(det.storm_active)
+            self.assertEqual(det.last_alert, self.T)
+            self.assertEqual(after._storm_evt, self.T)
+            self.assertEqual(det.alerts_sent, 1)
+            self.assertEqual(det.storm_details, {"period": 80.5, "onsets": [self.T]})
+            self.assertEqual((det.last_flood, det.window_start, det.window_count), (self.T - 20.0, self.T, 7))
+            self.assertTrue(det.in_flood)
+            self.assertEqual(len(det.counts), 40)
+            self.assertEqual(list(det.onsets), [self.T - 161.0, self.T - 80.5, self.T])
+
+    def test_the_restart_does_not_page_the_same_storm_again(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._cfg(Path(tmp))
+            pipe = Pipeline(cfg, NullEventLog(), stub_decryptor())
+            self._in_storm(pipe)
+            pipe._save_storm()
+
+            class Recorder(NullEventLog):
+                def __init__(self):
+                    super().__init__()
+                    self.names = []
+
+                def emit(self, event, severity, ts=None, **fields):
+                    self.names.append(event)
+                    return super().emit(event, severity, ts=ts, **fields)
+
+            log = Recorder()
+            after = Pipeline(cfg, log, stub_decryptor())
+            after.ingest(frame(self.T + 5.0, ROUTER))
+            self.assertNotIn("phase_locked_storm", log.names)
+
+    def test_an_unreadable_file_starts_the_detector_afresh(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._cfg(Path(tmp))
+            cfg.state_dir.mkdir(parents=True, exist_ok=True)
+            for junk in ("nonsense", json.dumps({"counts": [1]}), json.dumps([1, 2])):
+                (cfg.state_dir / "storm.json").write_text(junk)
+                pipe = Pipeline(cfg, NullEventLog(), stub_decryptor())
+                self.assertFalse(pipe.detector.storm_active, junk)
+                self.assertEqual((len(pipe.detector.counts), pipe._storm_evt), (0, 0.0), junk)
+
+
 class DeviceRssiEwmaTest(unittest.TestCase):
     """DeviceStats.rssi_ewma is the same slow average the last-seen table
     keeps (19 parts old to 1 part new): it feeds the marginal-reception

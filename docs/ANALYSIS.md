@@ -125,6 +125,7 @@ Each incident is one directory:
       border-routers.json    each border router's hostname, address and retired addresses
       blind-spans.json       when the recorder was not listening, as far as a silence still reached
       retransmissions.json   the retransmission detector's baseline and open elevation
+      storm.json             the storm detector's windows, onsets and last page
       events/                a copy of the whole event log, one file per day
 
 The name is the freeze time (local, `YYYYMMDDTHHMMSS`) and the label

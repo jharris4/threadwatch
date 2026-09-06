@@ -10,8 +10,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch.capture import RingWriter
 import unittest as _ut
+
+from threadwatch.capture import RingWriter
 
 
 class RingSizeCapTest(_ut.TestCase):
@@ -36,6 +37,7 @@ class RingSizeCapTest(_ut.TestCase):
         # hour, by as much as the hour brought.
         import tempfile
         import time
+
         from threadwatch.pcap import Frame
         with tempfile.TemporaryDirectory() as d:
             (Path(d) / "threadwatch-20260904-08.pcap").write_bytes(b"x" * 50_000)
@@ -58,6 +60,7 @@ class RingSizeCapTest(_ut.TestCase):
     def test_current_file_survives_a_clock_step_back(self):
         import tempfile
         import time
+
         from threadwatch.pcap import Frame
         with tempfile.TemporaryDirectory() as d:
             for h in ("12", "13", "14", "15"):
@@ -71,6 +74,7 @@ class RingSizeCapTest(_ut.TestCase):
     def test_keep_files_zero_does_not_delete_the_file_being_written(self):
         import tempfile
         import time
+
         from threadwatch.pcap import Frame
         with tempfile.TemporaryDirectory() as d:
             ring = RingWriter(Path(d), keep_files=0, dlt=0)
@@ -328,6 +332,7 @@ class TapHeaderTest(_ut.TestCase):
         RSSI, channel and LQI TLVs (each padded to four bytes) in front of a
         20-byte secured MAC command frame."""
         import io
+
         from threadwatch.pcap import DLT_TAP, PcapStreamReader, PcapWriter
         raw = bytes.fromhex("00001c0001000400000094c203000300190000000a000100"
                             "4c0000006b98f28473003c1a3c0d5a3901005504cb7ef338")
@@ -395,6 +400,7 @@ class RingHourNamingTest(_ut.TestCase):
 
     def test_two_hours_of_one_day_become_two_files_why_can_window(self):
         import time
+
         from threadwatch.why import RING_NAME, select_recent
         with tempfile.TemporaryDirectory() as d:
             ring = RingWriter(Path(d), keep_files=10, dlt=DLT_NOFCS)

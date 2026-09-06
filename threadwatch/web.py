@@ -18,12 +18,30 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from .events import DAY_RE, day_bounds, day_of, next_day, prev_day
 from .names import AmbiguousName, DeviceNames, LastSeen, load_names
-from .review import (DEVICE_FILTERS, DEVICE_HISTORY_DAYS, DEVICE_SORTS, capture_for_day, coverage, coverage_since,
-                     day_episodes, day_index,
-                     episode_blind_s,
-                     days_available, device_rows, devices_history, dominant_pan,
-                     fmt_bytes, fmt_duration, incidents, live_address, now_card, select_devices, storage, today)
-from .review import SEVERITY_RANK
+from .review import (
+    DEVICE_FILTERS,
+    DEVICE_HISTORY_DAYS,
+    DEVICE_SORTS,
+    SEVERITY_RANK,
+    capture_for_day,
+    coverage,
+    coverage_since,
+    day_episodes,
+    day_index,
+    days_available,
+    device_rows,
+    devices_history,
+    dominant_pan,
+    episode_blind_s,
+    fmt_bytes,
+    fmt_duration,
+    incidents,
+    live_address,
+    now_card,
+    select_devices,
+    storage,
+    today,
+)
 
 REFRESH_S = 60   # today's page reloads itself this often
 
@@ -771,7 +789,7 @@ def make_server(cfg, bind: str, port: int) -> ThreadingHTTPServer:
     # dominant_pan to read, which may be hours in. A deploy that rsyncs
     # pipeline.py into place meanwhile would load the new module into this
     # old process; loaded here, the server is one version of the code.
-    from .pipeline import Pipeline      # noqa: F401  (warmed, used by review.dominant_pan)
+    from .pipeline import Pipeline  # noqa: F401  (warmed, used by review.dominant_pan)
     site = Site(cfg)
 
     class Handler(BaseHTTPRequestHandler):

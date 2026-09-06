@@ -311,6 +311,7 @@ def main(argv=None) -> int:
 
     if args.cmd == "incidents":
         import sys
+
         from .review import fmt_bytes, incidents
         items = incidents(cfg.incidents_dir)
         if args.delete:
@@ -338,8 +339,9 @@ def main(argv=None) -> int:
         return print_report(run_doctor(cfg))
 
     if args.cmd == "alert-test":
-        from .alerts import Dispatcher, HeartbeatRunner, build_heartbeats, build_sinks
         import socket
+
+        from .alerts import Dispatcher, HeartbeatRunner, build_heartbeats, build_sinks
         log = lambda m: print(f"  ! {m}")
         # A recipient that is enabled but could not be built (a ${VARIABLE}
         # it names is unset) delivers nothing: that is what this command
@@ -376,6 +378,7 @@ def main(argv=None) -> int:
 
     if args.cmd == "report":
         import sys
+
         from .names import LastSeen, load_names, load_observed_names, rotation_hints, suggest_entries
         from .review import dominant_pan
         names = load_names(cfg)

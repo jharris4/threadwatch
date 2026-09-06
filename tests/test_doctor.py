@@ -7,13 +7,13 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest import mock
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch.config import Config
 from threadwatch import doctor
+from threadwatch.config import Config
 
 
 class DoctorTest(unittest.TestCase):
@@ -369,6 +369,7 @@ class HaEnvModeTest(unittest.TestCase):
     def test_a_world_readable_ha_env_warns_and_a_locked_one_does_not(self):
         import os
         import tempfile
+
         from threadwatch.config import Config
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Config(data_dir=Path(tmp) / "data")
@@ -385,6 +386,7 @@ class HaEnvModeTest(unittest.TestCase):
 
     def test_it_is_part_of_a_whole_run(self):
         import tempfile
+
         from threadwatch.config import Config
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Config(data_dir=Path(tmp) / "data")
@@ -430,8 +432,9 @@ class BlindSpansCheckTest(unittest.TestCase):
         import contextlib
         import io
         import tempfile
-        from threadwatch.events import NullEventLog
+
         from threadwatch.crypto import Decryptor
+        from threadwatch.events import NullEventLog
         from threadwatch.pipeline import Pipeline
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._cfg(tmp)
@@ -450,6 +453,7 @@ class MissingCryptographyTest(unittest.TestCase):
 
     def test_doctor_fails_when_cryptography_is_absent(self):
         import builtins
+
         from threadwatch import doctor as doc
         real = builtins.__import__
 
@@ -469,6 +473,7 @@ class MissingCryptographyTest(unittest.TestCase):
     def test_load_decryptor_raises_credentialserror_when_absent(self):
         import builtins
         import sys as _sys
+
         from threadwatch.pipeline import CredentialsError, load_decryptor
         real = builtins.__import__
 
@@ -491,6 +496,7 @@ class MissingCryptographyTest(unittest.TestCase):
 def _cfg_with_key():
     import tempfile
     from pathlib import Path as _P
+
     from threadwatch.config import Config
     d = _P(tempfile.mkdtemp())
     p = d / "credentials.toml"

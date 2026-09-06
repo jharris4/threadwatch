@@ -8,8 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch.names import (DeviceNames, LastSeen, adopt, load_observed_names,
-                               rotation_hints, suggest_entries)
+from threadwatch.names import DeviceNames, LastSeen, adopt, load_observed_names, rotation_hints, suggest_entries
 
 AQ = "26976e7f7d20964a"
 TV1 = "b62c32bf669272db"
@@ -206,6 +205,7 @@ class AdoptTest(unittest.TestCase):
         # stop two of them reading the same base and the later write
         # discarding the earlier, acknowledged, change.
         import threading
+
         from threadwatch import names as names_mod
         with tempfile.TemporaryDirectory() as d:
             inv = Path(d) / "devices.json"
@@ -340,6 +340,7 @@ class UnreadableStateTest(unittest.TestCase):
     def _load(self, path):
         import contextlib
         import io
+
         from threadwatch import names as names_mod
         names_mod._warned_unreadable.clear()
         out = io.StringIO()
@@ -440,6 +441,7 @@ class SaveIntervalTest(unittest.TestCase):
         import tempfile
         import time
         from pathlib import Path
+
         from threadwatch.names import LastSeen
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "last-seen.json"
@@ -472,6 +474,7 @@ class SaveUnderConcurrentTouchTest(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from unittest import mock
+
         from threadwatch.names import LastSeen
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "last-seen.json"

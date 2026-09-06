@@ -22,6 +22,7 @@ extend-exclude = ["vendor", ".venv-flash", ".nrfutil-bin"]
 # considered and left off.
 select = [
     "F",        # pyflakes: unused imports and names, broken f-strings
+    "I001",     # import blocks left unsorted
     "E9",       # syntax and IO errors
     "E402",     # module-level import that is not at the top of the file
     "E501",     # line too long
@@ -39,7 +40,6 @@ select = [
 # a comment nobody checks.
 #
 # Considered and rejected, so the next person does not re-litigate them:
-#   I001    import sorting, 97 hits, pure churn
 #   E702    grouped statements on one line, a deliberate idiom in the
 #           test helpers where several .clear() calls belong together
 #   E741    `l` for a line inside a comprehension, also deliberate

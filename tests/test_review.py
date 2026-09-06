@@ -17,11 +17,18 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from threadwatch import web
 from threadwatch.config import Config
 from threadwatch.events import EventLog, day_bounds, day_of, list_days, migrate_legacy, read_day
-from threadwatch.review import (coverage, coverage_since, day_episodes, day_index, device_history,
-                                episode_blind_s, group_episodes)
-from threadwatch import web
+from threadwatch.review import (
+    coverage,
+    coverage_since,
+    day_episodes,
+    day_index,
+    device_history,
+    episode_blind_s,
+    group_episodes,
+)
 from threadwatch.web import make_server
 
 AQ = "26976e7f7d20964a"
@@ -501,8 +508,8 @@ class DayViewTest(unittest.TestCase):
             httpd.server_close()
 
     def test_device_page_describes_the_live_address_however_it_was_reached(self):
-        from threadwatch.review import live_address
         from threadwatch.names import LastSeen
+        from threadwatch.review import live_address
         table = LastSeen(self.cfg.state_dir / "last-seen.json").table
         self.assertEqual(live_address([TV1, TV2], table), TV2)                  # by name: inventory order
         self.assertEqual(live_address([TV2, TV1], table), TV2)                  # by address: the asked-for one first

@@ -11,11 +11,11 @@ import time
 import traceback
 from pathlib import Path
 
-from .alerts import HeartbeatRunner, build_heartbeats, build_sinks
 from . import __version__
+from .alerts import HeartbeatRunner, build_heartbeats, build_sinks
 from .config import Config, repo_commit
 from .events import EventLog, NullEventLog
-from .pcap import PcapFormatError, PcapStreamReader, PcapWriter, Frame, scan_file
+from .pcap import Frame, PcapFormatError, PcapStreamReader, PcapWriter, scan_file
 from .pipeline import Pipeline, load_decryptor
 
 

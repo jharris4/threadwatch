@@ -4,8 +4,8 @@ import io
 import json
 import math
 import struct
-import tempfile
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -15,8 +15,7 @@ from threadwatch.config import Config
 from threadwatch.crypto import Decryptor
 from threadwatch.events import NullEventLog
 from threadwatch.mdns import TYPE_PTR, TYPE_TXT, encode_name, parse_message, read_name
-from threadwatch.pcap import (DLT_NOFCS, DLT_TAP, PCAP_MAGIC_LE_US,
-                              PcapStreamReader, complete_length, parse_frame)
+from threadwatch.pcap import DLT_NOFCS, DLT_TAP, PCAP_MAGIC_LE_US, PcapStreamReader, complete_length, parse_frame
 from threadwatch.pipeline import Pipeline
 
 

@@ -32,10 +32,11 @@ class BindDefaultTest(unittest.TestCase):
     from another machine is a deliberate act, not the default."""
 
     def test_nothing_serves_the_lan_until_the_operator_says_so(self):
-        from threadwatch import web
-        from threadwatch.config import Config, REPO_ROOT
         import inspect
         import tomllib
+
+        from threadwatch import web
+        from threadwatch.config import REPO_ROOT, Config
         self.assertEqual(Config().web_bind, "127.0.0.1")
         self.assertEqual(inspect.signature(web.serve).parameters["bind"].default, "127.0.0.1")
         example = tomllib.loads((REPO_ROOT / "config" / "config.example.toml").read_text())

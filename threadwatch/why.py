@@ -77,8 +77,9 @@ def blind_during(events_dir: Path, a: float, b: float) -> float:
     """How much of the span a..b the recorder was not listening for, from
     the log's coverage (docs/REVIEW.md): a silence the recorder slept
     through is not the device's."""
-    from .events import day_of, next_day
     import time as _t
+
+    from .events import day_of, next_day
     total, day, last = 0.0, day_of(a), day_of(b)
     now = max(b, _t.time())
     while day <= last:
@@ -164,7 +165,7 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
 
     def inspect(f, h):
         """MLE visibility for one of our data frames (credentials only)."""
-        from .crypto import Decryptor, MLE_UDP_PORT
+        from .crypto import MLE_UDP_PORT, Decryptor
         ext = f.src if len(f.src) == 16 else None
         plain = decryptor.decrypt_frame(f.psdu, ext, f.src if len(f.src) == 4 else None)
         if not plain:

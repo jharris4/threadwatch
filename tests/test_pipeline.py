@@ -9,12 +9,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from tests.frames import psdu_for
 from threadwatch.config import Config
+from threadwatch.crypto import Decryptor
 from threadwatch.events import NullEventLog
 from threadwatch.pcap import Frame
 from threadwatch.pipeline import Pipeline
-from threadwatch.crypto import Decryptor
-from tests.frames import psdu_for
 
 
 def stub_decryptor():
@@ -51,7 +51,9 @@ class StateFileShapeTest(unittest.TestCase):
         return Config(data_dir=d / "data", devices_path=d / "devices.json")
 
     def test_status_json_of_any_shape_never_stops_a_start(self):
-        import contextlib, io
+        import contextlib
+        import io
+
         from threadwatch.capture import last_frame_on_record
         for body in self.BODIES:
             with self.subTest(body=body), tempfile.TemporaryDirectory() as tmp:
@@ -67,7 +69,9 @@ class StateFileShapeTest(unittest.TestCase):
                 self.assertIn("status.json is unreadable (expected an object, got", out.getvalue())
 
     def test_rows_that_are_not_objects_are_dropped_from_the_tables(self):
-        import contextlib, io
+        import contextlib
+        import io
+
         from threadwatch.names import DeviceNames, LastSeen, load_border_routers
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._cfg(Path(tmp))
@@ -112,6 +116,7 @@ class OnePanAnswerTest(unittest.TestCase):
 
     def test_the_pages_read_the_pan_the_recorder_judges_by(self):
         from types import SimpleNamespace
+
         from threadwatch.capture import _write_status
         from threadwatch.review import dominant_pan, now_card
         pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
@@ -1206,6 +1211,7 @@ class QuietPolicyTest(unittest.TestCase):
 
     def test_beacon_requests_count_as_join_scanning(self):
         import struct
+
         from threadwatch.pcap import parse_frame
         pipe = self._pipe()
         t0 = 1_700_000_000.0
@@ -2130,6 +2136,7 @@ class EventRetentionTest(unittest.TestCase):
     def test_the_recorder_prunes_the_log_once_a_day_and_replay_never(self):
         import contextlib
         import io
+
         from threadwatch.events import EventLog
         with tempfile.TemporaryDirectory() as d:
             cfg = Config(data_dir=Path(d) / "data", events_keep_days=7, summary_hour=-1)
@@ -2498,6 +2505,7 @@ class BorderRouterTest(unittest.TestCase):
         import contextlib
         import io
         import struct
+
         from threadwatch import mdns
         self.cfg.border_router_browse_s = 600
         original = mdns.browse

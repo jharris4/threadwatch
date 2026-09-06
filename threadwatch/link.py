@@ -48,7 +48,6 @@ either clock: both resume where they stood.
 
 from __future__ import annotations
 
-
 DAY_S = 86400.0
 WARMUP_FRAMES = 200
 PAUSE_GAP_S = 30 * 60.0

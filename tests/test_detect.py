@@ -158,6 +158,7 @@ class DegeneratePeriodOnsetsTest(unittest.TestCase):
     def test_config_load_refuses_the_value_in_the_first_place(self):
         import tempfile
         from pathlib import Path as _Path
+
         from threadwatch import config as config_mod
         with tempfile.TemporaryDirectory() as d:
             path = _Path(d) / "config.toml"

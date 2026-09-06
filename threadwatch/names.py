@@ -55,7 +55,6 @@ import time
 from pathlib import Path
 from typing import Iterator
 
-
 _EXT_ADDR = re.compile(r"^[0-9a-f]{16}$")
 
 

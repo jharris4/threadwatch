@@ -259,6 +259,7 @@ class ReadOnlyStateDirTest(unittest.TestCase):
     def test_a_state_dir_that_cannot_be_created_is_a_path_not_a_crash(self):
         import os
         import stat
+
         from threadwatch.config import Config
         from threadwatch.web import Site
         with tempfile.TemporaryDirectory() as d:

@@ -10,15 +10,14 @@ import threading
 import time
 import unittest
 import urllib.error
-from unittest import mock
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from threadwatch import alerts
 from threadwatch.events import EventLog, read_all
-
 
 # serve_forever's default poll_interval is 0.5 s, and shutdown() blocks
 # until the loop next polls: every test that builds a server paid half a
@@ -930,12 +929,11 @@ class AlertChainTest(unittest.TestCase):
     silent phone without it."""
 
     def test_a_quiet_device_reaches_the_configured_sink_with_its_name(self):
+        from tests.frames import psdu_for
         from threadwatch import config as config_mod
         from threadwatch.crypto import Decryptor
         from threadwatch.pcap import Frame
         from threadwatch.pipeline import Pipeline
-
-        from tests.frames import psdu_for
 
         def frame(ts, src, rssi):
             return Frame(ts=ts, raw=b"", psdu=psdu_for(src, seq=int(ts) & 0xFF), rssi=rssi, channel=None,
@@ -1257,6 +1255,7 @@ class AlertTestCommandTest(unittest.TestCase):
     def _run(self, *args):
         import contextlib
         import io
+
         from threadwatch.cli import main
         out = io.StringIO()
         with contextlib.redirect_stdout(out):

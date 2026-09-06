@@ -216,7 +216,7 @@ class Pipeline:
             # process. Everything else the pipeline reaches lazily (freeze,
             # review, crypto) is already loaded by the time a run is up;
             # this was the one that was not.
-            from . import mdns          # noqa: F401  (warmed, used in _poll_border_routers)
+            from . import mdns  # noqa: F401  (warmed, used in _poll_border_routers)
         # How a critical event freezes the ring: in the background, so the
         # copy (gigabytes on a Pi) never stalls capture. Tests swap it.
         self.freezer = self._freeze_in_background
@@ -1553,7 +1553,7 @@ class Pipeline:
         _verify, or the plaintext of an unsecured frame) says about the
         mesh. Returns the MLE message found, if any, so ingest can take a
         secured one as vouching for an unsecured frame's sender."""
-        from .crypto import Decryptor, MLE_UDP_PORT
+        from .crypto import MLE_UDP_PORT, Decryptor
         ext = f.src if f.src and len(f.src) == 16 else None
         short = f.src if f.src and len(f.src) == 4 else None
         dext = f.dst if f.dst and len(f.dst) == 16 else None

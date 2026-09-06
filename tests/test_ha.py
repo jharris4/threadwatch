@@ -1,6 +1,6 @@
 import json
-import socket
 import os
+import socket
 import struct
 import sys
 import tempfile
@@ -12,9 +12,19 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from threadwatch import ha
-from threadwatch.ha import (FrameReader, HAError, connection_settings, encode_frame, load_env,
-                            normalize_ext, parse_dataset_tlv, select_dataset,
-                            thread_dataset, thread_devices, write_private)
+from threadwatch.ha import (
+    FrameReader,
+    HAError,
+    connection_settings,
+    encode_frame,
+    load_env,
+    normalize_ext,
+    parse_dataset_tlv,
+    select_dataset,
+    thread_dataset,
+    thread_devices,
+    write_private,
+)
 from threadwatch.importer import plan_border_routers, plan_inventory, run_import
 
 
@@ -416,6 +426,7 @@ class PlanInventoryTest(unittest.TestCase):
         # addresses as written, so HA's 001122... never found the entry and
         # a second one was made, taking the name and stranding the note.
         import tempfile
+
         from threadwatch.importer import plan_border_routers
         from threadwatch.names import DeviceNames
         existing = [{"name": "Old name", "extendedAddress": "00:11:22:33:44:55:66:77", "note": "retain me"}]
@@ -568,6 +579,7 @@ class RunImportTest(unittest.TestCase):
         # BUG-12: an import overlapping an adopt is the other lost-update
         # pair; both take names.inventory_lock, import for the whole run.
         import contextlib
+
         import threadwatch.importer as importer_mod
         from threadwatch.importer import run_import
         held = []
@@ -764,8 +776,8 @@ def _serve(handler):
 
 
 def _accept_for(request: bytes) -> str:
-    import hashlib
     import base64
+    import hashlib
     key = next(l.split(b":", 1)[1].strip() for l in request.split(b"\r\n")
                if l.lower().startswith(b"sec-websocket-key:"))
     return base64.b64encode(hashlib.sha1(key + ha.WS_GUID.encode()).digest()).decode()

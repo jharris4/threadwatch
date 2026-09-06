@@ -117,7 +117,9 @@ class MalformedLineTest(unittest.TestCase):
            '{"ts": 1700000000, "event": "x"}', "not json at all"]
 
     def test_lines_that_are_not_records_are_skipped_and_said_once(self):
-        import contextlib, io
+        import contextlib
+        import io
+
         from threadwatch import events as events_mod
         from threadwatch.review import day_episodes
         with tempfile.TemporaryDirectory() as tmp:
@@ -145,9 +147,9 @@ class MalformedLineTest(unittest.TestCase):
             eps = day_episodes(d, day, now=TS + 3600)
             self.assertEqual([e["kind"] for e in eps], ["quiet"])
             from threadwatch.config import Config
+            from threadwatch.crypto import Decryptor
             from threadwatch.events import EventLog
             from threadwatch.pipeline import Pipeline
-            from threadwatch.crypto import Decryptor
             (d / "devices.json").write_text("[]")
             cfg = Config(data_dir=d / "data", devices_path=d / "devices.json")
             log = EventLog(d, [])
@@ -164,6 +166,7 @@ class ReadCacheTest(unittest.TestCase):
         # KeyError, a 500 on the review page.
         import sys
         import threading
+
         from threadwatch import events as events_mod
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp)
@@ -239,6 +242,7 @@ class DayArithmeticTest(unittest.TestCase):
     def test_every_day_of_a_dst_year_steps_to_its_neighbours(self):
         import datetime
         import os
+
         from threadwatch.events import day_bounds, next_day, prev_day
         saved = os.environ.get("TZ")
         try:

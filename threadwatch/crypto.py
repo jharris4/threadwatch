@@ -19,14 +19,14 @@ high the sequence climbs.
 
 from __future__ import annotations
 
-import hmac
 import hashlib
+import hmac
 import re
 import struct
 from dataclasses import dataclass, field
 
-from cryptography.hazmat.primitives.ciphers.aead import AESCCM
 from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import AESCCM
 
 MLE_UDP_PORT = 19788
 

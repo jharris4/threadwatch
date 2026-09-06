@@ -12,8 +12,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch.cli import main
 from tests.frames import psdu_for, secured_psdu
+from threadwatch.cli import main
 
 
 class CliCase(unittest.TestCase):
@@ -159,6 +159,7 @@ class IncidentsTest(CliCase):
 class AdoptTest(CliCase):
     def test_adopted_name_is_read_back_from_beside_the_config_file(self):
         from unittest import mock
+
         from threadwatch import config as config_mod
         from threadwatch.names import DeviceNames
         # This checkout may carry a real config/devices.json; keep the test
@@ -219,6 +220,7 @@ class EventsFilterTest(CliCase):
     def setUp(self):
         super().setUp()
         import json
+
         from threadwatch.config import load
         from threadwatch.events import EventLog
         (self.d / "devices.json").write_text(json.dumps([
@@ -366,7 +368,8 @@ class DispatchTest(CliCase):
     def test_a_missing_network_key_is_exit_2_from_why_as_it_is_from_capture(self):
         # Scripts and the systemd unit tell "this box cannot decrypt" from
         # "this box broke" by the code, so both commands promise 2.
-        from threadwatch import capture as capture_mod, why as why_mod
+        from threadwatch import capture as capture_mod
+        from threadwatch import why as why_mod
         from threadwatch.pipeline import CredentialsError
 
         def refuse(*a, **kw):
@@ -692,6 +695,7 @@ class ConfigValidationTest(unittest.TestCase):
     def _load(self, body):
         import tempfile
         from pathlib import Path as _P
+
         from threadwatch import config
         d = _P(tempfile.mkdtemp())
         (d / "config.toml").write_text(body)

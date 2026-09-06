@@ -10,15 +10,28 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch.capture import (EXIT_FILE, EXIT_SNIFFER_DIED, EXIT_STALLED, PERIODIC_S,
-                                 STALL_TIMEOUT_S, TICK_S,
-                                 Housekeeping, _write_status, capture_healthy, capture_stalled,
-                                 last_frame_on_record, periodic_due, record_exit, status_tick, watchdog_verdict)
+from tests.frames import psdu_for
+from threadwatch.capture import (
+    EXIT_FILE,
+    EXIT_SNIFFER_DIED,
+    EXIT_STALLED,
+    PERIODIC_S,
+    STALL_TIMEOUT_S,
+    TICK_S,
+    Housekeeping,
+    _write_status,
+    capture_healthy,
+    capture_stalled,
+    last_frame_on_record,
+    periodic_due,
+    record_exit,
+    status_tick,
+    watchdog_verdict,
+)
 from threadwatch.config import Config
 from threadwatch.crypto import Decryptor
 from threadwatch.events import NullEventLog
 from threadwatch.pipeline import Pipeline
-from tests.frames import psdu_for
 
 
 class StatusFileTest(unittest.TestCase):
@@ -94,6 +107,7 @@ class StartupFailureTest(unittest.TestCase):
         # unreadable, came after the event log had loaded the spool; the
         # process left without closing it and the spool was already gone.
         import json as json_mod
+
         from threadwatch import alerts
         from threadwatch.capture import run_capture
         from threadwatch.pipeline import CredentialsError
@@ -203,6 +217,7 @@ class StatusConsumersTest(unittest.TestCase):
     def test_the_written_file_is_the_file_every_consumer_reads(self):
         import contextlib
         import io
+
         from threadwatch.cli import main
         from threadwatch.doctor import OK, WARN, check_daemon
         from threadwatch.web import Site
@@ -425,6 +440,7 @@ class RunCaptureTest(unittest.TestCase):
         import threading
         import types
         from unittest import mock
+
         from threadwatch import capture
         self.tmp = tempfile.TemporaryDirectory()
         d = Path(self.tmp.name)
@@ -504,6 +520,7 @@ class RunCaptureTest(unittest.TestCase):
 
     def tearDown(self):
         import signal
+
         from threadwatch import capture
         self.finished.set()
         self.hold.set()
@@ -532,6 +549,7 @@ class RunCaptureTest(unittest.TestCase):
     def _run(self):
         import contextlib
         import io
+
         from threadwatch.capture import run_capture
         out = io.StringIO()
         self.run_over.clear()
@@ -598,6 +616,7 @@ class RunCaptureTest(unittest.TestCase):
 
     def test_the_watchdog_exits_for_a_dead_sniffer_and_for_a_stall(self):
         from unittest import mock
+
         from threadwatch import capture
         for verdict, ladder in ((EXIT_SNIFFER_DIED, ["events.close"]),
                                 (EXIT_STALLED, ["events.close", "stop"])):

@@ -9,11 +9,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch.config import Config
-from threadwatch.events import NullEventLog
-from threadwatch.pcap import parse_frame
-from threadwatch.pipeline import Pipeline
-
 # cryptography is required, not optional: load_decryptor raises without it,
 # doctor.check_credentials is a hard FAIL, and setup-host.sh aborts on the
 # same import. These used to be guarded by "skip if AESCCM is None", which
@@ -21,7 +16,12 @@ from threadwatch.pipeline import Pipeline
 # scope, so a run without it is three collection errors before any guard
 # is read - and the guards suggested a configuration nobody tests.
 from cryptography.hazmat.primitives.ciphers.aead import AESCCM
+
+from threadwatch.config import Config
 from threadwatch.crypto import Decryptor, derive_keys
+from threadwatch.events import NullEventLog
+from threadwatch.pcap import parse_frame
+from threadwatch.pipeline import Pipeline
 
 KEY = bytes(range(16))
 SED = "029a47566a00b543"
@@ -315,7 +315,8 @@ class ResolveShortTest(unittest.TestCase):
         # "0x" prefix raised in ingest, outside every except, on the next
         # secured short-source frame: a crash loop, since the key was on
         # disk. Colons and case are forgiven, the rest is dropped and said.
-        import contextlib, io
+        import contextlib
+        import io
         with tempfile.TemporaryDirectory() as tmp:
             dd = Path(tmp)
             cfg = Config(data_dir=dd / "data")
@@ -594,7 +595,8 @@ class SightingAuthenticityTest(unittest.TestCase):
         return [r["addr"] for r in pipe.events.records if r["event"] == "device_quiet"]
 
     def test_forged_and_replayed_frames_do_not_keep_a_dead_device_heard(self):
-        import contextlib, io
+        import contextlib
+        import io
         with tempfile.TemporaryDirectory() as tmp:
             pipe, _cfg = self._pipe(tmp)
             t0 = 1_700_000_000.0

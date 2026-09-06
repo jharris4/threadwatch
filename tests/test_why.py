@@ -43,6 +43,7 @@ class SelectRecentTest(unittest.TestCase):
 class EventHistoryTest(unittest.TestCase):
     def test_merges_every_address_of_a_device_newest_first(self):
         import tempfile
+
         from threadwatch.events import EventLog
         from threadwatch.why import event_history
         a1, a2, other = "b62c32bf669272db", "e6c279e8f0c70298", "26976e7f7d20964a"
@@ -65,6 +66,7 @@ class EventHistoryTest(unittest.TestCase):
         import io
         import os
         import tempfile
+
         from threadwatch.events import EventLog, day_of
         from threadwatch.why import print_history
         addr = "b62c32bf669272db"
@@ -108,6 +110,7 @@ class HourTableTest(unittest.TestCase):
         import io
         import struct
         import tempfile
+
         from threadwatch.config import Config
         from threadwatch.pcap import DLT_NOFCS, Frame, PcapWriter
         from threadwatch.why import run_why
@@ -180,6 +183,7 @@ class RunWhyTest(unittest.TestCase):
         import contextlib
         import io
         import tempfile
+
         from threadwatch.config import Config
         from threadwatch.pcap import DLT_NOFCS, Frame, PcapWriter
         from threadwatch.why import run_why
@@ -253,6 +257,7 @@ class RunWhyTest(unittest.TestCase):
         import contextlib
         import io
         import tempfile
+
         from threadwatch.config import Config
         from threadwatch.why import run_why
         with tempfile.TemporaryDirectory() as d:
@@ -296,6 +301,7 @@ class RunWhyRingTest(unittest.TestCase):
 
     def setUp(self):
         import tempfile
+
         from threadwatch.config import Config
         self.tmp = tempfile.TemporaryDirectory()
         d = Path(self.tmp.name)
@@ -328,6 +334,7 @@ class RunWhyRingTest(unittest.TestCase):
     def _run(self, hours=None):
         import contextlib
         import io
+
         from threadwatch.why import run_why
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -346,6 +353,7 @@ class RunWhyRingTest(unittest.TestCase):
         import contextlib
         import io
         import json
+
         from threadwatch.why import run_why
         inc = self.cfg.incidents_dir / "20260903T100000_storm"
         inc.mkdir(parents=True)
@@ -458,6 +466,7 @@ class WhyMleAnalysisTest(unittest.TestCase):
         import contextlib
         import io
         import tempfile
+
         from threadwatch.config import Config
         from threadwatch.pcap import Frame, PcapWriter
         from threadwatch.why import run_why
@@ -549,6 +558,7 @@ class WhyIncidentWindowTest(unittest.TestCase):
         import contextlib
         import io
         import tempfile
+
         from threadwatch.config import Config
         from threadwatch.pcap import PcapWriter
         from threadwatch.why import run_why
@@ -594,6 +604,7 @@ class WhyNetworkContextTest(unittest.TestCase):
         import contextlib
         import io
         import tempfile
+
         from threadwatch.config import Config
         from threadwatch.pcap import Frame, PcapWriter
         from threadwatch.why import run_why

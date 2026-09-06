@@ -8,8 +8,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch.config import Config
 from threadwatch import freeze
+from threadwatch.config import Config
 
 
 class BundleTest(unittest.TestCase):
@@ -63,6 +63,7 @@ class BundleTest(unittest.TestCase):
 
     def test_the_shipped_example_config_survives_redaction_as_valid_toml(self):
         import tomllib
+
         from threadwatch.config import REPO_ROOT
         text = (REPO_ROOT / "config" / "config.example.toml").read_text()
         out = freeze.redact_config(text)
@@ -210,6 +211,7 @@ class FreezeTest(unittest.TestCase):
         # pruned", copytree remade the directory, and the freeze reported
         # success with a count and no packets.
         import threading
+
         from threadwatch.review import incidents
         cfg = self.cfg
         cfg.events_dir.mkdir(parents=True)

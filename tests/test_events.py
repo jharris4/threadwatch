@@ -59,7 +59,7 @@ class PartialLineTest(unittest.TestCase):
         second = [json.dumps(r) for r in _records(2)]
         for lines in (first, second):
             (d / "events.jsonl").write_text("\n".join(lines) + "\n")
-            with contextlib.redirect_stdout(io.StringIO()):
+            with contextlib.redirect_stderr(io.StringIO()):
                 migrate_legacy(events)
 
         self.assertEqual((d / "events.jsonl.migrated").read_text().splitlines(), first)
@@ -80,7 +80,7 @@ class RetentionTest(unittest.TestCase):
             d = Path(tmp)
             self._days(d, 40)
             now = TS + 39 * 86400 + 3600
-            with contextlib.redirect_stdout(io.StringIO()):
+            with contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(prune_days(d, 0, now), [])
                 self.assertEqual(len(list(d.glob("*.jsonl"))), 40)
                 gone = prune_days(d, 30, now)
@@ -89,7 +89,7 @@ class RetentionTest(unittest.TestCase):
             kept = sorted(p.stem for p in d.glob("*.jsonl"))
             self.assertEqual(len(kept), 31)
             self.assertEqual(kept[0], day_of(TS + 9 * 86400))
-            with contextlib.redirect_stdout(io.StringIO()):
+            with contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(prune_days(d, 30, now), [])       # idempotent
 
     def test_the_parsed_file_cache_is_bounded(self):
@@ -133,7 +133,7 @@ class MalformedLineTest(unittest.TestCase):
             path.write_text("\n".join(lines) + "\n")
             events_mod._read_cache.clear()
             out = io.StringIO()
-            with contextlib.redirect_stdout(out):
+            with contextlib.redirect_stderr(out):
                 self.assertEqual(read_day(d, day), good)
                 self.assertEqual(read_day(d, day), good)           # cached: not said again
                 path.write_text(path.read_text() + "\n")          # touched, re-read: the same count, not said again

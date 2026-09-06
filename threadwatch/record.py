@@ -117,17 +117,17 @@ class RingWriter:
             order = "big-endian" if scan.endian == ">" else "little-endian"
             print(f"[threadwatch] {self.current_path.name}: a {order} pcap of link type "
                   f"{scan.dlt}, not the {self.dlt} being recorded; starting the hour's file "
-                  "over rather than appending frames it would misread", flush=True)
+                  "over rather than appending frames it would misread", file=sys.stderr, flush=True)
             good = 0
         if good:
             size = self.current_path.stat().st_size
             if scan.skipped_bytes:
                 print(f"[threadwatch] {self.current_path.name}: {scan.skipped_bytes} bytes in "
                       f"{scan.gaps} place(s) are not readable records; left in place, "
-                      "readers skip them", flush=True)
+                      "readers skip them", file=sys.stderr, flush=True)
             if size > good:
                 print(f"[threadwatch] {self.current_path.name}: dropping {size - good} "
-                      "trailing bytes of a record cut short by the last run", flush=True)
+                      "trailing bytes of a record cut short by the last run", file=sys.stderr, flush=True)
                 with open(self.current_path, "r+b") as fh:
                     fh.truncate(good)
             self.fh = open(self.current_path, "ab")   # noqa: SIM115  (the ring writer owns this until rotation)
@@ -141,7 +141,7 @@ class RingWriter:
                 # not replaced in silence.
                 if not mismatch:
                     print(f"[threadwatch] {self.current_path.name}: {self.current_path.stat().st_size} bytes "
-                          "with no usable pcap header; starting the hour's file over", flush=True)
+                          "with no usable pcap header; starting the hour's file over", file=sys.stderr, flush=True)
             self.fh = open(self.current_path, "wb")   # noqa: SIM115  (the ring writer owns this until rotation)
             self.writer = PcapWriter(self.fh, self.dlt)
         self.fh.flush()                     # the header, so an early snapshot copies a readable pcap
@@ -287,7 +287,7 @@ def run_record(cfg: Config) -> None:
     watchdog_stop = threading.Event()
 
     def _log(msg: str) -> None:
-        print(f"[threadwatch] {msg}", flush=True)
+        print(f"[threadwatch] {msg}", file=sys.stderr, flush=True)
 
     # Everything that can fail on configuration is built before the sniffer
     # starts. The vendored sniffer runs a non-daemon thread that blocks until

@@ -51,6 +51,7 @@ import fcntl
 import json
 import os
 import re
+import sys
 import time
 from pathlib import Path
 from typing import Iterator
@@ -99,11 +100,11 @@ class DeviceNames:
                 raw = json.loads(inventory_path.read_text())
             except ValueError as exc:
                 print(f"[threadwatch] {inventory_path.name} is not valid JSON ({exc}): ignoring the file, "
-                      "so every device is unknown until it is fixed (threadwatch doctor checks it)", flush=True)
+                      "so every device is unknown until it is fixed (threadwatch doctor checks it)", file=sys.stderr, flush=True)
                 raw = []
             if not isinstance(raw, list):
                 print(f"[threadwatch] {inventory_path.name}: expected a list of devices, got "
-                      f"{type(raw).__name__}; ignoring the file", flush=True)
+                      f"{type(raw).__name__}; ignoring the file", file=sys.stderr, flush=True)
                 raw = []
             # A hand-edit can leave a bare string or a stray null behind. One bad
             # entry must not stop the recorder or 500 every review page.
@@ -116,7 +117,7 @@ class DeviceNames:
                     # raise there, in the capture loop, on every frame.
                     if not _EXT_ADDR.match(n):
                         print(f"[threadwatch] {inventory_path.name}: ignoring address {a!r} of "
-                              f"{entry.get('name')!r}: not 16 hex digits", flush=True)
+                              f"{entry.get('name')!r}: not 16 hex digits", file=sys.stderr, flush=True)
                         continue
                     self.by_addr[n] = entry
         for host, rec in load_border_routers(learned_path).items():
@@ -204,7 +205,7 @@ def _warn_once(path, message: str) -> None:
     if path in _warned_unreadable:
         return
     _warned_unreadable.add(path)
-    print(f"[threadwatch] {message}", flush=True)
+    print(f"[threadwatch] {message}", file=sys.stderr, flush=True)
 
 
 class LastSeen:
@@ -234,7 +235,7 @@ class LastSeen:
                 rows = {a: r for a, r in table.items() if isinstance(r, dict)}
                 if len(rows) < len(table):
                     print(f"[threadwatch] {state_path.name}: dropping {len(table) - len(rows)} row(s) that are "
-                          "not objects", flush=True)
+                          "not objects", file=sys.stderr, flush=True)
                 # Every key is fed to the decryptor's nonce search as raw
                 # hex, as the inventory's addresses are (DeviceNames checks
                 # those for the same reason): a 0x prefix, a dash or a
@@ -247,7 +248,7 @@ class LastSeen:
                     n = _norm(str(a))
                     if not _EXT_ADDR.match(n):
                         print(f"[threadwatch] {state_path.name}: dropping row {a!r}: not 16 hex digits",
-                              flush=True)
+                              file=sys.stderr, flush=True)
                     elif n not in self.table:
                         self.table[n] = r
             except (ValueError, OSError) as exc:
@@ -256,7 +257,7 @@ class LastSeen:
                     _warned_unreadable.add(state_path)
                     print(f"[threadwatch] {state_path.name} is unreadable ({exc}): starting from an empty "
                           f"table, so nothing is known about the devices until they are heard again; the "
-                          f"recorder keeps the file as {state_path.name}.corrupt when it next saves", flush=True)
+                          f"recorder keeps the file as {state_path.name}.corrupt when it next saves", file=sys.stderr, flush=True)
         self._dirty = False
         self._last_save = 0.0
 
@@ -321,9 +322,9 @@ class LastSeen:
         try:
             self.state_path.replace(kept)
         except OSError as exc:
-            print(f"[threadwatch] could not keep {self.state_path.name} aside as {kept.name}: {exc}", flush=True)
+            print(f"[threadwatch] could not keep {self.state_path.name} aside as {kept.name}: {exc}", file=sys.stderr, flush=True)
             return
-        print(f"[threadwatch] unreadable {self.state_path.name} kept as {kept.name}", flush=True)
+        print(f"[threadwatch] unreadable {self.state_path.name} kept as {kept.name}", file=sys.stderr, flush=True)
 
     def report(self, names: DeviceNames, quiet_after_s: float | None = None,
                now: float | None = None, min_rssi_dbm: float = -82.0,

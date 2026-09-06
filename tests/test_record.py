@@ -554,7 +554,7 @@ class RunRecordTest(unittest.TestCase):
         out = io.StringIO()
         self.run_over.clear()
         try:
-            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
                 with self.assertRaises(SystemExit) as cm:
                     run_record(self.cfg)
         finally:

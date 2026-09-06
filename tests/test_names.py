@@ -376,7 +376,7 @@ class UnreadableStateTest(unittest.TestCase):
         from threadwatch import names as names_mod
         names_mod._warned_unreadable.clear()
         out = io.StringIO()
-        with contextlib.redirect_stdout(out):
+        with contextlib.redirect_stderr(out):
             seen = LastSeen(path)
         return seen, out.getvalue()
 
@@ -392,7 +392,7 @@ class UnreadableStateTest(unittest.TestCase):
             import contextlib
             import io
             again = io.StringIO()
-            with contextlib.redirect_stdout(again):
+            with contextlib.redirect_stderr(again):
                 LastSeen(path)                                             # the web reads it per request:
             self.assertEqual(again.getvalue(), "")                         # said once per process
             seen.touch(TV1, 10.0, 1)
@@ -445,7 +445,7 @@ class MalformedInventoryTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             inv = Path(d) / "devices.json"
             inv.write_text('[{"name": "AQ", "extendedAddress": "%s"},]' % AQ.upper())   # a trailing comma
-            with contextlib.redirect_stdout(io.StringIO()) as out:
+            with contextlib.redirect_stderr(io.StringIO()) as out:
                 names = DeviceNames(inv)
             self.assertIsNone(names.name(AQ))
             self.assertEqual(names.entries, [])

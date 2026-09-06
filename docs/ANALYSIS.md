@@ -65,8 +65,9 @@ quiet channel the timers spread out naturally.
 
 `bin/threadwatch replay file.pcap` runs the whole pipeline over a pcap
 (a ring file, a snapshot's hour, a capture from another dongle) and
-prints one JSON object on stdout (`credentials: loaded` goes to stderr,
-so the output pipes into `jq`). Several files, or a directory of them
+prints one JSON object on stdout (everything the run says for itself —
+`credentials: loaded`, a replayed counter, an unreadable state file —
+goes to stderr, so the output pipes into `jq`). Several files, or a directory of them
 (the ring, a snapshot), are one run in name order, which for ring files
 is hour order: a silence or a storm that spans two hourly files is judged
 once, across the boundary, as the recorder judged it.

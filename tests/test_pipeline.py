@@ -62,7 +62,7 @@ class StateFileShapeTest(unittest.TestCase):
                 (cfg.state_dir / "status.json").write_text(body)
                 self.assertIsNone(last_frame_on_record(cfg.state_dir))
                 out = io.StringIO()
-                with contextlib.redirect_stdout(out):
+                with contextlib.redirect_stderr(out):
                     pipe = Pipeline(cfg, NullEventLog(), stub_decryptor())
                     pipe.ingest(frame(1_700_000_000.0, ROUTER))
                     pipe.periodic(1_700_000_030.0)
@@ -83,7 +83,7 @@ class StateFileShapeTest(unittest.TestCase):
             (cfg.state_dir / "border-routers.json").write_text(json.dumps({
                 "hub.local": {"addr": SENSOR, "name": "Hub"}, "other.local": "text", "third.local": []}))
             out = io.StringIO()
-            with contextlib.redirect_stdout(out):
+            with contextlib.redirect_stderr(out):
                 seen = LastSeen(cfg.state_dir / "last-seen.json")
                 self.assertEqual(list(seen.table), [ROUTER])
                 self.assertEqual(list(load_border_routers(cfg.state_dir / "border-routers.json")), ["hub.local"])
@@ -2171,7 +2171,7 @@ class EventRetentionTest(unittest.TestCase):
             now = time.time()
             for back in (30, 10, 8, 6, 1):
                 log.emit("e", "info", now - back * 86400)
-            with contextlib.redirect_stdout(io.StringIO()):
+            with contextlib.redirect_stderr(io.StringIO()):
                 pipe = Pipeline(cfg, log, stub_decryptor())
                 pipe.periodic(now)
                 days = sorted(p.stem for p in cfg.events_dir.glob("*.jsonl"))
@@ -2368,7 +2368,7 @@ class BorderRouterTest(unittest.TestCase):
         pipe._apply_border_routers([self.router(self.HOST, self.OLD)], t)
         forged = "deadbeefdeadbeef"
         out = io.StringIO()
-        with contextlib.redirect_stdout(out):
+        with contextlib.redirect_stderr(out):
             for tick in (60, 660):
                 pipe._apply_border_routers([self.router(self.HOST, forged)], t + tick)
         self.assertEqual(out.getvalue().count("has not been heard on air"), 1)
@@ -2396,7 +2396,7 @@ class BorderRouterTest(unittest.TestCase):
         pipe.ingest(frame(t, self.OLD))
         pipe._apply_border_routers([self.router(self.HOST, self.OLD)], t)
         forged = [self.router(f"h{i}.local", f"{i:016x}") for i in range(1000)]    # never heard on air
-        with contextlib.redirect_stdout(io.StringIO()):
+        with contextlib.redirect_stderr(io.StringIO()):
             pipe._apply_border_routers(forged, t + 1)
             pipe._apply_border_routers([self.router(self.HOST, self.NEW)], t + 2)   # the real hub, rebooted
         self.assertLessEqual(len(pipe._pending_routers), Pipeline.PENDING_MAX)
@@ -2409,7 +2409,7 @@ class BorderRouterTest(unittest.TestCase):
         # The once-per-address memory is bounded too, at the price of a
         # repeated line past the bound; within it a record is logged once.
         few = [self.router(f"s{i}.local", f"{0xabc0000 + i:016x}") for i in range(10)]
-        with contextlib.redirect_stdout(io.StringIO()) as out:
+        with contextlib.redirect_stderr(io.StringIO()) as out:
             pipe._apply_border_routers(forged, t + 20)
             pipe._apply_border_routers(few, t + 30)
             pipe._apply_border_routers(few, t + 40)
@@ -2434,7 +2434,7 @@ class BorderRouterTest(unittest.TestCase):
         self.assertEqual(pipe.seen.table[self.OLD]["rotated_to"], self.NEW)
         pipe.ingest(frame(t + 800, self.NEW))
         out = io.StringIO()
-        with contextlib.redirect_stdout(out):
+        with contextlib.redirect_stderr(out):
             for tick in (900, 1500):
                 pipe._apply_border_routers([self.router(self.HOST, self.OLD)], t + tick)
         self.assertEqual(out.getvalue().count("stale record, ignored"), 1)
@@ -2446,7 +2446,7 @@ class BorderRouterTest(unittest.TestCase):
         self.assertEqual([r["addr"] for r in pipe.events.records if r["event"] == "device_quiet"], [self.NEW])
         # A retired address heard on air is live, whatever mDNS said, and
         # its silences count again.
-        with contextlib.redirect_stdout(io.StringIO()):
+        with contextlib.redirect_stderr(io.StringIO()):
             pipe.ingest(frame(t + 7100, self.OLD))
         self.assertNotIn("rotated_to", pipe.seen.table[self.OLD])
         pipe.periodic(t + 7100 + 31 * 60)
@@ -2548,7 +2548,7 @@ class BorderRouterTest(unittest.TestCase):
 
                 mdns.browse = raising
                 t = 1_700_000_000.0
-                with contextlib.redirect_stdout(io.StringIO()) as out:
+                with contextlib.redirect_stderr(io.StringIO()) as out:
                     pipe.periodic(t)
                     pipe._browse_thread.join(5)
                     self.assertFalse(pipe._browse_thread.is_alive(), exc)

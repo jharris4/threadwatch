@@ -176,7 +176,7 @@ class ResumeHeaderMatchTest(unittest.TestCase):
             data[:4] = struct.pack(">L", 0xA1B2C3D4)
         path.write_bytes(bytes(data))
         out = io.StringIO()
-        with contextlib.redirect_stdout(out):
+        with contextlib.redirect_stderr(out):
             ring2 = RingWriter(Path(d), keep_hours=5, dlt=DLT_TAP)
             ring2.write(frame(1_700_000_002.0))
             ring2.close()
@@ -260,7 +260,7 @@ class CorruptRecordMidFileTest(unittest.TestCase):
             path = ring.current_path
             path.write_bytes(data)
             out = io.StringIO()
-            with contextlib.redirect_stdout(out):
+            with contextlib.redirect_stderr(out):
                 ring2 = RingWriter(Path(d), keep_hours=5, dlt=DLT_NOFCS)
                 ring2.write(frame(1_700_000_040.0)); ring2.close()
             self.assertEqual(out.getvalue(), f"[threadwatch] {path.name}: 25 bytes in 1 place(s) are not "
@@ -273,7 +273,7 @@ class CorruptRecordMidFileTest(unittest.TestCase):
             with open(path, "r+b") as fh:
                 fh.truncate(path.stat().st_size - 3)
             out = io.StringIO()
-            with contextlib.redirect_stdout(out):
+            with contextlib.redirect_stderr(out):
                 ring3 = RingWriter(Path(d), keep_hours=5, dlt=DLT_NOFCS)
                 ring3.write(frame(1_700_000_041.0)); ring3.close()
             self.assertIn("dropping 22 trailing bytes of a record cut short", out.getvalue())
@@ -478,7 +478,7 @@ class FormatRejectionTest(unittest.TestCase):
             path = ring.current_path
             path.write_bytes(b"not a capture at all" * 5)
             out = io.StringIO()
-            with contextlib.redirect_stdout(out):
+            with contextlib.redirect_stderr(out):
                 ring2 = RingWriter(Path(d), keep_hours=5, dlt=DLT_NOFCS)
                 ring2.write(frame(1_700_000_002.0)); ring2.close()
             self.assertEqual(out.getvalue(), f"[threadwatch] {path.name}: 100 bytes with no usable pcap header; "
@@ -488,7 +488,7 @@ class FormatRejectionTest(unittest.TestCase):
             # An empty file (a run killed between open and header) is started over without comment.
             path.write_bytes(b"")
             out = io.StringIO()
-            with contextlib.redirect_stdout(out):
+            with contextlib.redirect_stderr(out):
                 ring3 = RingWriter(Path(d), keep_hours=5, dlt=DLT_NOFCS)
                 ring3.write(frame(1_700_000_003.0)); ring3.close()
             self.assertEqual(out.getvalue(), "")

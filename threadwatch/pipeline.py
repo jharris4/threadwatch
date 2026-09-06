@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import struct
 import threading
+import sys
 import time
 from collections import deque
 from pathlib import Path
@@ -280,7 +281,7 @@ class Pipeline:
             except (json.JSONDecodeError, OSError) as exc:
                 print(f"[threadwatch] {self.mle_names_path.name} is unreadable ({exc}): the SRP hostnames "
                       "harvested from the mesh are forgotten and re-learned as devices re-register",
-                      flush=True)
+                      file=sys.stderr, flush=True)
                 loaded = {}
             # Owners map to {name: count}; any other shape would raise at
             # the first name observed, in the capture loop.
@@ -461,7 +462,7 @@ class Pipeline:
             # reports the file too.
             print(f"[threadwatch] {self.blind_path.name} is unreadable ({exc}): the recorder does not know "
                   "when it was last off, so a silence that spans one of its own outages is charged to the "
-                  "device in full", flush=True)
+                  "device in full", file=sys.stderr, flush=True)
             return []
 
     def _save_blind(self) -> None:
@@ -478,7 +479,7 @@ class Pipeline:
             tmp.write_text(json.dumps(keep))
             tmp.replace(self.blind_path)
         except OSError as exc:
-            print(f"[threadwatch] {self.blind_path.name} not written: {exc}", flush=True)
+            print(f"[threadwatch] {self.blind_path.name} not written: {exc}", file=sys.stderr, flush=True)
 
     def _load_retrans(self) -> None:
         """The retransmission detector as the last run left it (_save_retrans).
@@ -506,7 +507,7 @@ class Pipeline:
                 "alerted": self._retrans_alerted, "paged": self._retrans_paged, "up": self._retrans_up}))
             tmp.replace(self.retrans_path)
         except OSError as exc:
-            print(f"[threadwatch] {self.retrans_path.name} not written: {exc}", flush=True)
+            print(f"[threadwatch] {self.retrans_path.name} not written: {exc}", file=sys.stderr, flush=True)
 
     def _load_storm(self) -> None:
         """The storm detector as the last run left it (_save_storm). An
@@ -550,7 +551,7 @@ class Pipeline:
                 "storm_evt": self._storm_evt}))
             tmp.replace(self.storm_path)
         except OSError as exc:
-            print(f"[threadwatch] {self.storm_path.name} not written: {exc}", flush=True)
+            print(f"[threadwatch] {self.storm_path.name} not written: {exc}", file=sys.stderr, flush=True)
 
     def _load_frames_by_hour(self) -> dict[int, int]:
         try:
@@ -601,7 +602,7 @@ class Pipeline:
             # recorder could not start, and the traceback did not say
             # which file. Named here, and the table stands in for it.
             print(f"[threadwatch] status.json is unreadable ({exc}): when the last run last heard a "
-                  "frame is taken from last-seen.json instead", flush=True)
+                  "frame is taken from last-seen.json instead", file=sys.stderr, flush=True)
         stamps.extend(row["last_seen"] for row in self.seen.table.values() if row.get("last_seen") is not None)
         return max(stamps) if stamps else None
 
@@ -786,7 +787,7 @@ class Pipeline:
         self._dominant = leader
         if ts is None:
             print(f"[threadwatch] PAN 0x{leader:04x} taken for ours ({n} frames on record); "
-                  "set [network] pan_id in config.toml if that is wrong", flush=True)
+                  "set [network] pan_id in config.toml if that is wrong", file=sys.stderr, flush=True)
             return
         self._emit("dominant_pan_changed", "notice" if prev is None else "warning", ts,
                    pan=f"0x{leader:04x}", previous=None if prev is None else f"0x{prev:04x}",
@@ -930,7 +931,7 @@ class Pipeline:
         self.replayed += 1
         if ts - self._replay_said.get(who, -1e12) >= 3600.0:
             self._replay_said[who] = ts
-            print(f"[threadwatch] {self.names.name(who) or who}: {note} (said once an hour)", flush=True)
+            print(f"[threadwatch] {self.names.name(who) or who}: {note} (said once an hour)", file=sys.stderr, flush=True)
 
     # ---------------------------------------------------------- identity
 
@@ -1145,7 +1146,7 @@ class Pipeline:
                 # row is skipped by every quiet check, so nothing else could
                 # bring it back.
                 print(f"[threadwatch] {self.names.name(who) or who} heard on air after its address was "
-                      "retired: judged again", flush=True)
+                      "retired: judged again", file=sys.stderr, flush=True)
             if len(f.src) == 4:
                 self._note_rloc16(who, f.src, ts)
             pending = self._pending_routers.pop(who, None)
@@ -2066,7 +2067,7 @@ class Pipeline:
                 # traceback on stderr and a browse that never reports. A
                 # LAN nobody can parse must not be louder than one nobody
                 # answers on.
-                print(f"[threadwatch] mdns browse failed: {type(exc).__name__}: {exc}", flush=True)
+                print(f"[threadwatch] mdns browse failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
                 self._browse_result = None
 
         self._browse_thread = threading.Thread(target=run, name="mdns-browse", daemon=True)
@@ -2111,7 +2112,7 @@ class Pipeline:
                         self._unheard_logged.clear()
                     self._unheard_logged.add(ext)
                     print(f"[threadwatch] mdns: {r.get('instance') or host} advertises {ext}, which has not "
-                          "been heard on air; held until it is", flush=True)
+                          "been heard on air; held until it is", file=sys.stderr, flush=True)
                 continue
             rec = self.routers.get(host) or {}
             entry = (self.names.entry_for_border_router(host) or self.names.by_addr.get(ext)
@@ -2132,7 +2133,7 @@ class Pipeline:
                             self._stale_logged.clear()
                         self._stale_logged.add((host, ext))
                         print(f"[threadwatch] mdns: {r.get('instance') or host} advertises {ext}, but {prev} "
-                              "was heard on air more recently; stale record, ignored", flush=True)
+                              "was heard on air more recently; stale record, ignored", file=sys.stderr, flush=True)
                     continue
             new = {"addr": ext, "name": name, "instance": r.get("instance"), "vendor": r.get("vendor"),
                    "model": r.get("model"), "since": now if (changed or not rec) else rec.get("since", now),

@@ -327,7 +327,7 @@ class ResolveShortTest(unittest.TestCase):
                 "0x" + OTHER: row(), "02:9a:47:56:6a:00:b5:43": row(), "d20bfcd1-a12f-625d": row(),
                 "not an address": row(), OTHER.upper(): row(), "": row()}))
             out = io.StringIO()
-            with contextlib.redirect_stdout(out):
+            with contextlib.redirect_stderr(out):
                 dec = Decryptor(network_key=KEY)
                 pipe = Pipeline(cfg, NullEventLog(), dec)
             self.assertEqual(sorted(pipe.seen.table), sorted([SED, OTHER]))
@@ -612,7 +612,7 @@ class SightingAuthenticityTest(unittest.TestCase):
             forged = struct.pack("<HBH", fcf, 9,
                                  PAN) + bytes.fromhex("0000")[::-1] + bytes.fromhex(SED)[::-1] + b"\x7f\x33"
             out = io.StringIO()
-            with contextlib.redirect_stdout(out):
+            with contextlib.redirect_stderr(out):
                 for m in range(240):
                     t = t0 + 60 + m * 60
                     pipe.ingest(parse_frame(t, forged, 230))
@@ -662,7 +662,7 @@ class SightingAuthenticityTest(unittest.TestCase):
             pipe, cfg = self._pipe(tmp)
             t0 = 1_700_000_000.0
             out = io.StringIO()
-            with contextlib.redirect_stdout(out):
+            with contextlib.redirect_stderr(out):
                 pipe.ingest(parse_frame(t0, secured_ext_frame(SED, 1000, b"\x7f\x33", sequence=0), 195))
                 for i, counter in enumerate((1, 2)):                   # rotated: counters start again
                     pipe.ingest(parse_frame(t0 + 1 + i, secured_ext_frame(SED, counter, b"\x7f\x33",
@@ -671,7 +671,7 @@ class SightingAuthenticityTest(unittest.TestCase):
             self.assertEqual(pipe.seen.table[SED]["last_seen"], t0 + 2)
             self.assertEqual(pipe.seen.table[SED]["counter_seq"], 1)
             self.assertNotIn("not counted as a sighting", out.getvalue())
-            with contextlib.redirect_stdout(out):
+            with contextlib.redirect_stderr(out):
                 # A replay inside the new generation is still refused.
                 pipe.ingest(parse_frame(t0 + 60, secured_ext_frame(SED, 2, b"\x7f\x33", sequence=1), 195))
                 self.assertEqual((pipe.seen.table[SED]["frames"], pipe.replayed), (3, 1))
@@ -703,7 +703,7 @@ class SightingAuthenticityTest(unittest.TestCase):
             import contextlib
             import io
             out = io.StringIO()
-            with contextlib.redirect_stdout(out):
+            with contextlib.redirect_stderr(out):
                 again.ingest(parse_frame(t0 + 200, secured_ext_frame(SED, 999, b"\x7f\x33", sequence=0), 195))
             self.assertEqual((again.seen.table[SED]["last_seen"], again.replayed), (t0 + 100, 1))
             self.assertIn("under key generation 0", out.getvalue())

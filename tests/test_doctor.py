@@ -442,7 +442,7 @@ class BlindSpansCheckTest(unittest.TestCase):
             cfg.devices_path = Path(tmp) / "devices.json"
             (cfg.state_dir / "blind-spans.json").write_text("{not json")
             out = io.StringIO()
-            with contextlib.redirect_stdout(out):
+            with contextlib.redirect_stderr(out):
                 pipe = Pipeline(cfg, NullEventLog(), Decryptor(network_key=bytes(16)))
             self.assertEqual(pipe._blind, [])
             self.assertIn("blind-spans.json is unreadable", out.getvalue())

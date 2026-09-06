@@ -580,6 +580,26 @@ class ReplayTest(CliCase):
         written = sorted(p.name for p in (self.d / "data").rglob("*") if p.is_file())
         self.assertEqual(written, [])                                 # ephemeral: nothing under data/
 
+    def test_a_capture_with_replayed_counters_still_prints_only_json(self):
+        # A capture holding the same secured frame twice is ordinary: a
+        # retry heard late, a device whose counter went backwards. The
+        # pipeline says so, and that line used to go to stdout ahead of
+        # the JSON, so the documented `replay ... | jq` broke on exactly
+        # the captures worth replaying.
+        from threadwatch.pcap import DLT_NOFCS, Frame, PcapWriter
+        (self.d / "credentials.toml").write_text('[credentials]\nnetwork_key = "00112233445566778899aabbccddeeff"\n')
+        pcap = self.d / "repeated.pcap"
+        with open(pcap, "wb") as fh:
+            w = PcapWriter(fh, DLT_NOFCS)
+            for i in range(2):
+                psdu = self._psdu(self.DEV, 1, counter=1)             # the same frame, an hour apart
+                w.write(Frame(ts=self.T + i * 3600, raw=psdu, psdu=psdu, rssi=None, channel=None, lqi=None))
+        code, out, err = self.run_cli("replay", str(pcap))
+        self.assertEqual(code, 0)
+        run = json.loads(out)                                        # the whole of stdout, and nothing else
+        self.assertEqual(run["frames"], 2)
+        self.assertIn("not counted as a sighting", err)
+
     def test_a_pcap_that_cannot_be_read_is_one_line_and_exit_1(self):
         (self.d / "credentials.toml").write_text('[credentials]\nnetwork_key = "00112233445566778899aabbccddeeff"\n')
         junk = self.d / "notes.txt"

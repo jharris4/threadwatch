@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import threading
 import time
 from pathlib import Path
@@ -29,7 +30,7 @@ DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def _log(msg: str) -> None:
-    print(f"[threadwatch] {msg}", flush=True)
+    print(f"[threadwatch] {msg}", file=sys.stderr, flush=True)
 
 
 def day_of(ts: float) -> str:
@@ -102,7 +103,7 @@ class EventLog:
         with open(path, "a") as fh:
             fh.write(json.dumps(record) + "\n")
         if severity in ("warning", "critical"):
-            print(f"[threadwatch] {severity.upper()}: {event} {fields}", flush=True)
+            print(f"[threadwatch] {severity.upper()}: {event} {fields}", file=sys.stderr, flush=True)
         self.dispatcher.offer(record)
         return record
 
@@ -238,7 +239,7 @@ def read_day(events_dir: Path, day: str) -> list[dict]:
             _dropped_said[path] = dropped
         if not said:
             print(f"[threadwatch] {path.name}: skipped {dropped} line(s) that are not event records "
-                  "(not JSON, or no numeric ts and severity)", flush=True)
+                  "(not JSON, or no numeric ts and severity)", file=sys.stderr, flush=True)
     # Insert and evict under the lock: the web server serves each request
     # on its own thread, and picking the oldest entry while another thread
     # inserts or deletes raised mid-iteration.

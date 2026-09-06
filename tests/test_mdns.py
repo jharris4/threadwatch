@@ -165,6 +165,35 @@ class BrowseTest(unittest.TestCase):
                             rr(encode_name("otbr.local"), TYPE_A, bytes([192, 0, 2, 73]))])
         return ptr_only, details
 
+    def test_every_truncation_the_parser_rejects_is_skipped_not_fatal(self):
+        # An mDNS responder is anyone on the LAN, so these four rejections
+        # are the boundary between a hostile or broken responder and
+        # something parsed as a border router. All four were uncovered.
+        service = encode_name(SERVICE)
+        cases = {
+            # A name whose last label runs past the end of the datagram.
+            "truncated name": struct.pack(">HHHHHH", 0, 0x8400, 0, 1, 0, 0) + b"\x03OTB",
+            # A compression pointer with only its first byte present.
+            "truncated compression pointer":
+                struct.pack(">HHHHHH", 0, 0x8400, 0, 1, 0, 0) + b"\x03OTB\xc0",
+            # A question whose four type/class bytes are not all there.
+            "truncated question":
+                struct.pack(">HHHHHH", 0, 0x8400, 1, 0, 0, 0) + service + b"\x00\x0c",
+            # A record header (type, class, ttl, rdlength) cut short.
+            "truncated resource record":
+                struct.pack(">HHHHHH", 0, 0x8400, 0, 1, 0, 0) + service + b"\x00\x0c\x00",
+        }
+        for message, data in cases.items():
+            with self.subTest(message):
+                with self.assertRaises(ValueError) as cm:
+                    parse_message(data)
+                self.assertEqual(str(cm.exception), message)
+        # And a browse that receives all four still reports the good one.
+        ptr_only, details = self._answers()
+        found, _made, log = self._browse(list(cases.values()) + [ptr_only, details])
+        self.assertEqual([r["instance"] for r in found], ["OTB"])
+        self.assertEqual(log, [])
+
     def test_a_refused_read_and_a_cut_datagram_do_not_end_the_browse(self):
         ptr_only, details = self._answers()
         cut = struct.pack(">HHHHHH", 0, 0x8400, 0, 1, 0, 0) + b"\x05abc"   # one answer, name cut short

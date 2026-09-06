@@ -2345,6 +2345,42 @@ class BorderRouterTest(unittest.TestCase):
             mdns.browse = original
 
 
+    def test_a_browse_that_raises_anything_is_a_log_line_not_a_dead_thread(self):
+        # An mDNS responder is anyone on the LAN, so browse() parses
+        # untrusted input. The thread body caught OSError only, so a
+        # ValueError or struct.error past the parser's own guards escaped
+        # a daemon thread nothing joins: a bare traceback on stderr, no
+        # browse result, and the next tick starting another.
+        import contextlib
+        import io
+        import struct
+        from threadwatch import mdns
+        self.cfg.border_router_browse_s = 600
+        original = mdns.browse
+        try:
+            for exc in (OSError(101, "Network is unreachable"),
+                        ValueError("truncated name"),
+                        struct.error("unpack requires a buffer of 10 bytes"),
+                        IndexError("index out of range")):
+                pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+
+                def raising(timeout=4.0, _exc=exc, **kw):
+                    raise _exc
+
+                mdns.browse = raising
+                t = 1_700_000_000.0
+                with contextlib.redirect_stdout(io.StringIO()) as out:
+                    pipe.periodic(t)
+                    pipe._browse_thread.join(5)
+                    self.assertFalse(pipe._browse_thread.is_alive(), exc)
+                    pipe.periodic(t + 30)              # the tick that reads the result
+                self.assertIn(f"mdns browse failed: {type(exc).__name__}: {exc}", out.getvalue())
+                self.assertIsNone(pipe._browse_result)
+                self.assertEqual(pipe.routers, {})
+        finally:
+            mdns.browse = original
+
+
 class PartitionLeaderTest(unittest.TestCase):
     """'leader router 60' on the status page should name the device."""
 

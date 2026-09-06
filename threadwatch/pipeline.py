@@ -1804,8 +1804,15 @@ class Pipeline:
             from . import mdns
             try:
                 self._browse_result = mdns.browse()
-            except OSError as exc:
-                print(f"[threadwatch] mdns browse failed: {exc}", flush=True)
+            except Exception as exc:
+                # Not OSError alone. An mDNS responder is anyone on the LAN,
+                # so browse() parses untrusted input, and a ValueError,
+                # struct.error or IndexError getting past its own guards
+                # would escape a daemon thread nothing joins: a bare
+                # traceback on stderr and a browse that never reports. A
+                # LAN nobody can parse must not be louder than one nobody
+                # answers on.
+                print(f"[threadwatch] mdns browse failed: {type(exc).__name__}: {exc}", flush=True)
                 self._browse_result = None
 
         self._browse_thread = threading.Thread(target=run, name="mdns-browse", daemon=True)

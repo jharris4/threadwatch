@@ -12,6 +12,15 @@ from collections import deque
 from dataclasses import dataclass, field
 
 
+# Flood onsets kept, and so the most that can be asked for: the detector
+# looks at the last period_onsets of them, so a threshold above what it
+# holds could never be reached and the storm detector was silently off.
+# [detect] period_onsets is rejected above this, and the deque is sized to
+# the setting when it asks for more than the default.
+ONSETS_KEPT = 32
+ONSETS_MAX = 1000
+
+
 @dataclass
 class DetectorConfig:
     window_seconds: int = 10
@@ -33,7 +42,7 @@ class Detector:
     window_start: float = 0.0
     window_count: int = 0
     in_flood: bool = False
-    onsets: deque = field(default_factory=lambda: deque(maxlen=32))
+    onsets: deque = field(default_factory=lambda: deque(maxlen=ONSETS_KEPT))
     last_alert: float | None = None      # frame time of the last counted alert
     alerts_sent: int = 0
     storm_active: bool = False
@@ -41,6 +50,13 @@ class Detector:
     # periodic onset, cooldown or not, so whoever reports the storm
     # describes the one running and never an earlier one.
     storm_details: dict = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        # A mesh that storms slowly may want more onsets than the default
+        # before it calls one: keep as many as it asks for.
+        want = max(ONSETS_KEPT, int(self.cfg.period_onsets))
+        if self.onsets.maxlen != want:
+            self.onsets = deque(self.onsets, maxlen=want)
 
     def add_frame(self, ts: float) -> None:
         w = self.cfg.window_seconds

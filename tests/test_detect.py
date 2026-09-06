@@ -170,6 +170,47 @@ class DegeneratePeriodOnsetsTest(unittest.TestCase):
                 self.assertIn("period_onsets must be at least 2", str(cm.exception))
 
 
+class ManyPeriodOnsetsTest(unittest.TestCase):
+    """A threshold above the onsets the detector kept could never be
+    reached: config accepted the value, the deque stayed 32 long, and the
+    critical storm detector was off for good in a setting that reads like
+    a sensitivity. The detector keeps as many onsets as it is asked for,
+    and config refuses a number no mesh could reach."""
+
+    def test_a_threshold_above_the_default_still_alerts(self):
+        from threadwatch.detect import ONSETS_KEPT
+        det = Detector(DetectorConfig(period_onsets=ONSETS_KEPT + 1, flood_min_frames=10,
+                                      period_min_s=40.0, period_max_s=180.0))
+        self.assertEqual(det.onsets.maxlen, ONSETS_KEPT + 1)
+        t = 0.0
+        for _ in range(7):                                # calm first: the baseline a flood stands out from
+            for _ in range(2):
+                det.add_frame(t); t += 1.0
+            t += 60.0
+        for _ in range(ONSETS_KEPT + 2):                  # floods 60 s apart, one onset each
+            for _ in range(40):
+                det.add_frame(t); t += 0.1
+            t += 60.0
+        self.assertTrue(det.storm_active)
+        self.assertEqual(len(det.storm_details["onsets"]), ONSETS_KEPT + 1)
+
+    def test_config_refuses_a_threshold_beyond_what_is_kept(self):
+        import tempfile
+        from pathlib import Path as _Path
+
+        from threadwatch import config as config_mod
+        from threadwatch.detect import ONSETS_MAX
+        with tempfile.TemporaryDirectory() as d:
+            path = _Path(d) / "config.toml"
+            (_Path(d) / "devices.json").write_text("[]")
+            path.write_text(f"[detect]\nperiod_onsets = {ONSETS_MAX + 1}\n")
+            with self.assertRaises(ValueError) as cm:
+                config_mod.load(path)
+            self.assertIn(f"period_onsets must be at most {ONSETS_MAX}", str(cm.exception))
+            path.write_text(f"[detect]\nperiod_onsets = {ONSETS_MAX}\n")
+            self.assertEqual(config_mod.load(path).detector.period_onsets, ONSETS_MAX)
+
+
 class FloodThresholdTest(unittest.TestCase):
     """A window is a flood at flood_multiplier x the calm baseline, but never
     under flood_min_frames: the floor is absolute. Inverted into a ceiling

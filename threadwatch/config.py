@@ -7,7 +7,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .detect import DetectorConfig
+from .detect import ONSETS_MAX, DetectorConfig
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -301,6 +301,13 @@ def load(path: Path | None) -> Config:
         if cfg.detector.period_onsets < 2:
             raise ValueError(f"[detect] period_onsets must be at least 2 (a period needs two "
                              f"onsets to measure), not {cfg.detector.period_onsets}")
+        # The detector keeps the onsets it is asked for, but not without
+        # limit: a threshold in the thousands is a typo, and one the mesh
+        # could not reach in a day is the storm detector switched off in a
+        # setting that reads like a sensitivity.
+        if cfg.detector.period_onsets > ONSETS_MAX:
+            raise ValueError(f"[detect] period_onsets must be at most {ONSETS_MAX}, not "
+                             f"{cfg.detector.period_onsets}")
         quiet = raw.get("quiet", {})
         cfg.quiet_s = float(quiet.get("silence_s", cfg.quiet_s))
         # There is no "disable" value here, though [summary] hour = -1 and

@@ -91,8 +91,12 @@ proxy that authenticates.
   (every address the name has had),
   `addresses_seen` (a last-seen row per address), `name`, `live` (`role`,
   `rloc16`, `rloc16_ts`, `router_id`, `leader`, `parent`, `parent_addr`),
-  `episode_days` (how far back `episodes` goes) and `episodes`. An address or name that resolves to nothing is a 404 with an
-  `error` field, as is an ambiguous name.
+  `episode_days` (how far back `episodes` goes) and `episodes`. A name
+  that matches nothing is a 404 with an `error` field, as is an ambiguous
+  name. **A well-formed 16-hex address is not**: any of them resolves, so
+  an address the recorder has never heard returns 200 with `last_seen`
+  null and `episodes` empty. A sensor that treats 200 as "this device
+  exists" tracks a typo for ever; check `last_seen` instead.
 
 ## Episodes, not records
 

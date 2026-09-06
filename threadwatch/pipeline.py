@@ -101,6 +101,14 @@ class Pipeline:
         self.names = DeviceNames(cfg.devices_path, None if ephemeral else cfg.state_dir / "border-routers.json")
         self.seen = LastSeen(None if ephemeral else cfg.state_dir / "last-seen.json")
         self.detector = Detector(cfg.detector)
+        # How often a storm that rumbles on is escalated to the event log,
+        # which is what [detect] alert_cooldown_s documents itself as.
+        # Taken once, here: the detector's own copy of the setting is
+        # bookkeeping for alerts_sent and run_replay zeroes it so an
+        # offline pass counts every storm in the day, which used to drop
+        # this to the 60 s floor as well and make the same packets report
+        # 37 storm events against the recorder's 2.
+        self.storm_event_cooldown_s = max(60.0, cfg.detector.alert_cooldown_s)
         self.decryptor = decryptor
         self.devices: dict[str, DeviceStats] = {}
         # Frames heard per source PAN. The one with the most is ours: it
@@ -1145,7 +1153,7 @@ class Pipeline:
 
         # Storm detector escalation to the event log (own cooldown, never
         # per-frame even when the detector's alert cooldown is zeroed).
-        if self.detector.storm_active and ts - self._storm_evt > max(60.0, self.cfg.detector.alert_cooldown_s):
+        if self.detector.storm_active and ts - self._storm_evt > self.storm_event_cooldown_s:
             self._storm_evt = ts
             if not self.ephemeral:
                 # Now, not at the next window close: this is the record a

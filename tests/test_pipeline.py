@@ -2921,6 +2921,38 @@ class FramesByHourLoadTest(unittest.TestCase):
                 self.assertEqual(Pipeline(cfg, NullEventLog(), stub_decryptor())._frames_by_hour, {}, junk)
 
 
+class StormEscalationCooldownTest(unittest.TestCase):
+    """run_replay zeroes the detector's alert_cooldown_s, which is
+    documented as bookkeeping ("Notification is the Pipeline's job"). The
+    Pipeline borrowed the same setting as the floor of its own
+    phase_locked_storm cooldown, so the identical frames through the
+    identical pipeline reported 37 storm events offline against the
+    recorder's 2, and anyone reconciling a frozen incident against the day
+    page saw two different stories."""
+
+    def _cfg(self, tmp):
+        (tmp / "devices.json").write_text("[]")
+        return Config(data_dir=tmp / "data", devices_path=tmp / "devices.json")
+
+    def test_zeroing_the_detectors_bookkeeping_does_not_move_the_event_cooldown(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(Path(d))
+            pipe = Pipeline(cfg, NullEventLog(), stub_decryptor(), ephemeral=True)
+            self.assertEqual(pipe.storm_event_cooldown_s, 1800.0)
+            pipe.detector.cfg.alert_cooldown_s = 0          # as run_replay does
+            self.assertEqual(pipe.storm_event_cooldown_s, 1800.0)
+
+    def test_the_configured_setting_is_still_what_spaces_the_events(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = self._cfg(Path(d))
+            cfg.detector.alert_cooldown_s = 300.0
+            self.assertEqual(Pipeline(cfg, NullEventLog(), stub_decryptor(),
+                                      ephemeral=True).storm_event_cooldown_s, 300.0)
+            cfg.detector.alert_cooldown_s = 0.0             # no cooldown: the 60 s floor holds
+            self.assertEqual(Pipeline(cfg, NullEventLog(), stub_decryptor(),
+                                      ephemeral=True).storm_event_cooldown_s, 60.0)
+
+
 class StormStateLoadTest(unittest.TestCase):
     """storm.json is what the storm detector knows across a restart. Without
     it the next start needs six windows before it will call anything a flood

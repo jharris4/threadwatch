@@ -12,6 +12,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from threadwatch.events import day_of, migrate_legacy, prune_days, read_day  # noqa: E402
+from tests.no_lan import setUpModule, tearDownModule  # noqa: E402, F401  (no mDNS from the suite)
 
 TS = 1756944000.0
 
@@ -87,6 +88,58 @@ class RetentionTest(unittest.TestCase):
                 self.assertEqual(len(read_day(d, day)), 1)
             self.assertEqual(len(events_mod._read_cache), events_mod.READ_CACHE_MAX)
             self.assertNotIn(d / f"{day_of(TS)}.jsonl", events_mod._read_cache)    # the first read went first
+
+
+class MalformedLineTest(unittest.TestCase):
+    """A line that is valid JSON and not an event record (a null, a
+    number, a list, an object with no ts) was appended to read_day's
+    result; the recorder's summary check then raised on it every 30 s
+    inside the capture loop, and every review page for the day was a
+    500. Such lines are skipped and said once per file."""
+
+    BAD = ["null", "42", "[]", '"text"', "true", '{"event": "device_quiet"}',
+           '{"ts": "yesterday", "event": "device_quiet", "severity": "warning"}',
+           '{"ts": true, "event": "x", "severity": "info"}',
+           '{"ts": 1700000000, "event": "x"}', "not json at all"]
+
+    def test_lines_that_are_not_records_are_skipped_and_said_once(self):
+        import contextlib, io
+        from threadwatch import events as events_mod
+        from threadwatch.review import day_episodes
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            day = day_of(TS)
+            good = [{"ts": TS + 60, "event": "device_quiet", "severity": "warning", "addr": "a" * 16,
+                     "name": None, "silent_for_s": 1800, "note": "quiet"},
+                    {"ts": TS + 120, "event": "device_returned", "severity": "notice", "addr": "a" * 16}]
+            lines = [json.dumps(good[0])] + self.BAD + [json.dumps(good[1])]
+            path = d / f"{day}.jsonl"
+            path.write_text("\n".join(lines) + "\n")
+            events_mod._read_cache.clear()
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(read_day(d, day), good)
+                self.assertEqual(read_day(d, day), good)           # cached: not said again
+                path.write_text(path.read_text() + "\n")          # touched, re-read: the same count, not said again
+                os.utime(path, (time.time() + 5, time.time() + 5))
+                events_mod._read_cache.clear()
+                self.assertEqual(read_day(d, day), good)
+            self.assertEqual(out.getvalue(), f"[threadwatch] {day}.jsonl: skipped {len(self.BAD)} line(s) that "
+                                             "are not event records (not JSON, or no numeric ts and severity)\n")
+            # The consumers that crashed: episodes for the review page, and
+            # the recorder's summary of the day.
+            eps = day_episodes(d, day, now=TS + 3600)
+            self.assertEqual([e["kind"] for e in eps], ["quiet"])
+            from threadwatch.config import Config
+            from threadwatch.events import EventLog
+            from threadwatch.pipeline import Pipeline
+            from threadwatch.crypto import Decryptor
+            (d / "devices.json").write_text("[]")
+            cfg = Config(data_dir=d / "data", devices_path=d / "devices.json")
+            log = EventLog(d, [])
+            pipe = Pipeline(cfg, log, Decryptor(network_key=bytes(16)))
+            summary = pipe.summary(TS + 7200)
+            self.assertEqual(summary["events_24h"], {"critical": 0, "warning": 1, "notice": 1, "info": 0})
 
 
 class ReadCacheTest(unittest.TestCase):

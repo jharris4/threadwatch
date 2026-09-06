@@ -186,6 +186,9 @@ _read_lock = threading.Lock()      # the cache is shared by every web request th
 READ_CACHE_MAX = 128
 
 
+_dropped_said: dict[Path, int] = {}     # lines skipped per file, as last reported
+
+
 def read_day(events_dir: Path, day: str) -> list[dict]:
     """Records of one day. Parsed files are cached by (mtime, size): the
     review pages read a window of days per request, and only today's file
@@ -201,13 +204,33 @@ def read_day(events_dir: Path, day: str) -> list[dict]:
     if hit is not None and hit[0] == stamp:
         return list(hit[1])
     out = []
+    dropped = 0
     for line in path.read_text().splitlines():      # the file is read outside the lock
         line = line.strip()
-        if line:
-            try:
-                out.append(json.loads(line))
-            except ValueError:
-                continue
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            dropped += 1
+            continue
+        # Valid JSON that is not an event record (a null an editor left,
+        # a jq round-trip, an object with no ts) parsed fine and was
+        # handed to every consumer, each of which assumes a dict with a
+        # numeric ts and a severity: the recorder's summary check raised
+        # on it every 30 s, and every review page for the day was a 500.
+        if (not isinstance(rec, dict) or isinstance(rec.get("ts"), bool)
+                or not isinstance(rec.get("ts"), (int, float)) or not isinstance(rec.get("severity"), str)):
+            dropped += 1
+            continue
+        out.append(rec)
+    if dropped:
+        with _read_lock:
+            said = _dropped_said.get(path) == dropped
+            _dropped_said[path] = dropped
+        if not said:
+            print(f"[threadwatch] {path.name}: skipped {dropped} line(s) that are not event records "
+                  "(not JSON, or no numeric ts and severity)", flush=True)
     # Insert and evict under the lock: the web server serves each request
     # on its own thread, and picking the oldest entry while another thread
     # inserts or deletes raised mid-iteration.

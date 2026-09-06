@@ -138,7 +138,7 @@ class SnapshotsTest(CliCase):
         self.assertEqual([l.split()[2] for l in out.splitlines()],
                          ["20260903T090000_storm", "20260902T141500_storm", "20260901T080000_quiet"])
         self.assertIn("3 snapshot(s), 300 B", err)
-        (inc / "20260901T070000_storm-at-noon").mkdir()      # freeze wrote the label filename-safe...
+        (inc / "20260901T070000_storm-at-noon").mkdir()      # saved with the label filename-safe...
         code, _, err = self.run_cli("snapshots", "--delete", "storm at noon")   # ...delete takes it as typed
         self.assertEqual((code, err), (0, ""))
         self.assertFalse((inc / "20260901T070000_storm-at-noon").exists())
@@ -201,11 +201,11 @@ class SnapshotTest(CliCase):
         self.assertEqual(self.run_cli("snapshots")[1].count("my-label-with-junk"), 1)
         # The inventory as it was; the configuration with its secrets blanked.
         self.assertEqual((inc / "devices.json").read_text(), (self.d / "devices.json").read_text())
-        frozen_cfg = (inc / "config.toml").read_text()
-        self.assertNotIn("topic-9f3a", frozen_cfg)
-        self.assertNotIn("hunter2", frozen_cfg)
-        self.assertIn('url = "<redacted>"', frozen_cfg)
-        self.assertIn('name = "phone"', frozen_cfg)
+        saved_cfg = (inc / "config.toml").read_text()
+        self.assertNotIn("topic-9f3a", saved_cfg)
+        self.assertNotIn("hunter2", saved_cfg)
+        self.assertIn('url = "<redacted>"', saved_cfg)
+        self.assertIn('name = "phone"', saved_cfg)
         manifest = json.loads((inc / "manifest.json").read_text())
         self.assertEqual((manifest["label"], manifest["trigger"], manifest["ring_files"], manifest["span"],
                           manifest["inventory"], manifest["config"], manifest["events_days"]),
@@ -652,13 +652,13 @@ class ReplayTest(CliCase):
         inc.mkdir(parents=True)
         self._write_pcap("data/snapshots/20260903T100000_storm-at-noon/threadwatch-20260903-09.pcap",
                          [(self.T + i, self._psdu(self.DEV, i)) for i in range(3)], DLT_NOFCS)
-        (inc / "devices.json").write_text(json.dumps([{"name": "Frozen Name", "extendedAddress": self.DEV}]))
+        (inc / "devices.json").write_text(json.dumps([{"name": "Saved Name", "extendedAddress": self.DEV}]))
         for want in ("storm-at-noon", "storm at noon", inc.name, str(inc)):
             code, out, err = self.run_cli("replay", "--snapshot", want)
             self.assertEqual(code, 0, (want, err))
             run = json.loads(out)
             self.assertEqual(run["files"], [str(inc / "threadwatch-20260903-09.pcap")])
-            self.assertEqual([e["name"] for e in run["events"] if e["event"] == "device_first_seen"], ["Frozen Name"])
+            self.assertEqual([e["name"] for e in run["events"] if e["event"] == "device_first_seen"], ["Saved Name"])
         code, _out, _err = self.run_cli("replay", "--snapshot", "nope")
         self.assertEqual(code, 1)
         state = self.d / "data" / "state"

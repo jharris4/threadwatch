@@ -33,7 +33,7 @@ class SelectRecentTest(unittest.TestCase):
                          ring("20260902-23", "20260903-00", "20260903-08", "20260903-09", "20260903-10"))
 
     def test_unparsable_name_is_kept(self):
-        odd = Path("/ring/threadwatch-frozen.pcap")
+        odd = Path("/ring/threadwatch-garbled.pcap")
         self.assertEqual(select_recent([odd, *self.FILES], 1, NOW), [odd, *ring("20260903-09", "20260903-10")])
 
     def test_empty_when_nothing_is_recent(self):
@@ -362,22 +362,22 @@ class RunDeviceRingTest(unittest.TestCase):
         for p in self.cfg.ring_dir.iterdir():
             p.rename(inc / p.name)
         self.cfg.ring_dir.rmdir()
-        (inc / "devices.json").write_text(json.dumps([{"name": "Frozen AQ", "extendedAddress": self.DEV}]))
+        (inc / "devices.json").write_text(json.dumps([{"name": "Saved AQ", "extendedAddress": self.DEV}]))
         from threadwatch.events import EventLog
         log = EventLog(inc / "events")
         log.emit("recorder_started", "notice", self.now - 1.5 * 3600, cause="unknown", gap_s=3600,
                  last_frame_ts=self.now - 2.5 * 3600, stopped_ts=None, exit_code=None, note="n")
-        log.emit("device_quiet", "warning", self.now - 2 * 3600, addr=self.DEV, name="Frozen AQ",
+        log.emit("device_quiet", "warning", self.now - 2 * 3600, addr=self.DEV, name="Saved AQ",
                  silent_for_s=1800, last_seen=self.now - 2.5 * 3600, reception="good")
         out = io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-            rc = run_device(self.cfg, "Frozen AQ", None, hours=None, snapshot_dir=inc)
+            rc = run_device(self.cfg, "Saved AQ", None, hours=None, snapshot_dir=inc)
         text = out.getvalue()
         self.assertEqual(rc, 0)
         self.assertIn(f"analyzed snapshot {inc.name}: 2 ring file(s)", text)
-        self.assertIn(f"=== Frozen AQ ({self.DEV}) ===", text)
+        self.assertIn(f"=== Saved AQ ({self.DEV}) ===", text)
         self.assertIn("(recorder not listening for 60m of it)", text)
-        self.assertIn("Frozen AQ quiet for", text)                     # the snapshot's log, not the live one
+        self.assertIn("Saved AQ quiet for", text)                     # the snapshot's log, not the live one
         self.assertFalse((self.cfg.data_dir / "state").exists())       # nothing written to the live state
         # --hours counts back from the snapshot's newest file, not from now.
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):

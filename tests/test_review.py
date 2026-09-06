@@ -478,7 +478,7 @@ class DayViewTest(unittest.TestCase):
         late.mkdir(parents=True)
         for h in ("20260830-22", "20260830-23", "20260831-00"):           # ...holding the storm's evening
             (late / f"threadwatch-{h}.pcap").write_bytes(b"x")
-        (self.cfg.snapshots_dir / "20260904T090000_empty").mkdir()          # no pcaps: its freeze day
+        (self.cfg.snapshots_dir / "20260904T090000_empty").mkdir()          # no pcaps: the day it was saved
         by_day = {d: recording_for_day(self.cfg.ring_dir, self.cfg.snapshots_dir, d)["snapshots"]
                   for d in ("2026-08-29", "2026-08-30", "2026-08-31", "2026-09-04")}
         self.assertEqual(by_day, {"2026-08-29": [], "2026-08-30": [late.name], "2026-08-31": [late.name],
@@ -1044,14 +1044,14 @@ class EveryEventKindTest(unittest.TestCase):
                 note="traffic floods recurring every 80 s"),
             rec("snapshot_saved", "info", T0 + 5, label="auto-storm",
                 note="6 ring files kept as 20260902T120005_auto-storm"),
-            rec("snapshot_failed", "warning", T0 + 10, label="auto-storm", note="could not freeze the ring"),
+            rec("snapshot_failed", "warning", T0 + 10, label="auto-storm", note="could not save the ring"),
             rec("alert_test", "warning", T0 + 20, name="Test device", note="threadwatch alert-test from pi"),
         ])
         self.assertEqual([(e["kind"], e["severity"], e["title"], e["detail"]) for e in eps],
                          [("storm", "critical", "phase-locked storm",
                            "period 80.5s, onsets 3, baseline 250.0 frames/window"),
                           ("snapshot", "info", "snapshot saved", "6 ring files kept as 20260902T120005_auto-storm"),
-                          ("snapshot", "warning", "snapshot failed", "could not freeze the ring"),
+                          ("snapshot", "warning", "snapshot failed", "could not save the ring"),
                           ("test", "warning", "alert test", "threadwatch alert-test from pi")])
 
     def test_an_event_without_a_grouping_rule_is_a_row_named_after_it(self):
@@ -1070,7 +1070,7 @@ class EveryEventKindTest(unittest.TestCase):
         import re
         source = (Path(__file__).resolve().parent.parent / "threadwatch" / "pipeline.py").read_text()
         # Both spellings: the pipeline raises its events through _emit (which
-        # freezes the ring on a critical one) and the freeze path itself, and
+        # saves the ring on a critical one) and the snapshot path itself, and
         # the daily summary, straight through events.emit.
         emitted = sorted(set(re.findall(r'(?:events\.emit|self\._emit)\(\s*"([a-z_]+)"', source)))
         self.assertGreaterEqual(len(emitted), 20, emitted)

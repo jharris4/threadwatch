@@ -784,7 +784,7 @@ class QuietPolicyTest(unittest.TestCase):
         # Left the step ahead of the clock, each suppresses its own check
         # for the whole length of the step: no mDNS browse, so a hub that
         # rotates its address in the window keeps the dead one and then
-        # reads as quiet; no ring freeze for a critical event; no
+        # reads as quiet; no ring snapshot for a critical event; no
         # configured_pan_silent; join-scan, stale-credential and storm
         # notices held back; and maybe_save stops writing the last-seen
         # table, so a host cut in the window loses everything since.
@@ -1002,7 +1002,7 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual(saved, [("auto-phase_locked_storm", "phase_locked_storm")] * 2)
 
     def test_any_critical_event_saves_and_names_itself_as_the_trigger(self):
-        # The freeze hangs off the severity, not off the storm handler: an
+        # The snapshot hangs off the severity, not off the storm handler: an
         # event added later at "critical" keeps its packets, and its
         # snapshot says which event asked for it.
         from threadwatch.review import snapshots
@@ -1022,7 +1022,7 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual(manifest["trigger"], "leader_lost")
 
     def test_a_critical_event_with_no_note_still_says_where_its_packets_went(self):
-        self.cfg.snapshot_on_critical = False               # off: the reader is told to freeze by hand
+        self.cfg.snapshot_on_critical = False               # off: the reader is told to save it by hand
         pipe = self._pipe()
         rec = pipe._emit("leader_lost", "critical", 1_700_000_000.0)
         self.assertIsNone(rec["auto_snapshot"])
@@ -1035,7 +1035,7 @@ class QuietPolicyTest(unittest.TestCase):
         self.cfg.summary_severity = "critical"
         self.cfg.summary_hour = 0                         # any hour of the day will do
         pipe = self._pipe()
-        pipe.snapshotter = lambda label, trigger: self.fail("froze for the daily summary")
+        pipe.snapshotter = lambda label, trigger: self.fail("saved for the daily summary")
         pipe.ingest(frame(1_700_000_000.0, ROUTER))
         pipe._maybe_summarize(1_700_000_000.0 + 12 * 3600, 0x4e21)
         summaries = [r for r in pipe.events.records if r["event"] == "daily_summary"]
@@ -1054,7 +1054,7 @@ class QuietPolicyTest(unittest.TestCase):
         pipe.detector.storm_active = True
         pipe.detector.storm_details = {"period": 80.5, "onsets": [1.0, 2.0, 3.0]}
         pipe.detector.add_frame = lambda ts: setattr(pipe.detector, "storm_active", True)
-        pipe.ingest(frame(t0, ROUTER))                     # 2 h after the last auto freeze: held
+        pipe.ingest(frame(t0, ROUTER))                     # 2 h after the last auto snapshot: held
         pipe.ingest(frame(t0 + 5 * 3600, ROUTER))          # 7 h after it: saved again
         storms = [r["auto_snapshot"] for r in pipe.events.records if r["event"] == "phase_locked_storm"]
         self.assertEqual(storms, [None, "auto-phase_locked_storm"])
@@ -1149,7 +1149,7 @@ class QuietPolicyTest(unittest.TestCase):
         for ephemeral in (False, True):
             self.cfg.snapshot_on_critical = ephemeral        # on only for the replay case
             pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor(), ephemeral=ephemeral)
-            pipe.snapshotter = lambda label, trigger: self.fail("froze")
+            pipe.snapshotter = lambda label, trigger: self.fail("saved")
             pipe.detector.storm_active = True
             pipe.detector.storm_details = {"period": 60.0, "onsets": [1.0, 2.0, 3.0]}
             pipe.ingest(frame(1_700_000_000.0, ROUTER))
@@ -1168,7 +1168,7 @@ class QuietPolicyTest(unittest.TestCase):
 
     def test_each_automatic_snapshot_prunes_the_oldest_ones_before_it_copies(self):
         # Nothing but this prunes a snapshot, and each is a whole ring:
-        # four auto-freezes a day for ever fills the card the ring lives on.
+        # four automatic snapshots a day for ever fills the card the ring lives on.
         from threadwatch.review import snapshots
         pipe = self._pipe()
         self.cfg.keep_snapshots = 2

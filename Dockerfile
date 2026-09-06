@@ -3,8 +3,8 @@
 # is awkward (NAS, Unraid, an LXC). Linux hosts only: the dongle is passed
 # through as a device, which Docker Desktop on macOS/Windows cannot do.
 #
-#   docker compose up -d           # capture + web, see compose.yaml
-#   docker compose run --rm capture doctor
+#   docker compose up -d           # recorder + web, see compose.yaml
+#   docker compose run --rm recorder doctor
 FROM python:3.12-slim
 WORKDIR /app
 COPY requirements.txt .

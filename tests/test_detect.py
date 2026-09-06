@@ -175,7 +175,7 @@ class FloodThresholdTest(unittest.TestCase):
     under flood_min_frames: the floor is absolute. Inverted into a ceiling
     it would make every window on a fresh start a flood (baseline 0), and
     ordinary busy minutes on an established mesh, and phase_locked_storm
-    would page and freeze the ring on normal traffic."""
+    would page and save the ring on normal traffic."""
 
     def setUp(self):
         self.det = Detector(DetectorConfig(alert_cooldown_s=0))    # x3, floor 400

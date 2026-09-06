@@ -438,7 +438,7 @@ def run_record(cfg: Config) -> None:
         exit_code = exc.code if isinstance(exc.code, int) else 0
     except BaseException:
         traceback.print_exc()
-        _log("capture crashed; exiting for supervisor restart")
+        _log("recorder crashed; exiting for supervisor restart")
         exit_code = 1
     finally:
         # A second Ctrl-C here (or a SIGTERM racing a Ctrl-C) would raise

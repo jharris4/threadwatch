@@ -205,10 +205,10 @@ class SnapshotTest(unittest.TestCase):
         self.assertEqual(snapshot.discard_partials(self.cfg.snapshots_dir / "missing"), [])
 
     def test_a_copy_still_running_is_not_a_leftover_for_the_next_start(self):
-        # BUG-10: a manual freeze is another process and may overlap a
+        # BUG-10: a snapshot taken by hand is another process and may overlap a
         # recorder restart, whose start-up cleanup removed its staging
         # directory mid-copy; the copies after that failed as "source
-        # pruned", copytree remade the directory, and the freeze reported
+        # pruned", copytree remade the directory, and the copy reported
         # success with a count and no packets.
         import threading
 
@@ -288,7 +288,7 @@ class SnapshotTest(unittest.TestCase):
         self.assertEqual(list(staging.iterdir()), [])
 
     def test_a_snapshot_right_after_a_write_holds_that_record(self):
-        # BUG-02: the ring writer buffered records in Python; a freeze copies
+        # BUG-02: the ring writer buffered records in Python; a snapshot copies
         # the active file through its own handle and saw a zero-byte pcap
         # early in the hour, or an older tail later in it.
         from threadwatch.pcap import Frame, PcapStreamReader
@@ -351,7 +351,7 @@ class SnapshotTest(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in dest.iterdir()), before)
         self.assertEqual((dest / "threadwatch-20260903-00.pcap").read_bytes(), b"kept")
         self.assertEqual(list((self.cfg.snapshots_dir / snapshot.STAGING_DIR).iterdir()), [])   # no half copy left
-        # A half copy under the same name (a freeze still running, or one
+        # A half copy under the same name (a copy still running, or one
         # a dead run left) is not a directory to add to either.
         partial = self.cfg.snapshots_dir / snapshot.STAGING_DIR / dest.name.replace("storm", "quiet")
         partial.mkdir()

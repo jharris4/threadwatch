@@ -85,7 +85,7 @@ the line; under Docker, `docker compose ps` and the log.
 | exit | last line | meaning |
 | --- | --- | --- |
 | 0 | `stopped after N frames` | a requested stop (`systemctl stop`, Ctrl-C) |
-| 1 | a traceback, then `capture crashed` | an unexpected error; or, before capture began, `No nRF 802.15.4 sniffer found` or a refused `[alerts]` table |
+| 1 | a traceback, then `recorder crashed` | an unexpected error; or, before capture began, `No nRF 802.15.4 sniffer found` or a refused `[alerts]` table |
 | 2 | `threadwatch record: credentials.toml ...` or `threadwatch: [network] ...` | refused before capture began: no or bad network key, or a config value out of range |
 | 2 | `no frames for Ns - capture stalled` | the watchdog: three minutes without a frame after capture had begun |
 | 3 | `capture stream ended` | the sniffer closed the stream: dongle unplugged, or its process died |

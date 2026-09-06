@@ -240,10 +240,7 @@ class RunDeviceTest(unittest.TestCase):
     def test_the_silence_threshold_is_the_configured_one(self):
         # why hardcoded 30 minutes while the recorder pages after
         # [quiet] silence_s, so "why did this device go offline" reported
-        # no silences for the very gap that had just paged. The legacy
-        # config path can also produce quiet_s = 5400 from an old
-        # router_s / end_device_s pair, putting a stock upgrade out of
-        # step in the other direction.
+        # no silences for the very gap that had just paged.
         frames = [(self._at("2026-09-03 08:00"), self._psdu(self.DEV, 1)),
                   (self._at("2026-09-03 08:12"), self._psdu(self.DEV, 2))]
         self.assertNotIn("silences", self._run(frames))                       # 12 min, default 30

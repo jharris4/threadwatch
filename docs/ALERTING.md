@@ -94,10 +94,7 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 `device_quiet` fires after `[quiet] silence_s` of silence (default 30
 min). Routers advertise every few seconds and sleepy end devices poll
 every few, so from the sniffer's point of view neither is quiet for long
-and one window serves both. (A config.toml from before 2026-09-04 has
-`end_device_s` and `router_s` instead; both are still read and the larger
-stands in for `silence_s`, so an old file with a long end-device window
-now applies it to routers too: replace the pair with `silence_s`.) Two silences
+and one window serves both. Two silences
 are deliberately not paged: addresses whose frames carry a foreign PAN id
 (someone else's mesh) are never reported, and devices whose average RSSI
 at the sniffer is below `[quiet] min_rssi_dbm` (default -82) are logged at

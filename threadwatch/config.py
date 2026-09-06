@@ -162,8 +162,7 @@ SECTIONS: dict[str, frozenset[str] | None] = {
     "record": frozenset(("serial_port", "data_dir", "keep_hours", "keep_gb",
                          "snapshot_on_critical", "keep_snapshots")),
     "devices": frozenset(("inventory",)),
-    # end_device_s and router_s are the pre-2026-09-04 split, still read below.
-    "quiet": frozenset(("silence_s", "min_rssi_dbm", "end_device_s", "router_s")),
+    "quiet": frozenset(("silence_s", "min_rssi_dbm")),
     "link": frozenset(("drop_db", "hold_s")),
     "polls": frozenset(("rearm_s", "confirm_s")),
     "retransmissions": frozenset(("confirm_s",)),
@@ -303,10 +302,7 @@ def load(path: Path | None) -> Config:
             raise ValueError(f"[detect] period_onsets must be at least 2 (a period needs two "
                              f"onsets to measure), not {cfg.detector.period_onsets}")
         quiet = raw.get("quiet", {})
-        # end_device_s / router_s were the pre-2026-09-04 split by inventory
-        # role; the longer of them stands in for silence_s in an old file.
-        legacy = [float(quiet[k]) for k in ("end_device_s", "router_s") if k in quiet]
-        cfg.quiet_s = float(quiet.get("silence_s", max(legacy) if legacy else cfg.quiet_s))
+        cfg.quiet_s = float(quiet.get("silence_s", cfg.quiet_s))
         # There is no "disable" value here, though [summary] hour = -1 and
         # [border_routers] browse_s = 0 both mean that in the same file. At
         # zero or less the quiet test is true for every device on every

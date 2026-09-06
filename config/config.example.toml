@@ -40,8 +40,7 @@ inventory = "devices.json"
 # Silence before a device_quiet alert. Sleepy end devices poll every few
 # seconds and routers advertise every few, so from the sniffer's point of
 # view neither is quiet for long: one window serves both. Raise it only if
-# your devices genuinely sleep for long stretches. (Older files' end_device_s
-# and router_s are still read; the larger of them stands in for silence_s.)
+# your devices genuinely sleep for long stretches.
 silence_s = 1800           # 30 min
 # Devices the sniffer hears below this average RSSI are logged at notice
 # (not paged) when quiet: at the edge of range, silence is usually fading.

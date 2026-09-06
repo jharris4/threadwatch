@@ -229,10 +229,6 @@ class EventsKeepDaysTest(unittest.TestCase):
             with self.assertRaises(ValueError, msg=bad) as cm:
                 self._load(f"[quiet]\nsilence_s = {bad}\n")
             self.assertIn("[quiet] silence_s must be more than 0 seconds", str(cm.exception))
-        # The pre-2026-09-04 keys stand in for it, and are checked the same.
-        self.assertEqual(self._load("[quiet]\nend_device_s = 900\nrouter_s = 300\n").quiet_s, 900)
-        with self.assertRaises(ValueError):
-            self._load("[quiet]\nend_device_s = 0\nrouter_s = 0\n")
 
     def test_confirm_s_defaults_to_ten_minutes_zero_pages_at_once_negative_refused(self):
         self.assertEqual(self._load("[network]\nchannel = 25\n").poll_confirm_s, 600)
@@ -461,9 +457,13 @@ class UnknownNamesTest(unittest.TestCase):
         self.assertEqual(cfg.alerts_raw["sinks"][0]["whatever"], 1)
         self.assertEqual(cfg.heartbeats_raw[0]["anything"], 2)
 
-    def test_the_legacy_quiet_split_still_loads(self):
-        cfg = self._load("[quiet]\nend_device_s = 900\nrouter_s = 1200\n")
-        self.assertEqual(cfg.quiet_s, 1200)
+    def test_the_quiet_split_that_silence_s_replaced_is_gone(self):
+        # Dropped rather than carried: nothing on any host still writes
+        # them, and an old file saying end_device_s now says so loudly
+        # instead of quietly setting a window it does not name.
+        with self.assertRaises(ValueError) as e:
+            self._load("[quiet]\nend_device_s = 900\n")
+        self.assertIn("unknown key 'end_device_s' in [quiet]", str(e.exception))
 
     def test_config_load_and_the_example_agree_on_what_exists(self):
         """SECTIONS and ExampleConfigTest.SETTINGS are the same schema written
@@ -475,9 +475,7 @@ class UnknownNamesTest(unittest.TestCase):
         loaded = {(section, key)
                   for section, keys in config_mod.SECTIONS.items() if keys
                   for key in keys}
-        # Read from an older file's spelling, deliberately undocumented.
-        legacy = {("quiet", "end_device_s"), ("quiet", "router_s")}
-        self.assertEqual(loaded, documented - {p for p in documented if p[0] == "alerts"} | legacy)
+        self.assertEqual(loaded, documented - {p for p in documented if p[0] == "alerts"})
         opaque = {s for s, keys in config_mod.SECTIONS.items() if keys is None}
         self.assertEqual(opaque, {"alerts", "heartbeats"})
 

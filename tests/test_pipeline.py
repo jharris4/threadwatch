@@ -272,14 +272,6 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual(names, ["Living Room Apple TV", "Living Room AQ"])
         self.assertNotIn("profile", pipe.events.records[-1])
 
-    def test_legacy_quiet_keys_still_load(self):
-        from threadwatch import config as config_mod
-        d = Path(self.tmp.name)
-        (d / "config.toml").write_text("[quiet]\nend_device_s = 5400\nrouter_s = 1800\n")
-        self.assertEqual(config_mod.load(d / "config.toml").quiet_s, 5400)
-        (d / "config.toml").write_text("[quiet]\nsilence_s = 600\n")
-        self.assertEqual(config_mod.load(d / "config.toml").quiet_s, 600)
-
     def test_malformed_inventory_address_is_skipped_not_fatal(self):
         d = Path(self.tmp.name)
         (d / "devices.json").write_text(json.dumps([

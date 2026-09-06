@@ -111,6 +111,26 @@ leaving on the stall path the daemon flushes the ring file, saves the
 last-seen table and delivers the alerts it holds, so a stall costs the
 frames of the stall itself and nothing on disk.
 
+### The other commands
+
+The table above is `capture`'s. It is not the only command whose exit
+status means something: `bin/threadwatch <command> || notify` works for
+each of these too.
+
+| command | exit 1 | exit 2 |
+| --- | --- | --- |
+| `status` | no status file: the daemon has never run here, or `data_dir` points elsewhere. A clean liveness probe | |
+| `doctor` | any `FAIL` line | |
+| `alert-test` | any sink or heartbeat failed | |
+| `border-routers` | none answered over mDNS | |
+| `import` | Home Assistant refused, or `devices.json` will not parse | |
+| `adopt` | the address is already listed under another name | |
+| `why` | some of the pcap files could not be read (the report covers the rest) | no network key, or one that cannot be read |
+| `replay` | | the same |
+| `capture` | | the same, or a config value out of range |
+| `replay`, `why`, `incidents --delete` | `--incident NAME` matches no incident, or more than one | |
+
+
 ## Troubleshooting
 
 `bin/threadwatch doctor` is the first move: read-only, one line per check,

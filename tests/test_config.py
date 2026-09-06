@@ -73,6 +73,64 @@ class ChannelTest(unittest.TestCase):
             self.assertEqual(str(cm.exception), f"[network] channel must be 11-26, not {bad}")
 
 
+class PanIdTest(unittest.TestCase):
+    """A bad pan_id is the most likely operator mistake after channel, and
+    the ValueError is the only feedback. Neither of its two messages had
+    ever been produced by a test."""
+
+    def _load(self, text):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "config.toml"
+            path.write_text(text)
+            return config_mod.load(path)
+
+    def test_hex_decimal_and_the_two_ways_of_getting_it_wrong(self):
+        self.assertEqual(self._load('[network]\npan_id = "0x4e21"\n').pan_id, 0x4e21)
+        self.assertEqual(self._load("[network]\npan_id = 0x4e21\n").pan_id, 0x4e21)
+        self.assertEqual(self._load('[network]\npan_id = "20001"\n').pan_id, 20001)
+        self.assertIsNone(self._load("[network]\nchannel = 25\n").pan_id)
+        for bad in ('"0x4e2g"', '"nope"', '""'):
+            with self.assertRaises(ValueError, msg=bad) as cm:
+                self._load(f"[network]\npan_id = {bad}\n")
+            self.assertIn("pan_id must be a PAN id such as", str(cm.exception))
+        # 0xffff is the broadcast PAN, so the usable range stops one short.
+        self.assertEqual(self._load('[network]\npan_id = "0xfffe"\n').pan_id, 0xfffe)
+        for bad, shown in (("0xffff", "0xffff"), ("0x10000", "0x10000")):
+            with self.assertRaises(ValueError, msg=bad) as cm:
+                self._load(f'[network]\npan_id = "{bad}"\n')
+            self.assertEqual(str(cm.exception), f"[network] pan_id must be 0x0000-0xfffe, not {shown}")
+
+
+class SummaryTest(unittest.TestCase):
+    """[summary] hour and severity: the daily summary is the event that says
+    the recorder is still watching, and both of its range messages were
+    unreachable from the suite."""
+
+    def _load(self, text):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "config.toml"
+            path.write_text(text)
+            return config_mod.load(path)
+
+    def test_hour_takes_0_to_23_and_minus_one_to_disable(self):
+        self.assertEqual(self._load("[network]\nchannel = 25\n").summary_hour, 8)
+        for good in (-1, 0, 8, 23):
+            self.assertEqual(self._load(f"[summary]\nhour = {good}\n").summary_hour, good)
+        for bad in (-2, 24, 100):
+            with self.assertRaises(ValueError, msg=str(bad)) as cm:
+                self._load(f"[summary]\nhour = {bad}\n")
+            self.assertEqual(str(cm.exception), f"[summary] hour must be 0-23, or -1 to disable, not {bad}")
+
+    def test_severity_is_one_of_the_four_names(self):
+        self.assertEqual(self._load("[network]\nchannel = 25\n").summary_severity, "notice")
+        for good in ("info", "notice", "warning", "critical"):
+            self.assertEqual(self._load(f'[summary]\nseverity = "{good}"\n').summary_severity, good)
+        for bad in ("nope", "NOTICE", "warn"):
+            with self.assertRaises(ValueError, msg=bad) as cm:
+                self._load(f'[summary]\nseverity = "{bad}"\n')
+            self.assertIn("severity must be info, notice, warning or critical", str(cm.exception))
+
+
 class PeriodOnsetsTest(unittest.TestCase):
     def _load(self, text):
         with tempfile.TemporaryDirectory() as d:

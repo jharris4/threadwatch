@@ -96,7 +96,13 @@ reach the pages.
 ## Layout
 
 - `./config` is mounted read-write into `capture` (so `adopt` can write
-  `devices.json`) and read-only into `web`.
+  `devices.json`) and read-only into `web`. `web` also runs as uid 65534
+  (`nobody`), not 1000: it is the only published process and nothing in
+  front of it authenticates, and `credentials.toml`, `alerts.env` and
+  `ha.env` are 0400 owner-only, so that user cannot open them. Everything
+  `web` does read is world-readable. If your host writes with umask 077,
+  the pages fail to load: set `web`'s `user:` to the same uid:gid as
+  `capture`.
 - `./data` holds the ring, state and incidents, exactly as native.
 - The container runs as uid 1000, not root, so the ring files, state,
   incidents and any `devices.json` it writes belong to an ordinary user

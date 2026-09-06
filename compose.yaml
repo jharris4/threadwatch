@@ -61,6 +61,22 @@ services:
     # deliberately once something in front of it authenticates.
     ports:
       - "127.0.0.1:8080:8080"
+    # This is the only process the compose file publishes, and nothing in
+    # front of it authenticates, so it runs as a user that cannot open the
+    # secrets in ./config. web reads config.toml and devices.json and
+    # never credentials.toml, alerts.env or ha.env; those three are 0400
+    # owner-only, and 65534 (nobody) owns none of them. Everything else it
+    # reads - config.toml, devices.json, the ring and the state under
+    # ./data - the recorder writes world-readable (umask 022).
+    #
+    # Mounting only the two files instead would go stale: adopt and import
+    # rewrite devices.json by rename, and a bind mount of a file follows
+    # the old inode, so the pages would keep the names the container
+    # started with. If your host's config/ or data/ is not world-readable
+    # (some NAS images default to umask 077), the pages fail to load: set
+    # this to the same uid:gid as capture, and the mount below is again
+    # what limits what web can read.
+    user: "65534:65534"
     volumes:
       - ./config:/app/config:ro
       - ./data:/app/data:ro

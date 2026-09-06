@@ -446,6 +446,64 @@ class DeliveryTests(unittest.TestCase):
         self.assertTrue(d._thread.is_alive())       # abandoned; capture os._exit()s over it
         self.assertEqual(alerts.Dispatcher.close.__defaults__, (15.0,))
 
+    def test_a_receiver_that_answers_slowly_is_not_re_posted_for_hours(self):
+        # The body is on the wire long before the answer comes back: a
+        # receiver that accepts and then takes longer than timeout_s has
+        # already been notified. Treated as a plain failure the record was
+        # requeued at (30, 120, 480) then every 600 s until 6 h - about
+        # forty copies of one alert on somebody's phone.
+        got = []
+
+        class Slow(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                got.append(self.headers.get("Idempotency-Key"))
+                time.sleep(1.0)
+                self.send_response(200)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"ok")
+
+            def log_message(self, *a):
+                pass
+
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), Slow)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        logs = []
+        sink = alerts.HttpSink(name="phone", cooldown_s=0, timeout_s=0.2,
+                               url=f"http://127.0.0.1:{srv.server_port}/")
+        d = alerts.Dispatcher([sink], logs.append, retry_delays=(0.05,), retry_cap_s=0.05)
+        rec = {**REC, "ts": time.time(), "id": "abc123"}
+        try:
+            d.offer(rec)
+            wait_for(lambda: d.given_up == 1, timeout=5.0)
+        finally:
+            d.close(timeout=1.0)
+        self.assertEqual(d.given_up, 1)
+        self.assertEqual(len(got), 1 + alerts.TIMEOUT_RETRIES)     # the send and one retry, no more
+        self.assertEqual(got, ["abc123"] * len(got))               # ...and a receiver can dedupe them
+        self.assertTrue(any("already sent" in m for m in logs), logs)
+
+    def test_a_refused_connection_keeps_the_full_retry_schedule(self):
+        # Nothing was delivered and nothing can be duplicated: this is what
+        # the backoff is for (ntfy restarting, a router rebooting).
+        dead = socket.socket()
+        dead.bind(("127.0.0.1", 0))
+        port = dead.getsockname()[1]
+        dead.close()                                   # nothing listening there now
+        logs = []
+        sink = alerts.HttpSink(name="phone", cooldown_s=0, timeout_s=1.0, url=f"http://127.0.0.1:{port}/")
+        d = alerts.Dispatcher([sink], logs.append, retry_delays=(0.05, 0.05, 0.05), retry_cap_s=0.05)
+        try:
+            d.offer({**REC, "ts": time.time()})
+            wait_for(lambda: sum("retrying in" in m for m in logs) >= 4, timeout=5.0)
+        finally:
+            d.close(timeout=1.0)
+        self.assertGreaterEqual(sum("retrying in" in m for m in logs), 4)
+        self.assertEqual(d.given_up, 0)
+
     def test_a_send_thread_that_cannot_start_does_not_poison_the_sink(self):
         # The in-flight lock is taken here and released inside run() on the
         # worker. Under thread or memory pressure Thread.start() raises and

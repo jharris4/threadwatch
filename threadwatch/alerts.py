@@ -356,8 +356,14 @@ class HttpSink(Sink):
         return render(self.body, record, is_json, self.severity_values).encode()
 
     def send(self, record: dict) -> None:
+        headers = dict(self.headers)
+        # The same key on every retry of one record, so a receiver that
+        # dedupes on it does not show the alert twice when a slow answer
+        # made us send again.
+        if record.get("id") and not any(k.lower() == "idempotency-key" for k in headers):
+            headers["Idempotency-Key"] = str(record["id"])
         req = urllib.request.Request(self.url, data=self.payload(record),
-                                     headers=self.headers, method=self.method)
+                                     headers=headers, method=self.method)
         with _urlopen(req, timeout=self.timeout_s) as resp:
             resp.read()
 
@@ -580,6 +586,11 @@ def build_sinks(alerts_raw: dict, log: Callable[[str], None], unbuilt: Optional[
 RETRY_DELAYS_S = (30.0, 120.0, 480.0)
 RETRY_CAP_S = 600.0
 STALE_S = 6 * 3600.0
+# A send that timed out had its request on the wire before any answer was
+# due, so the receiver may already have it: the full schedule above would
+# put forty copies of one alert on a phone over six hours, which is how
+# people learn to mute a topic. One more try, then it is let go.
+TIMEOUT_RETRIES = 1
 SPOOL_FILE = "alert-spool.jsonl"
 # The spool is renamed to this at load and removed only once every record
 # in it has been delivered, given up or spooled again: a run that dies
@@ -744,6 +755,11 @@ class Dispatcher:
         now = time.time()
         age = now - float(record.get("ts") or now)
         with self._cv:
+            if _maybe_delivered(exc) and attempt > TIMEOUT_RETRIES:
+                self.given_up += 1
+                self.log(f"alert sink '{sink.name}' failed: {err}; not retried again (attempt {attempt}) "
+                         "because the request was already sent and a retry would be a second notification")
+                return
             if self._closing:
                 self._undelivered.append({"record": record, "sinks": [sink.name], "attempt": attempt})
                 self.log(f"alert sink '{sink.name}' failed: {err}; kept for the next start")
@@ -852,6 +868,12 @@ class Dispatcher:
                      + (f"; {skipped} unreadable or for a sink no longer configured, dropped" if skipped else ""))
 
 
+class SendInFlight(TimeoutError):
+    """A previous send to this target has not been answered yet, so this
+    record was never put on the wire. Unlike a deadline that expired with
+    the request already out, retrying it cannot duplicate anything."""
+
+
 def _bounded(target, call: Callable[[], Any], timeout_s: float, what: str) -> Any:
     """Run ``call`` (a send to ``target``) under a wall-clock deadline.
 
@@ -867,7 +889,7 @@ def _bounded(target, call: Callable[[], Any], timeout_s: float, what: str) -> An
     """
     lock = target._inflight
     if not lock.acquire(blocking=False):
-        raise TimeoutError(f"the previous {what} has still not been answered")
+        raise SendInFlight(f"the previous {what} has still not been answered")
     done = threading.Event()
     box: dict = {}
 
@@ -895,6 +917,24 @@ def _bounded(target, call: Callable[[], Any], timeout_s: float, what: str) -> An
     if "exc" in box:
         raise box["exc"]
     return box.get("result")
+
+
+def _maybe_delivered(exc: BaseException) -> bool:
+    """Did the receiver possibly get this record already? A deadline that
+    expired means the request was on the wire long before any answer was
+    due back: the notification may well have landed, and a retry is a
+    second copy on somebody's phone rather than a redelivery. A refused
+    connection, a name that does not resolve, an HTTP error status and a
+    command that exited non-zero are all answers, and safe to retry."""
+    if isinstance(exc, SendInFlight):
+        return False                       # never put on the wire
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return True
+    if isinstance(exc, urllib.error.HTTPError):
+        return False
+    if isinstance(exc, urllib.error.URLError):
+        exc = exc.reason if isinstance(exc.reason, BaseException) else exc
+    return isinstance(exc, TimeoutError)
 
 
 def _describe_error(exc: Exception) -> str:

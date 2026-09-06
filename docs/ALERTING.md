@@ -39,7 +39,15 @@ written to `data/state/alert-spool.jsonl`, and the next start sends it,
 less what has gone stale, to the sinks it was for by name. Every record
 carries an `id` that is the same on every retry (`{id}` in templates), so
 a receiver that keeps what it has seen can drop a repeat of a page that
-did arrive. `threadwatch status` and the status page count what this run
+did arrive; HTTP sinks send it as `Idempotency-Key` as well.
+
+A send that runs out of `timeout_s` is the exception to the schedule: the
+request was on the wire before any answer was due, so the receiver may
+already have it, and a retry would be a second notification rather than a
+redelivery. Those get one more try and are then let go, with the journal
+saying why. A refused connection, a name that does not resolve, an error
+status and a command that exits non-zero all mean nothing was delivered,
+and keep the full schedule. `threadwatch status` and the status page count what this run
 delivered, holds for retry, gave up and resumed from the spool;
 `threadwatch doctor` warns while a spool is waiting for a start.
 

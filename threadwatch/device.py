@@ -190,6 +190,7 @@ def run_device(cfg: Config, target: str, pcap_file: Path | None = None,
                     mle_events.append((f.ts, info.command_name))
 
     undecodable = 0
+    refused = 0                # frames bearing the address that did not vouch for it
     skipped_bytes = skipped_files = 0
     unreadable: list[tuple[Path, Exception]] = []
     for path in files:
@@ -205,6 +206,16 @@ def run_device(cfg: Config, target: str, pcap_file: Path | None = None,
                     # pipeline's answer is the attribution used here, so
                     # no frame is identified twice.
                     is_ours = pipe.ingest(f) in addr_set
+                    # Attribution is not a sighting. An extended address is
+                    # 64 bits the sender asserts, and the pipeline counts a
+                    # frame as the device's own only when its MIC and its
+                    # frame counter vouch for it. The traffic table below
+                    # is everything that carried the address - a beacon
+                    # request during a join scan is unsecured and worth
+                    # seeing - but when the device was last really heard,
+                    # and the silences that follow from it, are the
+                    # vouched-for frames alone, as the recorder judged them.
+                    vouched = is_ours and pipe.last_sighting in addr_set
                     # ACK for our previous unicast transmission
                     if (prev_frame is not None and f.ftype == 2
                             and f.seq == prev_frame.seq and f.ts - prev_frame.ts < 0.05):
@@ -220,11 +231,14 @@ def run_device(cfg: Config, target: str, pcap_file: Path | None = None,
                         h["polls"] += 1
                     if f.rssi is not None:
                         h["rssi"].append(f.rssi)
-                    if first_ts is None:
-                        first_ts = f.ts
-                    if last_ts is not None and f.ts - last_ts > cfg.quiet_s:
-                        gaps.append((last_ts, f.ts))
-                    last_ts = f.ts
+                    if vouched:
+                        if first_ts is None:
+                            first_ts = f.ts
+                        if last_ts is not None and f.ts - last_ts > cfg.quiet_s:
+                            gaps.append((last_ts, f.ts))
+                        last_ts = f.ts
+                    else:
+                        refused += 1
                     if f.ftype == 1:
                         try:
                             inspect(f, h)
@@ -249,6 +263,9 @@ def run_device(cfg: Config, target: str, pcap_file: Path | None = None,
                          f"(first: {path}: {exc})")
     if undecodable:
         print(f"({undecodable} frames with undecodable payloads skipped)")
+    if refused:
+        print(f"({refused} frame(s) carrying this address did not vouch for it - unsecured, a replay, or "
+              "a forgery - and count as traffic below but not as sightings of the device)")
     if skipped_bytes:
         print(f"({skipped_bytes} bytes in {skipped_files} ring file(s) are not readable records and were skipped)")
 
@@ -260,16 +277,20 @@ def run_device(cfg: Config, target: str, pcap_file: Path | None = None,
         window = f"last {hours:g} h: " if hours is not None else ""
         source = f"snapshot {snapshot_dir.name}: " if snapshot_dir is not None else ""
         print(f"analyzed {source}{window}{len(files)} ring file(s), {files[0].name[12:23]} to {files[-1].name[12:23]}")
-    if first_ts is None:
+    if not per_hour:
         print("No frames from this device in the analyzed window.")
         print("Interpretation: either out of range of the dongle, silent (dead "
               "battery / crashed radio), or transmitting under an unknown "
               "rotated address — check `threadwatch devices` for unknowns.")
         print_history(cfg.events_dir, addrs, reference)
         return 1 if unreadable else 0
-    print(f"first seen: {_t.strftime('%Y-%m-%d %H:%M:%S', _t.localtime(first_ts))}")
-    print(f"last seen:  {_t.strftime('%Y-%m-%d %H:%M:%S', _t.localtime(last_ts))}"
-          f"  ({round((_t.time() - last_ts) / 60, 1)} min ago)")
+    if first_ts is None:
+        print("Not heard: frames carrying this address are in the window, but none of them vouched for "
+              "the sender, so none is a sighting. The traffic is below; the device itself was not heard.")
+    else:
+        print(f"first seen: {_t.strftime('%Y-%m-%d %H:%M:%S', _t.localtime(first_ts))}")
+        print(f"last seen:  {_t.strftime('%Y-%m-%d %H:%M:%S', _t.localtime(last_ts))}"
+              f"  ({round((_t.time() - last_ts) / 60, 1)} min ago)")
     # The year is shown only when the table spans more than one.
     years = {k[0] for k in per_hour}
     labels = {k: (f"{k[0]}-" if len(years) > 1 else "") + f"{k[1]:02d}-{k[2]:02d} {k[3]:02d}h" for k in per_hour}

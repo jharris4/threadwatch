@@ -164,10 +164,19 @@ class RunDeviceTest(unittest.TestCase):
     def _at(stamp, plus=0.0):
         return time.mktime(time.strptime(stamp, "%Y-%m-%d %H:%M")) + plus
 
+    KEY = bytes.fromhex("00112233445566778899aabbccddeeff")     # what _run's credentials hold
+
     def _psdu(self, addr, seq, ftype=1, dst="0000", cmd=4):
-        """A data frame, or (ftype 3) an unsecured MAC command: a data
-        request (4, a poll) unless another command id is given."""
+        """A data frame or a poll (ftype 3, command 4), secured under the
+        test credentials as a device secures everything it sends once
+        attached: those are the frames that vouch for the sender and count
+        as sightings. The frame counter is the sequence number, so frames
+        written in time order climb. A beacon request (command 7, a join
+        scan) is unsecured, as it is on air."""
         import struct
+        if ftype in (1, 3) and cmd == 4:
+            from tests.frames import secured_psdu
+            return secured_psdu(addr, seq, ftype=ftype, seq=seq, dst=dst, key=RunDeviceTest.KEY)
         fcf = ftype | 0x0040 | (2 << 10) | (1 << 12) | (3 << 14)   # pan compressed, short dst, ext src
         payload = bytes([cmd, 0x33]) if ftype == 3 else b"\x7f\x33"
         return (struct.pack("<HBH", fcf, seq, 0x4e21) + bytes.fromhex(dst)[::-1]
@@ -236,6 +245,31 @@ class RunDeviceTest(unittest.TestCase):
         self.assertIn("(90 min)", text)                       # ours only: 08:20 -> 09:50
         self.assertIn("no rejoin-related MLE seen from this device", text)
         self.assertIn("event log: nothing recorded for this device.", text)
+
+    def test_replayed_frames_are_traffic_but_not_sightings(self):
+        # Three copies of one frame: the pipeline accepts the first and
+        # refuses the other two, and the report used to count all three,
+        # advance "last seen" to the last of them, and shorten the silence
+        # that followed. The traffic is still shown - a device whose
+        # frames are being replayed is worth seeing - but only the frame
+        # the pipeline vouched for is a sighting.
+        psdu = self._psdu(self.DEV, 5)
+        frames = [(self._at("2026-09-03 08:00"), psdu),
+                  (self._at("2026-09-03 08:40"), psdu),
+                  (self._at("2026-09-03 09:20"), psdu)]
+        text = self._run(frames)
+        self.assertIn("2 frame(s) carrying this address did not vouch for it", text)
+        self.assertIn("last seen:  2026-09-03 08:00:00", text)
+        self.assertNotIn("silences", text)                    # one sighting: no gap between two
+        self.assertEqual(sum(int(r[2]) for r in self._rows(text)), 3)   # the traffic is all there
+
+    def test_a_window_of_nothing_but_replays_says_the_device_was_not_heard(self):
+        psdu = self._psdu(self.DEV, 5)
+        text = self._run([(self._at("2026-09-03 08:00"), self._psdu(self.DEV, 9)),   # a later counter first
+                          (self._at("2026-09-03 08:40"), psdu)],
+                         target=self.DEV)
+        self.assertIn("last seen:  2026-09-03 08:00:00", text)
+        self.assertIn("1 frame(s) carrying this address did not vouch for it", text)
 
     def test_the_silence_threshold_is_the_configured_one(self):
         # why hardcoded 30 minutes while the recorder pages after

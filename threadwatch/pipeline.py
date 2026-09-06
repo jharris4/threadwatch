@@ -167,6 +167,10 @@ class Pipeline:
         self._next_browse = 0.0
         self.last_frame: Frame | None = None
         self._last_who: str | None = None
+        # The address the last frame ingested was attributed to and that it
+        # also vouched for (see ingest). Attribution alone is 64 bits the
+        # sender asserts; this is the frame the pipeline counted.
+        self.last_sighting: str | None = None
         self.beacon_times = deque(maxlen=16)
         self._join_scan_evt = 0.0
         self.dup_recent = {}                    # (src, seq, pan) -> ts
@@ -1052,7 +1056,11 @@ class Pipeline:
     def ingest(self, f: Frame) -> str | None:
         """Take one frame. Returns the extended address it was attributed
         to (identity), or None, so a caller walking a capture for one
-        device (the command) can filter on the same answer without a second pass."""
+        device (the command) can filter on the same answer without a second
+        pass. Attribution is not the same as a sighting: a replayed or
+        forged frame is attributed and refused. ``last_sighting`` holds the
+        address when this frame also vouched for it, and None when it did
+        not, so a caller can count what the pipeline counted."""
         ts = f.ts
         self.detector.add_frame(ts)
         bucket = int(ts // 3600)
@@ -1274,6 +1282,7 @@ class Pipeline:
                  **self.detector.snapshot())
 
         self.last_frame = f
+        self.last_sighting = who if (who and live) else None
         return who
 
     # -------------------------------------------------- poll starvation

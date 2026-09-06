@@ -16,8 +16,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch import alerts  # noqa: E402
-from threadwatch.events import EventLog, read_all  # noqa: E402
+from threadwatch import alerts
+from threadwatch.events import EventLog, read_all
 
 
 # serve_forever's default poll_interval is 0.5 s, and shutdown() blocks

@@ -9,10 +9,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from threadwatch import mdns  # noqa: E402
-from tests import no_lan  # noqa: E402
-from tests.no_lan import real_browse  # noqa: E402  (this module tests the browse itself)
-from threadwatch.mdns import (SERVICE, clean_text, TYPE_A, TYPE_PTR, TYPE_SRV, TYPE_TXT, build_query,  # noqa: E402
+from threadwatch import mdns
+from tests import no_lan
+from tests.no_lan import real_browse   # this module tests the browse itself
+from threadwatch.mdns import (SERVICE, clean_text, TYPE_A, TYPE_PTR, TYPE_SRV, TYPE_TXT, build_query,
                               collect_routers, encode_name, parse_message, read_name)
 
 EXT = bytes.fromhex("c0ffee0000000001")

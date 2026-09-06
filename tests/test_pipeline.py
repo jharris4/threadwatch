@@ -9,12 +9,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch.config import Config  # noqa: E402
-from threadwatch.events import NullEventLog  # noqa: E402
-from threadwatch.pcap import Frame  # noqa: E402
-from threadwatch.pipeline import Pipeline  # noqa: E402
-from threadwatch.crypto import Decryptor  # noqa: E402
-from tests.frames import psdu_for  # noqa: E402
+from threadwatch.config import Config
+from threadwatch.events import NullEventLog
+from threadwatch.pcap import Frame
+from threadwatch.pipeline import Pipeline
+from threadwatch.crypto import Decryptor
+from tests.frames import psdu_for
 
 
 def stub_decryptor():

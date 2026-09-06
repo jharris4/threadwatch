@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch.link import DAY_S, PAUSE_GAP_S, WARMUP_FRAMES, assess  # noqa: E402
+from threadwatch.link import DAY_S, PAUSE_GAP_S, WARMUP_FRAMES, assess
 
 T0 = 1_700_000_000.0
 DROP, HOLD = 8.0, 1800.0

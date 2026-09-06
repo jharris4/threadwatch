@@ -17,12 +17,12 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch.config import Config  # noqa: E402
-from threadwatch.events import EventLog, day_bounds, day_of, list_days, migrate_legacy, read_day  # noqa: E402
-from threadwatch.review import (coverage, coverage_since, day_episodes, day_index, device_history,  # noqa: E402
+from threadwatch.config import Config
+from threadwatch.events import EventLog, day_bounds, day_of, list_days, migrate_legacy, read_day
+from threadwatch.review import (coverage, coverage_since, day_episodes, day_index, device_history,
                                 episode_blind_s, group_episodes)
-from threadwatch import web  # noqa: E402
-from threadwatch.web import make_server  # noqa: E402
+from threadwatch import web
+from threadwatch.web import make_server
 
 AQ = "26976e7f7d20964a"
 PLUG = "2a2d355a26ccae5f"

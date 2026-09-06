@@ -12,8 +12,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch.config import Config  # noqa: E402
-from threadwatch import doctor  # noqa: E402
+from threadwatch.config import Config
+from threadwatch import doctor
 
 
 class DoctorTest(unittest.TestCase):

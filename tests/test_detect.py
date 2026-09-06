@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch.detect import Detector, DetectorConfig  # noqa: E402
+from threadwatch.detect import Detector, DetectorConfig
 
 
 class StormLatchTest(unittest.TestCase):

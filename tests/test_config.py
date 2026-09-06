@@ -9,9 +9,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch import alerts  # noqa: E402
-from threadwatch import config as config_mod  # noqa: E402
-from threadwatch.capture import RingWriter  # noqa: E402
+from threadwatch import alerts
+from threadwatch import config as config_mod
+from threadwatch.capture import RingWriter
 
 
 class KeepGbTest(unittest.TestCase):

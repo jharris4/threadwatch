@@ -10,15 +10,15 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch.capture import (EXIT_FILE, EXIT_SNIFFER_DIED, EXIT_STALLED, PERIODIC_S,  # noqa: E402
+from threadwatch.capture import (EXIT_FILE, EXIT_SNIFFER_DIED, EXIT_STALLED, PERIODIC_S,
                                  STALL_TIMEOUT_S, TICK_S,
                                  Housekeeping, _write_status, capture_healthy, capture_stalled,
                                  last_frame_on_record, periodic_due, record_exit, status_tick, watchdog_verdict)
-from threadwatch.config import Config  # noqa: E402
-from threadwatch.crypto import Decryptor  # noqa: E402
-from threadwatch.events import NullEventLog  # noqa: E402
-from threadwatch.pipeline import Pipeline  # noqa: E402
-from tests.frames import psdu_for  # noqa: E402
+from threadwatch.config import Config
+from threadwatch.crypto import Decryptor
+from threadwatch.events import NullEventLog
+from threadwatch.pipeline import Pipeline
+from tests.frames import psdu_for
 
 
 class StatusFileTest(unittest.TestCase):

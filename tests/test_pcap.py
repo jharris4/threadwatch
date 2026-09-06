@@ -10,8 +10,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch.capture import RingWriter  # noqa: E402
-import unittest as _ut  # noqa: E402
+from threadwatch.capture import RingWriter
+import unittest as _ut
 
 
 class RingSizeCapTest(_ut.TestCase):

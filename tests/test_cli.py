@@ -12,8 +12,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch.cli import main  # noqa: E402
-from tests.frames import psdu_for, secured_psdu  # noqa: E402
+from threadwatch.cli import main
+from tests.frames import psdu_for, secured_psdu
 
 
 class CliCase(unittest.TestCase):

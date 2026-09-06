@@ -9,10 +9,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch.config import Config  # noqa: E402
-from threadwatch.events import NullEventLog  # noqa: E402
-from threadwatch.pcap import parse_frame  # noqa: E402
-from threadwatch.pipeline import Pipeline  # noqa: E402
+from threadwatch.config import Config
+from threadwatch.events import NullEventLog
+from threadwatch.pcap import parse_frame
+from threadwatch.pipeline import Pipeline
 
 # cryptography is required, not optional: load_decryptor raises without it,
 # doctor.check_credentials is a hard FAIL, and setup-host.sh aborts on the
@@ -20,8 +20,8 @@ from threadwatch.pipeline import Pipeline  # noqa: E402
 # could never fire - three other test modules import the package at module
 # scope, so a run without it is three collection errors before any guard
 # is read - and the guards suggested a configuration nobody tests.
-from cryptography.hazmat.primitives.ciphers.aead import AESCCM  # noqa: E402
-from threadwatch.crypto import Decryptor, derive_keys  # noqa: E402
+from cryptography.hazmat.primitives.ciphers.aead import AESCCM
+from threadwatch.crypto import Decryptor, derive_keys
 
 KEY = bytes(range(16))
 SED = "029a47566a00b543"

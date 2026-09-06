@@ -21,9 +21,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch.config import Config  # noqa: E402
-from threadwatch.events import EventLog, day_of  # noqa: E402
-from threadwatch.web import make_server  # noqa: E402
+from threadwatch.config import Config
+from threadwatch.events import EventLog, day_of
+from threadwatch.web import make_server
 
 
 class BindDefaultTest(unittest.TestCase):

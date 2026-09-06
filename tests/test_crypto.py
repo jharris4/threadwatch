@@ -15,9 +15,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from cryptography.hazmat.primitives.ciphers.aead import AESCCM  # noqa: E402
+from cryptography.hazmat.primitives.ciphers.aead import AESCCM
 
-from threadwatch.crypto import Decryptor, derive_keys  # noqa: E402
+from threadwatch.crypto import Decryptor, derive_keys
 
 KEY = bytes(range(16))
 SED = "029a47566a00b543"

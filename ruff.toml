@@ -23,11 +23,20 @@ extend-exclude = ["vendor", ".venv-flash", ".nrfutil-bin"]
 select = [
     "F",        # pyflakes: unused imports and names, broken f-strings
     "E9",       # syntax and IO errors
+    "E402",     # module-level import that is not at the top of the file
     "E501",     # line too long
     "B",        # bugbear: loop-variable closures, re-raise without from
     "SIM115",   # files opened without a context manager
+    "RUF100",   # a noqa that suppresses nothing
 ]
 
+# E402 and RUF100 earn their place together. The tests set sys.path before
+# importing threadwatch, and 56 imports carried a noqa for it; ruff exempts
+# that header, so 54 of those directives suppressed nothing and were removed.
+# The two that remain mark a real stranded import. RUF100 is what stops the
+# other 54 growing back: a noqa that suppresses nothing is now an error, not
+# a comment nobody checks.
+#
 # Considered and rejected, so the next person does not re-litigate them:
 #   I001    import sorting, 97 hits, pure churn
 #   UP045   Optional[X] -> X | None, 184 hits, same

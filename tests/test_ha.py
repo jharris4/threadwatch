@@ -11,11 +11,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from threadwatch import ha  # noqa: E402
-from threadwatch.ha import (FrameReader, HAError, connection_settings, encode_frame, load_env,  # noqa: E402
+from threadwatch import ha
+from threadwatch.ha import (FrameReader, HAError, connection_settings, encode_frame, load_env,
                             normalize_ext, parse_dataset_tlv, select_dataset,
                             thread_dataset, thread_devices, write_private)
-from threadwatch.importer import plan_border_routers, plan_inventory, run_import  # noqa: E402
+from threadwatch.importer import plan_border_routers, plan_inventory, run_import
 
 
 class EnvFileTest(unittest.TestCase):

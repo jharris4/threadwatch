@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch.names import (DeviceNames, LastSeen, adopt, load_observed_names,  # noqa: E402
+from threadwatch.names import (DeviceNames, LastSeen, adopt, load_observed_names,
                                rotation_hints, suggest_entries)
 
 AQ = "26976e7f7d20964a"

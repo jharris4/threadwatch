@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch.why import select_recent  # noqa: E402
+from threadwatch.why import select_recent
 
 NOW = time.mktime(time.strptime("2026-09-03 10:20", "%Y-%m-%d %H:%M"))
 

@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch.config import Config  # noqa: E402
+from threadwatch.config import Config
 from threadwatch.crypto import Decryptor
 from threadwatch.events import NullEventLog
 from threadwatch.mdns import TYPE_PTR, TYPE_TXT, encode_name, parse_message, read_name

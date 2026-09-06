@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from threadwatch.config import Config  # noqa: E402
 from threadwatch import doctor  # noqa: E402
+from tests.no_lan import setUpModule, tearDownModule  # noqa: E402, F401  (no mDNS from the suite)
 
 
 class DoctorTest(unittest.TestCase):
@@ -313,3 +314,57 @@ def _cfg_with_key():
     cfg = Config()
     cfg.config_dir = d
     return cfg
+
+
+class CheckBorderRoutersTest(unittest.TestCase):
+    """check_border_routers against a patched browse. The whole-run tests
+    above used to reach the real mdns.browse through this check, a
+    four-second multicast query per run_doctor call on whatever LAN the
+    suite ran on, finding (and printing) real devices; the module now
+    imports the suite's LAN guard like every other."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cfg = Config(data_dir=Path(self.tmp.name) / "data", config_dir=Path(self.tmp.name))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _check(self, found=None, error=None):
+        from threadwatch import mdns
+
+        def browse(timeout=4.0, **_kw):
+            if error is not None:
+                raise error
+            return found
+        with mock.patch.object(mdns, "browse", browse):
+            return doctor.check_border_routers(self.cfg)
+
+    def test_disabled_failed_empty_and_found(self):
+        self.cfg.border_router_browse_s = 0
+        self.assertEqual(self._check(), [("ok", "border routers", "mDNS browse disabled ([border_routers] browse_s = 0)")])
+        self.cfg.border_router_browse_s = 600
+        level, subject, text = self._check(error=OSError("no route to host"))[0]
+        self.assertEqual((level, subject), ("warn", "border routers"))
+        self.assertIn("mDNS browse failed (no route to host)", text)
+        level, _s, text = self._check(found=[{"instance": "hub", "ext": None}])[0]
+        self.assertEqual(level, "warn")
+        self.assertIn("none found over mDNS", text)
+        level, _s, text = self._check(found=[{"instance": "Living Room", "ext": "b62c32bf669272db"},
+                                             {"instance": "Office", "ext": "1669674dd15cf0fa"},
+                                             {"instance": "no address", "ext": None}])[0]
+        self.assertEqual(level, "ok")
+        self.assertEqual(text, "2 found over mDNS: Living Room (b62c32bf669272db), Office (1669674dd15cf0fa)")
+
+    def test_the_whole_run_never_opens_a_socket(self):
+        # run_doctor reaches the browse through check_border_routers (the
+        # default browse_s is 600); under the suite's guard it answers with
+        # an empty LAN, and no socket is opened on the way.
+        from threadwatch import mdns
+        with mock.patch.object(mdns, "socket") as sock:
+            checks = doctor.run_doctor(self.cfg, find_port=lambda: "/dev/x", now=time.time())
+        self.assertEqual(sock.socket.call_count, 0)
+        routers = [c for c in checks if c[1] == "border routers"]
+        self.assertEqual(len(routers), 1)
+        self.assertEqual(routers[0][0], "warn")
+        self.assertIn("none found over mDNS", routers[0][2])

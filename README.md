@@ -106,8 +106,12 @@ question: *why did this device go offline?*
    --write` writes it and seeds `config/devices.json` with your device
    names). The recorder does not start without the key.
 4. `bin/threadwatch doctor` says whether the box is fit to record.
-5. `bin/threadwatch capture` (or enable the systemd unit; never both at
-   once, one capture process per host).
+5. `sudo systemctl restart threadwatch` — the setup script in step 2
+   already enabled and started it; this picks up the key from step 3.
+   `bin/threadwatch status` says it is recording. (To watch capture start
+   by hand, `sudo systemctl stop threadwatch` first: one capture process
+   per host, or the second one pages the household for silences the first
+   is already hearing. docs/OPERATIONS.md.)
 6. When something feels wrong: `bin/threadwatch status`, and
    `bin/threadwatch freeze` before the evidence rolls off
    (docs/OPERATIONS.md: logs, restarts, what every doctor line means).

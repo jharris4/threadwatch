@@ -199,6 +199,19 @@ def _severity_index(name: str, default: int = 2) -> int:
     return SEVERITIES.index(name) if name in SEVERITIES else default
 
 
+def _min_severity(raw, sink: str) -> int:
+    """A sink's floor, by name. An unrecognised name used to fall back to
+    warning without a word, so a typo ("notce", "Notice", "warn") raised
+    the floor and every notice the operator asked for was dropped, with
+    alert-test still saying ok. A typo in an event filter is logged for
+    the same reason; a floor that is wrong is worse, so it is refused."""
+    name = str(raw)
+    if name not in SEVERITIES:
+        raise ConfigError(f"alert sink '{sink}': min_severity must be one of {', '.join(SEVERITIES)}, "
+                          f"not {raw!r}")
+    return SEVERITIES.index(name)
+
+
 # ------------------------------------------------------------------- sinks
 
 def record_id(record: dict) -> str:
@@ -500,7 +513,7 @@ def build_sink(raw: dict, index: int, log: Callable[[str], None],
         raise ConfigError(f"alert sink '{name}': give events or ignore_events, not both")
     common = dict(
         name=name,
-        min_severity=_severity_index(str(raw.get("min_severity", "warning"))),
+        min_severity=_min_severity(raw.get("min_severity", "warning"), name),
         cooldown_s=float(raw.get("cooldown_s", 300.0)),
         timeout_s=float(raw.get("timeout_s", 10.0)),
         events=_event_filter(raw, "events", name, log),
@@ -544,7 +557,7 @@ def build_sinks(alerts_raw: dict, log: Callable[[str], None], unbuilt: Optional[
                 unbuilt.append(("webhook", reason))
         else:
             sinks.append(HttpSink(name="webhook", url=url,
-                                  min_severity=_severity_index(str(alerts_raw.get("min_severity", "warning")))))
+                                  min_severity=_min_severity(alerts_raw.get("min_severity", "warning"), "webhook")))
     for i, raw in enumerate(alerts_raw.get("sinks", []) or []):
         s = build_sink(raw, i, log, unbuilt)
         if s is not None:

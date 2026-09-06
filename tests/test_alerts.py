@@ -162,6 +162,21 @@ class SinkBuildTests(unittest.TestCase):
                                             msgs.append), [])           # unset variable: disabled, not built
         self.assertIn("TW_NOT_SET_CMD", msgs[0])
 
+    def test_a_misspelt_min_severity_is_refused_not_raised_to_warning(self):
+        # "notce" became warning without a word: every notice the sink was
+        # for was dropped, and alert-test said ok.
+        for bad in ("notce", "Notice", "info ", "warn", 2, True):
+            with self.subTest(bad=bad), self.assertRaises(alerts.ConfigError) as cm:
+                alerts.build_sinks({"sinks": [{"name": "phone", "url": "http://x", "min_severity": bad}]}, print)
+            self.assertEqual(str(cm.exception), "alert sink 'phone': min_severity must be one of info, notice, "
+                                                f"warning, critical, not {bad!r}")
+        with self.assertRaises(alerts.ConfigError) as cm:
+            alerts.build_sinks({"webhook_url": "http://x/hook", "min_severity": "notce"}, print)
+        self.assertIn("alert sink 'webhook': min_severity must be one of", str(cm.exception))
+        for name, idx in zip(alerts.SEVERITIES, range(4)):
+            sinks = alerts.build_sinks({"sinks": [{"url": "http://x", "min_severity": name}]}, print)
+            self.assertEqual(sinks[0].min_severity, idx)
+
     def test_cooldown_is_per_sink_and_per_event(self):
         a = alerts.HttpSink(name="a", url="http://x", cooldown_s=300)
         b = alerts.HttpSink(name="b", url="http://x", cooldown_s=0)

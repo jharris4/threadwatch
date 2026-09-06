@@ -205,6 +205,7 @@ show the same file.) The fields:
 | `last_frame_ts` | when any run last heard a frame (unix seconds); unlike the age it spans restarts, and stays put while nothing is heard |
 | `port`, `channel` | the dongle's serial port and the channel being captured |
 | `frames_total` | frames this run; it should climb between two runs of `status` |
+| `dropped_lines` | serial lines from the dongle the sniffer could not parse this run: frames nobody recorded. A steady climb is a cable or firmware problem, not a quiet mesh |
 | `uptime_s` | this run's age |
 | `current_file` | the ring file being written; `null` until this run's first frame opens one |
 | `devices_tracked` | addresses heard this run |

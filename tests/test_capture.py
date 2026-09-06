@@ -60,6 +60,19 @@ class StatusFileTest(unittest.TestCase):
         self.pipe.__class__ = Racing
         self.assertEqual(self.pipe.partition_status(), {"id": 0x2a, "leader_router": 60})
 
+    def test_dropped_serial_lines_are_counted_into_the_status_file(self):
+        # The vendored sniffer swallowed a line its packet regex did not
+        # match with a bare `except: ...`, so a garbled serial line was a
+        # dropped frame nothing recorded. A flight recorder that drops
+        # frames without counting them cannot tell you that it did.
+        from types import SimpleNamespace
+        self.assertEqual(self._write(last_frame_age=5.0)["dropped_lines"], 0)
+        beat = {"last_frame_mono": None, "total": 0, "last_frame": None, "ring": self.ring}
+        status_tick(self.cfg, "/dev/x", beat, time.time(), time.monotonic(), self.pipe,
+                    self.pipe.decryptor, None, lambda _m: None, SimpleNamespace(parse_failures=7))
+        st = json.loads((self.cfg.state_dir / "status.json").read_text())
+        self.assertEqual(st["dropped_lines"], 7)
+
     def test_last_frame_stamp_is_written_and_read_back(self):
         self.assertIsNone(last_frame_on_record(self.cfg.state_dir))      # no file yet
         st = self._write(last_frame_age=170.0)                            # a run that heard nothing
@@ -122,6 +135,53 @@ class ExitNoteTest(unittest.TestCase):
             self.assertIsNone(record_exit(Path(d) / "missing" / "state", EXIT_STALLED, None))
 
 
+class VendoredSnifferTest(unittest.TestCase):
+    """vendor/nrf802154_sniffer.py carries two threadwatch changes: a
+    garbled serial line is counted rather than swallowed, and a
+    disconnected dongle ends the reader instead of spinning."""
+
+    def _reader(self, lines, disconnect_after):
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "vendor"))
+        from nrf802154_sniffer import ExitEvent, Nrf802154Sniffer, ParseFailure, SnifferPacket
+
+        class FakeSerial:
+            def __init__(self, *_a, **_k):
+                self.n = 0
+
+            def readline(self):
+                self.n += 1
+                if self.n > disconnect_after:
+                    raise OSError("device gone")
+                return lines[self.n - 1]
+
+        class FakeQueue:
+            def __init__(self):
+                self.items = []
+
+            def put(self, item):
+                self.items.append(item)
+
+        import nrf802154_sniffer as mod
+        real, q = mod.Serial, FakeQueue()
+        mod.Serial = FakeSerial
+        try:
+            Nrf802154Sniffer.serial_reader("/dev/x", q)
+        finally:
+            mod.Serial = real
+        return q.items, ExitEvent, ParseFailure, SnifferPacket
+
+    def test_a_garbled_line_is_a_counted_drop_and_a_disconnect_ends_the_reader(self):
+        good = (b"received: 0102030405060708 power: -42 lqi: 128 time: 1000\r\n")
+        items, ExitEvent, ParseFailure, SnifferPacket = self._reader(
+            [good, b"\xff\xfe garbage\r\n", good], disconnect_after=3)
+        kinds = [type(i).__name__ for i in items]
+        self.assertEqual(kinds, ["SnifferPacket", "ParseFailure", "SnifferPacket", "ExitEvent"])
+        # It used to fall through and spin here, filling the queue with
+        # ExitEvents at whatever rate the failing read returned.
+        self.assertEqual(kinds.count("ExitEvent"), 1)
+
+
 class StatusConsumersTest(unittest.TestCase):
     """One status.json, written by the daemon and read by everything that
     reads it: the web header and status page, doctor, and `threadwatch
@@ -153,8 +213,9 @@ class StatusConsumersTest(unittest.TestCase):
                       self.ring, self.pipe.decryptor, last_frame_age=170.0, last_frame_ts=now - 170)
         st = json.loads((self.cfg.state_dir / "status.json").read_text())
         self.assertEqual(sorted(st), ["alerts", "channel", "commit", "crypto", "current_file", "detector",
-                                      "devices_tracked", "dominant_pan", "frames_total", "last_frame_age_s",
-                                      "last_frame_ts", "partition", "port", "updated", "uptime_s", "version"])
+                                      "devices_tracked", "dominant_pan", "dropped_lines", "frames_total",
+                                      "last_frame_age_s", "last_frame_ts", "partition", "port", "updated",
+                                      "uptime_s", "version"])
         # Which code is recording: the one thing that tells a restart that
         # happened from one that did not.
         from threadwatch import __version__

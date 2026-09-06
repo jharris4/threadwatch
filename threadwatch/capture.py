@@ -370,7 +370,8 @@ def run_capture(cfg: Config) -> None:
             time.sleep(30)
             if watchdog_stop.is_set():
                 return          # shutting down: the main thread owns the state now
-            age = status_tick(cfg, port, beat, started, started_mono, pipe, decryptor, prior_frame, _log)
+            age = status_tick(cfg, port, beat, started, started_mono, pipe, decryptor, prior_frame, _log,
+                              sniffer)
             verdict = watchdog_verdict(age, ring_open=beat["ring"] is not None,
                                        sniffer_alive=sniffer.thread.is_alive())
             if verdict == EXIT_SNIFFER_DIED:
@@ -472,7 +473,7 @@ def run_capture(cfg: Config) -> None:
 
 
 def status_tick(cfg, port, beat: dict, started: float, started_mono: float, pipe: Pipeline,
-                decryptor, prior_frame: Optional[float], log) -> float:
+                decryptor, prior_frame: Optional[float], log, sniffer=None) -> float:
     """One watchdog tick: refresh status.json once the ring is open, and
     return the stall clock's reading (seconds since this run's last frame,
     or since it started). The file's last_frame_ts is when a frame was
@@ -484,7 +485,8 @@ def status_tick(cfg, port, beat: dict, started: float, started_mono: float, pipe
     if beat["ring"] is not None:
         try:
             _write_status(cfg, port, beat["total"], started, pipe, beat["ring"], decryptor,
-                          last_frame_age=age, last_frame_ts=beat["last_frame"] or prior_frame)
+                          last_frame_age=age, last_frame_ts=beat["last_frame"] or prior_frame,
+                          dropped_lines=getattr(sniffer, "parse_failures", 0))
         except Exception as exc:   # a full disk must not take the stall check with it
             log(f"status.json not written: {exc}")
     return age
@@ -503,7 +505,8 @@ def last_frame_on_record(state_dir: Path) -> Optional[float]:
 
 
 def _write_status(cfg, port, total, started, pipe: Pipeline, ring, decryptor,
-                  last_frame_age: float = 0.0, last_frame_ts: Optional[float] = None) -> None:
+                  last_frame_age: float = 0.0, last_frame_ts: Optional[float] = None,
+                  dropped_lines: int = 0) -> None:
     # last_frame_age_s is this run's view (the watchdog's stall clock);
     # last_frame_ts is the wall-clock time of the last frame any run heard,
     # which does not move while nothing is heard.
@@ -518,6 +521,10 @@ def _write_status(cfg, port, total, started, pipe: Pipeline, ring, decryptor,
         "port": port,
         "channel": cfg.channel,
         "frames_total": total,
+        # Serial lines the sniffer could not parse: frames the dongle sent
+        # and nothing recorded. Steadily climbing means a cable or a
+        # baud-rate problem, not a quiet mesh.
+        "dropped_lines": dropped_lines,
         "uptime_s": round(time.time() - started, 1),
         # None until the first frame opens an hour file: a tick in the
         # first 30 s of a silent channel used to write the string "None".

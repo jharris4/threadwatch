@@ -78,6 +78,16 @@ class ExitEvent:
     reason: str = ""
 
 
+# threadwatch local change: a serial line the packet regex does not match
+# used to be dropped by a bare except with nothing counting it. A flight
+# recorder that drops frames without counting them cannot tell you it
+# did, so the reader sends one of these instead and the consumer, which
+# runs in the recorder's own process, keeps the total.
+@dataclass
+class ParseFailure:
+    pass
+
+
 class DLT(IntEnum):
     # Various options for pcap files: http://www.tcpdump.org/linktypes.html
     DLT_IEEE802_15_4_NOFCS = 230
@@ -113,6 +123,10 @@ class Nrf802154Sniffer:
         self.first_local_timestamp = None
         self.first_sniffer_timestamp = None
         self.thread = None
+        # threadwatch local change: serial lines the packet regex did not
+        # match, counted for status.json. Written by the consumer thread
+        # in this process, read by the watchdog.
+        self.parse_failures = 0
 
     def correct_time(self, sniffer_timestamp):
         """
@@ -142,9 +156,15 @@ class Nrf802154Sniffer:
                     packet = cls.parse_packet(value)
                     queue.put(packet)
                 except:
-                    ...
+                    # threadwatch local change: was `...`, so a garbled
+                    # line was a dropped frame nothing recorded.
+                    queue.put(ParseFailure())
             except:
                 queue.put(ExitEvent(f"Sniffer device {serial_port} was disconnected."))
+                # threadwatch local change: was a fall-through, so a
+                # disconnected dongle span here filling the queue with
+                # ExitEvents at whatever rate the failing read returned.
+                return
 
     @classmethod
     def parse_packet(cls, value: bytes) -> SnifferPacket:
@@ -418,6 +438,9 @@ class Nrf802154Sniffer:
                                 content, self.dlt, self.channel, rssi, lqi, self.correct_time(timestamp)
                             )
                             fifo.write(pcap)
+                        case ParseFailure():
+                            # threadwatch local change: see ParseFailure.
+                            self.parse_failures += 1
                         case ExitEvent(reason):
                             if reason:
                                 sys.stderr.write(reason)

@@ -160,6 +160,21 @@ class EventsKeepDaysTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self._load("[events]\nkeep_days = -1\n")
 
+    def test_silence_s_of_zero_is_refused_rather_than_paging_every_device(self):
+        # Zero is "disable" for [summary] hour (-1) and [border_routers]
+        # browse_s in the same file. Here it made the quiet test true for
+        # every device on every tick: 40 pages, each persisted as
+        # announced, and then nothing about a real silence again.
+        self.assertEqual(self._load("[quiet]\nsilence_s = 600\n").quiet_s, 600)
+        for bad in ("0", "-1"):
+            with self.assertRaises(ValueError, msg=bad) as cm:
+                self._load(f"[quiet]\nsilence_s = {bad}\n")
+            self.assertIn("[quiet] silence_s must be more than 0 seconds", str(cm.exception))
+        # The pre-2026-09-04 keys stand in for it, and are checked the same.
+        self.assertEqual(self._load("[quiet]\nend_device_s = 900\nrouter_s = 300\n").quiet_s, 900)
+        with self.assertRaises(ValueError):
+            self._load("[quiet]\nend_device_s = 0\nrouter_s = 0\n")
+
     def test_confirm_s_defaults_to_ten_minutes_zero_pages_at_once_negative_refused(self):
         self.assertEqual(self._load("[network]\nchannel = 25\n").poll_confirm_s, 600)
         self.assertEqual(self._load("[polls]\nconfirm_s = 0\n").poll_confirm_s, 0)

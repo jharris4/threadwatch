@@ -238,6 +238,14 @@ def load(path: Optional[Path]) -> Config:
         # role; the longer of them stands in for silence_s in an old file.
         legacy = [float(quiet[k]) for k in ("end_device_s", "router_s") if k in quiet]
         cfg.quiet_s = float(quiet.get("silence_s", max(legacy) if legacy else cfg.quiet_s))
+        # There is no "disable" value here, though [summary] hour = -1 and
+        # [border_routers] browse_s = 0 both mean that in the same file. At
+        # zero or less the quiet test is true for every device on every
+        # tick: a 40-device mesh pages 40 times, each one persisted as
+        # announced so a restart does not undo it, and then says nothing
+        # about a real silence again.
+        if not cfg.quiet_s > 0:
+            raise ValueError(f"[quiet] silence_s must be more than 0 seconds, not {cfg.quiet_s:g}")
         cfg.quiet_min_rssi_dbm = float(quiet.get("min_rssi_dbm", cfg.quiet_min_rssi_dbm))
         link = raw.get("link", {})
         cfg.link_drop_db = float(link.get("drop_db", cfg.link_drop_db))

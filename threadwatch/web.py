@@ -680,7 +680,7 @@ class Site:
                '<span class="sev info">info</span> bookkeeping &middot; '
                '<span class="sev notice">notice</span> worth a glance here, never paged &middot; '
                '<span class="sev warning">warning</span> paged to the phone &middot; '
-               '<span class="sev critical">critical</span> paged, and the ring buffer is worth freezing.</div>')
+               '<span class="sev critical">critical</span> paged, and the ring buffer is worth saving.</div>')
         items = "".join(f'<h2>{esc(title)}</h2><p>{esc(text)}</p>' for _k, title, text in LEGEND)
         conv = ('<h2>How the pages read</h2><p>Each row is an <i>episode</i>, not a log line: repeated '
                 'records about the same thing are one row with a count and a time span. An episode that '

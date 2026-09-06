@@ -748,6 +748,31 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertAlmostEqual(rec["silent_for_s"], 31 * 60, delta=5)
         self.assertEqual(len([r for r in pipe.events.records if r["event"] == "clock_step"]), 1)
 
+    def test_a_silence_of_exactly_quiet_s_at_start_up_is_not_yet_quiet(self):
+        # The start-up reconciliation decides a device has returned with
+        # `silence_s(row, now) <= quiet_threshold_s(addr)`. Nothing said
+        # which way the exact boundary falls, so changing it to < left the
+        # suite green while flipping every device sitting precisely on the
+        # threshold from "returned" to "quiet" at every restart. The live
+        # check one screen away is `>`, so exactly quiet_s is not quiet
+        # there either, and the two have to agree or a restart announces a
+        # silence the running recorder would not have.
+        import json as _json
+        T = time.time()
+        for offset, expect_quiet in ((0.0, False), (0.5, True)):
+            state = self.cfg.state_dir
+            state.mkdir(parents=True, exist_ok=True)
+            (state / "last-seen.json").write_text(_json.dumps(
+                {ROUTER: {"first_seen": T - 7200, "last_seen": T - self.cfg.quiet_s - offset,
+                          "frames": 10, "types": {}, "pan": OWN_PAN}}))
+            (state / "blind-spans.json").write_text("[]")
+            # Something else was heard a moment ago, so the recorder is
+            # credited no blindness reaching back over this silence.
+            (state / "status.json").write_text(_json.dumps({"last_frame_ts": T}))
+            pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+            self.assertEqual(self._quiet(pipe) == [ROUTER], expect_quiet,
+                             f"silence of quiet_s + {offset}")
+
     def test_a_clock_step_back_moves_every_cooldown_and_deadline_with_it(self):
         # Each of these is read as `now < stamp` or `now - stamp < window`.
         # Left the step ahead of the clock, each suppresses its own check

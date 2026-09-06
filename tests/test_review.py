@@ -910,6 +910,19 @@ class CoverageTest(unittest.TestCase):
                            "note": coverage(self.log.dir, self.day, self.end)[0]["note"], "count": 1,
                            "credited": True}])
 
+    def test_a_gap_that_ends_exactly_at_the_days_start_is_no_segment_at_all(self):
+        # Each segment is clipped to the day and dropped `if b > a`. With
+        # >= instead, a gap that ends exactly where the day begins - or
+        # begins exactly where `now` is - is emitted as a zero-width band
+        # on the bar and a "recorder not listening: 0s" line under it.
+        # The suite did not say which, so the mutation survived.
+        self._put(start(self.start, last=self.start - 3600, cause="stopped"))
+        self.assertEqual(coverage(self.log.dir, self.day, self.end), [])
+        # The day before owns it whole, and there it is a real segment.
+        self.assertEqual([(s["start"], s["end"]) for s in
+                          coverage(self.log.dir, day_of(T0 - 86400), self.end)],
+                         [(self.start - 3600, self.start)])
+
     def test_the_scan_forward_stops_at_a_start_whose_last_frame_is_after_the_day(self):
         self._put(start(T0 + 86400, last=self.end + 60, cause="unknown"),       # heard after this day: stop here
                   start(T0 + 2 * 86400, last=T0, cause="unknown"))              # never read (would cover the day)

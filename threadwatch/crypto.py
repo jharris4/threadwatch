@@ -75,7 +75,7 @@ class Decryptor:
     stats: dict = field(default_factory=lambda: {
         "mac_decrypted": 0, "mac_failed": 0, "mac_no_ext_addr": 0, "mac_unsupported": 0,
         "mle_decrypted": 0, "mle_failed": 0, "mle_unsecured": 0, "plaintext": 0,
-        "short_resolved": 0, "short_unresolved": 0, "parse_failed": 0,
+        "short_resolved": 0, "short_unresolved": 0, "short_candidates_tried": 0, "parse_failed": 0,
     })
 
     # Before any frame has decrypted, a key index is tried as the first
@@ -154,6 +154,7 @@ class Decryptor:
         if not sec:
             return None
         for ext_hex in candidates:
+            self.stats["short_candidates_tried"] += 1
             if self._decrypt_with_ext(sec, ext_hex) is not None:
                 self.short_to_ext[short_hex] = ext_hex
                 self.stats["short_resolved"] += 1

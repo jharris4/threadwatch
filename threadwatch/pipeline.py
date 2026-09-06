@@ -194,6 +194,11 @@ class Pipeline:
         self._pruned_day: Optional[str] = None       # local day the event log was last pruned on
         self._capped_at: Optional[float] = None      # when rows were last dropped to stay under TRACK_MAX
         self._resolve_after: dict[str, float] = {}   # short addr -> next attempt ts
+        self._resolve_fails: dict[str, int] = {}     # short addr -> searches that found nobody, in a row
+        self._resolve_tokens = float(self.RESOLVE_TRIALS_BURST)   # candidate trials in hand (see identity)
+        self._resolve_tokens_ts: Optional[float] = None
+        self._candidates_built: Optional[float] = None
+        self._candidates: list[str] = []
         self._verify_after: dict[str, float] = {}    # short addr -> next re-check of its mapping
         self._foreign_after: dict[tuple, float] = {}  # (short addr, other PAN) -> next MIC check against it
         self.extra_candidates: list[str] = []        # ext addrs to try first in the nonce search (why)
@@ -664,6 +669,45 @@ class Pipeline:
     # ---------------------------------------------------------- identity
 
     RESOLVE_RETRY_S = 30.0
+    RESOLVE_RETRY_MAX_S = 1800.0      # the backoff on a short address nobody in the table sent from
+    # The nonce search is the one thing in the capture loop whose cost the
+    # sender chooses: every unmappable short source costs a MIC check per
+    # candidate, up to sixteen AES-CCM operations each, and there are
+    # 65,536 short addresses to send from. The candidates are the
+    # addresses most heard on our PAN, this many at most, and the searches
+    # draw on one budget of trials refilled at this rate: a start-up that
+    # has the whole mesh to name spends the burst, a flood of forged short
+    # sources is throttled to a fraction of a core, and the ring keeps up.
+    RESOLVE_CANDIDATES_MAX = 256
+    RESOLVE_TRIALS_PER_S = 500.0
+    RESOLVE_TRIALS_BURST = 4000.0
+    RESOLVE_CANDIDATES_CACHE_S = 5.0
+
+    def _resolve_candidates(self, ts: float) -> list[str]:
+        """The extended addresses worth trying as a short-source frame's
+        nonce: the caller's (why), the inventory's, then the table's rows
+        on our PAN by frames heard, so a forged address heard once never
+        displaces a device; ranked again every few seconds, not per frame."""
+        built = self._candidates_built
+        if built is None or not 0.0 <= ts - built < self.RESOLVE_CANDIDATES_CACHE_S:
+            dominant = self.dominant_pan()
+            rows = [(row.get("frames") or 0, a) for a, row in self.seen.table.items()
+                    if dominant is None or row.get("pan") in (None, dominant)]
+            rows.sort(reverse=True)
+            self._candidates = list(dict.fromkeys(
+                [*self.extra_candidates, *self.names.by_addr, *(a for _n, a in rows[:self.RESOLVE_CANDIDATES_MAX])]))
+            self._candidates_built = ts
+        return self._candidates
+
+    def _resolve_budget(self, ts: float) -> bool:
+        """Refill the trial budget to now; True when a search may start."""
+        last = self._resolve_tokens_ts
+        if last is None or ts < last:
+            last = ts
+        self._resolve_tokens = min(self.RESOLVE_TRIALS_BURST,
+                                   self._resolve_tokens + (ts - last) * self.RESOLVE_TRIALS_PER_S)
+        self._resolve_tokens_ts = ts
+        return self._resolve_tokens >= 1.0
 
     def identity(self, f: Frame) -> Optional[str]:
         """The extended address a frame came from, when we can know it.
@@ -719,9 +763,22 @@ class Pipeline:
             self._resolve_after.pop(src, None)
         if f.ts < self._resolve_after.get(src, 0.0) or not self.decryptor.resolvable(f.psdu):
             return None
-        self._resolve_after[src] = f.ts + self.RESOLVE_RETRY_S
-        candidates = dict.fromkeys([*self.extra_candidates, *self.names.by_addr, *self.seen.table])
-        return self.decryptor.resolve_short(f.psdu, src, candidates)
+        pan = f.src_pan if f.src_pan != BROADCAST_PAN else None
+        dominant = self.dominant_pan()
+        if pan is not None and dominant is not None and pan != dominant:
+            return None          # a neighbour's device: our key cannot name it, and need not
+        if not self._resolve_budget(f.ts):
+            return None          # the budget is spent: this one waits, the ring does not
+        fails = self._resolve_fails.get(src, 0)
+        self._resolve_after[src] = f.ts + min(self.RESOLVE_RETRY_S * 2 ** fails, self.RESOLVE_RETRY_MAX_S)
+        tried = self.decryptor.stats["short_candidates_tried"]
+        ext = self.decryptor.resolve_short(f.psdu, src, self._resolve_candidates(f.ts))
+        self._resolve_tokens -= self.decryptor.stats["short_candidates_tried"] - tried
+        if ext is None:
+            self._resolve_fails[src] = fails + 1
+        else:
+            self._resolve_fails.pop(src, None)
+        return ext
 
     # ------------------------------------------------------------ ingest
 

@@ -256,6 +256,63 @@ class ResolveShortTest(unittest.TestCase):
             f = parse_frame(1.0, secured_frame(SED, "c829", 3, ftype=3), 195)
             self.assertEqual(pipe.identity(f), SED)
 
+    def test_the_nonce_search_is_bounded_in_candidates_and_in_trials(self):
+        # The candidate set was the whole last-seen table, which anything
+        # in range can grow (a forged extended address per frame), and the
+        # only rate limit was per short address, of which there are 65,536:
+        # a flood of unmappable short sources cost O(table) AES-CCM per
+        # frame on the capture thread until the ring dropped frames.
+        with tempfile.TemporaryDirectory() as tmp:
+            dd = Path(tmp)
+            (dd / "devices.json").write_text(json.dumps([{"name": "x", "extendedAddress": OTHER}]))
+            cfg = Config(data_dir=dd / "data", devices_path=dd / "devices.json")
+            dec = Decryptor(network_key=KEY)
+            pipe = Pipeline(cfg, NullEventLog(), dec)
+            t0 = 1_700_000_000.0
+            fcf = 1 | 0x0040 | (2 << 10) | (1 << 12) | (3 << 14)      # unsecured data, ext source
+            for n in range(1000):                                      # a thousand addresses heard once
+                addr = f"{0x3000000000000000 + n:016x}"
+                psdu = struct.pack("<HBH", fcf, 1, PAN) + bytes.fromhex("00cc")[::-1] + bytes.fromhex(addr)[::-1]
+                pipe.ingest(parse_frame(t0 + n * 0.001, psdu, 230))
+            for i in range(5):                                         # and the real device, five times
+                psdu = struct.pack("<HBH", fcf, 1, PAN) + bytes.fromhex("00cc")[::-1] + bytes.fromhex(SED)[::-1]
+                pipe.ingest(parse_frame(t0 + 2 + i, psdu, 230))
+            self.assertEqual(len(pipe.seen.table), 1001)
+            # One unmappable short source: the inventory and the most-heard
+            # rows are tried, the device is found, and the thousand
+            # once-heard addresses were never in the running.
+            self.assertEqual(pipe.ingest(parse_frame(t0 + 10, secured_frame(SED, "c829", 1), 195)), SED)
+            self.assertLessEqual(dec.stats["short_candidates_tried"], Pipeline.RESOLVE_CANDIDATES_MAX + 1)
+            candidates = pipe._resolve_candidates(t0 + 10)
+            self.assertEqual(candidates[:2], [OTHER, SED])
+            self.assertLessEqual(len(candidates), Pipeline.RESOLVE_CANDIDATES_MAX + 1)
+            # A flood of forged short sources under a foreign key: the
+            # searches draw on one budget, so the trials stop growing with
+            # the flood, and every short address is not a fresh search.
+            foreign = bytes(range(16, 32))
+            before = dec.stats["short_candidates_tried"]
+            for n in range(5000):
+                psdu = secured_frame(OTHER, f"{0x1000 + n:04x}", n, key=foreign)
+                pipe.ingest(parse_frame(t0 + 20 + n * 0.002, psdu, 195))   # 10 s of frames
+            spent = dec.stats["short_candidates_tried"] - before
+            self.assertLessEqual(spent, Pipeline.RESOLVE_TRIALS_BURST + 10 * Pipeline.RESOLVE_TRIALS_PER_S + 300)
+            self.assertLess(dec.stats["short_unresolved"], 5000)
+            # A short address that found nobody backs off further each
+            # time: 30 s after the first search, then 60, 120 ... to 30 min.
+            self.assertEqual(pipe._resolve_after["1000"], t0 + 20 + 30)
+            waits = []
+            for t in (t0 + 60, t0 + 130, t0 + 300, t0 + 700, t0 + 2000, t0 + 4000):
+                pipe._resolve_tokens = Pipeline.RESOLVE_TRIALS_BURST
+                pipe.ingest(parse_frame(t, secured_frame(OTHER, "1000", 9000, key=foreign), 195))
+                waits.append(pipe._resolve_after["1000"] - t)
+            self.assertEqual(waits, [60, 120, 240, 480, 960, 1800])
+            # Success clears the backoff; a neighbour's PAN is not searched at all.
+            self.assertNotIn("c829", pipe._resolve_fails)
+            before = dec.stats["short_candidates_tried"]
+            pipe._resolve_tokens = Pipeline.RESOLVE_TRIALS_BURST
+            pipe.ingest(parse_frame(t0 + 5000, secured_frame(OTHER, "abcd", 1, pan=0x58bc, key=foreign), 195))
+            self.assertEqual(dec.stats["short_candidates_tried"], before)
+
     def test_unresolvable_short_is_retried_only_after_backoff(self):
         with tempfile.TemporaryDirectory() as tmp:
             dd = Path(tmp)

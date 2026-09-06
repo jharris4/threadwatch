@@ -1794,6 +1794,11 @@ class Pipeline:
         listing says which one without opening the manifest."""
         if not self.cfg.snapshot_on_critical or self.ephemeral:
             return None
+        if self.cfg.keep_snapshots == 0:
+            # Keeping none of them: taking one to delete it at the next
+            # storm is the ring copied for nothing. Snapshots saved by hand
+            # are a different path and are not affected.
+            return None
         if ts - self._last_auto_snapshot < self.AUTO_SNAPSHOT_COOLDOWN_S:
             return None
         self._last_auto_snapshot = ts
@@ -1811,7 +1816,12 @@ class Pipeline:
         from .snapshot import prune_auto_snapshots, save_snapshot
         # Oldest automatic snapshots go before this one is taken, not
         # after: the room they free is the room this copy needs.
-        dropped = prune_auto_snapshots(self.cfg.snapshots_dir, max(0, self.cfg.keep_snapshots - 1))
+        keep = self.cfg.keep_snapshots
+        # One less, to leave room for the copy about to be taken - but -1 is
+        # the no-cap sentinel and has to stay -1 through that subtraction:
+        # the 0 it used to become deleted every automatic snapshot on disk,
+        # which is the opposite of what -1 asks for.
+        dropped = prune_auto_snapshots(self.cfg.snapshots_dir, keep - 1 if keep > 0 else keep)
         if dropped:
             self.events.emit("snapshots_pruned", "info", time.time(), removed=dropped,
                              note=(f"{len(dropped)} older automatic snapshot(s) removed to keep "

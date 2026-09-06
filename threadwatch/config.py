@@ -39,7 +39,7 @@ class Config:
     keep_hours: int = 168                      # ring: one hourly file each, a week of them
     keep_bytes: int | None = None           # ring: total size cap ([record] keep_gb), None = files only
     snapshot_on_critical: bool = False         # save the ring when a critical event fires
-    keep_snapshots: int = 4                    # how many auto-* snapshots to keep; -1 = no cap
+    keep_snapshots: int = 4                    # how many auto-* snapshots to keep; -1 = no cap, 0 = take none
     devices_path: Path | None = None
     detector: DetectorConfig = field(default_factory=DetectorConfig)
     config_dir: Path = REPO_ROOT / "config"

@@ -30,7 +30,9 @@ keep_hours = 168                  # ring files to retain, one per hour heard (16
 # snapshot_on_critical = true
 # keep_snapshots = 4              # how many auto-* snapshots to keep; the oldest go before each new
                                   # one is taken. Snapshots you saved by hand are never pruned.
-                                  # -1 keeps every automatic one (nothing else deletes them).
+                                  # -1 keeps every automatic one (nothing else deletes them);
+                                  # 0 takes none at all, leaving snapshot_on_critical to the
+                                  # events it logs ('threadwatch snapshot' still saves by hand).
 
 [devices]
 # Inventory that maps extended addresses to human names (see names.py docstring).

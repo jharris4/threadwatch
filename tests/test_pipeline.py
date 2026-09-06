@@ -1177,6 +1177,41 @@ class QuietPolicyTest(unittest.TestCase):
         pruned = [r for r in pipe.events.records if r["event"] == "snapshots_pruned"]
         self.assertEqual([r["removed"] for r in pruned], [["20231101T000000_auto-storm"]])
 
+    def test_keeping_every_automatic_snapshot_deletes_none_of_them(self):
+        # -1 is the no-cap sentinel. Subtracting the room for the copy about
+        # to be taken turned it into 0, which deleted every automatic
+        # snapshot on disk: each save destroyed the evidence it was set to
+        # keep for ever.
+        from threadwatch.review import snapshots
+        pipe = self._pipe()
+        self.cfg.keep_snapshots = -1
+        self.cfg.ring_dir.mkdir(parents=True, exist_ok=True)
+        (self.cfg.ring_dir / "threadwatch-20231114-22.pcap").write_bytes(b"ring")
+        self.cfg.snapshots_dir.mkdir(parents=True, exist_ok=True)
+        for name in ("20231101T000000_auto-storm", "20231102T000000_auto-storm"):
+            (self.cfg.snapshots_dir / name).mkdir()
+        pipe._save_snapshot_now("auto-storm", "phase_locked_storm")
+        kept = sorted(i["name"] for i in snapshots(self.cfg.snapshots_dir))
+        self.assertEqual(kept[:2], ["20231101T000000_auto-storm", "20231102T000000_auto-storm"])
+        self.assertEqual(len(kept), 3)                     # the two old ones and the new one
+        self.assertEqual([r for r in pipe.events.records if r["event"] == "snapshots_pruned"], [])
+
+    def test_keeping_no_snapshots_takes_none(self):
+        # 0 is a count of snapshots to keep, so it takes none at all rather
+        # than copying the whole ring and deleting it at the next storm.
+        # The critical event is still logged and still alerts.
+        self.cfg.snapshot_on_critical = True
+        self.cfg.keep_snapshots = 0
+        pipe = self._pipe()
+        pipe.snapshotter = lambda label, trigger: self.fail("copied the ring with keep_snapshots = 0")
+        pipe.detector.storm_active = True
+        pipe.detector.storm_details = {"period": 80.5, "onsets": [1.0, 2.0, 3.0]}
+        pipe.detector.add_frame = lambda ts: setattr(pipe.detector, "storm_active", True)
+        pipe.ingest(frame(1_700_000_000.0, ROUTER))
+        storms = [r for r in pipe.events.records if r["event"] == "phase_locked_storm"]
+        self.assertEqual([r["auto_snapshot"] for r in storms], [None])
+        self.assertFalse(self.cfg.snapshots_dir.exists())   # nothing was copied
+
     def test_a_snapshot_that_would_crowd_the_ring_out_is_refused_not_attempted(self):
         # A snapshot is a second copy of the ring. Taking one that leaves
         # the ring less room than it still needs trades a week of recording

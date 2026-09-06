@@ -103,7 +103,9 @@ any event of `critical` severity fires — `phase_locked_storm` is the only
 one today (at most once per six hours, counted from the newest automatic
 snapshot on disk). Automatic snapshots are capped by
 `[record] keep_snapshots` (4 by default): the oldest `auto-*` ones go
-before each new snapshot is taken. Snapshots you saved by hand are never
+before each new snapshot is taken. `-1` keeps every automatic snapshot,
+and `0` takes none of them at all — the critical event is still logged
+and still alerts, and `threadwatch snapshot <label>` still saves by hand. Snapshots you saved by hand are never
 pruned, so delete them yourself with `threadwatch snapshots --delete`. A
 snapshot that would leave the ring less room than it still needs is
 refused, with a `snapshot_skipped` warning saying so.

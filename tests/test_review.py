@@ -907,7 +907,8 @@ class CoverageTest(unittest.TestCase):
         self.assertEqual(self._cov(now=T0 + 7200)[-1], ("blind", T0 + 3600, T0 + 7200, "unknown", 1))
         self.assertEqual(coverage(self.log.dir, day_of(T0 - 86400), self.end),
                          [{"start": self.start - 900, "end": self.start, "state": "blind", "cause": "clock_step",
-                           "note": coverage(self.log.dir, self.day, self.end)[0]["note"], "count": 1}])
+                           "note": coverage(self.log.dir, self.day, self.end)[0]["note"], "count": 1,
+                           "credited": True}])
 
     def test_the_scan_forward_stops_at_a_start_whose_last_frame_is_after_the_day(self):
         self._put(start(T0 + 86400, last=self.end + 60, cause="unknown"),       # heard after this day: stop here
@@ -931,12 +932,26 @@ class CoverageTest(unittest.TestCase):
         self.assertEqual(coverage(self.log.dir, today, now, {"updated": now - 10, "last_frame_age_s": 5}), [])
 
     def test_how_much_of_an_episode_nobody_was_listening_for(self):
-        segs = [{"start": T0 + 600, "end": T0 + 1200, "state": "blind"},
-                {"start": T0 + 1200, "end": T0 + 1500, "state": "uncertain"},
-                {"start": T0 + 3000, "end": T0 + 4000, "state": "blind"}]
+        segs = [{"start": T0 + 600, "end": T0 + 1200, "state": "blind", "credited": True},
+                {"start": T0 + 1200, "end": T0 + 1500, "state": "uncertain", "credited": False},
+                {"start": T0 + 3000, "end": T0 + 4000, "state": "blind", "credited": True}]
         quiet = {"start": T0 + 1800, "end": None, "silent_since": T0}          # from the device's last frame
         self.assertEqual(episode_blind_s(quiet, segs, now=T0 + 3500), 600 + 500)
         self.assertEqual(episode_blind_s({"start": T0 + 1300, "end": T0 + 2000}, segs), 0)
+
+    def test_the_uncertain_tail_of_a_restart_counts_as_the_pipeline_counted_it(self):
+        # The pipeline credits the whole span from the last frame any run
+        # heard; coverage splits it, calling last_frame..stopped
+        # "uncertain" (running, hearing nothing) and stopped..start
+        # "blind". Counting only the blind half made the event and the day
+        # page disagree about the same outage by exactly that tail.
+        self._put(start(T0 + 7200, last=T0 + 1800, stopped=T0 + 3600, cause="stopped"))
+        segs = coverage(self.log.dir, self.day, T0 + 7200)
+        self.assertEqual([(s["state"], s["start"], s["end"], s["credited"]) for s in segs],
+                         [("uncertain", T0 + 1800, T0 + 3600, True),
+                          ("blind", T0 + 3600, T0 + 7200, True)])
+        quiet = {"start": T0 + 1800, "end": None, "silent_since": T0 + 1800}
+        self.assertEqual(episode_blind_s(quiet, segs, now=T0 + 7200), 5400)
 
 
 class EveryEventKindTest(unittest.TestCase):

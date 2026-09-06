@@ -368,9 +368,10 @@ def coverage_since(events_dir: Path) -> Optional[float]:
 def _merge(spans: list[tuple]) -> list[dict]:
     """Overlapping or touching spans of one state become one segment,
     keeping the cause and note of the longest piece and counting the
-    pieces (a restart loop is one segment of many starts)."""
+    pieces (a restart loop is one segment of many starts). ``credited``
+    is true if any piece was: see coverage."""
     out: list[dict] = []
-    for a, b, cause, note in sorted(spans):
+    for a, b, cause, note, credited in sorted(spans):
         if b <= a:
             continue
         if out and a <= out[-1]["end"]:
@@ -379,8 +380,10 @@ def _merge(spans: list[tuple]) -> list[dict]:
                 cur.update(cause=cause, note=note, longest=b - a)
             cur["end"] = max(cur["end"], b)
             cur["count"] += 1
+            cur["credited"] = cur["credited"] or credited
             continue
-        out.append({"start": a, "end": b, "cause": cause, "note": note, "count": 1, "longest": b - a})
+        out.append({"start": a, "end": b, "cause": cause, "note": note, "count": 1,
+                    "longest": b - a, "credited": credited})
     return out
 
 
@@ -420,25 +423,35 @@ def coverage(events_dir: Path, day: str, now: Optional[float] = None,
                 continue                      # the first start ever: nothing before it to cover
             cause = r.get("cause") if r.get("cause") in _BLIND_NOTES else "unknown"
             if isinstance(stopped, (int, float)) and last <= stopped <= ts:
+                # The last run was up and hearing nothing from its last
+                # frame until it stopped, then nothing was running until
+                # this start. The two read differently on the page, but
+                # the pipeline credited the whole span to itself, so the
+                # whole span is credited here too.
                 if stopped - last >= COVERAGE_MIN_S:
-                    uncertain.append((last, stopped, "no_frames", _UNCERTAIN_NOTES["no_frames"]))
-                blind.append((stopped, ts, cause, _BLIND_NOTES[cause]))
+                    uncertain.append((last, stopped, "no_frames", _UNCERTAIN_NOTES["no_frames"], True))
+                blind.append((stopped, ts, cause, _BLIND_NOTES[cause], True))
             else:
-                blind.append((last, ts, cause, _BLIND_NOTES[cause]))
+                blind.append((last, ts, cause, _BLIND_NOTES[cause], True))
         elif ev == "clock_step":
             step = r.get("step_s") or 0
             if step > 0:
-                blind.append((ts - step, ts, "clock_step", _BLIND_NOTES["clock_step"]))
+                blind.append((ts - step, ts, "clock_step", _BLIND_NOTES["clock_step"], True))
         elif ev == "configured_pan_silent":
+            # Frames were heard, just not ours: nothing the pipeline
+            # subtracts from any device's silence.
             window = r.get("window_s") or 1800
-            uncertain.append((ts - window, ts, "pan_silent", _UNCERTAIN_NOTES["pan_silent"]))
+            uncertain.append((ts - window, ts, "pan_silent", _UNCERTAIN_NOTES["pan_silent"], False))
     if status and day == day_of(now):
         updated = status.get("updated")
         if isinstance(updated, (int, float)):
+            # The live tail: nothing is on record about it yet, so
+            # nothing has been credited to any device's silence either.
             if now - updated > STATUS_DEAD_S:
-                blind.append((updated, now, "down", _BLIND_NOTES["down"]))
+                blind.append((updated, now, "down", _BLIND_NOTES["down"], False))
             elif (status.get("last_frame_age_s") or 0) > STATUS_QUIET_S:
-                uncertain.append((now - status["last_frame_age_s"], now, "no_frames", _UNCERTAIN_NOTES["no_frames"]))
+                uncertain.append((now - status["last_frame_age_s"], now, "no_frames",
+                                  _UNCERTAIN_NOTES["no_frames"], False))
     blind_segs = _merge(blind)
     segs = [{**seg, "state": "blind"} for seg in blind_segs]
     segs += [{**seg, "state": "uncertain"} for seg in _subtract(_merge(uncertain), blind_segs)]
@@ -447,18 +460,25 @@ def coverage(events_dir: Path, day: str, now: Optional[float] = None,
         a, b = max(seg["start"], start), min(seg["end"], end, now)
         if b > a:
             out.append({"start": a, "end": b, "state": seg["state"], "cause": seg["cause"],
-                        "note": seg["note"], "count": seg["count"]})
+                        "note": seg["note"], "count": seg["count"], "credited": seg["credited"]})
     return sorted(out, key=lambda x: (x["start"], x["state"]))
 
 
 def episode_blind_s(ep: dict, segments: list[dict], now: Optional[float] = None) -> float:
-    """How much of an episode's span the recorder was not listening for
-    (blind segments only): the figure beside a silence that says how
-    much of it nobody was there to hear. A quiet spell spans from the
-    device's last frame; anything else from its first record."""
+    """How much of an episode's span the recorder was not listening for:
+    the figure beside a silence that says how much of it nobody was there
+    to hear. A quiet spell spans from the device's last frame; anything
+    else from its first record.
+
+    The credited segments, not the blind ones. They are the same except
+    at a restart, where the pipeline credits the whole span from the last
+    frame any run heard - including the tail during which the last run
+    was up and hearing nothing, drawn as uncertain here. Counting the
+    blind ones alone made the day page and the event disagree about the
+    same outage by exactly that tail (90 min against 80)."""
     a = ep.get("silent_since") if isinstance(ep.get("silent_since"), (int, float)) else ep["start"]
     b = ep["end"] if ep["end"] is not None else (now or time.time())
-    return sum(max(0.0, min(b, s["end"]) - max(a, s["start"])) for s in segments if s["state"] == "blind")
+    return sum(max(0.0, min(b, s["end"]) - max(a, s["start"])) for s in segments if s["credited"])
 
 
 # Counts per day file, keyed by (mtime, size) as events.read_day is. The

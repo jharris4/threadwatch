@@ -79,7 +79,8 @@ proxy that authenticates.
   the same data as JSON, for Home Assistant or anything else. The day
   response carries `coverage`: the segments of the day the recorder was
   not listening (`state` `blind`) or may not have been (`uncertain`),
-  each with `start`, `end`, `cause` and a `note`. `/api/days`
+  each with `start`, `end`, `cause`, a `note`, and `credited`: whether
+  the recorder subtracted the segment from device silences. `/api/days`
   is the day strip: one row per day that has an event file, newest first,
   with `day`, `total` and a count per severity (`info`, `notice`,
   `warning`, `critical`), so a sensor that wants "warnings today" reads
@@ -139,10 +140,13 @@ the last one to the exit the stall watchdog forced, or frames from other
 PANs only), blank for the rest of today. One line per gap follows, with
 its cause. On today's page the daemon's status file adds the live tail:
 a recorder that is down or hearing nothing right now has not logged that
-yet. A row whose span overlaps a red gap says how much of it the recorder
+yet. A row whose span overlaps a gap says how much of it the recorder
 was off for ("recorder off 14m of this"): a device quiet for an hour
 with the recorder off for fifty minutes of it is not much evidence
-against the device. `threadwatch events --day` prints the same gaps
+against the device. That figure counts the amber stretch before a
+restart as well as the red one, because the recorder credits the whole
+span from the last frame it heard to a device's silence; the two colours
+say what was known about the span, not how it was counted. `threadwatch events --day` prints the same gaps
 before the day's records.
 
 Days before the first `recorder_started` on record say "coverage: not

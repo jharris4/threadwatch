@@ -332,6 +332,43 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class HaEnvModeTest(unittest.TestCase):
+    """credentials.toml and alerts.env both warn when they are readable by
+    others. config/ha.env holds the Home Assistant long-lived access token
+    and had no such check: setup-host.sh and push-to-host.sh chmod it on
+    the capture host, so what went unchecked was the workstation copy, and
+    any host where setup-host.sh never ran."""
+
+    def test_a_world_readable_ha_env_warns_and_a_locked_one_does_not(self):
+        import os
+        import tempfile
+        from threadwatch.config import Config
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(data_dir=Path(tmp) / "data")
+            cfg.config_dir = Path(tmp)
+            path = cfg.config_dir / "ha.env"
+            self.assertEqual(doctor.check_ha_env(cfg), [])         # not present: nothing to say
+            path.write_text("HA_TOKEN=secret\n")
+            os.chmod(path, 0o644)
+            level, subject, text = doctor.check_ha_env(cfg)[0]
+            self.assertEqual((level, subject), ("warn", "ha.env"))
+            self.assertIn("long-lived access token", text)
+            os.chmod(path, 0o600)
+            self.assertEqual(doctor.check_ha_env(cfg)[0][:2], ("ok", "ha.env"))
+
+    def test_it_is_part_of_a_whole_run(self):
+        import tempfile
+        from threadwatch.config import Config
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(data_dir=Path(tmp) / "data")
+            cfg.config_dir = Path(tmp)
+            (cfg.config_dir / "ha.env").write_text("HA_TOKEN=secret\n")
+            import os
+            os.chmod(cfg.config_dir / "ha.env", 0o644)
+            checks = doctor.run_doctor(cfg, find_port=lambda: "/dev/x", now=time.time())
+            self.assertIn(("warn", "ha.env"), [(c[0], c[1]) for c in checks])
+
+
 class BlindSpansCheckTest(unittest.TestCase):
     """blind-spans.json is what every silence is measured against. It used
     to be discarded on any read failure with no journal line and no doctor

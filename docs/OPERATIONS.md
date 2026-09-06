@@ -150,6 +150,7 @@ non-`ok` line means and what to do about it:
 | `services` not installed | the systemd units are not there | `sudo bin/setup-host.sh` |
 | `services` failed / inactive | a unit is down | the journal says why; `reset-failed` and restart as above |
 | `alerts.env` mode / `export` prefix | the file is readable by others, or has a line systemd will drop | `chmod 600`; write `NAME=value` |
+| `ha.env` mode NNNN: readable by others | the Home Assistant long-lived access token is world- or group-readable | `chmod 600 config/ha.env` |
 | `alerts` alert sink 'x' disabled: environment variable(s) not set | a `${NAME}` the sink references is not in `config/alerts.env`; the daemon runs without that sink | add it to alerts.env, restart |
 | `alerts` the recorder refuses to start on this table | a sink or heartbeat with no url, an unknown type, or two sharing a name | fix `[alerts]` / `[[heartbeats]]` in config.toml (docs/ALERTING.md) |
 | `alerts` no sinks / `heartbeats` none | nothing pages you, or nothing pages when the recorder dies | optional; docs/ALERTING.md |

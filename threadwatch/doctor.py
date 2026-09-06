@@ -367,6 +367,25 @@ def load_env(path: Path) -> list[Check]:
     return out
 
 
+def check_ha_env(cfg) -> list[Check]:
+    """config/ha.env holds the Home Assistant long-lived access token
+    (docs/CREDENTIALS.md), so it gets the same mode check credentials.toml
+    and alerts.env get. Not loaded into the environment: only `import`
+    reads it, and it does that for itself.
+
+    setup-host.sh and push-to-host.sh both chmod it on the capture host,
+    so it is the workstation copy, and any host where setup-host.sh never
+    ran, that this catches."""
+    path = cfg.config_dir / "ha.env"
+    if not path.exists():
+        return []
+    mode = stat.S_IMODE(path.stat().st_mode)
+    if mode & 0o077:
+        return [(WARN, "ha.env", f"mode {mode:04o}: readable by others, and it holds the Home Assistant "
+                                 "long-lived access token; chmod 600 it")]
+    return [(OK, "ha.env", f"mode {mode:04o}")]
+
+
 def check_alerts(cfg) -> list[Check]:
     from .alerts import SPOOL_FILE, ConfigError, build_heartbeats, build_sinks
 
@@ -439,7 +458,8 @@ def run_doctor(cfg, find_port: Callable[[], str] | None = None, now: float | Non
                  lambda: check_dongle(cfg, find_port), lambda: check_daemon(cfg, now), lambda: check_ring(cfg, now),
                  lambda: check_last_seen(cfg), lambda: check_blind_spans(cfg), lambda: check_disk(cfg), lambda: check_writable(cfg), check_clock,
                  check_services,
-                 lambda: check_alerts(cfg), lambda: check_web(cfg), check_version):
+                 lambda: check_alerts(cfg), lambda: check_ha_env(cfg), lambda: check_web(cfg),
+                 check_version):
         try:
             checks.extend(step())
         except Exception as exc:   # one broken check must not hide the rest

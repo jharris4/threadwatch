@@ -524,9 +524,13 @@ class Pipeline:
                                "ran ahead?); every stamp taken before the jump was moved back with it, so "
                                "silences are counted as heard"))
 
-    # The stamps a last-seen row carries on the wall clock.
+    # The stamps a last-seen row carries on the wall clock. quiet_reported_ts
+    # is deliberately not one of them: it is not a measurement but a pointer
+    # at an appended device_quiet record, which the step does not move. Moving
+    # the pointer alone makes the start-up reconciliation miss the record,
+    # discard the flag, and page the same unbroken silence a second time.
     ROW_STAMPS = ("first_seen", "last_seen", "rloc16_ts", "rssi_heard_ts", "rssi_ref_ts",
-                  "starve_confirm_at", "quiet_reported_ts")
+                  "starve_confirm_at")
     STATS_STAMPS = ("last_poll_ts", "ack_pending_ts", "poll_pending_ts", "unanswered_since", "confirm_at")
 
     def _rewind(self, now: float, back: float, since_check: float) -> None:

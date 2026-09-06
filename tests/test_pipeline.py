@@ -749,6 +749,35 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertAlmostEqual(rec["silent_for_s"], 31 * 60, delta=5)
         self.assertEqual(len([r for r in pipe.events.records if r["event"] == "clock_step"]), 1)
 
+    def test_a_clock_step_back_does_not_re_announce_a_silence_already_on_record(self):
+        # The quiet flag names the device_quiet record it stands for by its
+        # stamp. A backward step moves the row's measurements back with the
+        # clock; the appended record cannot move, so the pointer must not
+        # either, or the next start finds no record, discards the flag and
+        # pages the same unbroken silence twice.
+        from threadwatch.events import EventLog, day_of, read_day
+        T = time.time()
+        pipe = Pipeline(self.cfg, EventLog(self.cfg.state_dir / "events"), stub_decryptor())
+        clock = {"wall": T, "mono": 0.0}
+        pipe._wall, pipe._mono, pipe._clock = (lambda: clock["wall"]), (lambda: clock["mono"]), (T, 0.0)
+        pipe.ingest(frame(T, ROUTER))
+        clock.update(wall=T + 31 * 60, mono=31 * 60.0)
+        pipe.periodic(clock["wall"])                             # announced quiet, flag and record stamped alike
+        reported = pipe.seen.table[ROUTER]["quiet_reported_ts"]
+        clock.update(wall=T + 31 * 60 - 1800 + 20, mono=31 * 60.0 + 20)
+        pipe.periodic(clock["wall"])                             # the clock steps back 30 min
+        events = self.cfg.state_dir / "events"
+
+        def logged(event):
+            days = sorted({day_of(T), day_of(clock["wall"])})
+            return [r for day in days for r in read_day(events, day) if r["event"] == event]
+
+        self.assertEqual([r["step_s"] for r in logged("clock_step")], [-1800])
+        self.assertEqual(pipe.seen.table[ROUTER]["quiet_reported_ts"], reported)
+        pipe.seen.save()
+        Pipeline(self.cfg, EventLog(events), stub_decryptor())
+        self.assertEqual(len(logged("device_quiet")), 1)
+
     def test_a_restart_loop_that_hears_nothing_does_not_announce_every_device(self):
         # The mesh (or the dongle) died two hours ago. Since then the
         # watchdog has restarted the recorder every three minutes, and every

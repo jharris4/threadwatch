@@ -501,15 +501,28 @@ class RunCaptureTest(unittest.TestCase):
                 self.record_exit.reset_mock()
                 with mock.patch.object(capture, "watchdog_verdict", return_value=verdict):
                     import threading
+                    def watchdog_left():
+                        return any(name != "MainThread" for name, _ in self.exits)
+
                     def tick_then_release():
                         self.reader_open.wait(5)
                         self.tick.set()                    # the watchdog's tick: its verdict
-                        deadline = time.time() + 5
-                        while not any(name != "MainThread" for name, _ in self.exits) and time.time() < deadline:
+                        # Not a pacing delay: releasing the stream before
+                        # the watchdog has acted ends the main loop, and
+                        # its shutdown sets watchdog_stop, which sends the
+                        # watchdog home without a verdict. Long enough that
+                        # only a real hang reaches it.
+                        deadline = time.monotonic() + 30
+                        while not watchdog_left() and time.monotonic() < deadline:
                             time.sleep(0.01)
                         self.hold.set()                    # os._exit would have ended the process here
                     threading.Thread(target=tick_then_release, daemon=True).start()
                     self._run()
+                # The watchdog exits on its own thread, so its entry can
+                # land just after the main thread's does.
+                deadline = time.monotonic() + 5
+                while not watchdog_left() and time.monotonic() < deadline:
+                    time.sleep(0.01)
                 watchdog = [(n, c) for n, c in self.exits if n != "MainThread"]
                 self.assertEqual([c for _n, c in watchdog], [verdict])
                 # What the watchdog did before leaving, in order: the note, then the ladder.

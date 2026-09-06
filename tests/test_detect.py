@@ -125,18 +125,48 @@ class StormLatchTest(unittest.TestCase):
 
 
 class DegeneratePeriodOnsetsTest(unittest.TestCase):
-    def test_period_onsets_below_two_does_not_divide_by_zero(self):
-        for n in (0, 1):
-            det = Detector(DetectorConfig(period_onsets=n, flood_min_frames=10))
-            t = 0.0
-            for _ in range(7):
-                for _ in range(2):
-                    det.add_frame(t); t += 1.0
-                t += 60.0
-            for _ in range(6):
-                for _ in range(40):
-                    det.add_frame(t); t += 0.1
-                t += 60.0
+    """period_onsets below 2 is not a way to disable the periodicity check
+    and not an error the detector raises: _check_periodicity clamps with
+    `need = max(2, period_onsets)`, so 0 and 1 both alert on two onsets,
+    the fewest a period can be measured from. config.load rejects the
+    value outright, so this is only reachable by building a
+    DetectorConfig directly, and what it does then has to be written
+    down: the test used to drive it and end, asserting nothing."""
+
+    def _storm(self, n):
+        det = Detector(DetectorConfig(period_onsets=n, flood_min_frames=10))
+        t = 0.0
+        for _ in range(7):                        # calm: two frames a minute
+            for _ in range(2):
+                det.add_frame(t); t += 1.0
+            t += 60.0
+        for _ in range(6):                        # floods, 60 s apart
+            for _ in range(40):
+                det.add_frame(t); t += 0.1
+            t += 60.0
+        return det
+
+    def test_below_two_is_clamped_to_two_and_neither_raises_nor_disables(self):
+        for n in (0, 1, 2):
+            det = self._storm(n)
+            self.assertEqual(det.alerts_sent, 1, n)
+            self.assertTrue(det.storm_active, n)
+            self.assertEqual(det.storm_details["onsets"], [621.0, 681.0], n)   # exactly two
+        # Three onsets is the shipped default, and it names all three.
+        self.assertEqual(self._storm(3).storm_details["onsets"], [561.0, 621.0, 681.0])
+
+    def test_config_load_refuses_the_value_in_the_first_place(self):
+        import tempfile
+        from pathlib import Path as _Path
+        from threadwatch import config as config_mod
+        with tempfile.TemporaryDirectory() as d:
+            path = _Path(d) / "config.toml"
+            (_Path(d) / "devices.json").write_text("[]")
+            for bad in (0, 1):
+                path.write_text(f"[detect]\nperiod_onsets = {bad}\n")
+                with self.assertRaises(ValueError) as cm:
+                    config_mod.load(path)
+                self.assertIn("period_onsets must be at least 2", str(cm.exception))
 
 
 class FloodThresholdTest(unittest.TestCase):

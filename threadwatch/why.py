@@ -213,7 +213,7 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
                         h["rssi"].append(f.rssi)
                     if first_ts is None:
                         first_ts = f.ts
-                    if last_ts is not None and f.ts - last_ts > 1800:
+                    if last_ts is not None and f.ts - last_ts > cfg.quiet_s:
                         gaps.append((last_ts, f.ts))
                     last_ts = f.ts
                     if f.ftype == 1:
@@ -275,7 +275,7 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
         mle = ", ".join(f"{k}x{v}" for k, v in h["mle"].items()) if h["mle"] else ""
         print(f"{labels[hkey]:{width}s} {h['frames']:6d} {h['polls']:6d} {h['tx']:5d} {h['acked']:6d} {med:>9s}  {mle}")
     if gaps:
-        print("\nsilences (>30 min):")
+        print(f"\nsilences (>{fmt_duration(cfg.quiet_s)}, the configured [quiet] silence_s):")
         for a, b in gaps[-10:]:
             # A silence the recorder was not there for is not the device's.
             blind = blind_during(cfg.events_dir, a, b)

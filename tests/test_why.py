@@ -179,7 +179,7 @@ class RunWhyTest(unittest.TestCase):
         import struct
         return struct.pack("<HB", 2, seq)
 
-    def _run(self, frames, target=None):
+    def _run(self, frames, target=None, quiet_s=None):
         """Write the frames to a pcap, run `why` over it, return its output."""
         import contextlib
         import io
@@ -191,6 +191,8 @@ class RunWhyTest(unittest.TestCase):
             cred = Path(d) / "credentials.toml"
             cred.write_text('[credentials]\nnetwork_key = "00112233445566778899aabbccddeeff"\n')
             cfg = Config(data_dir=Path(d) / "data", credentials_path=cred)
+            if quiet_s is not None:
+                cfg.quiet_s = quiet_s
             pcap = Path(d) / "window.pcap"
             with open(pcap, "wb") as fh:
                 w = PcapWriter(fh, DLT_NOFCS)
@@ -230,10 +232,24 @@ class RunWhyTest(unittest.TestCase):
         self.assertEqual(rows[0][:6], ["09-03", "08h", "6", "1", "5", "1"])
         self.assertEqual(rows[1][:6], ["09-03", "09h", "1", "0", "1", "0"])
         self.assertIn(f"=== {self.DEV} ({self.DEV}) ===", text)
-        self.assertIn("silences (>30 min):", text)
+        self.assertIn("silences (>30m, the configured [quiet] silence_s):", text)
         self.assertIn("(90 min)", text)                       # ours only: 08:20 -> 09:50
         self.assertIn("no rejoin-related MLE seen from this device", text)
         self.assertIn("event log: nothing recorded for this device.", text)
+
+    def test_the_silence_threshold_is_the_configured_one(self):
+        # why hardcoded 30 minutes while the recorder pages after
+        # [quiet] silence_s, so "why did this device go offline" reported
+        # no silences for the very gap that had just paged. The legacy
+        # config path can also produce quiet_s = 5400 from an old
+        # router_s / end_device_s pair, putting a stock upgrade out of
+        # step in the other direction.
+        frames = [(self._at("2026-09-03 08:00"), self._psdu(self.DEV, 1)),
+                  (self._at("2026-09-03 08:12"), self._psdu(self.DEV, 2))]
+        self.assertNotIn("silences", self._run(frames))                       # 12 min, default 30
+        text = self._run(frames, quiet_s=600)
+        self.assertIn("silences (>10m, the configured [quiet] silence_s):", text)
+        self.assertIn("(12 min)", text)
 
     def test_a_pcap_that_cannot_be_read_is_an_error_not_a_diagnosis(self):
         # "No frames from this device" over zero examined packets, with
@@ -394,7 +410,7 @@ class RunWhyRingTest(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn(f"analyzed 3 ring file(s), {self._hour(5)} to {self._hour(0)}", out)
         self.assertEqual(self._frames_in_table(out), 12)
-        self.assertIn("silences (>30 min):", out)                     # the 5 h file to the 1 h file
+        self.assertIn("silences (>30m, the configured [quiet] silence_s):", out)                     # the 5 h file to the 1 h file
 
     def test_a_ring_file_that_cannot_be_read_is_reported_and_the_rest_still_counts(self):
         bad = self._ring_file(1, [])

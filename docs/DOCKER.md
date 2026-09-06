@@ -85,6 +85,14 @@ before `ufw`'s `INPUT` rules: a host firewall you believe is closing the
 port would not be. Read them over `ssh -L 8080:127.0.0.1:8080 user@host`,
 or widen the mapping once something in front of it authenticates.
 
+Inside the container the server binds `0.0.0.0` (`command:` in
+`compose.yaml`), which is not the LAN bind the `[web]` comment in
+config.toml warns about: that `0.0.0.0` is the container's own network
+namespace, and the published port forwards to the container's bridge
+address, so a server on the container's loopback would refuse every
+connection. Here it is the publish, not the bind, that says who can
+reach the pages.
+
 ## Layout
 
 - `./config` is mounted read-write into `capture` (so `adopt` can write

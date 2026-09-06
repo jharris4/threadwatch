@@ -40,10 +40,16 @@ class BindDefaultTest(unittest.TestCase):
         self.assertEqual(inspect.signature(web.serve).parameters["bind"].default, "127.0.0.1")
         example = tomllib.loads((REPO_ROOT / "config" / "config.example.toml").read_text())
         self.assertEqual(example["web"]["bind"], "127.0.0.1")
+        compose = (REPO_ROOT / "compose.yaml").read_text()
         published = [line.strip().lstrip("- ").strip('"')
-                     for line in (REPO_ROOT / "compose.yaml").read_text().splitlines()
+                     for line in compose.splitlines()
                      if line.strip().startswith("- ") and ":8080" in line and not line.strip().startswith("#")]
         self.assertEqual(published, ["127.0.0.1:8080:8080"])
+        # ...and that publish is the whole restriction under Docker, so the
+        # container has to bind its own 0.0.0.0: the port forwards to the
+        # container's bridge address, and a server on the container's
+        # loopback refuses every connection that arrives there.
+        self.assertIn('command: ["web", "--bind", "0.0.0.0"]', compose)
 
 
 class RequestTimeoutTest(unittest.TestCase):

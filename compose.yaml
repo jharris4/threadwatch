@@ -45,7 +45,12 @@ services:
 
   web:
     image: threadwatch
-    command: web
+    # 0.0.0.0 is this container's own network namespace, not the host's.
+    # The published port below forwards to the container's bridge address,
+    # so a server on the container's loopback - the [web] bind default,
+    # right for a native install - refuses every connection that arrives.
+    # What keeps the pages off the LAN here is the loopback publish.
+    command: ["web", "--bind", "0.0.0.0"]
     restart: unless-stopped
     depends_on: [capture]
     # Published on loopback only: the pages have no authentication, and on

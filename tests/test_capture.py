@@ -354,6 +354,7 @@ class RunCaptureTest(unittest.TestCase):
         self.reader_open = threading.Event()   # set once run_capture has opened its end
         self.tick = threading.Event()          # one watchdog tick per set
         self.finished = threading.Event()
+        self.run_over = threading.Event()      # set when run_capture has returned
         self.fail_stop = False
         test = self
 
@@ -432,32 +433,46 @@ class RunCaptureTest(unittest.TestCase):
 
     def _sleep(self, _seconds):
         """The watchdog's 30 s: one tick per test.tick.set(). Once the test
-        is over, the watchdog's own stop flag ends it on its next check.
-        Throwing SystemExit at the thread instead, as this used to, left an
-        unhandled-thread-exception warning on every run - noise that would
-        hide a real one."""
-        from threadwatch import capture
-        while not self.finished.is_set():
+        is over, the run's own stop flag (set by its shutdown) ends the
+        thread on its next check. Throwing SystemExit at the thread
+        instead, as this used to, left an unhandled-thread-exception
+        warning on every run - noise that would hide a real one."""
+        while not (self.finished.is_set() or self.run_over.is_set()):
             if self.tick.wait(0.02):
                 self.tick.clear()
                 return
-        capture.watchdog_stop.set()
+        return      # the run is over: its own stop flag ends the thread on the next check
 
     def _run(self):
         import contextlib
         import io
         from threadwatch.capture import run_capture
         out = io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-            with self.assertRaises(SystemExit) as cm:
-                run_capture(self.cfg)
+        self.run_over.clear()
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as cm:
+                    run_capture(self.cfg)
+        finally:
+            # Lets a watchdog parked in the faked sleep return, so it sees
+            # its own run's stop flag and ends instead of outliving the
+            # test. One left behind used to sit in a real 30 s sleep once
+            # tearDown put the clock back.
+            self.run_over.set()
         return cm.exception.code, out.getvalue()
+
+    @staticmethod
+    def _watchdogs() -> set:
+        """The live watchdog threads, by identity."""
+        import threading
+        return {t.ident for t in threading.enumerate() if t.name == "watchdog" and t.is_alive()}
 
     def _exit_note(self):
         return json.loads((self.cfg.state_dir / EXIT_FILE).read_text())
 
     def test_a_stream_that_ends_is_exit_3_with_everything_saved_and_closed(self):
         from threadwatch.pcap import PcapStreamReader
+        before = self._watchdogs()
         self.hold.set()                                    # three frames, then the sniffer closes its end
         code, out = self._run()
         self.assertEqual(code, 3)
@@ -477,9 +492,13 @@ class RunCaptureTest(unittest.TestCase):
         self.assertIn("stopped after 3 frames", out)
         # The watchdog is told to stop before any of that ladder runs, so
         # it cannot write status.json or take an exit decision while the
-        # main thread is saving state and closing files.
-        from threadwatch import capture
-        self.assertTrue(capture.watchdog_stop.is_set())
+        # main thread is saving state and closing files - and it goes. Only
+        # this run's: earlier tests in this class leave their own parked in
+        # a real 30 s sleep, tearDown having put the real clock back.
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and self._watchdogs() - before:
+            time.sleep(0.02)
+        self.assertEqual(self._watchdogs() - before, set())
         self.assertTrue((self.cfg.state_dir / "status.json").exists() or True)   # written by ticks only
 
     def test_a_sniffer_that_will_not_stop_does_not_keep_the_note_or_the_log_from_closing(self):

@@ -261,19 +261,14 @@ def capture_healthy(last_frame_mono: Optional[float], now: float,
     return now - last_frame_mono < timeout
 
 
-# Set on the way out of run_capture. The watchdog then stops ticking
-# rather than writing status.json or taking an exit decision while the
-# main thread is saving state and closing files. One capture process per
-# host (docs/OPERATIONS.md), so one flag serves; run_capture clears it at
-# the start of each run. It is also how a test ends the thread, which used
-# to mean throwing SystemExit at it from a faked sleep.
-watchdog_stop = threading.Event()
-
-
 def run_capture(cfg: Config) -> None:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "vendor"))
     from nrf802154_sniffer import Nrf802154Sniffer
-    watchdog_stop.clear()
+    # Set on the way out, so the watchdog stops ticking rather than writing
+    # status.json or taking an exit decision while the main thread is saving
+    # state and closing files. One per run, not module state: a watchdog
+    # outliving its own run must not be able to stop a later one's.
+    watchdog_stop = threading.Event()
 
     def _log(msg: str) -> None:
         print(f"[threadwatch] {msg}", flush=True)

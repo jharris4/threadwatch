@@ -1357,7 +1357,8 @@ class Pipeline:
         so router 60 answers to short address 0xF000; the MLE layer learns
         which extended address that is the first time the device itself
         sends an MLE frame (its advertisements carry its RLOC16)."""
-        rid = router_id if router_id is not None else (self.partition[1] if self.partition else None)
+        part = self.partition       # read once: the capture thread reassigns it
+        rid = router_id if router_id is not None else (part[1] if part else None)
         if rid is None:
             return {}
         short = f"{rid << 10:04x}"
@@ -1373,9 +1374,15 @@ class Pipeline:
 
     def partition_status(self) -> Optional[dict]:
         """The 'partition' entry of status.json and the replay summary."""
-        if not self.partition:
+        # Read once: the watchdog thread calls this while the capture
+        # thread may replace self.partition between the test and the
+        # indexing, and the raise costs a status.json write. Two missed
+        # writes in a row show a false "capture stale" banner on the web
+        # header, which treats a status file older than 180 s as stale.
+        part = self.partition
+        if not part:
             return None
-        return {"id": self.partition[0], "leader_router": self.partition[1], **self.leader_device()}
+        return {"id": part[0], "leader_router": part[1], **self.leader_device()}
 
     def _label(self, addr: Optional[str]) -> Optional[str]:
         """Name for any address form: extended, or a short one the decryptor

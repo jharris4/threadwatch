@@ -568,7 +568,10 @@ class Site:
             row("channel / port", f'{esc(st.get("channel"))} &middot; <code>{esc(st.get("port"))}</code>')
             row("this run", f'{st.get("frames_total", 0):,} frames in {fmt_duration(st.get("uptime_s", 0))}, '
                             f'{st.get("devices_tracked", 0)} devices with stats')
-            row("current file", f'<code>{esc(Path(st.get("current_file", "")).name)}</code>')
+            # null until the first frame of the run opens an hour file.
+            current = st.get("current_file")
+            row("current file", f'<code>{esc(Path(current).name)}</code>' if current
+                                else '<span class="muted">no hour file open yet</span>')
             if st.get("version"):
                 # Which code is recording. A deploy that did not land, or a
                 # unit that was never restarted, shows in nothing else here.

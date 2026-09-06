@@ -204,7 +204,7 @@ show the same file.) The fields:
 | `port`, `channel` | the dongle's serial port and the channel being captured |
 | `frames_total` | frames this run; it should climb between two runs of `status` |
 | `uptime_s` | this run's age |
-| `current_file` | the ring file being written |
+| `current_file` | the ring file being written; `null` until this run's first frame opens one |
 | `devices_tracked` | addresses heard this run |
 | `dominant_pan` | the PAN the recorder judges by: `[network] pan_id`, else the one it adopted (ten frames to adopt, twice as many to replace); `null` before it has one. `report` and the review pages read it here, so quiet and foreign mean the same thing everywhere |
 | `partition` | null until the MLE layer has seen an advertisement, then `id`, `leader_router` (the leader's router id), `leader_rloc16`, and `leader_addr` / `leader_name` once that router id has been matched to a device |

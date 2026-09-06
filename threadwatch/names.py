@@ -285,8 +285,20 @@ class LastSeen:
             return
         if self.unreadable is not None:
             self._keep_aside()
+        # Copied before it is serialised: the watchdog's stall path saves
+        # from its own thread while the capture thread may still be adding
+        # rows, and json.dumps over the live table raises "dictionary
+        # changed size during iteration". Retried as Detector.snapshot is,
+        # rather than losing the save the stall path exists to make.
+        for attempt in range(3):
+            try:
+                blob = json.dumps(dict(self.table))
+                break
+            except RuntimeError:
+                if attempt == 2:
+                    raise
         tmp = self.state_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.table))
+        tmp.write_text(blob)
         tmp.replace(self.state_path)
         self._dirty = False
         self._last_save = time.time()

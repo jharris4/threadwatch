@@ -386,13 +386,19 @@ def run_capture(cfg: Config) -> None:
                 # being written: keep the last frames and what they taught us,
                 # deliver the alerts still queued or held for a digest, and
                 # take the sniffer's child (which holds the port) with us.
-                for step in (lambda: beat["ring"].fh.flush(), pipe.seen.save,
-                             lambda: record_exit(cfg.state_dir, EXIT_STALLED, beat["last_frame"] or prior_frame),
-                             events.close, sniffer._stop):
+                # Each step is allowed to fail without taking the rest
+                # with it, but never in silence: the whole point of the
+                # ladder is that what it saved is what the next run reads.
+                for what, step in (("ring flush", lambda: beat["ring"].fh.flush()),
+                                   ("last-seen save", pipe.seen.save),
+                                   ("exit note", lambda: record_exit(cfg.state_dir, EXIT_STALLED,
+                                                                     beat["last_frame"] or prior_frame)),
+                                   ("alert delivery", events.close),
+                                   ("sniffer stop", sniffer._stop)):
                     try:
                         step()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _log(f"stalled exit: {what} failed: {exc}")
                 os._exit(EXIT_STALLED)
 
     threading.Thread(target=_watchdog, daemon=True, name="watchdog").start()
@@ -513,7 +519,9 @@ def _write_status(cfg, port, total, started, pipe: Pipeline, ring, decryptor,
         "channel": cfg.channel,
         "frames_total": total,
         "uptime_s": round(time.time() - started, 1),
-        "current_file": str(ring.current_path),
+        # None until the first frame opens an hour file: a tick in the
+        # first 30 s of a silent channel used to write the string "None".
+        "current_file": str(ring.current_path) if ring.current_path else None,
         "devices_tracked": len(pipe.devices),
         # The PAN the recorder judges by (configured, or adopted with the
         # pipeline's floor and hysteresis): the report and the pages read

@@ -34,6 +34,32 @@ class StatusFileTest(unittest.TestCase):
         _write_status(self.cfg, "/dev/x", 12, time.time() - 100, self.pipe, self.ring, self.pipe.decryptor, **kw)
         return json.loads((self.cfg.state_dir / "status.json").read_text())
 
+    def test_a_ring_with_no_hour_file_yet_is_null_not_the_string_None(self):
+        # beat["ring"] is set when the RingWriter is built, before the
+        # first frame rotates an hour file into place, so a watchdog tick
+        # in the first 30 s of a silent channel writes current_file with
+        # nothing open. It used to write "None", which the web header
+        # rendered as <code>None</code>.
+        self.ring.current_path = None
+        self.assertIsNone(self._write(last_frame_age=5.0)["current_file"])
+
+    def test_a_partition_reassigned_mid_read_does_not_cost_the_status_write(self):
+        # partition_status runs on the watchdog thread while the capture
+        # thread may replace self.partition between the emptiness test and
+        # the indexing. The IndexError is caught by status_tick, at the
+        # price of one skipped status.json write, and the web header calls
+        # a status file older than 180 s "capture stale": two skipped
+        # writes in a row is a false banner on a healthy recorder.
+        reads = iter([[0x2a, 60]])
+
+        class Racing(type(self.pipe)):
+            @property
+            def partition(self):
+                return next(reads, [])          # reassigned after the first read
+
+        self.pipe.__class__ = Racing
+        self.assertEqual(self.pipe.partition_status(), {"id": 0x2a, "leader_router": 60})
+
     def test_last_frame_stamp_is_written_and_read_back(self):
         self.assertIsNone(last_frame_on_record(self.cfg.state_dir))      # no file yet
         st = self._write(last_frame_age=170.0)                            # a run that heard nothing

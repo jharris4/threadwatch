@@ -463,6 +463,41 @@ class SaveIntervalTest(unittest.TestCase):
             self.assertEqual(LastSeen.maybe_save.__defaults__, (30.0,))
 
 
+class SaveUnderConcurrentTouchTest(unittest.TestCase):
+    """The watchdog's stalled-exit ladder saves the table from its own
+    thread, to "keep the last frames and what they taught us". The capture
+    thread may still be adding rows, and serialising the live table raises
+    "dictionary changed size during iteration"; the ladder wraps every
+    step in except Exception, so the save the step exists for was dropped
+    without a word."""
+
+    def test_the_table_is_copied_first_and_the_write_is_retried(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+        from threadwatch.names import LastSeen
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "last-seen.json"
+            seen = LastSeen(path)
+            seen.touch("b62c32bf669272db", 1000.0, 1)
+
+            real, seen_args = json.dumps, []
+
+            def flaky(obj, *a, **kw):
+                seen_args.append(obj)
+                if len(seen_args) == 1:
+                    raise RuntimeError("dictionary changed size during iteration")
+                return real(obj, *a, **kw)
+
+            with mock.patch("threadwatch.names.json.dumps", flaky):
+                seen.save()
+
+            self.assertEqual(len(seen_args), 2)                  # retried, not lost
+            self.assertIsNot(seen_args[0], seen.table)           # a copy, not the live table
+            self.assertEqual(json.loads(path.read_text())["b62c32bf669272db"]["last_seen"], 1000.0)
+
+
 class TouchExtendedOnlyTest(unittest.TestCase):
     """The table is keyed by extended address. A short address (an RLOC16)
     is reassigned whenever a parent restarts, so a row under one would

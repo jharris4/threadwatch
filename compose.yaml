@@ -44,6 +44,14 @@ services:
         required: false
 
   web:
+    # Both services build the same image; only one of them needs to say
+    # so, but naming it without a build: made "threadwatch" resolve to
+    # docker.io/library/threadwatch:latest whenever the tag was not
+    # already local. The documented flow (up -d --build) builds it first
+    # and never hit that, but `up -d web` on its own, a compose pull, or
+    # an up after an image prune would either fail confusingly or pull a
+    # stranger's image and run it against this config.
+    build: .
     image: threadwatch
     # 0.0.0.0 is this container's own network namespace, not the host's.
     # The published port below forwards to the container's bridge address,

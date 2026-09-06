@@ -14,12 +14,14 @@ runs is skipped, not fatal.
 
 from __future__ import annotations
 
+import datetime
 import fcntl
 import json
 import os
 import re
 import shutil
 import time
+import tomllib
 from pathlib import Path
 
 from . import __version__
@@ -31,21 +33,21 @@ from .config import repo_commit
 STATE_FILES = ("status.json", "last-seen.json", "observed-names.json", "frames-by-hour.json",
                "border-routers.json", "blind-spans.json", "retransmissions.json",
                "storm.json")
-# The configuration goes along with its secrets blanked: a value whose key
-# contains one of these words, anywhere in the file, is replaced by
-# "<redacted>" (a value that runs on over lines - an array, a table, a
-# """ string - is swallowed whole), as is every key inside a table whose
-# own name contains one, such as [alerts.sinks.headers]. Matching is on
-# containment, not on the whole key: webhook_url, Authorization and
-# X-Api-Key are the shapes an operator actually writes, and over-redacting
-# a bundle costs nothing while under-redacting one ships a bearer token.
+# The configuration goes along with its secrets blanked: it is parsed as
+# TOML and written back out, and a value whose key contains one of these
+# words - at any depth, written as a plain key, a dotted one, an inline
+# table or an array of them - is replaced by "<redacted>", as is every
+# value inside a table whose own key contains one, such as
+# [alerts.sinks.headers]. Matching is on containment, not on the whole
+# key: webhook_url, Authorization and X-Api-Key are the shapes an operator
+# actually writes, and over-redacting a bundle costs nothing while
+# under-redacting one ships a bearer token.
 # Secrets are meant to live in alerts.env as ${VAR} references, but a
 # token pasted into a URL or a header must not travel with the packets.
 # credentials.toml, alerts.env and ha.env are never copied.
 REDACT_WORDS = ("url", "header", "command", "token", "topic", "password",
                 "secret", "auth", "username", "key")
-_KEY_LINE = re.compile(r"""^(\s*)([A-Za-z0-9_-]+|"[^"]*"|'[^']*')(\s*=)""")
-_TABLE_LINE = re.compile(r"^\s*\[\[?\s*(.+?)\s*\]\]?\s*(?:#.*)?$")
+REDACTED = "<redacted>"
 MANIFEST = "manifest.json"
 _LABEL = re.compile(r"[^A-Za-z0-9._-]+")
 # A copy in progress is built under this directory, beside the finished
@@ -82,77 +84,128 @@ def _is_secret(key: str) -> bool:
 
 
 def redact_config(text: str) -> str:
-    """The configuration with every secret value blanked. Line-based rather
-    than a tomllib round-trip, so the file keeps its comments and its shape
-    and stays valid TOML: a reader of the snapshot sees which sinks and
-    settings were in force without seeing where they pointed."""
+    """The configuration with every secret value blanked, as valid TOML.
+
+    Parsed with tomllib and written back out, rather than edited line by
+    line: an editor has to recognize every form a key can be written in,
+    and the ones it did not - a dotted key, an inline table, an array of
+    inline tables - carried a webhook URL and a bearer token into the
+    bundle intact. Redacting the parsed data instead reaches every value
+    at every depth whatever shape it was written in, and what is emitted
+    parses by construction. The cost is the operator's comments and
+    layout, which do not survive the round trip: a reader of the snapshot
+    still sees which sinks and settings were in force, without seeing
+    where they pointed."""
+    if not text.strip():
+        return text
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        # A configuration the recorder itself could not have loaded. Say so
+        # and blank it whole: copying the text through unparsed is the one
+        # case where nothing has looked at what is in it.
+        return f"# the configuration in force did not parse as TOML ({exc}); redacted whole\n"
+    return _HEADER + _dump_table(_redact(data, False), ()).lstrip("\n") + "\n"
+
+
+# What replaces the operator's own comments at the top of the copy.
+_HEADER = ('# The configuration in force when this snapshot was saved, with every\n'
+           '# secret value replaced by "<redacted>". Written back out from the\n'
+           '# parsed file, so the comments and the layout of the original are not\n'
+           '# here; the settings that judged these packets are.\n\n')
+
+
+def _redact(value, secret: bool):
+    """The value with every secret leaf blanked. ``secret`` is set once a
+    key on the way down was a sensitive one, and everything below that key
+    goes with it: the tokens are as often a table's values (Authorization,
+    X-Api-Key) as the table's own."""
+    if isinstance(value, dict):
+        return {k: _redact(v, secret or _is_secret(k)) for k, v in value.items()}
+    if secret:
+        return REDACTED
+    if isinstance(value, list):
+        return [_redact(v, False) for v in value]
+    return value
+
+
+def _dump_table(table: dict, path: tuple[str, ...], header: str | None = None) -> str:
+    """One table and everything below it as TOML text. Its own values come
+    first and its sub-tables after, which is the order TOML requires: a key
+    written below a [header] belongs to that table, not to this one."""
+    lines = [header] if header else []
+    lines += [f"{_key(k)} = {_value(v)}" for k, v in table.items()
+              if not _is_table(v) and not _is_table_array(v)]
+    for k, v in table.items():
+        name = _key_path(path + (k,))
+        if _is_table(v):
+            lines += ["", _dump_table(v, path + (k,), f"[{name}]")]
+        elif _is_table_array(v):
+            for item in v:
+                lines += ["", _dump_table(item, path + (k,), f"[[{name}]]")]
+    return "\n".join(lines)
+
+
+def _is_table(value) -> bool:
+    return isinstance(value, dict)
+
+
+def _is_table_array(value) -> bool:
+    """A list [[alerts.sinks]] can be written as. An empty list, or one
+    holding anything but tables, is an ordinary value and stays inline."""
+    return isinstance(value, list) and bool(value) and all(isinstance(v, dict) for v in value)
+
+
+def _key(key: str) -> str:
+    return key if _BARE_KEY.fullmatch(key) else _string(key)
+
+
+def _key_path(path: tuple[str, ...]) -> str:
+    return ".".join(_key(part) for part in path)
+
+
+def _value(value) -> str:
+    """One TOML value. bool is checked before int, which it is a subclass
+    of, or a sink's enabled = true would come back out as 1."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return _string(value)
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if value != value:
+            return "nan"
+        if value in (float("inf"), float("-inf")):
+            return "inf" if value > 0 else "-inf"
+        return repr(value)
+    if isinstance(value, (datetime.datetime, datetime.date, datetime.time)):
+        return value.isoformat()
+    if isinstance(value, list):
+        return "[" + ", ".join(_value(v) for v in value) + "]"
+    if isinstance(value, dict):
+        return "{" + ", ".join(f"{_key(k)} = {_value(v)}" for k, v in value.items()) + "}"
+    return _string(str(value))
+
+
+def _string(text: str) -> str:
+    """A TOML basic string. Newlines and the rest of the control characters
+    are escaped rather than left in: a multi-line value written as \"\"\"...\"\"\"
+    comes back as one escaped line, which parses to the same string."""
     out = []
-    depth, open_ml, skipping = 0, None, False
-    secret_table = False
-    for line in text.splitlines():
-        if depth or open_ml is not None:
-            # Inside a value that runs on over lines: follow it to its end,
-            # dropping it if it belongs to a key that is being blanked.
-            depth, open_ml = _run_state(line, depth, open_ml)
-            if not skipping:
-                out.append(line)
-            continue
-        table = _TABLE_LINE.match(line)
-        if table:
-            # [alerts.sinks.headers] and the like: the secret is not the
-            # table's value but every key inside it (Authorization,
-            # X-Api-Key), none of which reads as sensitive on its own.
-            secret_table = _is_secret(table.group(1).rsplit(".", 1)[-1])
-            out.append(line)
-            continue
-        m = _KEY_LINE.match(line)
-        if not m:
-            out.append(line)
-            continue
-        skipping = secret_table or _is_secret(m.group(2))
-        rest = line[m.end():] if skipping else line
-        out.append(f'{m.group(1)}{m.group(2)} = "<redacted>"' if skipping else line)
-        depth, open_ml = _run_state(rest, 0, None)
-        depth = max(0, depth)
-    return "\n".join(out) + ("\n" if text.endswith("\n") else "")
+    for ch in text:
+        if ch in _ESCAPES:
+            out.append(_ESCAPES[ch])
+        elif ch < " " or ch == "\x7f":
+            out.append(f"\\u{ord(ch):04x}")
+        else:
+            out.append(ch)
+    return '"' + "".join(out) + '"'
 
 
-def _run_state(text: str, depth: int, open_ml: str | None) -> tuple[int, str | None]:
-    """Walk one line from the given state and report what it leaves open:
-    net brackets, and the ''' or \"\"\" of a string still running. Counting
-    brackets alone missed a multi-line basic string, whose body was then
-    copied out verbatim and left the config.toml in the bundle invalid."""
-    i, quote = 0, None
-    while i < len(text):
-        ch = text[i]
-        if open_ml is not None:
-            if text.startswith(open_ml, i):
-                i, open_ml = i + 3, None
-            else:
-                i += 1
-            continue
-        if quote:
-            if ch == "\\" and quote == '"':
-                i += 2
-                continue
-            if ch == quote:
-                quote = None
-            i += 1
-            continue
-        if text.startswith('"""', i) or text.startswith("'''", i):
-            open_ml = text[i:i + 3]
-            i += 3
-            continue
-        if ch in "\"'":
-            quote = ch
-        elif ch == "#":
-            break
-        elif ch in "[{":
-            depth += 1
-        elif ch in "]}":
-            depth -= 1
-        i += 1
-    return depth, open_ml
+_BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")
+_ESCAPES = {"\\": "\\\\", '"': '\\"', "\b": "\\b", "\t": "\\t",
+            "\n": "\\n", "\f": "\\f", "\r": "\\r"}
 
 
 # A reader of the bundle months later should know which code judged it.

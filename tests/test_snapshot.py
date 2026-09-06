@@ -30,7 +30,8 @@ class BundleTest(unittest.TestCase):
         parsed = tomllib.loads(out)
         self.assertEqual(parsed["network"], {"channel": 25, "keep_hours": 168})
         self.assertEqual(parsed["alerts"]["sinks"], [{"name": "phone", "type": "ntfy", "url": "<redacted>",
-                                                      "token": "<redacted>", "headers": "<redacted>",
+                                                      "token": "<redacted>",
+                                                      "headers": {"Authorization": "<redacted>", "X-Y": "<redacted>"},
                                                       "command": "<redacted>", "min_severity": "warning"}])
         self.assertEqual(parsed["heartbeats"], [{"failure_url": "<redacted>"}])
         self.assertEqual(parsed["credentials"], {"network_key": "<redacted>", "file": "credentials.toml"})
@@ -61,6 +62,52 @@ class BundleTest(unittest.TestCase):
                                                                   "X-Api-Key": "<redacted>"}}])
         self.assertEqual(parsed["credentials"], {"network_key": "<redacted>", "file": "credentials.toml"})
 
+    def test_the_toml_forms_a_line_based_redaction_could_not_see(self):
+        # Both are valid TOML the loader accepts, and both carried their
+        # secret into the bundle whole while redaction worked on lines: the
+        # key it looked for was inside an inline table in an array, or was
+        # a dotted one whose leading segment is the sensitive part.
+        import tomllib
+        inline = ('[alerts]\n'
+                  'sinks = [{type="http", url="https://example.invalid/FAKE_SECRET"}]\n')
+        dotted = ('[[alerts.sinks]]\ntype = "http"\nurl = "https://example.invalid"\n'
+                  'headers.Authorization = "Bearer FAKE_SECRET"\n')
+        for text in (inline, dotted):
+            out = snapshot.redact_config(text)
+            self.assertNotIn("FAKE_SECRET", out)
+            sink = tomllib.loads(out)["alerts"]["sinks"][0]
+            self.assertEqual(sink["type"], "http")     # which sink it was still reads
+            self.assertEqual(sink["url"], "<redacted>")
+        self.assertEqual(tomllib.loads(snapshot.redact_config(dotted))["alerts"]["sinks"][0]["headers"],
+                         {"Authorization": "<redacted>"})
+
+    def test_the_values_that_are_not_secret_come_back_unchanged(self):
+        # The round trip rewrites the file, so every type an operator can
+        # write has to survive it: bool must not arrive as 1, and a nested
+        # table, an array of tables and an ordinary array must all parse
+        # back to what went in.
+        import tomllib
+        text = ('[network]\nchannel = 25\npan_id = "0x4e21"\n'
+                '[record]\nsnapshot_on_critical = true\nkeep_snapshots = -1\n'
+                '[detect]\nflood_multiplier = 3.0\n'
+                '[[alerts.sinks]]\nname = "phone"\nevents = ["device_quiet", "phase_locked_storm"]\n'
+                '[[alerts.sinks]]\nname = "script"\n"odd name" = "kept"\n')
+        parsed = tomllib.loads(snapshot.redact_config(text))
+        self.assertEqual(parsed["network"], {"channel": 25, "pan_id": "0x4e21"})
+        self.assertIs(parsed["record"]["snapshot_on_critical"], True)
+        self.assertEqual(parsed["record"]["keep_snapshots"], -1)
+        self.assertEqual(parsed["detect"]["flood_multiplier"], 3.0)
+        self.assertEqual([s["name"] for s in parsed["alerts"]["sinks"]], ["phone", "script"])
+        self.assertEqual(parsed["alerts"]["sinks"][0]["events"], ["device_quiet", "phase_locked_storm"])
+        self.assertEqual(parsed["alerts"]["sinks"][1]["odd name"], "kept")
+
+    def test_a_configuration_that_does_not_parse_is_blanked_whole(self):
+        # Nothing has looked at what is in a file tomllib cannot read, so
+        # none of it travels; the copy says why it is empty.
+        out = snapshot.redact_config('[alerts]\nurl = "https://example.invalid/FAKE_SECRET\n')
+        self.assertNotIn("FAKE_SECRET", out)
+        self.assertIn("did not parse", out)
+
     def test_the_shipped_example_config_survives_redaction_as_valid_toml(self):
         import tomllib
 
@@ -68,7 +115,10 @@ class BundleTest(unittest.TestCase):
         text = (REPO_ROOT / "config" / "config.example.toml").read_text()
         out = snapshot.redact_config(text)
         self.assertEqual(tomllib.loads(out).keys(), tomllib.loads(text).keys())
-        self.assertIn("# ", out)                       # the comments explain what was in force
+        # The operator's own comments do not survive the round trip; a note
+        # saying what the copy is, and why it does not look like their file,
+        # takes their place.
+        self.assertIn("secret value replaced", out)
 
     def test_the_bundle_names_everything_it_holds(self):
         import json

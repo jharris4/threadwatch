@@ -117,8 +117,10 @@ Each snapshot is one directory:
                              with its size, and the commands that read it
       devices.json           the inventory as it was: the names to judge these packets by
       config.toml            the configuration in force, with every url, header, command, token,
-                             topic, password and key blanked to "<redacted>" (credentials.toml,
-                             alerts.env and ha.env are never copied)
+                             topic, password and key blanked to "<redacted>" at whatever depth it
+                             was written (credentials.toml, alerts.env and ha.env are never
+                             copied). Written back out from the parsed file, so the settings are
+                             all here but your own comments and layout are not
       status.json            the recorder's status at the time
       last-seen.json         the last-seen table: first/last heard, frames, RSSI per address
       observed-names.json    SRP hostnames harvested from the mesh

@@ -178,7 +178,7 @@ make. The daemon reads the file at start, so restart it after editing.
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # pyserial, cryptography
-.venv/bin/python3 -m unittest discover -s tests -v                     # the suite; about 300 tests, half a minute
+.venv/bin/python3 -m unittest discover -s tests -v                     # the suite; under a minute, slower on a Pi
 .venv/bin/python3 -m unittest tests.test_pipeline                      # one module
 ```
 

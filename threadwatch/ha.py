@@ -350,7 +350,7 @@ def thread_devices(ha: HomeAssistant, log: Callable[[str], None] = lambda m: Non
     diags = ha.call_many([("matter/node_diagnostics", {"device_id": dev["id"]}) for dev in matter])
     out: list[dict] = []
     skipped = 0
-    for dev, diag in zip(matter, diags):
+    for dev, diag in zip(matter, diags, strict=True):
         name = (dev.get("name_by_user") or dev.get("name") or "").strip()
         if isinstance(diag, HAError):
             log(f"skip {name or dev['id']}: {diag}")

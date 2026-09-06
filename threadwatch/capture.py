@@ -131,7 +131,7 @@ class RingWriter:
                       "trailing bytes of a record cut short by the last run", flush=True)
                 with open(self.current_path, "r+b") as fh:
                     fh.truncate(good)
-            self.fh = open(self.current_path, "ab")
+            self.fh = open(self.current_path, "ab")   # noqa: SIM115  (the ring writer owns this until rotation)
             self.writer = PcapWriter.__new__(PcapWriter)
             self.writer.stream = self.fh
             self.writer.dlt = self.dlt
@@ -143,7 +143,7 @@ class RingWriter:
                 if not mismatch:
                     print(f"[threadwatch] {self.current_path.name}: {self.current_path.stat().st_size} bytes "
                           "with no usable pcap header; starting the hour's file over", flush=True)
-            self.fh = open(self.current_path, "wb")
+            self.fh = open(self.current_path, "wb")   # noqa: SIM115  (the ring writer owns this until rotation)
             self.writer = PcapWriter(self.fh, self.dlt)
         self.fh.flush()                     # the header, so an early freeze copies a readable pcap
         self._prune()
@@ -605,7 +605,7 @@ def run_replay(cfg: Config, pcap_path: Path | list[Path]) -> None:
             # A path that does not exist, cannot be read, or is not a pcap:
             # one line and exit 1 (as `why` does), not a traceback and not a
             # zero-frame JSON that reads as a quiet capture.
-            raise SystemExit(f"threadwatch replay: could not read {path}: {exc}")
+            raise SystemExit(f"threadwatch replay: could not read {path}: {exc}") from None
     if last:
         pipe.periodic(last)
     out = {

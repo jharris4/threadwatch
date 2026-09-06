@@ -2161,7 +2161,7 @@ class ObservedNamesTest(unittest.TestCase):
             seen = pipe.observed_names[SENSOR]
             self.assertLessEqual(len(seen), Pipeline.OBSERVED_NAMES_MAX)
             self.assertEqual(seen["office-aq-1a2b.local"], 3)
-            for i in range(20):                               # a second real name recurs and is kept
+            for _ in range(20):                               # a second real name recurs and is kept
                 pipe._note_observed_name(SENSOR, "office-aq-1a2b._hap._tcp.local")
             self.assertEqual(seen["office-aq-1a2b._hap._tcp.local"], 20)
             self.assertLessEqual(len(seen), Pipeline.OBSERVED_NAMES_MAX)

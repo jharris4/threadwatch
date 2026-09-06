@@ -644,7 +644,7 @@ class RunCaptureTest(unittest.TestCase):
             with self.subTest(as_child=as_child):
                 self.calls.clear(); self.exits.clear(); self.hold.clear(); self.reader_open.clear()
 
-                def send():
+                def send(as_child=as_child):
                     self.reader_open.wait(5)
                     time.sleep(0.1)
                     if as_child:

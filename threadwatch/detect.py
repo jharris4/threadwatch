@@ -116,7 +116,7 @@ class Detector:
         if len(self.onsets) < need:
             return
         recent = list(self.onsets)[-need:]
-        gaps = [b - a for a, b in zip(recent, recent[1:])]
+        gaps = [b - a for a, b in zip(recent, recent[1:], strict=False)]
         if all(self.cfg.period_min_s <= g <= self.cfg.period_max_s for g in gaps):
             mean = sum(gaps) / len(gaps)
             spread = max(gaps) - min(gaps)

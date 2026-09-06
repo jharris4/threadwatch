@@ -157,7 +157,7 @@ def migrate_legacy(events_dir: Path) -> int:
             if day not in present:
                 present[day] = set(path.read_text().splitlines()) if path.exists() else set()
                 _close_partial_line(path)
-                handles[day] = open(path, "a")
+                handles[day] = open(path, "a")   # noqa: SIM115  (one handle per day, all closed in the finally)
             if line in present[day]:
                 continue
             handles[day].write(line + "\n")

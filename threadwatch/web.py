@@ -455,7 +455,7 @@ class Site:
             rec_html = {"good": '<span class="ok">good</span>', "marginal": '<span class="warn">marginal</span>'}.get(rec, '<span class="muted">?</span>')
             silent = r["silent_for_s"]
             seen_html = f'<span class="{"bad" if silent > 1800 else ""}">{ago(r["last_seen"], now)}</span>'
-            nm = esc(r["name"]) if r["name"] else f'<span class="warn">unknown</span>'
+            nm = esc(r["name"]) if r["name"] else '<span class="warn">unknown</span>'
             if r.get("border_router_label"):
                 nm += f' <span class="muted">border router {esc(r["border_router_label"])}</span>'
             if r.get("rotated_to"):
@@ -559,8 +559,8 @@ class Site:
         else:
             age = now - st.get("updated", 0)
             alive = age < 90
-            row("capture", (f'<span class="ok">running</span>' if alive else
-                            f'<span class="bad">not running</span>') + f' <span class="muted">(status written '
+            row("capture", ('<span class="ok">running</span>' if alive else
+                            '<span class="bad">not running</span>') + f' <span class="muted">(status written '
                                                                         f'{fmt_duration(age)} ago; every 30 s while alive)</span>')
             fa = st.get("last_frame_age_s", 0)
             row("last frame", (f'<span class="{"warn" if fa > 120 else "ok"}">{fmt_duration(fa)} ago</span>'

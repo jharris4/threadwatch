@@ -15,7 +15,6 @@ from pathlib import Path
 
 from .config import Config
 from .events import NullEventLog
-from .names import DeviceNames
 from .pcap import PcapStreamReader, is_poll
 from .pipeline import Pipeline, load_decryptor
 from .review import coverage, devices_history, episode_blind_s, fmt_duration, fmt_episode
@@ -30,7 +29,7 @@ def resolve_target(cfg: Config, target: str) -> tuple[list[str], str]:
         from .names import load_names
         return load_names(cfg).resolve(target)
     except ValueError as exc:
-        raise SystemExit(str(exc))
+        raise SystemExit(str(exc)) from None
 
 
 RING_NAME = "threadwatch-%Y%m%d-%H.pcap"

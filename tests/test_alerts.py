@@ -178,7 +178,7 @@ class SinkBuildTests(unittest.TestCase):
         with self.assertRaises(alerts.ConfigError) as cm:
             alerts.build_sinks({"webhook_url": "http://x/hook", "min_severity": "notce"}, print)
         self.assertIn("alert sink 'webhook': min_severity must be one of", str(cm.exception))
-        for name, idx in zip(alerts.SEVERITIES, range(4)):
+        for idx, name in enumerate(alerts.SEVERITIES):
             sinks = alerts.build_sinks({"sinks": [{"url": "http://x", "min_severity": name}]}, print)
             self.assertEqual(sinks[0].min_severity, idx)
 
@@ -714,7 +714,7 @@ class DeliveryTests(unittest.TestCase):
         cmd = alerts.CommandSink(name="c", command=["curl", "-H", "Authorization: Bearer SECRET", "https://h/x"])
         self.assertEqual(cmd.describe(), "c: curl (+3 args)")
         self.assertEqual(alerts.CommandSink(name="c", command=["notify"]).describe(), "c: notify")
-        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"TOKEN": "tk_SECRET"}):
+        with tempfile.TemporaryDirectory(), mock.patch.dict(os.environ, {"TOKEN": "tk_SECRET"}):
             built = alerts.build_sink({"type": "command", "command": ["curl", "-H", "Authorization: Bearer ${TOKEN}",
                                                                       "https://h/x"]}, 0, print)
             self.assertNotIn("SECRET", built.describe())

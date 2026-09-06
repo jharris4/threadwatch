@@ -229,7 +229,6 @@ def main(argv=None) -> int:
             return 0
         addrs = None
         if args.device:
-            from .names import DeviceNames
             try:
                 from .names import load_names
                 addrs = set(load_names(cfg).resolve(args.device)[0])

@@ -563,6 +563,11 @@ class Pipeline:
             t = getattr(self, attr)
             if t and before(t):
                 setattr(self, attr, t - back)
+        # The duplicate window is two seconds wide, so there is nothing in
+        # it worth moving: dropping it costs at most one window of genuine
+        # retransmission detection, and keeps stamps from before the step
+        # out of the comparison entirely.
+        self.dup_recent.clear()
 
     # ------------------------------------------------------- quiet policy
 
@@ -1008,7 +1013,12 @@ class Pipeline:
         if f.ftype in (1, 3) and f.src and f.seq is not None and not foreign:
             key = (f.src, f.seq, pan)
             last = self.dup_recent.get(key)
-            if last is not None and ts - last < 2.0:
+            # 0 <= : a stamp in the future is not a repeat. A sequence
+            # number is a byte, so every device re-uses each key once per
+            # 256 frames; without the floor a cached stamp left ahead of
+            # the clock makes every frame from every device score as a
+            # duplicate until the cycle comes round.
+            if last is not None and 0 <= ts - last < 2.0:
                 self._win_dups += 1
                 pair = (who or f.src, f.dst)
                 self._win_dup_by[pair] = self._win_dup_by.get(pair, 0) + 1

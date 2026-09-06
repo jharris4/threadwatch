@@ -1690,6 +1690,26 @@ class RetransmissionConfirmTest(unittest.TestCase):
         self.assertIn("paged if the rate is still up in 5 min", first["note"])
         self.assertNotIn("sustained_s", first)
 
+    def test_a_backward_clock_step_does_not_turn_ordinary_traffic_into_retransmissions(self):
+        # dup_recent maps (src, seq, pan) -> ts and a frame is a repeat if
+        # ts - last < 2 s. A MAC sequence number is a byte, so every device
+        # re-uses each key once per 256 frames: after a step back, every
+        # cached stamp sat in the future, ts - last was negative, and the
+        # window rate went to 1.0 for a whole sequence cycle. A false
+        # mesh-wide page, with nothing changed about the mesh.
+        pipe = self._pipe()
+        clock = {"wall": self.T, "mono": 0.0}
+        pipe._wall, pipe._mono, pipe._clock = (lambda: clock["wall"]), (lambda: clock["mono"]), (self.T, 0.0)
+        self.run_minutes(pipe, [0.0] * 12)                      # twelve clean minutes
+        self.assertEqual(self._events(pipe), [])
+        clock.update(wall=self.T + 12 * 60 - 1800, mono=12 * 60.0)
+        pipe.periodic(clock["wall"])                            # the clock steps back 30 min
+        self.assertEqual([r["step_s"] for r in pipe.events.records if r["event"] == "clock_step"], [-1800])
+        self.assertEqual(pipe.dup_recent, {})
+        self.run_minutes(pipe, [0.0] * 15, start=-18)           # the same clean traffic, corrected clock
+        self.assertEqual(self._events(pipe), [])
+        self.assertEqual(max(pipe.retrans_counts), 0.0)
+
     def test_calm_low_traffic_minutes_end_an_elevation_rather_than_sustain_it(self):
         # A minute under 100 frames never reached the detector, so it could
         # not close an elevation: a one-minute burst, ten quiet minutes of

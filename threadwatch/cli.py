@@ -45,6 +45,18 @@ def _find_incident(cfg, want: str, parser, command: str) -> Path:
     return cfg.incidents_dir / hits[0]["name"]
 
 
+def _print_episodes(episodes: list, floor: int, ranks: dict, what: str) -> int:
+    """The episode lines, or a word about there being none."""
+    from .review import fmt_episode
+    shown = [ep for ep in episodes if ranks.get(ep["severity"], 0) >= floor]
+    if not shown:
+        print(f"no episodes {what}".rstrip())
+        return 0
+    for ep in shown:
+        print(fmt_episode(ep))
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="threadwatch",
@@ -233,11 +245,13 @@ def main(argv=None) -> int:
 
         what = " ".join(filter(None, [f"about {args.device!r}" if args.device else "",
                                       f"at {args.severity} or above" if args.severity else ""]))
+        def mine(ep):
+            return addrs is None or (ep.get("addr") or "").lower() in addrs
+
         if args.day:
             from .web import valid_day
             if not valid_day(args.day):
                 parser.error(f"--day wants YYYY-MM-DD, not {args.day!r}")
-            records = [r for r in read_day(cfg.events_dir, args.day) if wanted(r)]
             # First, whether the recorder was there to hear the day: a
             # silence inside one of these lines is not the device's.
             from .review import coverage
@@ -245,6 +259,17 @@ def main(argv=None) -> int:
                 a, b = (time.strftime("%H:%M", time.localtime(t)) for t in (seg["start"], seg["end"]))
                 how = "not listening" if seg["state"] == "blind" else "may not have heard"
                 print(f"{a}-{b} recorder {how}: {seg['note']}")
+            if args.episodes:
+                # The same call the web day page makes, which groups over
+                # the days around this one. Grouping this day's file alone
+                # rebuilt an episode that opened earlier from its closing
+                # record: a different kind, a shorter duration and a
+                # notice where the page showed a warning, so a 15-hour
+                # outage was missing from --severity warning entirely.
+                from .review import day_episodes
+                episodes = [ep for ep in day_episodes(cfg.events_dir, args.day) if mine(ep)]
+                return _print_episodes(episodes, floor, SEVERITY_RANK, f"{what} on {args.day}")
+            records = [r for r in read_day(cfg.events_dir, args.day) if wanted(r)]
             if not records:
                 print(f"no events {what + ' ' if what else ''}on {args.day}")
                 return 0
@@ -254,19 +279,16 @@ def main(argv=None) -> int:
                 records = [r for r in read_day(cfg.events_dir, day) if wanted(r)] + records
                 if len(records) >= args.n:
                     break
+            if args.episodes:
+                # Over every day read, not the newest -n records of them:
+                # truncating first cut episodes off at their opening record.
+                from .review import group_episodes
+                episodes = [ep for ep in group_episodes(records) if mine(ep)]
+                return _print_episodes(episodes[-args.n:], floor, SEVERITY_RANK, what)
             records = records[-args.n:]
             if not records:
                 print(f"no events {what}")
                 return 0
-        if args.episodes:
-            from .review import fmt_episode, group_episodes
-            episodes = [ep for ep in group_episodes(records) if SEVERITY_RANK.get(ep["severity"], 0) >= floor]
-            if not episodes:
-                print(f"no episodes {what}" + (f" on {args.day}" if args.day else ""))
-                return 0
-            for ep in episodes:
-                print(fmt_episode(ep))
-            return 0
         for e in records:
             e = dict(e)
             stamp = time.strftime("%m-%d %H:%M:%S", time.localtime(e.pop("ts")))

@@ -271,6 +271,46 @@ class EventsFilterTest(CliCase):
         self.assertEqual(self.events("--device", "apple tv", "--severity", "warning"), ["device_quiet"])
 
 
+    def test_a_day_episode_reads_the_same_as_the_web_page_for_that_day(self):
+        # --day fed group_episodes only that day's file, so an episode that
+        # opened earlier was rebuilt from its closing record alone: a
+        # different kind, a different duration, and a notice where the page
+        # showed a warning. --severity warning called such a day clean.
+        from threadwatch.config import load
+        from threadwatch.events import EventLog, day_of
+        from threadwatch.review import day_episodes
+        cfg = load(Path(self.cfg))
+        log = EventLog(cfg.events_dir)
+        quiet_at = 1_756_800_000.0 - 15.5 * 3600            # the day before, late evening
+        log.emit("device_quiet", "warning", quiet_at, addr="26976e7f7d20964a", name="Office AQ",
+                 silent_for_s=1800)
+        log.emit("device_returned", "notice", 1_756_800_000.0, addr="26976e7f7d20964a", name="Office AQ")
+        day = day_of(1_756_800_000.0)
+        page = [ep for ep in day_episodes(cfg.events_dir, day)
+                if ep.get("addr") == "26976e7f7d20964a" and ep["severity"] == "warning"]
+        self.assertEqual([ep["title"] for ep in page], ["Office AQ quiet for 16h00m"])
+        code, out, err = self.run_cli("events", "--day", day, "--episodes", "--device", "Office")
+        self.assertEqual(code, 0, err)
+        self.assertIn("[warning", out)
+        self.assertIn("Office AQ quiet for 16h00m", out)
+        code, out, err = self.run_cli("events", "--day", day, "--episodes", "--severity", "warning")
+        self.assertEqual(code, 0, err)
+        self.assertIn("Office AQ quiet for 16h00m", out)       # the day's most serious event, not dropped
+
+    def test_episodes_without_a_day_group_over_the_days_read_not_the_last_n_records(self):
+        # -n truncated the records before grouping, so an episode whose
+        # opening record fell outside the slice was rebuilt from its close.
+        from threadwatch.config import load
+        from threadwatch.events import EventLog
+        log = EventLog(load(Path(self.cfg)).events_dir)
+        log.emit("device_returned", "notice", 1_756_800_000.0 + 1800, addr="b62c32bf669272db",
+                 name="Living Room Apple TV")
+        code, out, err = self.run_cli("events", "--episodes", "-n", "2", "--device", "apple tv")
+        self.assertEqual(code, 0, err)
+        self.assertIn("Living Room Apple TV quiet for 60m", out)
+        self.assertNotIn("was quiet before", out)
+
+
 if __name__ == "__main__":
     unittest.main()
 

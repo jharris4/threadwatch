@@ -142,6 +142,7 @@ non-`ok` line means and what to do about it:
 | `ring` the ring stopped growing | no new hourly file in two hours | the `capture` line says whether the daemon is down or deaf |
 | `last-seen` is unreadable | the last-seen table is damaged: no device has a history and none can go quiet | "What lives under data/" below |
 | `last-seen` kept aside as last-seen.json.corrupt | an earlier table was moved aside after failing to parse | repair and put it back, or delete it (same section) |
+| `blind-spans` is unreadable | the recorder does not know when it was last off, so a silence that spans one of its own outages is charged to the device in full | delete the file: the next outage rebuilds it, at the price of one round of `device_quiet` for anything quiet since before it |
 | `disk` it will not fit | free space is below what a full ring needs | lower `keep_files`, set `keep_gb`, or move `data_dir` |
 | `disk` under 1 GB to spare | it fits, barely | same, before it does not |
 | `writable` state / ring / incidents dir | the service user cannot write there | `chown -R <user> data/`, or check the mount |

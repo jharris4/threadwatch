@@ -201,6 +201,13 @@ class DeviceNames:
 _warned_unreadable: set = set()     # state files already complained about, once per process
 
 
+def _warn_once(path, message: str) -> None:
+    if path in _warned_unreadable:
+        return
+    _warned_unreadable.add(path)
+    print(f"[threadwatch] {message}", flush=True)
+
+
 class LastSeen:
     """Tracks when each source address (extended, 16-hex-char) last transmitted."""
 
@@ -369,9 +376,16 @@ def load_border_routers(path: Optional[Path]) -> dict[str, dict]:
         return {}
     try:
         data = json.loads(path.read_text())
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        return {}                       # not browsed yet
+    except (OSError, ValueError) as exc:
+        _warn_once(path, f"{path.name} is unreadable ({exc}): a border router that has rotated its address "
+                         "keeps its old one until the next mDNS browse, and the addresses it has retired "
+                         "lose their name")
         return {}
     if not isinstance(data, dict):
+        _warn_once(path, f"{path.name} is not an object: the border routers are re-learned at the next "
+                         "mDNS browse, and the addresses they have retired lose their name")
         return {}
     # A row that is not an object (a hand-edit, a half-restored backup)
     # has no .get, and every reader of a row asks it: the recorder could

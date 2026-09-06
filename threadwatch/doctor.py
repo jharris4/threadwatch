@@ -196,6 +196,27 @@ def check_last_seen(cfg) -> list[Check]:
     return out
 
 
+def check_blind_spans(cfg) -> list[Check]:
+    """blind-spans.json is when the recorder was not listening. Every
+    silence is measured against it, so losing it charges each device for
+    the recorder's own outages: a mesh quiet since before one pages
+    device_quiet for every device at once."""
+    path = cfg.state_dir / "blind-spans.json"
+    if not path.exists():
+        return [(OK, "blind-spans", "not written yet (no outage on record)")]
+    try:
+        spans = json.loads(path.read_text())
+        if not isinstance(spans, list):
+            raise ValueError(f"expected a list, got {type(spans).__name__}")
+        for since, length in spans:
+            float(since), float(length)
+    except (ValueError, TypeError, OSError) as exc:
+        return [(FAIL, "blind-spans", f"blind-spans.json is unreadable ({exc}): the recorder does not know "
+                                      "when it was last off, so a silence that spans one of its own outages "
+                                      "is charged to the device in full")]
+    return [(OK, "blind-spans", f"{len(spans)} outage(s) on record")]
+
+
 def check_disk(cfg) -> list[Check]:
     from .review import fmt_bytes, storage
     sto = storage(cfg)
@@ -416,7 +437,7 @@ def run_doctor(cfg, find_port: Callable[[], str] | None = None, now: float | Non
     for step in (lambda: check_config(cfg), lambda: check_inventory(cfg), lambda: check_credentials(cfg),
                  lambda: check_border_routers(cfg),
                  lambda: check_dongle(cfg, find_port), lambda: check_daemon(cfg, now), lambda: check_ring(cfg, now),
-                 lambda: check_last_seen(cfg), lambda: check_disk(cfg), lambda: check_writable(cfg), check_clock,
+                 lambda: check_last_seen(cfg), lambda: check_blind_spans(cfg), lambda: check_disk(cfg), lambda: check_writable(cfg), check_clock,
                  check_services,
                  lambda: check_alerts(cfg), lambda: check_web(cfg), check_version):
         try:

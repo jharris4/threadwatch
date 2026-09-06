@@ -197,7 +197,7 @@ class DoctorTest(unittest.TestCase):
             ("ok", "dongle"),               # the stub finder above
             ("warn", "capture"),            # never run here
             ("warn", "ring"),               # no ring files
-            ("ok", "last-seen"),
+            ("ok", "last-seen"), ("ok", "blind-spans"),
             ("ok", "disk"),
             ("ok", "writable"),
             ("ok", "clock"),
@@ -330,6 +330,55 @@ class DoctorTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BlindSpansCheckTest(unittest.TestCase):
+    """blind-spans.json is what every silence is measured against. It used
+    to be discarded on any read failure with no journal line and no doctor
+    line, which silently recreates the bug the file was added to fix: a
+    device unheard since before an outage charged for it in full, so a
+    long-silent mesh pages device_quiet for every device at once."""
+
+    def _cfg(self, tmp):
+        from threadwatch.config import Config
+        cfg = Config(data_dir=Path(tmp) / "data")
+        cfg.state_dir.mkdir(parents=True, exist_ok=True)
+        return cfg
+
+    def test_missing_readable_and_damaged(self):
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._cfg(tmp)
+            path = cfg.state_dir / "blind-spans.json"
+            self.assertEqual([(c[0], c[2]) for c in doctor.check_blind_spans(cfg)],
+                             [("ok", "not written yet (no outage on record)")])
+            path.write_text(json.dumps([[1000.0, 60.0], [2000.0, 120.0]]))
+            self.assertEqual(doctor.check_blind_spans(cfg)[0][:2] + (doctor.check_blind_spans(cfg)[0][2],),
+                             ("ok", "blind-spans", "2 outage(s) on record"))
+            for junk in ("{not json", json.dumps({"a": 1}), json.dumps([["x", "y"]])):
+                path.write_text(junk)
+                level, subject, text = doctor.check_blind_spans(cfg)[0]
+                self.assertEqual((level, subject), ("FAIL", "blind-spans"), junk)
+                self.assertIn("charged to the device in full", text)
+
+    def test_the_pipeline_says_so_too_rather_than_starting_empty_in_silence(self):
+        import contextlib
+        import io
+        import tempfile
+        from threadwatch.events import NullEventLog
+        from threadwatch.crypto import Decryptor
+        from threadwatch.pipeline import Pipeline
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._cfg(tmp)
+            (Path(tmp) / "devices.json").write_text("[]")
+            cfg.devices_path = Path(tmp) / "devices.json"
+            (cfg.state_dir / "blind-spans.json").write_text("{not json")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                pipe = Pipeline(cfg, NullEventLog(), Decryptor(network_key=bytes(16)))
+            self.assertEqual(pipe._blind, [])
+            self.assertIn("blind-spans.json is unreadable", out.getvalue())
 
 
 class MissingCryptographyTest(unittest.TestCase):

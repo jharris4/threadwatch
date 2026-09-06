@@ -239,7 +239,10 @@ class Pipeline:
         if not ephemeral and self.mle_names_path.exists():
             try:
                 loaded = json.loads(self.mle_names_path.read_text())
-            except (json.JSONDecodeError, OSError):
+            except (json.JSONDecodeError, OSError) as exc:
+                print(f"[threadwatch] {self.mle_names_path.name} is unreadable ({exc}): the SRP hostnames "
+                      "harvested from the mesh are forgotten and re-learned as devices re-register",
+                      flush=True)
                 loaded = {}
             # Owners map to {name: count}; any other shape would raise at
             # the first name observed, in the capture loop.
@@ -401,7 +404,18 @@ class Pipeline:
         try:
             raw = json.loads(self.blind_path.read_text())
             return [(float(since), float(length)) for since, length in raw][-self.BLIND_MAX:]
-        except (OSError, ValueError, TypeError):
+        except FileNotFoundError:
+            return []                   # the first run, or nothing missed yet
+        except (OSError, ValueError, TypeError) as exc:
+            # Losing this file silently recreates the bug it was added to
+            # fix, quoted in its own comment: a device unheard since
+            # before an outage is charged for it in full, so a long-silent
+            # mesh pages device_quiet for every device at once with
+            # nothing saying why. Said as LastSeen says it, and doctor
+            # reports the file too.
+            print(f"[threadwatch] {self.blind_path.name} is unreadable ({exc}): the recorder does not know "
+                  "when it was last off, so a silence that spans one of its own outages is charged to the "
+                  "device in full", flush=True)
             return []
 
     def _save_blind(self) -> None:

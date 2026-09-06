@@ -446,6 +446,34 @@ class DeliveryTests(unittest.TestCase):
         self.assertTrue(d._thread.is_alive())       # abandoned; capture os._exit()s over it
         self.assertEqual(alerts.Dispatcher.close.__defaults__, (15.0,))
 
+    def test_a_send_thread_that_cannot_start_does_not_poison_the_sink(self):
+        # The in-flight lock is taken here and released inside run() on the
+        # worker. Under thread or memory pressure Thread.start() raises and
+        # run() never executes: without a release the sink is poisoned for
+        # the life of the process, every later send failing the acquire
+        # with "the previous send has still not been answered".
+        sink = alerts.HttpSink(name="phone", cooldown_s=0, url=self.srv.url)
+        real = alerts.threading.Thread
+
+        class Refuses(real):
+            def start(self):
+                raise RuntimeError("can't start new thread")
+
+        alerts.threading.Thread = Refuses
+        try:
+            with self.assertRaises(RuntimeError):
+                alerts._bounded(sink, lambda: None, 1.0, "send")
+        finally:
+            alerts.threading.Thread = real
+        self.assertTrue(sink._inflight.acquire(blocking=False))
+        sink._inflight.release()
+        d = alerts.Dispatcher([sink], lambda *a: None)
+        try:
+            d.offer(dict(REC))
+            self.assertEqual(len(self.srv.wait(1, timeout=3.0)), 1)
+        finally:
+            d.close(timeout=2.0)
+
     def test_a_sink_answering_a_byte_at_a_time_does_not_hold_the_others(self):
         # urlopen's timeout bounds each socket read, not the request: a
         # remote that accepts and then drips its reply never trips it, and

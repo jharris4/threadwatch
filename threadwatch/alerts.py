@@ -880,7 +880,16 @@ def _bounded(target, call: Callable[[], Any], timeout_s: float, what: str) -> An
             lock.release()
             done.set()
 
-    threading.Thread(target=run, daemon=True, name=f"{what}-{target.name}").start()
+    try:
+        threading.Thread(target=run, daemon=True, name=f"{what}-{target.name}").start()
+    except BaseException:
+        # run() never executed, so nothing will ever release the lock. Under
+        # thread or memory pressure start() raises RuntimeError, and without
+        # this the sink is poisoned for the life of the process: every later
+        # send fails the acquire above, _failed reads that as transient, and
+        # the retries give up six hours later having delivered nothing.
+        lock.release()
+        raise
     if not done.wait(timeout_s):
         raise TimeoutError(f"no answer within {timeout_s:g} s")
     if "exc" in box:

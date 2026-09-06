@@ -382,6 +382,138 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_identity import KEY, OTHER, PAN, SED, mle_message, secured_frame  # noqa: E402
 
 
+class WhyMleAnalysisTest(unittest.TestCase):
+    """The rejoin evidence the command exists to show. why.py's whole MLE
+    half - parse_mle, the per-hour histogram, and the collection of
+    Parent Request / Child ID Request / Announce into the attach-attempts
+    section - had no test: it could have returned an empty histogram for
+    every input and nothing would have noticed."""
+
+    T0 = time.mktime(time.strptime("2026-09-03 08:10", "%Y-%m-%d %H:%M"))
+
+    def _mle_frame(self, src_ext, command, sequence, counter, extra=b""):
+        """A MAC-unsecured data frame carrying an MLE-secured command, as a
+        device attaching sends on the air."""
+        import struct
+        fcf = 1 | 0x0040 | (2 << 10) | (1 << 12) | (3 << 14)
+        header = struct.pack("<HBH", fcf, counter & 0xFF, PAN) + b"\xff\xff" + bytes.fromhex(src_ext)[::-1]
+        iphc = struct.pack(">H", 0x7F3B) + b"\x01"
+        udp = b"\xf0" + struct.pack(">HH", 19788, 19788) + b"\x00\x00"
+        src_ip = bytes.fromhex("fe80000000000000") + bytes([0x02 ^ int(src_ext[:2], 16)]) + bytes.fromhex(src_ext[2:])
+        dst_ip = bytes.fromhex("ff020000000000000000000000000001")
+        body = bytes([command]) + extra
+        return header + iphc + udp + mle_message(src_ext, sequence, counter, src_ip, dst_ip, body) + b"\x00\x00"
+
+    def _run(self, frames, target=SED):
+        import contextlib
+        import io
+        import tempfile
+        from threadwatch.config import Config
+        from threadwatch.pcap import Frame, PcapWriter
+        from threadwatch.why import run_why
+        with tempfile.TemporaryDirectory() as d:
+            cred = Path(d) / "credentials.toml"
+            cred.write_text(f'[credentials]\nnetwork_key = "{KEY.hex()}"\n')
+            cfg = Config(data_dir=Path(d) / "data", credentials_path=cred)
+            pcap = Path(d) / "window.pcap"
+            with open(pcap, "wb") as fh:
+                w = PcapWriter(fh, 195)
+                for ts, raw in frames:
+                    w.write(Frame(ts=ts, raw=raw, psdu=raw, rssi=None, channel=None, lqi=None))
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                code = run_why(cfg, target, pcap)
+        return code, out.getvalue()
+
+    def test_the_histogram_and_the_attach_section_name_what_the_device_sent(self):
+        # Parent Request, then Child ID Request: a device re-attaching. The
+        # Advertisement in between is MLE too, and belongs in the histogram
+        # but not in the attach-attempts list.
+        frames = [(self.T0, self._mle_frame(SED, 9, 5000, 1)),          # Parent Request
+                  (self.T0 + 2, self._mle_frame(SED, 4, 5000, 2, b"\x00\x02\x04\x00")),   # Advertisement
+                  (self.T0 + 4, self._mle_frame(SED, 11, 5000, 3)),     # Child ID Request
+                  (self.T0 + 6, self._mle_frame(SED, 15, 5000, 4))]     # Announce
+        code, text = self._run(frames)
+        self.assertEqual(code, 0)
+        row = next(l for l in text.splitlines() if l.startswith("09-03 08h"))
+        for expected in ("Parent Requestx1", "Advertisementx1", "Child ID Requestx1", "Announcex1"):
+            self.assertIn(expected, row)
+        section = text.split("rejoin-related MLE (attach attempts):")[1]
+        self.assertEqual([l.split()[-1] for l in section.splitlines()[1:4]],
+                         ["Request", "Request", "Announce"])          # Parent, Child ID, Announce
+        self.assertIn("08:10:00  Parent Request", section)
+        self.assertIn("08:10:04  Child ID Request", section)
+        self.assertNotIn("Advertisement", section)
+
+    def test_a_device_that_never_tried_to_attach_is_said_so_in_as_many_words(self):
+        # The documented reasoning: no rejoin after a silence points at the
+        # device rather than at RF, so the absence has to be printed.
+        code, text = self._run([(self.T0, self._mle_frame(SED, 4, 5000, 1, b"\x00\x02\x04\x00"))])
+        self.assertEqual(code, 0)
+        self.assertIn("no rejoin-related MLE seen from this device in the window.", text)
+        self.assertNotIn("attach attempts", text)
+
+    def test_a_payload_that_cannot_be_decoded_is_counted_not_fatal(self):
+        import struct
+        fcf = 1 | 0x0040 | (2 << 10) | (1 << 12) | (3 << 14)
+        header = struct.pack("<HBH", fcf, 1, PAN) + b"\xff\xff" + bytes.fromhex(SED)[::-1]
+        # An IPHC header that says a UDP header follows and then stops.
+        broken = header + struct.pack(">H", 0x7F3B) + b"\x01" + b"\xf0" + b"\x00\x00"
+        code, text = self._run([(self.T0, broken),
+                                (self.T0 + 2, self._mle_frame(SED, 9, 5000, 2))])
+        self.assertEqual(code, 0)
+        self.assertIn("frames with undecodable payloads skipped", text)
+        self.assertIn("Parent Request", text)                  # the good frame still read
+
+    def test_a_name_that_resolves_to_nothing_exits_with_the_resolver_s_message(self):
+        with self.assertRaises(SystemExit) as cm:
+            self._run([], target="nothing like it")
+        self.assertIn("neither a 16-hex-char address nor a known device name", str(cm.exception))
+
+
+class WhyIncidentWindowTest(unittest.TestCase):
+    """--hours inside a frozen incident counts back from where the freeze
+    stopped, not from now, so it can select nothing."""
+
+    def _run(self, hours, files=("20260903-08", "20260903-09")):
+        import contextlib
+        import io
+        import tempfile
+        from threadwatch.config import Config
+        from threadwatch.pcap import PcapWriter
+        from threadwatch.why import run_why
+        with tempfile.TemporaryDirectory() as d:
+            cred = Path(d) / "credentials.toml"
+            cred.write_text(f'[credentials]\nnetwork_key = "{KEY.hex()}"\n')
+            cfg = Config(data_dir=Path(d) / "data", credentials_path=cred)
+            inc = cfg.incidents_dir / "20260903T100000_storm"
+            inc.mkdir(parents=True)
+            for name in files:
+                with open(inc / f"threadwatch-{name}.pcap", "wb") as fh:
+                    PcapWriter(fh, 195)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                code = run_why(cfg, SED, hours=hours, incident_dir=inc)
+            return code, out.getvalue()
+
+    def test_the_window_counts_back_from_the_freeze_not_from_now(self):
+        # These files are days old by the time anyone reads the bundle, so
+        # counting back from now would select nothing from any incident.
+        code, text = self._run(hours=48)
+        self.assertEqual(code, 0)
+        self.assertIn("analyzed incident 20260903T100000_storm: last 48 h: 2 ring file(s)", text)
+        code, text = self._run(hours=0.25)
+        self.assertEqual(code, 0)
+        self.assertIn("last 0.25 h: 1 ring file(s), 20260903-09 to 20260903-09", text)
+        # An empty bundle is the one case with nothing to read at all. (The
+        # "no files in the last N h" arm below it cannot be reached: the
+        # window ends where the newest file ends, so that file is always in
+        # it, and a name that does not parse as an hour is always kept.)
+        with self.assertRaises(SystemExit) as cm:
+            self._run(hours=1, files=())
+        self.assertIn("no pcap files in incident", str(cm.exception))
+
+
 class WhyNetworkContextTest(unittest.TestCase):
     """BUG-04: `why` used to identify frames without ingesting them, so an
     MLE advertisement from another device (the one thing that carries a

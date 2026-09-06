@@ -948,7 +948,7 @@ class AlertChainTest(unittest.TestCase):
                 {"name": "Porch Sensor", "extendedAddress": "b62c32bf669272db"}]))
             (d / "config.toml").write_text(
                 "[network]\npan_id = \"0x4e21\"\n"
-                f"[capture]\ndata_dir = \"{d / 'data'}\"\n"
+                f"[record]\ndata_dir = \"{d / 'data'}\"\n"
                 "[devices]\ninventory = \"devices.json\"\n"
                 "[quiet]\nsilence_s = 60\n"
                 "[border_routers]\nbrowse_s = 0\n"
@@ -1243,7 +1243,7 @@ class AlertTestCommandTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         d = Path(self.tmp.name)
         (d / "config.toml").write_text(
-            f"[capture]\ndata_dir = \"{d / 'data'}\"\n"
+            f"[record]\ndata_dir = \"{d / 'data'}\"\n"
             "[[alerts.sinks]]\nname = \"phone\"\ntype = \"http\"\n"
             f"url = \"{self.ok.url}/hook\"\nmin_severity = \"notice\"\ncooldown_s = 300\n"
             "[[alerts.sinks]]\nname = \"pager\"\ntype = \"http\"\n"

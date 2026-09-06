@@ -15,19 +15,21 @@ channel = 25
 # The network key is deliberately not here either: it lives in its own
 # owner-only file, see [credentials] below and docs/CREDENTIALS.md.
 
-[capture]
+[record]
 # serial_port = "/dev/ttyACM0"   # leave unset to auto-detect the dongle
 # data_dir = "~/threadwatch-data"  # default: <repo>/data; ~ and ${HOME}-style variables expand
-keep_files = 168                  # hourly ring files to retain (168 = 1 week)
+keep_hours = 168                  # ring files to retain, one per hour heard (168 = a week of them;
+                                  # hours the recorder was down leave no file, so a week of files
+                                  # reaches further back than a week after an outage)
 # keep_gb = 4                     # ...and no more than this much on disk (oldest go first; the hour
                                   # being written is never pruned, so one heavy hour can stand over it)
-# Copy the ring into data/incidents/ by itself when a critical event
+# Copy the ring into data/snapshots/ by itself when a critical event
 # (phase_locked_storm) fires, at most once per six hours (counted from the
-# newest auto-* incident on disk, so a restart does not reset it). Off by default:
-# an incident is the size of the ring. 'threadwatch incidents' lists them.
-# freeze_on_critical = true
-# incidents_keep = 4              # how many auto-* incidents to keep; the oldest go before each new
-                                  # one is taken. Incidents you froze by hand are never pruned.
+# newest auto-* snapshot on disk, so a restart does not reset it). Off by default:
+# a snapshot is the size of the ring. 'threadwatch snapshots' lists them.
+# snapshot_on_critical = true
+# keep_snapshots = 4              # how many auto-* snapshots to keep; the oldest go before each new
+                                  # one is taken. Snapshots you saved by hand are never pruned.
                                   # -1 keeps every automatic one (nothing else deletes them).
 
 [devices]
@@ -113,7 +115,7 @@ browse_s = 600             # 10 min
 keep_days = 365
 
 [web]
-# Review pages: bin/threadwatch web (systemd/threadwatch-web.service).
+# Review pages: bin/threadwatch serve (systemd/threadwatch-web.service).
 # Read-only, and no authentication of any kind: whoever reaches the port
 # gets every device name and address, each device's role and parent, and
 # the whole event history, which is a per-room, per-hour trace of who was

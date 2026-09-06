@@ -287,7 +287,7 @@ class RunWhyTest(unittest.TestCase):
         quiet = "72d035122fdf06f6"
         text = self._run([(self._at("2026-09-03 08:10"), self._psdu(self.OTHER, 7))], target=quiet)
         self.assertIn("No frames from this device in the analyzed window.", text)
-        self.assertIn("check `threadwatch report` for unknowns", text)
+        self.assertIn("check `threadwatch devices` for unknowns", text)
 
 
 class RunWhyRingTest(unittest.TestCase):

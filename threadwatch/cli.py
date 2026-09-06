@@ -38,9 +38,9 @@ def _find_incident(cfg, want: str, parser, command: str) -> Path:
             or [i for i in items if i["label"] == want]
             or [i for i in items if i["label"] == safe_label(want)])
     if not hits:
-        parser.exit(1, f"threadwatch {command}: no incident named {want!r}\n")
+        parser.exit(1, f"threadwatch {command}: no snapshot named {want!r}\n")
     if len(hits) > 1:
-        parser.exit(1, f"threadwatch {command}: {want!r} names {len(hits)} incidents; "
+        parser.exit(1, f"threadwatch {command}: {want!r} names {len(hits)} snapshots; "
                        f"use the full name: {', '.join(i['name'] for i in hits)}\n")
     return cfg.incidents_dir / hits[0]["name"]
 
@@ -73,20 +73,20 @@ def main(argv=None) -> int:
                         version=f"threadwatch {__version__}" + (f" ({commit})" if commit else ""))
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("capture", help="run the capture daemon (foreground)")
+    sub.add_parser("record", help="run the recorder (foreground)")
     sub.add_parser("status", help="show the running daemon's status")
 
     p_replay = sub.add_parser("replay", help="run detection over existing pcap files, as one run")
     p_replay.add_argument("pcap", type=Path, nargs="*",
-                          help="pcap files in order, or a directory (an incident, the ring) of them")
-    p_replay.add_argument("--incident", metavar="NAME",
-                          help="a frozen incident (name or label): its pcaps, judged with its own inventory "
+                          help="pcap files in order, or a directory (a snapshot, the ring) of them")
+    p_replay.add_argument("--snapshot", metavar="NAME",
+                          help="a saved snapshot (name or label): its pcaps, judged with its own inventory "
                                "and state; any pcaps given are read instead of its own")
 
-    p_freeze = sub.add_parser("freeze", help="preserve the current ring buffer as an incident")
-    p_freeze.add_argument("label", nargs="?", default="incident")
+    p_freeze = sub.add_parser("snapshot", help="save the current ring buffer as a snapshot")
+    p_freeze.add_argument("label", nargs="?", default="snapshot")
 
-    p_report = sub.add_parser("report", help="device last-seen / quiet / unknown-address report")
+    p_report = sub.add_parser("devices", help="device last-seen / quiet / unknown-address report")
     p_report.add_argument("--quiet-minutes", type=float, default=None,
                           help="list every device silent this many minutes (wall clock) as quiet, instead of "
                                "the devices the recorder has announced quiet (the same set the review pages "
@@ -95,8 +95,8 @@ def main(argv=None) -> int:
                           help="print a ready-to-paste devices.json entry per unknown address "
                                "instead of the report (names prefilled from harvested SRP hostnames)")
 
-    p_adopt = sub.add_parser("adopt", help="name an address: add it to devices.json")
-    p_adopt.add_argument("addr", help="16-hex extended address (from 'report')")
+    p_adopt = sub.add_parser("name", help="name an address: add it to devices.json")
+    p_adopt.add_argument("addr", help="16-hex extended address (from 'devices')")
     p_adopt.add_argument("name", help="device name; an existing name gains the address (rotation)")
 
     p_imp = sub.add_parser("import", help="fill devices.json and credentials.toml from Home Assistant (Matter "
@@ -116,12 +116,12 @@ def main(argv=None) -> int:
                                                  "with their current extended addresses")
     p_br.add_argument("--seconds", type=float, default=4.0, help="how long to wait for answers")
 
-    p_why = sub.add_parser("why", help="reconstruct one device's story from the ring buffer")
+    p_why = sub.add_parser("device", help="reconstruct one device's story from the ring buffer")
     p_why.add_argument("device", help="device name (from devices.json) or 16-hex extended address")
     p_why.add_argument("--pcap", type=Path, help="analyze this file instead of the ring")
-    p_why.add_argument("--incident", metavar="NAME",
-                       help="analyze a frozen incident (name or label) instead of the ring, with the "
-                            "inventory and event log frozen with it")
+    p_why.add_argument("--snapshot", metavar="NAME",
+                       help="analyze a saved snapshot (name or label) instead of the ring, with the "
+                            "inventory and event log saved with it")
     p_why.add_argument("--hours", type=float,
                        help="only the ring files covering the last N hours (default: the whole ring)")
 
@@ -135,13 +135,13 @@ def main(argv=None) -> int:
     p_events.add_argument("--severity", choices=("info", "notice", "warning", "critical"),
                           help="only records at this severity or above")
 
-    p_web = sub.add_parser("web", help="serve the review pages (day-by-day events, devices)")
+    p_web = sub.add_parser("serve", help="serve the review pages (day-by-day events, devices)")
     p_web.add_argument("--bind", help="address to listen on (default: [web] bind, else 127.0.0.1; "
                                       "\"0.0.0.0\" serves the LAN, where nothing authenticates)")
     p_web.add_argument("--port", type=int, help="port (default: [web] port, else 8080)")
 
-    p_inc = sub.add_parser("incidents", help="list frozen incidents, or delete one")
-    p_inc.add_argument("--delete", metavar="NAME", help="remove this incident (its directory name, or a "
+    p_inc = sub.add_parser("snapshots", help="list saved snapshots, or delete one")
+    p_inc.add_argument("--delete", metavar="NAME", help="remove this snapshot (its directory name, or a "
                                                           "label that names exactly one)")
 
     sub.add_parser("doctor", help="check this box is fit to record: dongle, config, key file, disk, "
@@ -165,23 +165,23 @@ def main(argv=None) -> int:
         parser.exit(2, f"threadwatch: {exc}\n")
     from .pipeline import CredentialsError
 
-    if args.cmd == "capture":
+    if args.cmd == "record":
         from .capture import run_capture
         try:
             run_capture(cfg)
         except CredentialsError as exc:
-            parser.exit(2, f"threadwatch capture: {exc}\n")
+            parser.exit(2, f"threadwatch record: {exc}\n")
         return 0
 
     if args.cmd == "replay":
         from .capture import run_replay
         paths = list(args.pcap)
-        if args.incident:
-            inc = _find_incident(cfg, args.incident, parser, "replay")
+        if args.snapshot:
+            inc = _find_incident(cfg, args.snapshot, parser, "replay")
             cfg = cfg.for_incident(inc)
             paths = paths or [inc]
         if not paths:
-            parser.error("give pcap files, a directory of them, or --incident NAME")
+            parser.error("give pcap files, a directory of them, or --snapshot NAME")
         try:
             run_replay(cfg, paths)
         except CredentialsError as exc:
@@ -191,7 +191,7 @@ def main(argv=None) -> int:
     if args.cmd == "status":
         path = cfg.state_dir / "status.json"
         if not path.exists():
-            print("no status file; is the capture daemon running?")
+            print("no status file; is the recorder running?")
             return 1
         status = json.loads(path.read_text())
         age = time.time() - status.get("updated", 0)
@@ -200,25 +200,25 @@ def main(argv=None) -> int:
         print(json.dumps(status, indent=1))
         return 0
 
-    if args.cmd == "freeze":
+    if args.cmd == "snapshot":
         from .freeze import freeze_ring
         dest, count = freeze_ring(cfg, args.label)
-        print(f"froze {count} ring files -> {dest}")
+        print(f"saved {count} ring files -> {dest}")
         return 0
 
-    if args.cmd == "why":
+    if args.cmd == "device":
         from .why import run_why
         if args.pcap and args.hours is not None:
             parser.error("--hours selects ring files; it does not apply with --pcap")
-        if args.pcap and args.incident:
-            parser.error("--pcap and --incident each say what to read; give one")
+        if args.pcap and args.snapshot:
+            parser.error("--pcap and --snapshot each say what to read; give one")
         if args.hours is not None and args.hours <= 0:
             parser.error("--hours must be positive")
-        incident = _find_incident(cfg, args.incident, parser, "why") if args.incident else None
+        incident = _find_incident(cfg, args.snapshot, parser, "device") if args.snapshot else None
         try:
             return run_why(cfg, args.device, args.pcap, hours=args.hours, incident_dir=incident)
         except CredentialsError as exc:
-            parser.exit(2, f"threadwatch why: {exc}\n")
+            parser.exit(2, f"threadwatch device: {exc}\n")
 
     if args.cmd == "events":
         from .events import list_days, migrate_legacy, read_day
@@ -304,34 +304,34 @@ def main(argv=None) -> int:
             print(f"{stamp} [{sev:8s}] {name}  {json.dumps(e)}")
         return 0
 
-    if args.cmd == "web":
+    if args.cmd == "serve":
         from .web import serve
         serve(cfg, bind=args.bind or cfg.web_bind, port=args.port or cfg.web_port)
         return 0
 
-    if args.cmd == "incidents":
+    if args.cmd == "snapshots":
         import sys
 
         from .review import fmt_bytes, incidents
         items = incidents(cfg.incidents_dir)
         if args.delete:
-            target = _find_incident(cfg, args.delete, parser, "incidents")
+            target = _find_incident(cfg, args.delete, parser, "snapshots")
             if target.parent.resolve() != cfg.incidents_dir.resolve():
-                parser.exit(1, f"threadwatch incidents: {target} is not under {cfg.incidents_dir}\n")
+                parser.exit(1, f"threadwatch snapshots: {target} is not under {cfg.incidents_dir}\n")
             size = next((i["bytes"] for i in items if i["name"] == target.name), 0)
             shutil.rmtree(target)
             print(f"deleted {target} ({fmt_bytes(size)})")
             return 0
         if not items:
-            print("no frozen incidents (threadwatch freeze <label> makes one)")
+            print("no snapshots (threadwatch snapshot <label> makes one)")
             return 0
         for i in items:
             span = f"{i['span'][0]} to {i['span'][1]}" if i["span"] else "no ring files"
-            print(f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(i['frozen']))}  {i['name']:36s} "
+            print(f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(i['saved']))}  {i['name']:36s} "
                   f"{fmt_bytes(i['bytes']):>9s}  {i['pcaps']:3d} pcaps  {span}"
                   + ("  +events" if i["events"] else ""))
         total = sum(i["bytes"] for i in items)
-        print(f"{len(items)} incident(s), {fmt_bytes(total)} in {cfg.incidents_dir}", file=sys.stderr)
+        print(f"{len(items)} snapshot(s), {fmt_bytes(total)} in {cfg.incidents_dir}", file=sys.stderr)
         return 0
 
     if args.cmd == "doctor":
@@ -376,7 +376,7 @@ def main(argv=None) -> int:
                 print(f"  FAIL {name}: not built -> {reason}")
         return 1 if failures else 0
 
-    if args.cmd == "report":
+    if args.cmd == "devices":
         import sys
 
         from .names import LastSeen, load_names, load_observed_names, rotation_hints, suggest_entries
@@ -393,16 +393,16 @@ def main(argv=None) -> int:
             for addr, h in hints.items():
                 print(f"{addr}: looks like {h['name']!r} rotated its address "
                       f"({h['delta_s']:+d} s from its previous one going silent). If so: "
-                      f"threadwatch adopt {addr} '{h['name']}'", file=sys.stderr)
+                      f"threadwatch name {addr} '{h['name']}'", file=sys.stderr)
             if entries:
                 print(f"{len(entries)} entr{'y' if len(entries) == 1 else 'ies'} to fill in and "
                       f"paste into {_inventory_path(cfg).name}, or name one directly with: "
-                      f"threadwatch adopt <addr> '<name>'", file=sys.stderr)
+                      f"threadwatch name <addr> '<name>'", file=sys.stderr)
             return 0
         print(json.dumps(report, indent=1))
         if report["unknown"]:
             print(f"{len(report['unknown'])} unknown address(es) seen. Name them with "
-                  f"'threadwatch adopt <addr> <name>', or 'threadwatch report --suggest' "
+                  f"'threadwatch name <addr> <name>', or 'threadwatch devices --suggest' "
                   f"for ready-to-paste entries (the format: README.md, devices.json).",
                   file=sys.stderr)
         return 0
@@ -436,14 +436,14 @@ def main(argv=None) -> int:
         except (HAError, ValueError) as exc:     # ValueError: a malformed devices.json, named
             parser.exit(1, f"threadwatch import: {exc}\n")
 
-    if args.cmd == "adopt":
+    if args.cmd == "name":
         from .names import adopt
         path = _inventory_path(cfg)
         try:
             print(f"{adopt(path, args.addr, args.name)} -> {path}")
         except ValueError as exc:
-            parser.exit(1, f"threadwatch adopt: {exc}\n")
-        print("(the capture daemon reads the inventory at start: restart it to use the name)")
+            parser.exit(1, f"threadwatch name: {exc}\n")
+        print("(the recorder reads the inventory at start: restart it to use the name)")
         return 0
 
     return 1

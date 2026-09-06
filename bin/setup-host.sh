@@ -142,7 +142,7 @@ fi
 
 echo "==> systemd services"
 if ! command -v systemctl >/dev/null; then
-  echo "    no systemd on this host: run '$REPO/bin/threadwatch capture' and 'web' under your own supervisor"
+  echo "    no systemd on this host: run '$REPO/bin/threadwatch record' and 'serve' under your own supervisor"
 else
   # Rendered beside the target and moved into place, not written through
   # a redirect: the redirect truncated the live unit before anything was

@@ -36,10 +36,10 @@ class Config:
     pan_id: int | None = None
     serial_port: str | None = None          # auto-detect when unset
     data_dir: Path = REPO_ROOT / "data"
-    keep_files: int = 168                      # ring: hourly files, one week
-    keep_bytes: int | None = None           # ring: total size cap ([capture] keep_gb), None = files only
-    freeze_on_critical: bool = False           # snapshot the ring when a critical event fires
-    incidents_keep: int = 4                    # how many auto-* incidents to keep; -1 = no cap
+    keep_hours: int = 168                      # ring: one hourly file each, a week of them
+    keep_bytes: int | None = None           # ring: total size cap ([record] keep_gb), None = files only
+    snapshot_on_critical: bool = False         # save the ring when a critical event fires
+    keep_snapshots: int = 4                    # how many auto-* snapshots to keep; -1 = no cap
     devices_path: Path | None = None
     detector: DetectorConfig = field(default_factory=DetectorConfig)
     config_dir: Path = REPO_ROOT / "config"
@@ -141,7 +141,7 @@ class Config:
 
     @property
     def incidents_dir(self) -> Path:
-        return self.data_dir / "incidents"
+        return self.data_dir / "snapshots"
 
     @property
     def events_dir(self) -> Path:
@@ -159,8 +159,8 @@ class Config:
 # can be logged rather than stop the recorder from starting.
 SECTIONS: dict[str, frozenset[str] | None] = {
     "network": frozenset(("channel", "pan_id")),
-    "capture": frozenset(("serial_port", "data_dir", "keep_files", "keep_gb",
-                          "freeze_on_critical", "incidents_keep")),
+    "record": frozenset(("serial_port", "data_dir", "keep_hours", "keep_gb",
+                         "snapshot_on_critical", "keep_snapshots")),
     "devices": frozenset(("inventory",)),
     # end_device_s and router_s are the pre-2026-09-04 split, still read below.
     "quiet": frozenset(("silence_s", "min_rssi_dbm", "end_device_s", "router_s")),
@@ -220,36 +220,36 @@ def load(path: Path | None) -> Config:
                 raise ValueError(f"[network] pan_id must be a PAN id such as \"0x4e21\", not {raw_pan!r}") from None
             if not 0 <= cfg.pan_id <= 0xfffe:
                 raise ValueError(f"[network] pan_id must be 0x0000-0xfffe, not 0x{cfg.pan_id:x}")
-        cap = raw.get("capture", {})
-        cfg.serial_port = cap.get("serial_port") or None
-        if cap.get("data_dir"):
-            cfg.data_dir = Path(os.path.expandvars(str(cap["data_dir"]))).expanduser()
-        cfg.keep_files = int(cap.get("keep_files", cfg.keep_files))
-        if cfg.keep_files < 1:
-            raise ValueError(f"[capture] keep_files must be at least 1, not {cfg.keep_files}")
-        if cap.get("keep_gb") is not None:
+        rec = raw.get("record", {})
+        cfg.serial_port = rec.get("serial_port") or None
+        if rec.get("data_dir"):
+            cfg.data_dir = Path(os.path.expandvars(str(rec["data_dir"]))).expanduser()
+        cfg.keep_hours = int(rec.get("keep_hours", cfg.keep_hours))
+        if cfg.keep_hours < 1:
+            raise ValueError(f"[record] keep_hours must be at least 1, not {cfg.keep_hours}")
+        if rec.get("keep_gb") is not None:
             # A negative cap would prune every file but the one being
             # written at each rotation (RingWriter._prune loops while the
             # total exceeds it), and zero would be no cap at all: neither
             # is a size to keep.
             try:
-                keep_gb = float(cap["keep_gb"])
+                keep_gb = float(rec["keep_gb"])
             except (TypeError, ValueError):
-                raise ValueError(f"[capture] keep_gb must be a number of gigabytes, not {cap['keep_gb']!r}") from None
+                raise ValueError(f"[record] keep_gb must be a number of gigabytes, not {rec['keep_gb']!r}") from None
             if not keep_gb > 0:
-                raise ValueError(f"[capture] keep_gb must be more than 0 (unset it for no size cap), not {keep_gb:g}")
+                raise ValueError(f"[record] keep_gb must be more than 0 (unset it for no size cap), not {keep_gb:g}")
             cfg.keep_bytes = int(keep_gb * 1024 ** 3)
-        cfg.freeze_on_critical = bool(cap.get("freeze_on_critical", cfg.freeze_on_critical))
-        if cap.get("incidents_keep") is not None:
+        cfg.snapshot_on_critical = bool(rec.get("snapshot_on_critical", cfg.snapshot_on_critical))
+        if rec.get("keep_snapshots") is not None:
             # Each automatic snapshot is a whole ring, and nothing else
             # deletes one: without a cap a mesh that storms repeatedly
             # fills the card and the recorder stops recording.
-            keep = cap["incidents_keep"]
+            keep = rec["keep_snapshots"]
             if isinstance(keep, bool) or not isinstance(keep, int):
-                raise ValueError(f"[capture] incidents_keep must be a whole number of incidents, not {keep!r}")
+                raise ValueError(f"[record] keep_snapshots must be a whole number of snapshots, not {keep!r}")
             if keep < -1:
-                raise ValueError(f"[capture] incidents_keep must be -1 (no cap) or more, not {keep}")
-            cfg.incidents_keep = keep
+                raise ValueError(f"[record] keep_snapshots must be -1 (no cap) or more, not {keep}")
+            cfg.keep_snapshots = keep
         if raw.get("devices", {}).get("inventory"):
             cfg.devices_path = (Path(path).parent / raw["devices"]["inventory"]).resolve()
         det = raw.get("detect", {})

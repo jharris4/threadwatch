@@ -1,5 +1,5 @@
 [Unit]
-Description=threadwatch web: day-by-day event review pages
+Description=threadwatch serve: day-by-day event review pages
 # time-sync.target, as for threadwatch.service: a Pi has no RTC, and the
 # pages tell today's time from the clock.
 After=network-online.target time-sync.target
@@ -17,7 +17,7 @@ User=__USER__
 WorkingDirectory=__REPO__
 # Read-only over the state directory; a separate process so a page bug can
 # never touch capture. Listen address and port: [web] in config.toml.
-ExecStart=__REPO__/bin/threadwatch web
+ExecStart=__REPO__/bin/threadwatch serve
 Restart=always
 RestartSec=5
 

@@ -222,8 +222,8 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
             new("storm", rec, "phase-locked storm",
                 f"period {rec.get('period_s')}s, onsets {rec.get('onsets')}, "
                 f"baseline {rec.get('baseline_frames_per_window')} frames/window")
-        elif ev in ("incident_frozen", "incident_freeze_failed"):
-            new("frozen", rec, "incident frozen" if ev == "incident_frozen" else "incident freeze failed",
+        elif ev in ("snapshot_saved", "snapshot_failed"):
+            new("snapshot", rec, "snapshot saved" if ev == "snapshot_saved" else "snapshot failed",
                 rec.get("note", ""))
         elif ev == "daily_summary":
             new("summary", rec, "daily summary", rec.get("note", ""))
@@ -732,15 +732,15 @@ DEFAULT_BYTES_PER_HOUR = 30 * 1024 * 1024   # a busy mesh; used until the ring h
 
 def storage(cfg) -> dict:
     """What the recorder keeps on disk and how much room is left there.
-    ring_bound_bytes is the most the ring can grow to (keep_files hours at
+    ring_bound_bytes is the most the ring can grow to (keep_hours hours at
     the measured rate, and no more than keep_gb when set); ring_needs_bytes
     is how much of that it has not used yet. Both consumers (doctor, the
     status page) judge free space against these, so they agree."""
     import shutil
     ring = sorted(p.name for p in cfg.ring_dir.glob("threadwatch-*.pcap")) if cfg.ring_dir.exists() else []
     out = {"ring_files": len(ring), "ring_span": _span(ring), "ring_bytes": _dir_size(cfg.ring_dir),
-           "keep_files": cfg.keep_files,
-           "incidents_bytes": _dir_size(cfg.incidents_dir) if cfg.incidents_dir.exists() else 0,
+           "keep_hours": cfg.keep_hours,
+           "snapshots_bytes": _dir_size(cfg.incidents_dir) if cfg.incidents_dir.exists() else 0,
            "events_bytes": _dir_size(cfg.events_dir) if cfg.events_dir.exists() else 0}
     try:
         usage = shutil.disk_usage(cfg.data_dir if cfg.data_dir.exists() else cfg.data_dir.parent)
@@ -750,7 +750,7 @@ def storage(cfg) -> dict:
     if ring and len(ring) > 1:
         out["bytes_per_hour"] = out["ring_bytes"] // len(ring)
     per_hour = out.get("bytes_per_hour") or DEFAULT_BYTES_PER_HOUR
-    bound = cfg.keep_files * per_hour
+    bound = cfg.keep_hours * per_hour
     if cfg.keep_bytes:
         # The writer prunes closed files to the cap as the hour grows, but
         # never the file being written: the ring can stand one hour over.
@@ -772,14 +772,14 @@ def incidents(incidents_dir: Path) -> list[dict]:
             continue
         stamp, _, label = d.name.partition("_")
         try:
-            frozen = time.mktime(time.strptime(stamp, "%Y%m%dT%H%M%S"))
+            saved = time.mktime(time.strptime(stamp, "%Y%m%dT%H%M%S"))
         except ValueError:
-            frozen = d.stat().st_mtime
+            saved = d.stat().st_mtime
         pcaps = sorted(p.name for p in d.glob("*.pcap"))
-        out.append({"name": d.name, "label": label or d.name, "frozen": frozen,
+        out.append({"name": d.name, "label": label or d.name, "saved": saved,
                     "pcaps": len(pcaps), "span": _span(pcaps), "bytes": _dir_size(d),
-                    "events": (d / "events").is_dir(), "day": day_of(frozen)})
-    out.sort(key=lambda i: -i["frozen"])
+                    "events": (d / "events").is_dir(), "day": day_of(saved)})
+    out.sort(key=lambda i: -i["saved"])
     return out
 
 
@@ -807,7 +807,7 @@ def capture_for_day(ring_dir: Path, incidents_dir: Path, day: str) -> dict:
         span = inc["span"]
         if (span[0][:8] <= stamp <= span[1][:8]) if span else inc["day"] == day:
             kept.append(inc["name"])
-    return {"ring_files": ring, "incidents": sorted(kept)}
+    return {"ring_files": ring, "snapshots": sorted(kept)}
 
 
 def today() -> str:

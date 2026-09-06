@@ -206,7 +206,7 @@ class StatusConsumersTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.d = Path(self.tmp.name)
-        (self.d / "config.toml").write_text(f'[capture]\ndata_dir = "{self.d / "data"}"\n')
+        (self.d / "config.toml").write_text(f'[record]\ndata_dir = "{self.d / "data"}"\n')
         self.cfg = Config(data_dir=self.d / "data")
         self.pipe = Pipeline(self.cfg, NullEventLog(), Decryptor(network_key=bytes(16)), ephemeral=True)
         self.ring = SimpleNamespace(current_path=self.cfg.ring_dir / "threadwatch-20260904-10.pcap")

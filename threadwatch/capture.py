@@ -418,7 +418,7 @@ def run_capture(cfg: Config) -> None:
     try:
         with open(fifo_path, "rb") as fifo:
             reader = PcapStreamReader(fifo)
-            ring = RingWriter(cfg.ring_dir, cfg.keep_files, reader.dlt, cfg.keep_bytes)
+            ring = RingWriter(cfg.ring_dir, cfg.keep_hours, reader.dlt, cfg.keep_bytes)
             beat["ring"] = ring
             for frame in reader:
                 frame.ts = time.time()   # host wall clock, NTP-aligned

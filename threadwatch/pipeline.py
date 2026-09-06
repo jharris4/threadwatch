@@ -203,7 +203,7 @@ class Pipeline:
             for label in discard_partials(cfg.incidents_dir):
                 # events.emit, not _emit: this is the freeze path reporting
                 # on itself, and self.freezer is not set until below.
-                self.events.emit("incident_freeze_failed", "warning", time.time(), label=label,
+                self.events.emit("snapshot_failed", "warning", time.time(), label=label,
                                  note=(f"the freeze for {label} was cut short when the recorder last stopped; "
                                        "the half copy was discarded, and the next storm event tries again"))
         self._last_auto_freeze = 0.0 if ephemeral else self._last_auto_freeze_on_disk()
@@ -544,7 +544,7 @@ class Pipeline:
         try:
             for inc in incidents(self.cfg.incidents_dir):      # newest first
                 if inc["label"].startswith("auto-"):
-                    return float(inc["frozen"])
+                    return float(inc["saved"])
         except OSError:
             pass
         return 0.0
@@ -1770,7 +1770,7 @@ class Pipeline:
             label = self._auto_freeze(ts, event)
             fields["auto_freeze"] = label
             keep = (f"the ring is being frozen as {label}" if label
-                    else "run 'threadwatch freeze' to keep the packets")
+                    else "run 'threadwatch snapshot' to keep the packets")
             note = fields.get("note")
             fields["note"] = f"{note}; {keep}" if note else keep
         record = self.events.emit(event, severity, ts, **fields)
@@ -1792,7 +1792,7 @@ class Pipeline:
         that fails shortens it to AUTO_FREEZE_RETRY_S (see _freeze_now).
         The label carries the event that called for it, so an incidents
         listing says which one without opening the manifest."""
-        if not self.cfg.freeze_on_critical or self.ephemeral:
+        if not self.cfg.snapshot_on_critical or self.ephemeral:
             return None
         if ts - self._last_auto_freeze < self.AUTO_FREEZE_COOLDOWN_S:
             return None
@@ -1811,11 +1811,11 @@ class Pipeline:
         from .freeze import freeze_ring, prune_auto_incidents
         # Oldest automatic snapshots go before this one is taken, not
         # after: the room they free is the room this copy needs.
-        dropped = prune_auto_incidents(self.cfg.incidents_dir, max(0, self.cfg.incidents_keep - 1))
+        dropped = prune_auto_incidents(self.cfg.incidents_dir, max(0, self.cfg.keep_snapshots - 1))
         if dropped:
-            self.events.emit("incidents_pruned", "info", time.time(), removed=dropped,
-                             note=(f"{len(dropped)} older automatic incident(s) removed to keep "
-                                   f"[capture] incidents_keep = {self.cfg.incidents_keep}: "
+            self.events.emit("snapshots_pruned", "info", time.time(), removed=dropped,
+                             note=(f"{len(dropped)} older automatic snapshot(s) removed to keep "
+                                   f"[record] keep_snapshots = {self.cfg.keep_snapshots}: "
                                    + ", ".join(dropped)))
         if not self._room_to_freeze(label):
             return
@@ -1826,12 +1826,12 @@ class Pipeline:
             # six-hour cooldown armed for this attempt must not stand: the
             # next storm event after the retry hold tries again.
             self._last_auto_freeze -= self.AUTO_FREEZE_COOLDOWN_S - self.AUTO_FREEZE_RETRY_S
-            self.events.emit("incident_freeze_failed", "warning", time.time(), label=label,
-                             note=(f"could not freeze the ring for {label}: {exc}; nothing was kept, and "
+            self.events.emit("snapshot_failed", "warning", time.time(), label=label,
+                             note=(f"could not save the ring for {label}: {exc}; nothing was kept, and "
                                    f"the next critical event after {self.AUTO_FREEZE_RETRY_S // 60} min "
                                    f"tries again"))
             return
-        self.events.emit("incident_frozen", "info", time.time(), label=label, path=str(dest),
+        self.events.emit("snapshot_saved", "info", time.time(), label=label, path=str(dest),
                          ring_files=count, note=f"{count} ring files kept as {dest.name}")
 
     def _room_to_freeze(self, label: str) -> bool:
@@ -1845,11 +1845,11 @@ class Pipeline:
         if free is None or free - sto["ring_bytes"] >= need:
             return True
         self._last_auto_freeze -= self.AUTO_FREEZE_COOLDOWN_S - self.AUTO_FREEZE_RETRY_S
-        self.events.emit("incident_freeze_skipped", "warning", time.time(), label=label,
+        self.events.emit("snapshot_skipped", "warning", time.time(), label=label,
                          disk_free=free, ring_bytes=sto["ring_bytes"], ring_needs_bytes=need,
-                         note=(f"not freezing {label}: a copy of the ring ({fmt_bytes(sto['ring_bytes'])}) "
+                         note=(f"not saving {label}: a copy of the ring ({fmt_bytes(sto['ring_bytes'])}) "
                                f"would leave less than the {fmt_bytes(need)} the ring still needs out of "
-                               f"{fmt_bytes(free)} free; delete incidents or lower keep_files"))
+                               f"{fmt_bytes(free)} free; delete snapshots or lower keep_hours"))
         return False
 
     # ------------------------------------------------------ daily summary
@@ -2078,7 +2078,7 @@ class Pipeline:
                 self._emit("border_router_unlisted", "notice", now, addr=ext, name=None, hostname=host,
                            note=(f"border router {r.get('instance') or host} ({r.get('vendor')} {r.get('model')}) "
                                  f"at {ext} is not in devices.json: name it with "
-                                 f"threadwatch adopt {ext} \"<name>\", or give an entry "
+                                 f"threadwatch name {ext} \"<name>\", or give an entry "
                                  f"\"borderRouter\": \"{host}\""))
             if new != rec:
                 self.routers[host] = new

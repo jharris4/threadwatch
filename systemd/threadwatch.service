@@ -26,7 +26,7 @@ Type=simple
 #       systemd/threadwatch.service | sudo tee /etc/systemd/system/threadwatch.service
 User=__USER__
 WorkingDirectory=__REPO__
-ExecStart=__REPO__/bin/threadwatch capture
+ExecStart=__REPO__/bin/threadwatch record
 # Alert/heartbeat secrets (optional; see config/alerts.example.env).
 EnvironmentFile=-__REPO__/config/alerts.env
 Restart=always

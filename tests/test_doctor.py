@@ -91,7 +91,7 @@ class DoctorTest(unittest.TestCase):
         self.cfg.ring_dir.mkdir(parents=True)
         for h in ("20260903-08", "20260903-09"):
             (self.cfg.ring_dir / f"threadwatch-{h}.pcap").write_bytes(b"x" * 4096)
-        self.cfg.keep_files = 10 ** 12                     # a ring no disk could hold...
+        self.cfg.keep_hours = 10 ** 12                     # a ring no disk could hold...
         level, _, text = doctor.check_disk(self.cfg)[0]
         self.assertEqual(level, "FAIL")
         self.assertIn("set keep_gb", text)
@@ -107,10 +107,10 @@ class DoctorTest(unittest.TestCase):
         self.cfg.incidents_dir.mkdir(parents=True)
         (self.cfg.incidents_dir / "20260903T080000_auto-storm").mkdir()
         (self.cfg.incidents_dir / "20260903T080000_auto-storm" / "a.pcap").write_bytes(b"x" * 8192)
-        self.assertIn("frozen incidents hold 8 KB", doctor.check_disk(self.cfg)[0][2])
-        # With freeze_on_critical on, room for one more whole copy of the
+        self.assertIn("snapshots hold 8 KB", doctor.check_disk(self.cfg)[0][2])
+        # With snapshot_on_critical on, room for one more whole copy of the
         # ring is part of the judgement: without it the recorder refuses.
-        self.cfg.freeze_on_critical = True
+        self.cfg.snapshot_on_critical = True
         real = review.storage
         review.storage = lambda cfg: {**real(cfg), "disk_free": 5 * 10 ** 9, "ring_bytes": 5 * 10 ** 9,
                                       "ring_needs_bytes": 5 * 10 ** 8}
@@ -118,8 +118,8 @@ class DoctorTest(unittest.TestCase):
             checks = doctor.check_disk(self.cfg)
         finally:
             review.storage = real
-        self.assertEqual(self.levels(checks), [("ok", "disk"), ("warn", "incidents")])
-        self.assertIn("threadwatch incidents --delete", checks[1][2])
+        self.assertEqual(self.levels(checks), [("ok", "disk"), ("warn", "snapshots")])
+        self.assertIn("threadwatch snapshots --delete", checks[1][2])
 
     def test_the_version_check_names_the_code_that_answered_the_others(self):
         # Every other check answers the same whether the host is running

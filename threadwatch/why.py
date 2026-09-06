@@ -104,7 +104,7 @@ def print_history(events_dir: Path, addrs: list[str], now: float | None = None) 
     for ep in shown:
         print("  " + fmt_episode(ep, "%Y-%m-%d %H:%M"))
     if len(shown) < len(episodes):
-        print(f"  ... {len(episodes) - len(shown)} more: threadwatch web, /device/{addrs[0]}")
+        print(f"  ... {len(episodes) - len(shown)} more: threadwatch serve, /device/{addrs[0]}")
 
 
 def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
@@ -235,8 +235,8 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
                 skipped_files += 1
     if unreadable and len(unreadable) == len(files):
         path, exc = unreadable[0]
-        raise SystemExit(f"threadwatch why: could not read {path}: {exc}" if len(files) == 1 else
-                         f"threadwatch why: none of the {len(files)} ring files could be read "
+        raise SystemExit(f"threadwatch device: could not read {path}: {exc}" if len(files) == 1 else
+                         f"threadwatch device: none of the {len(files)} ring files could be read "
                          f"(first: {path}: {exc})")
     if undecodable:
         print(f"({undecodable} frames with undecodable payloads skipped)")
@@ -255,7 +255,7 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
         print("No frames from this device in the analyzed window.")
         print("Interpretation: either out of range of the dongle, silent (dead "
               "battery / crashed radio), or transmitting under an unknown "
-              "rotated address — check `threadwatch report` for unknowns.")
+              "rotated address — check `threadwatch devices` for unknowns.")
         print_history(cfg.events_dir, addrs)
         return 1 if unreadable else 0
     print(f"first seen: {_t.strftime('%Y-%m-%d %H:%M:%S', _t.localtime(first_ts))}")

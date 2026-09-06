@@ -50,7 +50,7 @@ class BindDefaultTest(unittest.TestCase):
         # container has to bind its own 0.0.0.0: the port forwards to the
         # container's bridge address, and a server on the container's
         # loopback refuses every connection that arrives there.
-        self.assertIn('command: ["web", "--bind", "0.0.0.0"]', compose)
+        self.assertIn('command: ["serve", "--bind", "0.0.0.0"]', compose)
 
 
 class RequestTimeoutTest(unittest.TestCase):

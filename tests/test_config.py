@@ -22,28 +22,28 @@ class KeepGbTest(unittest.TestCase):
             return config_mod.load(path)
 
     def test_a_positive_cap_is_bytes(self):
-        self.assertEqual(self._load("[capture]\nkeep_gb = 4\n").keep_bytes, 4 * 1024 ** 3)
-        self.assertEqual(self._load("[capture]\nkeep_gb = 0.5\n").keep_bytes, 512 * 1024 ** 2)
-        self.assertIsNone(self._load("[capture]\nkeep_files = 24\n").keep_bytes)
+        self.assertEqual(self._load("[record]\nkeep_gb = 4\n").keep_bytes, 4 * 1024 ** 3)
+        self.assertEqual(self._load("[record]\nkeep_gb = 0.5\n").keep_bytes, 512 * 1024 ** 2)
+        self.assertIsNone(self._load("[record]\nkeep_hours = 24\n").keep_bytes)
 
     def test_a_negative_or_zero_cap_is_refused_not_a_ring_of_one_file(self):
         # A negative keep_bytes makes RingWriter._prune's "while total >
         # keep_bytes" true for every total: one file left at every rotation.
         for bad in ("-5", "0", "-0.1"):
             with self.assertRaises(ValueError) as cm:
-                self._load(f"[capture]\nkeep_gb = {bad}\n")
+                self._load(f"[record]\nkeep_gb = {bad}\n")
             self.assertIn("keep_gb", str(cm.exception))
         with self.assertRaises(ValueError):
-            self._load('[capture]\nkeep_gb = "lots"\n')
+            self._load('[record]\nkeep_gb = "lots"\n')
 
-    def test_incidents_keep_is_a_whole_number_of_incidents_or_minus_one(self):
-        self.assertEqual(self._load("[capture]\nincidents_keep = 0\n").incidents_keep, 0)
-        self.assertEqual(self._load("[capture]\nincidents_keep = -1\n").incidents_keep, -1)
-        self.assertEqual(self._load("[capture]\nkeep_files = 24\n").incidents_keep, 4)
+    def test_keep_snapshots_is_a_whole_number_of_incidents_or_minus_one(self):
+        self.assertEqual(self._load("[record]\nkeep_snapshots = 0\n").keep_snapshots, 0)
+        self.assertEqual(self._load("[record]\nkeep_snapshots = -1\n").keep_snapshots, -1)
+        self.assertEqual(self._load("[record]\nkeep_hours = 24\n").keep_snapshots, 4)
         for bad in ("-2", "2.5", '"four"', "true"):
             with self.assertRaises(ValueError, msg=bad) as cm:
-                self._load(f"[capture]\nincidents_keep = {bad}\n")
-            self.assertIn("incidents_keep", str(cm.exception))
+                self._load(f"[record]\nkeep_snapshots = {bad}\n")
+            self.assertIn("keep_snapshots", str(cm.exception))
 
     def test_the_writer_refuses_a_cap_that_would_prune_everything(self):
         with tempfile.TemporaryDirectory() as d:
@@ -296,12 +296,12 @@ class ExampleConfigTest(unittest.TestCase):
     SETTINGS = {
         ("network", "channel"): ("channel", 25, 15),
         ("network", "pan_id"): ("pan_id", 0x4e21, 0x1234),
-        ("capture", "serial_port"): ("serial_port", "/dev/ttyACM0", "/dev/ttyUSB3"),
-        ("capture", "data_dir"): ("data_dir", Path("~/threadwatch-data").expanduser(), Path("/srv/tw")),
-        ("capture", "keep_files"): ("keep_files", 168, 24),
-        ("capture", "keep_gb"): ("keep_bytes", 4 * 1024 ** 3, 2 * 1024 ** 3),
-        ("capture", "freeze_on_critical"): ("freeze_on_critical", True, False),
-        ("capture", "incidents_keep"): ("incidents_keep", 4, 9),
+        ("record", "serial_port"): ("serial_port", "/dev/ttyACM0", "/dev/ttyUSB3"),
+        ("record", "data_dir"): ("data_dir", Path("~/threadwatch-data").expanduser(), Path("/srv/tw")),
+        ("record", "keep_hours"): ("keep_hours", 168, 24),
+        ("record", "keep_gb"): ("keep_bytes", 4 * 1024 ** 3, 2 * 1024 ** 3),
+        ("record", "snapshot_on_critical"): ("snapshot_on_critical", True, False),
+        ("record", "keep_snapshots"): ("keep_snapshots", 4, 9),
         ("devices", "inventory"): ("devices_path", "devices.json", "other.json"),
         ("quiet", "silence_s"): ("quiet_s", 1800, 600),
         ("quiet", "min_rssi_dbm"): ("quiet_min_rssi_dbm", -82, -70),
@@ -436,15 +436,15 @@ class UnknownNamesTest(unittest.TestCase):
 
     def test_an_unknown_section_is_refused_and_the_file_is_named(self):
         with self.assertRaises(ValueError) as e:
-            self._load("[recording]\nkeep_files = 100\n")
+            self._load("[recording]\nkeep_hours = 100\n")
         self.assertIn("unknown section [recording]", str(e.exception))
         self.assertIn("config.toml", str(e.exception))
 
     def test_a_mistyped_key_is_refused_and_the_section_lists_what_it_takes(self):
         with self.assertRaises(ValueError) as e:
-            self._load("[capture]\nkeep_file = 100\n")
-        self.assertIn("unknown key 'keep_file' in [capture]", str(e.exception))
-        self.assertIn("keep_files", str(e.exception))
+            self._load("[record]\nkeep_file = 100\n")
+        self.assertIn("unknown key 'keep_file' in [record]", str(e.exception))
+        self.assertIn("keep_hours", str(e.exception))
 
     def test_a_section_written_as_a_bare_value_is_refused_not_crashed_on(self):
         with self.assertRaises(ValueError) as e:

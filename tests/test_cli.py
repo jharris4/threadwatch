@@ -20,7 +20,7 @@ class CliCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.d = Path(self.tmp.name)
-        (self.d / "config.toml").write_text(f'[capture]\ndata_dir = "{self.d / "data"}"\n')
+        (self.d / "config.toml").write_text(f'[record]\ndata_dir = "{self.d / "data"}"\n')
         self.cfg = str(self.d / "config.toml")
 
     def tearDown(self):
@@ -42,7 +42,7 @@ class AlertTestFilterTest(CliCase):
     def setUp(self):
         super().setUp()
         (self.d / "config.toml").write_text(
-            f'[capture]\ndata_dir = "{self.d / "data"}"\n'
+            f'[record]\ndata_dir = "{self.d / "data"}"\n'
             '[[alerts.sinks]]\nname = "all"\ntype = "command"\ncommand = ["true"]\n'
             '[[alerts.sinks]]\nname = "phone"\ntype = "command"\ncommand = ["true"]\n'
             'ignore_events = ["poll_starvation", "retransmission_elevation"]\n'
@@ -94,7 +94,7 @@ class AlertTestUnbuiltTest(CliCase):
         for var in ("THREADWATCH_TEST_UNSET_TOKEN", "THREADWATCH_TEST_UNSET_BEAT"):
             self.assertNotIn(var, os.environ)
         (self.d / "config.toml").write_text(
-            f'[capture]\ndata_dir = "{self.d / "data"}"\n'
+            f'[record]\ndata_dir = "{self.d / "data"}"\n'
             '[[alerts.sinks]]\nname = "all"\ntype = "command"\ncommand = ["true"]\n'
             '[[alerts.sinks]]\nname = "phone"\ntype = "http"\n'
             'url = "http://127.0.0.1:9/${THREADWATCH_TEST_UNSET_TOKEN}"\n'
@@ -117,7 +117,7 @@ class AlertTestUnbuiltTest(CliCase):
         self.assertIn("  FAIL gatus: not built -> environment variable(s) not set: THREADWATCH_TEST_UNSET_BEAT", out)
         # With the variables set, the usable recipient alone is a pass.
         (self.d / "config.toml").write_text(
-            f'[capture]\ndata_dir = "{self.d / "data"}"\n'
+            f'[record]\ndata_dir = "{self.d / "data"}"\n'
             '[[alerts.sinks]]\nname = "all"\ntype = "command"\ncommand = ["true"]\n'
             '[[alerts.sinks]]\nname = "off"\ntype = "http"\nenabled = false\n'
             'url = "http://127.0.0.1:9/${THREADWATCH_TEST_UNSET_TOKEN}"\n')
@@ -127,33 +127,33 @@ class AlertTestUnbuiltTest(CliCase):
 
 class IncidentsTest(CliCase):
     def test_list_and_delete(self):
-        code, out, _ = self.run_cli("incidents")
-        self.assertEqual((code, out.strip()), (0, "no frozen incidents (threadwatch freeze <label> makes one)"))
-        inc = self.d / "data" / "incidents"
+        code, out, _ = self.run_cli("snapshots")
+        self.assertEqual((code, out.strip()), (0, "no snapshots (threadwatch snapshot <label> makes one)"))
+        inc = self.d / "data" / "snapshots"
         for name in ("20260902T141500_storm", "20260903T090000_storm", "20260901T080000_quiet"):
             (inc / name).mkdir(parents=True)
             (inc / name / "threadwatch-20260902-12.pcap").write_bytes(b"x" * 100)
-        code, out, err = self.run_cli("incidents")
+        code, out, err = self.run_cli("snapshots")
         self.assertEqual(code, 0)
         self.assertEqual([l.split()[2] for l in out.splitlines()],
                          ["20260903T090000_storm", "20260902T141500_storm", "20260901T080000_quiet"])
-        self.assertIn("3 incident(s), 300 B", err)
+        self.assertIn("3 snapshot(s), 300 B", err)
         (inc / "20260901T070000_storm-at-noon").mkdir()      # freeze wrote the label filename-safe...
-        code, _, err = self.run_cli("incidents", "--delete", "storm at noon")   # ...delete takes it as typed
+        code, _, err = self.run_cli("snapshots", "--delete", "storm at noon")   # ...delete takes it as typed
         self.assertEqual((code, err), (0, ""))
         self.assertFalse((inc / "20260901T070000_storm-at-noon").exists())
-        code, _, err = self.run_cli("incidents", "--delete", "storm")
+        code, _, err = self.run_cli("snapshots", "--delete", "storm")
         self.assertEqual(code, 1)
-        self.assertIn("names 2 incidents", err)
-        code, out, _ = self.run_cli("incidents", "--delete", "quiet")
+        self.assertIn("names 2 snapshots", err)
+        code, out, _ = self.run_cli("snapshots", "--delete", "quiet")
         self.assertEqual(code, 0)
         self.assertFalse((inc / "20260901T080000_quiet").exists())
-        code, _, _ = self.run_cli("incidents", "--delete", "20260902T141500_storm/")
+        code, _, _ = self.run_cli("snapshots", "--delete", "20260902T141500_storm/")
         self.assertEqual(code, 0)
         self.assertEqual([p.name for p in inc.iterdir()], ["20260903T090000_storm"])
-        code, _, err = self.run_cli("incidents", "--delete", "nothing")
+        code, _, err = self.run_cli("snapshots", "--delete", "nothing")
         self.assertEqual(code, 1)
-        self.assertIn("no incident named", err)
+        self.assertIn("no snapshot named", err)
 
 
 class AdoptTest(CliCase):
@@ -166,7 +166,7 @@ class AdoptTest(CliCase):
         # (and adopt's write) away from it.
         with mock.patch.object(config_mod, "REPO_ROOT", self.d / "repo"):
             self.assertIsNone(config_mod.load(Path(self.cfg)).devices_path)   # no inventory anywhere yet
-            code, out, _ = self.run_cli("adopt", "66417fe110ed6950", "Office AQ")
+            code, out, _ = self.run_cli("name", "66417fe110ed6950", "Office AQ")
             self.assertEqual(code, 0)
             self.assertIn(str(self.d / "devices.json"), out)
             cfg = config_mod.load(Path(self.cfg))
@@ -178,7 +178,7 @@ class FreezeTest(CliCase):
     def test_freeze_copies_ring_state_and_events(self):
         from threadwatch.config import load
         (self.d / "config.toml").write_text(
-            f'[capture]\ndata_dir = "{self.d / "data"}"\n[devices]\ninventory = "devices.json"\n'
+            f'[record]\ndata_dir = "{self.d / "data"}"\n[devices]\ninventory = "devices.json"\n'
             '[[alerts.sinks]]\nname = "phone"\ntype = "ntfy"\nurl = "https://ntfy.example/topic-9f3a"\n'
             'headers = { Authorization = "Bearer hunter2" }\n')
         (self.d / "devices.json").write_text('[{"name": "Office AQ", "extendedAddress": "26976E7F7D20964A"}]')
@@ -190,15 +190,15 @@ class FreezeTest(CliCase):
         (cfg.state_dir / "border-routers.json").write_text("{}")   # the hubs' address history
         cfg.events_dir.mkdir(parents=True)
         (cfg.events_dir / "2026-09-03.jsonl").write_text("")
-        code, out, _ = self.run_cli("freeze", "my label/with junk")
+        code, out, _ = self.run_cli("snapshot", "my label/with junk")
         self.assertEqual(code, 0)
-        self.assertIn("froze 2 ring files", out)
+        self.assertIn("saved 2 ring files", out)
         inc = next(p for p in cfg.incidents_dir.iterdir() if not p.name.startswith("."))
         self.assertTrue(inc.name.endswith("_my-label-with-junk"))
         self.assertEqual(sorted(p.name for p in inc.iterdir()),
                          ["border-routers.json", "config.toml", "devices.json", "events", "last-seen.json",
                           "manifest.json", "threadwatch-20260903-08.pcap", "threadwatch-20260903-09.pcap"])
-        self.assertEqual(self.run_cli("incidents")[1].count("my-label-with-junk"), 1)
+        self.assertEqual(self.run_cli("snapshots")[1].count("my-label-with-junk"), 1)
         # The inventory as it was; the configuration with its secrets blanked.
         self.assertEqual((inc / "devices.json").read_text(), (self.d / "devices.json").read_text())
         frozen_cfg = (inc / "config.toml").read_text()
@@ -227,7 +227,7 @@ class EventsFilterTest(CliCase):
             {"name": "Living Room Apple TV", "extendedAddresses": ["b62c32bf669272db", "e6c279e8f0c70298"]},
             {"name": "Office AQ", "extendedAddress": "26976e7f7d20964a"},
         ]))
-        (self.d / "config.toml").write_text(f'[capture]\ndata_dir = "{self.d / "data"}"\n'
+        (self.d / "config.toml").write_text(f'[record]\ndata_dir = "{self.d / "data"}"\n'
                                             f'[devices]\ninventory = "devices.json"\n')
         log = EventLog(load(Path(self.cfg)).events_dir)
         t = 1_756_800_000.0
@@ -329,43 +329,43 @@ class DispatchTest(CliCase):
         # anywhere on the box reaches shutil.rmtree without this check.
         from threadwatch.config import load
         load(Path(self.cfg)).incidents_dir.mkdir(parents=True)
-        outside = self.d / "not-an-incident"
+        outside = self.d / "not-a-snapshot"
         outside.mkdir()
         (outside / "keep.txt").write_text("mine")
-        code, _, err = self.run_cli("incidents", "--delete", str(outside))
+        code, _, err = self.run_cli("snapshots", "--delete", str(outside))
         self.assertEqual(code, 1)
         self.assertIn("is not under", err)
         self.assertTrue((outside / "keep.txt").exists())
-        traversal = self.d / "data" / "incidents" / ".." / ".." / "not-an-incident"
-        code, _, err = self.run_cli("incidents", "--delete", str(traversal))
+        traversal = self.d / "data" / "snapshots" / ".." / ".." / "not-a-snapshot"
+        code, _, err = self.run_cli("snapshots", "--delete", str(traversal))
         self.assertEqual(code, 1)
         self.assertIn("is not under", err)
         self.assertTrue((outside / "keep.txt").exists())
         # A name nothing matches is a different error, and deletes nothing.
-        code, _, err = self.run_cli("incidents", "--delete", "no-such-incident")
+        code, _, err = self.run_cli("snapshots", "--delete", "no-such-snapshot")
         self.assertEqual(code, 1)
-        self.assertIn("no incident named 'no-such-incident'", err)
+        self.assertIn("no snapshot named 'no-such-snapshot'", err)
 
     def test_an_incident_inside_the_directory_is_deleted_by_name_or_label(self):
         from threadwatch.config import load
         inc = load(Path(self.cfg)).incidents_dir / "20260903T120000_storm-at-noon"
         inc.mkdir(parents=True)
         (inc / "threadwatch-20260903-11.pcap").write_bytes(b"x" * 10)
-        code, out, err = self.run_cli("incidents", "--delete", "storm at noon")   # the label as typed
+        code, out, err = self.run_cli("snapshots", "--delete", "storm at noon")   # the label as typed
         self.assertEqual(code, 0, err)
         self.assertIn("deleted", out)
         self.assertFalse(inc.exists())
 
     def test_why_refuses_the_argument_combinations_that_contradict_each_other(self):
         for args, message in ((("--pcap", "x.pcap", "--hours", "6"), "does not apply with --pcap"),
-                              (("--pcap", "x.pcap", "--incident", "n"), "give one"),
+                              (("--pcap", "x.pcap", "--snapshot", "n"), "give one"),
                               (("--hours", "0"), "--hours must be positive"),
                               (("--hours", "-1"), "--hours must be positive")):
-            code, _, err = self.run_cli("why", "Office AQ", *args)
+            code, _, err = self.run_cli("device", "Office AQ", *args)
             self.assertEqual(code, 2, args)
             self.assertIn(message, err)
 
-    def test_a_missing_network_key_is_exit_2_from_why_as_it_is_from_capture(self):
+    def test_a_missing_network_key_is_exit_2_from_device_as_it_is_from_record(self):
         # Scripts and the systemd unit tell "this box cannot decrypt" from
         # "this box broke" by the code, so both commands promise 2.
         from threadwatch import capture as capture_mod
@@ -375,11 +375,11 @@ class DispatchTest(CliCase):
         def refuse(*a, **kw):
             raise CredentialsError("credentials.toml is missing")
 
-        for cmd, mod, name in (("why", why_mod, "run_why"), ("capture", capture_mod, "run_capture")):
+        for cmd, mod, name in (("device", why_mod, "run_why"), ("record", capture_mod, "run_capture")):
             real = getattr(mod, name)
             setattr(mod, name, refuse)
             try:
-                code, _, err = self.run_cli(cmd, *(["Office AQ"] if cmd == "why" else []))
+                code, _, err = self.run_cli(cmd, *(["Office AQ"] if cmd == "device" else []))
             finally:
                 setattr(mod, name, real)
             self.assertEqual(code, 2, cmd)
@@ -388,7 +388,7 @@ class DispatchTest(CliCase):
     def test_replay_needs_something_to_read(self):
         code, _, err = self.run_cli("replay")
         self.assertEqual(code, 2)
-        self.assertIn("give pcap files, a directory of them, or --incident NAME", err)
+        self.assertIn("give pcap files, a directory of them, or --snapshot NAME", err)
 
     def test_events_day_wants_a_date(self):
         from threadwatch.config import load
@@ -426,14 +426,14 @@ class DispatchTest(CliCase):
 
     def test_adopt_reports_a_bad_address_as_exit_1_and_writes_nothing(self):
         inv = self.d / "devices.json"
-        (self.d / "config.toml").write_text(f'[capture]\ndata_dir = "{self.d / "data"}"\n'
+        (self.d / "config.toml").write_text(f'[record]\ndata_dir = "{self.d / "data"}"\n'
                                             f'[devices]\ninventory = "devices.json"\n')
         inv.write_text("[]")
-        code, _, err = self.run_cli("adopt", "not-an-address", "Office AQ")
+        code, _, err = self.run_cli("name", "not-an-address", "Office AQ")
         self.assertEqual(code, 1)
-        self.assertIn("threadwatch adopt:", err)
+        self.assertIn("threadwatch name:", err)
         self.assertEqual(inv.read_text(), "[]")
-        code, out, err = self.run_cli("adopt", "26976e7f7d20964a", "Office AQ")
+        code, out, err = self.run_cli("name", "26976e7f7d20964a", "Office AQ")
         self.assertEqual(code, 0, err)
         self.assertIn("Office AQ", out)
         self.assertIn("restart it to use the name", out)
@@ -469,11 +469,11 @@ class DispatchTest(CliCase):
         seen.table["26976e7f7d20964a"] = {"first_seen": now - 3600, "last_seen": now, "frames": 500,
                                           "rssi": -60.0, "types": {}}
         seen.save()
-        code, out, err = self.run_cli("report", "--suggest")
+        code, out, err = self.run_cli("devices", "--suggest")
         self.assertEqual(code, 0, err)
         self.assertIn("26976e7f7d20964a", out.lower())
         self.assertIn("paste into devices.json", err)
-        code, out, err = self.run_cli("report")
+        code, out, err = self.run_cli("devices")
         self.assertEqual(code, 0, err)
         self.assertEqual(json.loads(out)["unknown"][0]["addr"], "26976e7f7d20964a")
         self.assertIn("1 unknown address(es) seen", err)
@@ -522,7 +522,7 @@ class ReportSuggestTest(CliCase):
                          {self.DEV: {"office-aq-1a2b.local": 3, "junk-once.x[L(": 1}})
         self.assertFalse(names_file.with_suffix(".tmp").exists())   # written whole, then renamed into place
 
-        code, out, err = self.run_cli("report", "--suggest")
+        code, out, err = self.run_cli("devices", "--suggest")
         self.assertEqual(code, 0, err)
         entries = json.loads(out)
         self.assertEqual([(e["name"], e["extendedAddress"]) for e in entries],
@@ -532,8 +532,8 @@ class ReportSuggestTest(CliCase):
         self.assertNotIn("junk-once", entries[0]["note"])           # seen once: a regex false positive
         self.assertIn("1 entry to fill in and paste into devices.json", err)
         # Named, the address leaves the unknown list and nothing is suggested.
-        self.assertEqual(self.run_cli("adopt", self.DEV, "Office AQ")[0], 0)
-        code, out, err = self.run_cli("report", "--suggest")
+        self.assertEqual(self.run_cli("name", self.DEV, "Office AQ")[0], 0)
+        code, out, err = self.run_cli("devices", "--suggest")
         self.assertEqual((code, json.loads(out), err), (0, [], ""))
 
 
@@ -603,7 +603,7 @@ class ReplayTest(CliCase):
         # BUG-03: replay ran the periodic checks once, at EOF, so a device
         # that fell silent and came back inside the file was never quiet.
         from threadwatch.pcap import DLT_NOFCS
-        (self.d / "config.toml").write_text(f'[capture]\ndata_dir = "{self.d / "data"}"\n[quiet]\nsilence_s = 60\n')
+        (self.d / "config.toml").write_text(f'[record]\ndata_dir = "{self.d / "data"}"\n[quiet]\nsilence_s = 60\n')
         (self.d / "credentials.toml").write_text('[credentials]\nnetwork_key = "00112233445566778899aabbccddeeff"\n')
         frames = [(self.T, self._psdu(self.DEV, 0))]
         frames += [(self.T + 30 * i, self._psdu(self.OTHER, i)) for i in range(1, 7)]     # T+30 .. T+180
@@ -619,7 +619,7 @@ class ReplayTest(CliCase):
         # one silence: judged once, across the boundary, as the recorder
         # judged it, whether the files are named or the directory is.
         from threadwatch.pcap import DLT_NOFCS
-        (self.d / "config.toml").write_text(f'[capture]\ndata_dir = "{self.d / "data"}"\n[quiet]\nsilence_s = 60\n')
+        (self.d / "config.toml").write_text(f'[record]\ndata_dir = "{self.d / "data"}"\n[quiet]\nsilence_s = 60\n')
         (self.d / "credentials.toml").write_text('[credentials]\nnetwork_key = "00112233445566778899aabbccddeeff"\n')
         ring = self.d / "ring"
         ring.mkdir()
@@ -644,29 +644,29 @@ class ReplayTest(CliCase):
 
     def test_replay_reads_an_incident_with_the_inventory_frozen_in_it(self):
         from threadwatch.pcap import DLT_NOFCS
-        (self.d / "config.toml").write_text(f'[capture]\ndata_dir = "{self.d / "data"}"\n'
+        (self.d / "config.toml").write_text(f'[record]\ndata_dir = "{self.d / "data"}"\n'
                                             '[devices]\ninventory = "devices.json"\n')
         (self.d / "devices.json").write_text(json.dumps([{"name": "Live Name", "extendedAddress": self.DEV}]))
         (self.d / "credentials.toml").write_text('[credentials]\nnetwork_key = "00112233445566778899aabbccddeeff"\n')
-        inc = self.d / "data" / "incidents" / "20260903T100000_storm-at-noon"
+        inc = self.d / "data" / "snapshots" / "20260903T100000_storm-at-noon"
         inc.mkdir(parents=True)
-        self._write_pcap("data/incidents/20260903T100000_storm-at-noon/threadwatch-20260903-09.pcap",
+        self._write_pcap("data/snapshots/20260903T100000_storm-at-noon/threadwatch-20260903-09.pcap",
                          [(self.T + i, self._psdu(self.DEV, i)) for i in range(3)], DLT_NOFCS)
         (inc / "devices.json").write_text(json.dumps([{"name": "Frozen Name", "extendedAddress": self.DEV}]))
         for want in ("storm-at-noon", "storm at noon", inc.name, str(inc)):
-            code, out, err = self.run_cli("replay", "--incident", want)
+            code, out, err = self.run_cli("replay", "--snapshot", want)
             self.assertEqual(code, 0, (want, err))
             run = json.loads(out)
             self.assertEqual(run["files"], [str(inc / "threadwatch-20260903-09.pcap")])
             self.assertEqual([e["name"] for e in run["events"] if e["event"] == "device_first_seen"], ["Frozen Name"])
-        code, _out, _err = self.run_cli("replay", "--incident", "nope")
+        code, _out, _err = self.run_cli("replay", "--snapshot", "nope")
         self.assertEqual(code, 1)
         state = self.d / "data" / "state"
         self.assertEqual(sorted(p.name for p in state.rglob("*")) if state.exists() else [], [])
 
     def test_replay_finds_a_link_drop_that_holds_and_then_recovers(self):
         from threadwatch.pcap import DLT_TAP
-        (self.d / "config.toml").write_text(f'[capture]\ndata_dir = "{self.d / "data"}"\n'
+        (self.d / "config.toml").write_text(f'[record]\ndata_dir = "{self.d / "data"}"\n'
                                             '[link]\ndrop_db = 8\nhold_s = 60\n')
         (self.d / "credentials.toml").write_text('[credentials]\nnetwork_key = "00112233445566778899aabbccddeeff"\n')
 
@@ -704,7 +704,7 @@ class ConfigValidationTest(unittest.TestCase):
     def test_out_of_range_and_degenerate_values_are_rejected(self):
         for body in ('[network]\nchannel = 99\n',
                      '[network]\nchannel = 3\n',
-                     '[capture]\nkeep_files = 0\n',
+                     '[record]\nkeep_hours = 0\n',
                      '[detect]\nperiod_onsets = 1\n'):
             with self.assertRaises(ValueError):
                 self._load(body)
@@ -715,7 +715,7 @@ class ConfigValidationTest(unittest.TestCase):
     def test_data_dir_expands_environment_variables(self):
         import os
         os.environ["TW_TEST_ROOT"] = "/tmp/tw-test-root"
-        cfg = self._load('[capture]\ndata_dir = "$TW_TEST_ROOT/data"\n')
+        cfg = self._load('[record]\ndata_dir = "$TW_TEST_ROOT/data"\n')
         self.assertEqual(str(cfg.data_dir), "/tmp/tw-test-root/data")
 
     def test_a_config_path_that_does_not_exist_is_one_line_not_a_traceback(self):

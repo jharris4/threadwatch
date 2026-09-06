@@ -18,7 +18,7 @@ class BundleTest(unittest.TestCase):
 
     def test_redaction_blanks_secret_values_and_keeps_the_shape(self):
         import tomllib
-        text = ('[network]\nchannel = 25\nkeep_files = 168\n'
+        text = ('[network]\nchannel = 25\nkeep_hours = 168\n'
                 '[[alerts.sinks]]\nname = "phone"\ntype = "ntfy"\nurl = "https://ntfy.example/t-9f3a"   # topic\n'
                 'token = "${NTFY_TOKEN}"\nheaders = { Authorization = "Bearer hunter2", "X-Y" = "]" }\n'
                 'command = [\n  "curl", "-H", "Auth: hunter3",\n  "https://x.example/{event}",\n]\n'
@@ -28,7 +28,7 @@ class BundleTest(unittest.TestCase):
         for secret in ("9f3a", "hunter2", "hunter3", "NTFY_TOKEN", "hc.example", "00112233"):
             self.assertNotIn(secret, out)
         parsed = tomllib.loads(out)
-        self.assertEqual(parsed["network"], {"channel": 25, "keep_files": 168})
+        self.assertEqual(parsed["network"], {"channel": 25, "keep_hours": 168})
         self.assertEqual(parsed["alerts"]["sinks"], [{"name": "phone", "type": "ntfy", "url": "<redacted>",
                                                       "token": "<redacted>", "headers": "<redacted>",
                                                       "command": "<redacted>", "min_severity": "warning"}])

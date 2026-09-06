@@ -130,7 +130,7 @@ LEGEND = [
     ("storm", "Phase-locked storm",
      "Traffic floods recurring with a stable period: the signature of the mesh-wide broadcast "
      "storm that took the network down before. Critical. This is what the ring buffer is for: "
-     "run 'threadwatch freeze' to keep the packets."),
+     "run 'threadwatch snapshot' to keep the packets."),
     ("partition", "Partition or leader change",
      "The Thread mesh split, merged, or elected a new leader (credentials needed to see this). "
      "Routine after a border router reboots; a problem if it keeps happening."),
@@ -152,9 +152,9 @@ LEGEND = [
     ("join_scan", "Join-scan beacons",
      "Beacon requests or beacons in a burst: something is scanning to join a network. Normal "
      "while commissioning a device; otherwise a neighbour's device or a factory-reset one."),
-    ("frozen", "Incident frozen",
-     "The recorder copied the ring buffer into an incident directory by itself, because a critical "
-     "event fired and [capture] freeze_on_critical is on. One per six hours at most. A failure "
+    ("snapshot", "Snapshot saved",
+     "The recorder copied the ring buffer into a snapshot by itself, because a critical "
+     "event fired and [record] snapshot_on_critical is on. One per six hours at most. A failure "
      "(disk full, usually) is logged as a warning instead."),
     ("recorder", "Recorder started / restarted",
      "The recorder itself started: how long it had not been listening (since the last frame any run "
@@ -278,7 +278,7 @@ class Site:
         crypto = f'{(st.get("crypto") or {}).get("mac_decrypted", 0):,} decrypted'
         return (f'<header><a class="brand" href="/">threadwatch</a>'
                 f'<nav><a href="/">today</a> &nbsp; <a href="/devices">devices</a> &nbsp; '
-                f'<a href="/incidents">incidents</a> &nbsp; <a href="/status">status</a> &nbsp; '
+                f'<a href="/snapshots">snapshots</a> &nbsp; <a href="/status">status</a> &nbsp; '
                 f'<a href="/help">what these mean</a></nav>'
                 f'<span class="status">{live}{storm} &middot; ch {esc(st.get("channel"))} &middot; '
                 f'<b>{st.get("frames_total", 0):,}</b> frames &middot; {st.get("devices_tracked", 0)} devices '
@@ -403,9 +403,9 @@ class Site:
             pk = f'<span class="ok">{len(cap["ring_files"])} hourly capture files still in the ring</span>'
         else:
             pk = '<span class="muted">packets for this day are gone from the ring</span>'
-        if cap["incidents"]:
-            pk += ' &middot; frozen incidents: ' + ", ".join(
-                f'<a href="/incidents#{esc(i)}">{esc(i)}</a>' for i in cap["incidents"])
+        if cap["snapshots"]:
+            pk += ' &middot; snapshots: ' + ", ".join(
+                f'<a href="/snapshots#{esc(i)}">{esc(i)}</a>' for i in cap["snapshots"])
         rows = []
         for ep in eps:
             span = ""
@@ -641,9 +641,9 @@ class Site:
                 if sto["ring_span"] else "")
         rate = f', about {fmt_bytes(sto["bytes_per_hour"])}/hour' if sto.get("bytes_per_hour") else ""
         cap = f', capped at {fmt_bytes(sto["keep_bytes"])}' if sto.get("keep_bytes") else ""
-        row("ring", f'{sto["ring_files"]} of {sto["keep_files"]} hourly files, '
+        row("ring", f'{sto["ring_files"]} of {sto["keep_hours"]} hourly files, '
                     f'{fmt_bytes(sto["ring_bytes"])}{rate}{cap}{span}')
-        row("incidents", f'{fmt_bytes(sto["incidents_bytes"])} &middot; <a href="/incidents">list</a>')
+        row("snapshots", f'{fmt_bytes(sto["snapshots_bytes"])} &middot; <a href="/snapshots">list</a>')
         row("event log", fmt_bytes(sto["events_bytes"]))
         if sto.get("disk_total"):
             free = sto["disk_free"]
@@ -662,18 +662,18 @@ class Site:
         for i in items:
             span = f'{i["span"][0]} to {i["span"][1]}' if i["span"] else '<span class="muted">no ring files</span>'
             trs.append(f'<tr id="{esc(i["name"])}"><td class="t">'
-                       f'<a href="/day/{i["day"]}">{i["day"]}</a> {hm(i["frozen"])}</td>'
+                       f'<a href="/day/{i["day"]}">{i["day"]}</a> {hm(i["saved"])}</td>'
                        f'<td><b>{esc(i["label"])}</b></td><td>{i["pcaps"]} pcaps, {span}</td>'
                        f'<td class="n">{fmt_bytes(i["bytes"])}</td>'
                        f'<td class="muted">{"events included" if i["events"] else ""}</td></tr>')
-        table = (f'<table><tr><th>frozen</th><th>label</th><th>packets</th>'
+        table = (f'<table><tr><th>saved</th><th>label</th><th>packets</th>'
                  f'<th>size</th><th></th></tr>{"".join(trs)}</table>'
-                 if trs else '<p class="empty">no frozen incidents</p>')
+                 if trs else '<p class="empty">no snapshots</p>')
         intro = (f'<p class="muted">Snapshots of the ring buffer taken with '
-                 f'<code>threadwatch freeze &lt;label&gt;</code>, '
+                 f'<code>threadwatch snapshot &lt;label&gt;</code>, '
                  f'kept forever under <code>{esc(self.cfg.incidents_dir)}</code>. Open them in Wireshark or with '
-                 f'<code>threadwatch why --pcap</code> / <code>replay</code>.</p>')
-        return self.page("incidents", f'<h1>incidents</h1>{intro}{table}')
+                 f'<code>threadwatch device --pcap</code> / <code>replay</code>.</p>')
+        return self.page("snapshots", f'<h1>snapshots</h1>{intro}{table}')
 
     def help_page(self) -> str:
         sev = ('<div class="card"><b>Severities.</b> '
@@ -698,8 +698,8 @@ class Site:
     def api(self, path: str, query: dict):
         if path == "/api/status":
             return {**self.status(), "storage": storage(self.cfg)}
-        if path == "/api/incidents":
-            return {"incidents": incidents(self.cfg.incidents_dir)}
+        if path == "/api/snapshots":
+            return {"snapshots": incidents(self.cfg.incidents_dir)}
         if path.startswith("/api/day/"):
             day = path[len("/api/day/"):]
             if not valid_day(day):
@@ -709,7 +709,7 @@ class Site:
                 ep.pop("events", None)
             from .events import read_day
             return {"day": day, "episodes": eps, "records": read_day(self.cfg.events_dir, day),
-                    "capture": capture_for_day(self.cfg.ring_dir, self.cfg.incidents_dir, day),
+                    "recording": capture_for_day(self.cfg.ring_dir, self.cfg.incidents_dir, day),
                     "coverage": coverage(self.cfg.events_dir, day, status=self.status())}
         if path == "/api/devices":
             seen = self.seen()
@@ -773,7 +773,7 @@ class Site:
             return 200, "text/html; charset=utf-8", self.help_page().encode()
         if path == "/status":
             return 200, "text/html; charset=utf-8", self.status_page().encode()
-        if path == "/incidents":
+        if path == "/snapshots":
             return 200, "text/html; charset=utf-8", self.incidents_page().encode()
         if path.startswith("/device/"):
             target = unquote(path[len("/device/"):]).strip()
@@ -827,7 +827,7 @@ def serve(cfg, bind: str = "127.0.0.1", port: int = 8080) -> None:
     state = cfg.state_dir
     print(f"[threadwatch] web: http://{bind}:{httpd.server_port}/ (state {state})"
           + ("" if state.is_dir() else ": does not exist yet, so the pages are empty until "
-                                       "threadwatch capture has started"), flush=True)
+                                       "threadwatch record has started"), flush=True)
     # In the container this process is PID 1, which the kernel does not
     # deliver a default-action signal to: without a handler, stop is ignored.
     # shutdown() must not run on the thread inside serve_forever, or it

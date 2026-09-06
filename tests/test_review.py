@@ -461,10 +461,10 @@ class DayViewTest(unittest.TestCase):
         sto = storage(self.cfg)
         self.assertEqual((sto["ring_files"], sto["ring_span"], sto["ring_bytes"], sto["bytes_per_hour"]),
                          (2, ("20260903-08", "20260903-09"), 8192, 4096))
-        self.assertEqual(sto["incidents_bytes"], 3072 + 15)   # notes.txt is disk usage too
+        self.assertEqual(sto["snapshots_bytes"], 3072 + 15)   # notes.txt is disk usage too
         self.assertGreater(sto["disk_free"], 0)
         self.assertEqual((sto["ring_bound_bytes"], sto["ring_needs_bytes"]),
-                         (self.cfg.keep_files * 4096, self.cfg.keep_files * 4096 - 8192))
+                         (self.cfg.keep_hours * 4096, self.cfg.keep_hours * 4096 - 8192))
         self.cfg.keep_bytes = 10000                            # keep_gb wins when it is the smaller bound...
         sto = storage(self.cfg)                                # ...plus the hour being written, never pruned
         self.assertEqual((sto["keep_bytes"], sto["ring_bound_bytes"], sto["ring_needs_bytes"]), (10000, 14096, 5904))
@@ -479,11 +479,11 @@ class DayViewTest(unittest.TestCase):
         for h in ("20260830-22", "20260830-23", "20260831-00"):           # ...holding the storm's evening
             (late / f"threadwatch-{h}.pcap").write_bytes(b"x")
         (self.cfg.incidents_dir / "20260904T090000_empty").mkdir()          # no pcaps: its freeze day
-        by_day = {d: capture_for_day(self.cfg.ring_dir, self.cfg.incidents_dir, d)["incidents"]
+        by_day = {d: capture_for_day(self.cfg.ring_dir, self.cfg.incidents_dir, d)["snapshots"]
                   for d in ("2026-08-29", "2026-08-30", "2026-08-31", "2026-09-04")}
         self.assertEqual(by_day, {"2026-08-29": [], "2026-08-30": [late.name], "2026-08-31": [late.name],
                                   "2026-09-04": ["20260904T090000_empty"]})
-        self.assertEqual(capture_for_day(self.cfg.ring_dir, Path(self.tmp.name) / "none", "2026-08-30")["incidents"],
+        self.assertEqual(capture_for_day(self.cfg.ring_dir, Path(self.tmp.name) / "none", "2026-08-30")["snapshots"],
                          [])
 
     def test_chooser_links_survive_url_special_characters_in_names(self):
@@ -625,17 +625,21 @@ class DayViewTest(unittest.TestCase):
             inc = self.cfg.incidents_dir / f"{day.replace('-', '')}T141500_storm"
             inc.mkdir(parents=True)
             (inc / "threadwatch-20260902-12.pcap").write_bytes(b"x" * 100)
-            status, body = get("/incidents")
+            status, body = get("/snapshots")
             self.assertIn("<b>storm</b>", body)
             self.assertIn("1 pcaps, 20260902-12 to 20260902-12", body)
-            self.assertIn(f'href="/incidents#{inc.name}"', get(f"/day/{day}")[1])
+            self.assertIn(f'href="/snapshots#{inc.name}"', get(f"/day/{day}")[1])
             status, body = get("/status")
             self.assertIn(">running<", body)
             self.assertNotIn("inspection", body)
             self.assertIn("free</span> of", body)
             self.assertIn("12,345 frames", body)
             self.assertIn("storage", json.loads(get("/api/status")[1]))
-            self.assertEqual(json.loads(get("/api/incidents")[1])["incidents"][0]["label"], "storm")
+            api = json.loads(get("/api/snapshots")[1])["snapshots"][0]
+            self.assertEqual(api["label"], "storm")
+            # "saved" is the stamp in the directory name; the CLI listing,
+            # the page and the auto-snapshot cooldown all read this key.
+            self.assertEqual(time.strftime("%Y-%m-%d", time.localtime(api["saved"])), day)
             self.assertIn('title="', get(f"/day/{day}")[1])   # rows carry the legend as tooltips
             with self.assertRaises(urllib.error.HTTPError) as ctx:
                 get("/device/zzz")
@@ -730,7 +734,7 @@ class WebServerTest(unittest.TestCase):
         finally:
             os.chmod(self.cfg.data_dir, 0o700)
         self.assertEqual(status, 200)
-        self.assertIn("does not exist yet, so the pages are empty until threadwatch capture has started", printed)
+        self.assertIn("does not exist yet, so the pages are empty until threadwatch record has started", printed)
 
 
 class FmtEpisodeTest(unittest.TestCase):
@@ -1038,16 +1042,16 @@ class EveryEventKindTest(unittest.TestCase):
         eps = group_episodes([
             rec("phase_locked_storm", "critical", T0, period_s=80.5, onsets=3, baseline_frames_per_window=250.0,
                 note="traffic floods recurring every 80 s"),
-            rec("incident_frozen", "info", T0 + 5, label="auto-storm",
+            rec("snapshot_saved", "info", T0 + 5, label="auto-storm",
                 note="6 ring files kept as 20260902T120005_auto-storm"),
-            rec("incident_freeze_failed", "warning", T0 + 10, label="auto-storm", note="could not freeze the ring"),
+            rec("snapshot_failed", "warning", T0 + 10, label="auto-storm", note="could not freeze the ring"),
             rec("alert_test", "warning", T0 + 20, name="Test device", note="threadwatch alert-test from pi"),
         ])
         self.assertEqual([(e["kind"], e["severity"], e["title"], e["detail"]) for e in eps],
                          [("storm", "critical", "phase-locked storm",
                            "period 80.5s, onsets 3, baseline 250.0 frames/window"),
-                          ("frozen", "info", "incident frozen", "6 ring files kept as 20260902T120005_auto-storm"),
-                          ("frozen", "warning", "incident freeze failed", "could not freeze the ring"),
+                          ("snapshot", "info", "snapshot saved", "6 ring files kept as 20260902T120005_auto-storm"),
+                          ("snapshot", "warning", "snapshot failed", "could not freeze the ring"),
                           ("test", "warning", "alert test", "threadwatch alert-test from pi")])
 
     def test_an_event_without_a_grouping_rule_is_a_row_named_after_it(self):

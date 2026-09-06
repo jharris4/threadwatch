@@ -183,7 +183,7 @@ def write_manifest(cfg, dest: Path, label: str, now: float, trigger: str | None)
         "config": "config.toml" if "config.toml" in files else None,
         "events_days": sum(1 for n in files if n.startswith("events/") and n.endswith(".jsonl")),
         "files": files,
-        "read_with": "threadwatch replay --incident <name>; threadwatch why <device> --incident <name>",
+        "read_with": "threadwatch replay --snapshot <name>; threadwatch device <device> --snapshot <name>",
     }
     (dest / MANIFEST).write_text(json.dumps(manifest, indent=1))
     return manifest

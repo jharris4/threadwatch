@@ -28,4 +28,4 @@ USER threadwatch
 VOLUME ["/app/config", "/app/data"]
 EXPOSE 8080
 ENTRYPOINT ["/app/bin/threadwatch"]
-CMD ["capture"]
+CMD ["record"]

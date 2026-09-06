@@ -82,10 +82,10 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `border_router_address_changed` | notice | `addr`, `name`, `previous`, `hostname`, `note` |
 | `border_router_unlisted` | notice | `addr`, `hostname`, `note` |
 | `phase_locked_storm` | critical | detector snapshot (`period_s`, `onsets`, ...) |
-| `incident_frozen` | info | `label`, `path`, `ring_files`, `note` (with `[capture] freeze_on_critical`) |
-| `incident_freeze_failed` | warning | `label`, `note` |
-| `incident_freeze_skipped` | warning | `label`, `disk_free`, `ring_bytes`, `ring_needs_bytes`, `note` |
-| `incidents_pruned` | info | `removed`, `note` |
+| `snapshot_saved` | info | `label`, `path`, `ring_files`, `note` (with `[record] snapshot_on_critical`) |
+| `snapshot_failed` | warning | `label`, `note` |
+| `snapshot_skipped` | warning | `label`, `disk_free`, `ring_bytes`, `ring_needs_bytes`, `note` |
+| `snapshots_pruned` | info | `removed`, `note` |
 | `daily_summary` | `[summary] severity` (notice) | `frames_24h`, `devices_heard_24h`, `devices_tracked`, `quiet`, `unknown`, `marginal`, `degraded`, `storm_active`, `events_24h`, `note` |
 | `alert_test` | as requested | `name`, `addr`, `note` (from `alert-test`) |
 

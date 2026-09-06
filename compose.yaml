@@ -5,7 +5,7 @@ services:
   capture:
     build: .
     image: threadwatch
-    command: capture
+    command: record
     restart: unless-stopped
     # On stop the recorder saves its state, then drains queued alerts and
     # held digests for up to 15 s (alerts.Dispatcher.close) before it
@@ -58,7 +58,7 @@ services:
     # so a server on the container's loopback - the [web] bind default,
     # right for a native install - refuses every connection that arrives.
     # What keeps the pages off the LAN here is the loopback publish.
-    command: ["web", "--bind", "0.0.0.0"]
+    command: ["serve", "--bind", "0.0.0.0"]
     restart: unless-stopped
     depends_on: [capture]
     # Published on loopback only: the pages have no authentication, and on

@@ -41,7 +41,7 @@ def check_inventory(cfg) -> list[Check]:
     path = cfg.devices_path
     if path is None or not path.exists():
         return [(WARN, "inventory", "no devices.json: every address will be reported as unknown "
-                                    "(threadwatch report --suggest drafts entries)")]
+                                    "(threadwatch devices --suggest drafts entries)")]
     try:
         entries = json.loads(path.read_text())
     except ValueError as exc:
@@ -168,7 +168,7 @@ def check_ring(cfg, now: float | None = None) -> list[Check]:
         return [(WARN, "ring", "no ring files yet")]
     newest = files[-1]
     age = now - newest.stat().st_mtime
-    text = f"{len(files)} of {cfg.keep_files} hourly files, newest {newest.name} written {age / 60:.0f} min ago"
+    text = f"{len(files)} of {cfg.keep_hours} hourly files, newest {newest.name} written {age / 60:.0f} min ago"
     if age > 2 * 3600:
         return [(FAIL, "ring", text + ": the ring stopped growing")]
     return [(OK, "ring", text)]
@@ -231,28 +231,28 @@ def check_disk(cfg) -> list[Check]:
     cap = f", capped at {fmt_bytes(sto['keep_bytes'])}" if sto.get("keep_bytes") else ""
     text = (f"{fmt_bytes(free)} free; a full ring ({fmt_bytes(sto['ring_bound_bytes'])}{cap}) "
             f"needs about {fmt_bytes(need)} more{rate}")
-    incidents = sto.get("incidents_bytes") or 0
+    incidents = sto.get("snapshots_bytes") or 0
     if incidents:
-        text += f"; frozen incidents hold {fmt_bytes(incidents)}"
+        text += f"; snapshots hold {fmt_bytes(incidents)}"
     if free < need:
-        return [(FAIL, "disk", text + ": it will not fit; lower keep_files, set keep_gb, or move data_dir")]
+        return [(FAIL, "disk", text + ": it will not fit; lower keep_hours, set keep_gb, or move data_dir")]
     if free < need + 1024 ** 3:
         return [(WARN, "disk", text + ": under 1 GB to spare")]
     out = [(OK, "disk", text)]
-    # A snapshot is a whole second copy of the ring, and only incidents_keep
+    # A snapshot is a whole second copy of the ring, and only keep_snapshots
     # bounds how many are kept, so the room the ring still needs has to
     # survive one more of them.
-    if cfg.freeze_on_critical and free - sto["ring_bytes"] < need:
-        out.append((WARN, "incidents",
-                    f"freeze_on_critical is on and one more snapshot ({fmt_bytes(sto['ring_bytes'])}) would "
+    if cfg.snapshot_on_critical and free - sto["ring_bytes"] < need:
+        out.append((WARN, "snapshots",
+                    f"snapshot_on_critical is on and one more snapshot ({fmt_bytes(sto['ring_bytes'])}) would "
                     f"leave less than the {fmt_bytes(need)} the ring still needs: the recorder will refuse it "
-                    "until you delete incidents (threadwatch incidents --delete) or lower keep_files"))
+                    "until you delete snapshots (threadwatch snapshots --delete) or lower keep_hours"))
     return out
 
 
 def check_writable(cfg) -> list[Check]:
     out = []
-    for label, d in (("state", cfg.state_dir), ("ring", cfg.ring_dir), ("incidents", cfg.incidents_dir)):
+    for label, d in (("state", cfg.state_dir), ("ring", cfg.ring_dir), ("snapshots", cfg.incidents_dir)):
         probe = d / ".doctor-probe"
         try:
             d.mkdir(parents=True, exist_ok=True)
@@ -260,7 +260,7 @@ def check_writable(cfg) -> list[Check]:
             probe.unlink()
         except OSError as exc:
             out.append((FAIL, "writable", f"{label} dir {d}: {exc}"))
-    return out or [(OK, "writable", "state, ring and incidents directories")]
+    return out or [(OK, "writable", "state, ring and snapshots directories")]
 
 
 def _run(cmd: list[str]) -> str | None:
@@ -449,7 +449,7 @@ def check_web(cfg) -> list[Check]:
             # that is down.
             return [(OK, "web", "review pages run in their own container (not checked from in here)")]
         return [(WARN, "web", f"nothing answers on port {cfg.web_port} ({type(exc).__name__}); "
-                              "'threadwatch web' or threadwatch-web.service")]
+                              "'threadwatch serve' or threadwatch-web.service")]
 
 
 def run_doctor(cfg, find_port: Callable[[], str] | None = None, now: float | None = None) -> list[Check]:

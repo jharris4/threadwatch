@@ -1000,9 +1000,14 @@ class HeartbeatRunner:
         return out
 
     def _run(self) -> None:
+        # Deadlines are monotonic, never wall-clock. A Pi has no RTC and NTP
+        # steps it minutes after boot: absolute time.time() deadlines left
+        # every beat the length of a backward step in the future, and the
+        # monitor paged that the recorder was down while it was recording
+        # normally. Nothing here needs to know the date.
         due = {b.name: 0.0 for b in self.beats}
         while True:
-            now = time.time()
+            now = time.monotonic()
             state = self.healthy()
             for b in self.beats:
                 if now < due[b.name]:
@@ -1019,4 +1024,4 @@ class HeartbeatRunner:
                     if b.name not in self._failing:    # log the edge, not every miss
                         self._failing.add(b.name)
                         self.log(f"heartbeat '{b.name}' failed: {_describe_error(exc)}")
-            time.sleep(min(5.0, max(0.5, min(due.values()) - time.time())))
+            time.sleep(min(5.0, max(0.5, min(due.values()) - time.monotonic())))

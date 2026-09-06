@@ -881,20 +881,26 @@ class _LoopStop(Exception):
 
 
 class LoopClock:
-    """time.time()/time.sleep() for HeartbeatRunner._run under test. The
-    loop parks at every sleep; step() releases one iteration and returns
-    once the loop is parked again, the clock advanced by what it asked to
-    sleep. No real waiting, no races with the assertions."""
+    """time.monotonic()/time.sleep() for HeartbeatRunner._run under test.
+    The loop parks at every sleep; step() releases one iteration and
+    returns once the loop is parked again, the clock advanced by what it
+    asked to sleep. No real waiting, no races with the assertions.
+    ``wall_offset`` is what NTP has done to time.time() and nothing else:
+    the loop must not read it."""
 
     def __init__(self, start=1_000_000.0):
         self.now = start
+        self.wall_offset = 0.0
         self.sleeps = []
         self._go = threading.Semaphore(0)
         self._parked = threading.Semaphore(0)
         self._stopping = False
 
-    def time(self):
+    def monotonic(self):
         return self.now
+
+    def time(self):
+        return self.now + self.wall_offset
 
     def sleep(self, seconds):
         self.sleeps.append(seconds)
@@ -980,6 +986,30 @@ class HeartbeatLoopTest(unittest.TestCase):
             self.assertIn("'hc' recovered", logs[1])
             clock.step(2)
             self.assertEqual(len(logs), 2)
+            clock.stop()
+
+
+class HeartbeatClockStepTest(unittest.TestCase):
+    """A Pi has no RTC: it boots on its saved clock and NTP steps it minutes
+    later, with the recorder up. Deadlines held on the wall clock were then
+    the whole step in the future and the monitor paged that the recorder
+    was down while it was recording normally."""
+
+    def test_a_backward_wall_step_does_not_hold_the_beats(self):
+        clock, pushes = LoopClock(), []
+        hb = alerts.Heartbeat(name="hc", url="http://x/ping", interval_s=10.0)
+        hb.push = lambda healthy: pushes.append(clock.now) or True
+        runner = alerts.HeartbeatRunner([hb], healthy=lambda: True, log=print, start=False)
+        with mock.patch.object(alerts, "time", clock):
+            clock.run(runner)
+            t = clock.now
+            clock.step(2)
+            self.assertEqual(pushes, [t, t + 10])
+            clock.wall_offset = -1800.0            # NTP corrects a clock that ran ahead
+            clock.step(2)
+            self.assertEqual(pushes, [t, t + 10, t + 20])
+            clock.step(2)
+            self.assertEqual(pushes, [t, t + 10, t + 20, t + 30])
             clock.stop()
 
 

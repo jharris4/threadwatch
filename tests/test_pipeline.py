@@ -2440,6 +2440,64 @@ class LinkDegradationTest(unittest.TestCase):
         self.assertEqual(len(evs), 1)
         self.assertLess(evs[0]["low_for_s"], 40 * 60)         # the day of silence is not held time
 
+    def test_a_drop_the_device_can_no_longer_close_is_closed_for_it(self):
+        # assess() judges the average per fresh frame, so once a degraded
+        # device stops transmitting neither the recovery test nor the
+        # daily refresh can ever run again: the flag stood for ever, on
+        # the headline card, in ?only=down and in every daily summary,
+        # naming a device that had simply gone quiet.
+        from threadwatch.events import day_of
+        from threadwatch.review import now_card
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t = self._talk(pipe, 1_700_000_000.0, -60.0)
+        t = self._talk(pipe, t, -70.0, 31 * 60)
+        self.assertEqual(len(self._events(pipe, "rssi_degradation")), 1)
+        self.assertTrue(pipe.seen.table[ROUTER]["rssi_degraded"])
+        t = self._talk_through(pipe, t, -60.0, 3 * 3600, who=STRANGER)   # the router says nothing more
+        self.assertIn(ROUTER, [r["addr"] for r in self._events(pipe, "device_quiet")])
+        rec = self._events(pipe, "rssi_recovered")
+        self.assertEqual(len(rec), 1)
+        self.assertIn("stopped being heard altogether", rec[0]["note"])
+        self.assertNotIn("rssi_degraded", pipe.seen.table[ROUTER])
+        card = now_card(pipe.seen, pipe.names, self.cfg.events_dir, self.cfg.quiet_min_rssi_dbm,
+                        day_of(t), now=t, pan_id=self.cfg.pan_id, state_dir=self.cfg.state_dir)
+        self.assertEqual(card["degraded"], [])
+        self.assertEqual([q["addr"] for q in card["quiet"]], [ROUTER])
+        self.assertEqual(pipe.summary(t, OWN_PAN)["degraded"], [])
+
+    def test_a_retired_address_does_not_read_signal_down_for_ever(self):
+        # An Apple hub rotates: _apply_border_routers retires the old row,
+        # which will never send another frame and so can never clear a
+        # drop it was carrying.
+        from threadwatch.review import device_rows
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t = self._talk(pipe, 1_700_000_000.0, -60.0)
+        t = self._talk(pipe, t, -70.0, 31 * 60)
+        self.assertEqual(len(self._events(pipe, "rssi_degradation")), 1)
+        pipe.seen.table[ROUTER]["rotated_to"] = SENSOR
+        pipe.periodic(t + 60)
+        rec = self._events(pipe, "rssi_recovered")
+        self.assertEqual(len(rec), 1)
+        self.assertIn("retired when the device rotated", rec[0]["note"])
+        self.assertNotIn("rssi_degraded", pipe.seen.table[ROUTER])
+        # ...and the pages do not read the flag off a retired row anyway.
+        pipe.seen.table[ROUTER]["rssi_degraded"] = True
+        rows = {r["addr"]: r for r in device_rows(pipe.seen, pipe.names, self.cfg.quiet_min_rssi_dbm, now=t)}
+        self.assertFalse(rows[ROUTER]["degraded"])
+
+    def test_a_starvation_the_device_can_no_longer_answer_is_closed_for_it(self):
+        # The same shape: an unanswered poll is only closed by an answered
+        # one, which a device that has stopped polling will never send.
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t = self._talk(pipe, 1_700_000_000.0, -60.0)
+        pipe.seen.table[ROUTER]["starved"] = True
+        pipe.seen.table[ROUTER]["starve_since"] = t
+        t = self._talk_through(pipe, t, -60.0, 3 * 3600, who=STRANGER)
+        answered = self._events(pipe, "poll_answered")
+        self.assertEqual(len(answered), 1)
+        self.assertIn("stopped polling altogether", answered[0]["note"])
+        self.assertNotIn("starved", pipe.seen.table[ROUTER])
+
     def test_foreign_pan_devices_are_not_assessed(self):
         pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
         t0 = 1_700_000_000.0

@@ -545,7 +545,7 @@ def device_rows(seen: LastSeen, names: DeviceNames, min_rssi_dbm: float,
             # MAC command under type 3, beacon requests and all.
             "polls": row.get("polls", row.get("types", {}).get("3", 0)),
             "quiet": bool(row.get("quiet_reported")),
-            "degraded": bool(row.get("rssi_degraded")),
+            "degraded": bool(row.get("rssi_degraded")) and not row.get("rotated_to"),
         })
     rows.sort(key=lambda r: ((r["name"] is None), (r["name"] or r["addr"]).lower()))
     return rows
@@ -634,7 +634,7 @@ def now_card(seen: LastSeen, names: DeviceNames, events_dir: Path, min_rssi_dbm:
                 "rssi_dbm": row.get("rssi"), "reception": reception(row.get("rssi"), min_rssi_dbm)}
         if row.get("quiet_reported"):
             quiet.append(item)
-        if row.get("rssi_degraded"):
+        if row.get("rssi_degraded") and not row.get("rotated_to"):
             degraded.append({**item, "reference_dbm": row.get("rssi_ref")})
         if item["name"] is None:
             unknown.append(item)

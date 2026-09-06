@@ -1551,6 +1551,22 @@ class Pipeline:
             pan = row.get("pan")
             if dominant is not None and pan is not None and pan != dominant:
                 continue
+            # assess() judges the RSSI average per fresh frame, so a device
+            # that stops transmitting can never clear its own flag: both
+            # the recovery test and the daily refresh want frames it will
+            # not send. A retired address (a hub that rotated) will not
+            # send them either. Left open, the drop is on the headline
+            # card, in ?only=down and in every daily summary for ever,
+            # naming a healthy device. It is closed here instead, and the
+            # silence - or the rotation - is the story from then on.
+            retired = bool(row.get("rotated_to"))
+            gone = retired or self.silence_s(row, now) > self.quiet_threshold_s(addr)
+            if gone:
+                if row.get("rssi_degraded"):
+                    self._close_degradation(addr, row, now, retired)
+                if row.get("starved"):
+                    self._close_starvation(addr, row, now, retired)
+                continue
             verdict = assess_link(row, now, self.cfg.link_drop_db, self.cfg.link_hold_s,
                                   pause_gap_s=self.quiet_threshold_s(addr))
             if verdict is None:
@@ -1579,6 +1595,35 @@ class Pipeline:
                                  note=(f"reference re-based to {ref:g} dBm: the drop held a day "
                                        "and is the new normal" if rebased else
                                        f"back to its usual {ref:g} dBm"))
+
+    def _close_degradation(self, addr: str, row: dict, now: float, retired: bool) -> None:
+        """End an announced signal drop the device itself can no longer end."""
+        for key in ("rssi_degraded", "rssi_low_since"):
+            row.pop(key, None)
+        self.seen._dirty = True
+        self.events.emit("rssi_recovered", "info", now, addr=addr, name=self.names.name(addr),
+                         rssi_dbm=row.get("rssi"), reference_dbm=row.get("rssi_ref"),
+                         note=("this address was retired when the device rotated: the signal drop it "
+                               "was carrying is closed with it" if retired else
+                               "the device has stopped being heard altogether: the signal drop is "
+                               "closed here, and the silence is the story from now on"))
+
+    def _close_starvation(self, addr: str, row: dict, now: float, retired: bool) -> None:
+        """The same for an announced starvation: an unanswered poll is only
+        closed by an answered one, which a device that has stopped polling
+        will never send."""
+        for key in ("starved", "starve_confirm_at", "starve_since"):
+            row.pop(key, None)
+        row["starve_closed"] = now
+        self.seen._dirty = True
+        stats = self.devices.get(addr)
+        if stats is not None:
+            stats.starved, stats.confirm_at = False, None
+        self.events.emit("poll_answered", "notice", now, addr=addr, name=self.names.name(addr),
+                         note=("this address was retired when the device rotated: the unanswered polls "
+                               "it was carrying are closed with it" if retired else
+                               "the device has stopped polling altogether: the unanswered polls are "
+                               "closed here, and the silence is the story from now on"))
 
     # -------------------------------------------------- freeze on critical
 
@@ -1694,7 +1739,11 @@ class Pipeline:
         unknown = sorted(a for a in ours if self.names.name(a) is None)
         marginal = sorted(label(a) for a, r in heard.items()
                           if reception(r.get("rssi"), self.cfg.quiet_min_rssi_dbm) == "marginal")
-        degraded = sorted(label(a) for a, r in ours.items() if r.get("rssi_degraded"))
+        # A retired address (a hub that rotated) carries whatever flag it
+        # held when it stopped being used; the quiet set is already
+        # filtered by quiet_reported, and the degraded set needs the same.
+        degraded = sorted(label(a) for a, r in ours.items()
+                          if r.get("rssi_degraded") and not r.get("rotated_to"))
         counts = {"critical": 0, "warning": 0, "notice": 0, "info": 0}
         # Every local day the window touches: after the spring clock change
         # 24 hours can span three of them, and reading the first and last

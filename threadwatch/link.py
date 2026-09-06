@@ -23,7 +23,11 @@ and judges the average against the reference:
                           the daily refresh (a drop that persists a day is
                           the new normal, and further drops measure from
                           there). Either way the clearing is reported as a
-                          recovery, so an announced drop is always closed.
+                          recovery. Both need a fresh frame, so a device
+                          that stops transmitting cannot clear its own
+                          flag: the pipeline closes the drop for it once
+                          the device crosses its quiet threshold or its
+                          address is retired (Pipeline._close_degradation).
 
 The reference is only taken once a device has been heard enough for its
 average to have settled.

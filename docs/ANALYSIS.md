@@ -99,9 +99,12 @@ history from before the file), writes nothing under `data/state`, browses
 no mDNS, saves nothing, and sends nothing to any alert sink; the events
 are collected in memory and printed. Running it against a live recorder's
 ring file, on the recorder itself, disturbs neither the recorder nor the
-household. One difference from live: the storm detector's alert cooldown
-is zeroed, so every `phase_locked_storm` in the file shows rather than
-the first per half hour.
+household. One difference from live: the storm detector's own alert
+cooldown is zeroed, so its `alerts_sent` counts every storm in the file
+rather than one per window. The `phase_locked_storm` events in the list
+are not affected -- they keep the `[detect] alert_cooldown_s` cadence
+(never under a minute) the recorder would have logged them at, which is
+what makes a replay's event list comparable with the day it replays.
 
 ## Snapshots
 

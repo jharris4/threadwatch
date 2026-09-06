@@ -991,6 +991,43 @@ class TimeoutDefaultsTest(unittest.TestCase):
         self.assertEqual([(c.args[0], c.args[2]) for c in bounded.call_args_list], [(sink, 10.0), (beat, 10.0)])
 
 
+class ClockStepTest(unittest.TestCase):
+    """The cooldown was a wall-clock subtraction with no lower bound: after
+    a step back of S seconds, now minus the window's start was negative,
+    which read as "inside the cooldown" for S seconds even with the
+    cooldown disabled, and what came out at the end was a digest, not
+    the page. A Pi corrected by NTP after booting on its saved clock
+    steps by hours, at the start a broken mesh most needs pages."""
+
+    def test_a_backward_step_neither_holds_a_page_nor_makes_it_a_digest(self):
+        t = 1_700_000_000.0
+        off = alerts.HttpSink(name="t", url="http://x", cooldown_s=0)
+        self.assertTrue(off.wants(REC, t))
+        self.assertTrue(off.wants({**REC, "ts": t - 30}, t - 30))           # used to be held 30 s
+        self.assertEqual(off._pending, {})
+        sink = alerts.HttpSink(name="t", url="http://x", cooldown_s=300)
+        self.assertTrue(sink.wants(REC, t))
+        self.assertFalse(sink.wants({**REC, "name": "Freezer Outlet"}, t + 1))   # held, as it should be
+        # The clock steps back an hour: the window that began "an hour
+        # from now" is over. The next record pages and opens a new one,
+        # and the held record's digest is due at once, not in an hour.
+        self.assertEqual(sink.next_digest_at(t - 3600), t - 3600)
+        self.assertTrue(sink.wants({**REC, "name": "Dining AQ"}, t - 3599))
+        self.assertEqual([d["count"] for d in sink.due_digests(t - 3599)], [1])
+        self.assertFalse(sink.wants({**REC, "name": "Hall"}, t - 3500))       # the new window holds again
+        self.assertEqual(sink.next_digest_at(t - 3500), t - 3599 + 300)
+
+    def test_a_retry_scheduled_before_the_step_is_due_now(self):
+        d = alerts.Dispatcher([], print, retry_delays=(30.0, 120.0, 480.0), retry_cap_s=600.0)
+        now = 1_700_000_000.0
+        self.assertFalse(d._due({"due": now + 480}, now))                    # a retry, on time
+        self.assertTrue(d._due({"due": now}, now))
+        self.assertTrue(d._due({"due": now + 3600 + 30}, now))               # scheduled before an hour's step back
+        self.assertEqual(d._next_due(now), None)
+        d._queue.append({"due": now + 3600 + 30})
+        self.assertEqual(d._next_due(now), now)
+
+
 class DigestWindowTest(unittest.TestCase):
     """The cooldown pages the first event and holds the rest for one digest
     when the window ends. Its content is well covered; this is its timing

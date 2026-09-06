@@ -268,7 +268,14 @@ class Sink:
             return False
         if ignore_cooldown:
             return True
-        if now - self._last.get(ev, 0.0) < self.cooldown_s:
+        # The window is judged on elapsed time within it: a wall clock
+        # stepped back (NTP correcting a Pi that booted on its saved time)
+        # puts now before the window's start, and that used to read as
+        # "inside the cooldown" for the length of the step, with the
+        # cooldown disabled as much as not. A window that starts in the
+        # future is over.
+        elapsed = now - self._last.get(ev, 0.0)
+        if 0.0 <= elapsed < self.cooldown_s:
             self._pending.setdefault(ev, []).append(record)
             self._since.setdefault(ev, self._last.get(ev, 0.0))
             return False
@@ -278,18 +285,22 @@ class Sink:
     def _held_since(self, ev: str) -> float:
         return self._since.get(ev, self._last.get(ev, 0.0))
 
-    def next_digest_at(self) -> Optional[float]:
-        """When the earliest window with held-back records ends, or None."""
+    def next_digest_at(self, now: Optional[float] = None) -> Optional[float]:
+        """When the earliest window with held-back records ends, or None.
+        A window that began after ``now`` (the clock stepped back) ends now."""
         if not self._pending:
             return None
-        return min(self._held_since(ev) + self.cooldown_s for ev in self._pending)
+        now = time.time() if now is None else now
+        return min(now if self._held_since(ev) > now else self._held_since(ev) + self.cooldown_s
+                   for ev in self._pending)
 
     def due_digests(self, now: float, all_pending: bool = False) -> list[dict]:
         """Digests for windows that have ended; each opens the next window.
         ``all_pending`` closes every window now (the process is leaving)."""
         out = []
         for ev in list(self._pending):
-            if all_pending or now - self._held_since(ev) >= self.cooldown_s:
+            elapsed = now - self._held_since(ev)
+            if all_pending or elapsed < 0.0 or elapsed >= self.cooldown_s:
                 records = self._pending.pop(ev)
                 self._since.pop(ev, None)
                 self._last[ev] = now
@@ -587,6 +598,10 @@ class Dispatcher:
         self.log = log
         self.spool = spool
         self.retry_delays, self.retry_cap_s, self.stale_s = retry_delays, retry_cap_s, stale_s
+        # No retry is ever scheduled further ahead than this: an item due
+        # later than that was scheduled before the clock stepped back, and
+        # is due now rather than when the clock climbs back over the step.
+        self._max_delay = max(retry_cap_s, *retry_delays) if retry_delays else retry_cap_s
         self._queue: list[dict] = []          # {record, sinks, attempt, due}
         self._undelivered: list[dict] = []    # for the spool: {record, sinks: [names], attempt}
         self._inflight: Optional[dict] = None
@@ -661,9 +676,12 @@ class Dispatcher:
 
     # ------------------------------------------------------------ thread
 
+    def _due(self, item: dict, now: float) -> bool:
+        return item["due"] <= now or item["due"] - now > self._max_delay
+
     def _next_due(self, now: float) -> Optional[float]:
-        times = [it["due"] for it in self._queue]
-        times += [t for t in (s.next_digest_at() for s in self.sinks) if t is not None]
+        times = [now if self._due(it, now) else it["due"] for it in self._queue]
+        times += [t for t in (s.next_digest_at(now) for s in self.sinks) if t is not None]
         return min(times) if times else None
 
     def _run(self) -> None:
@@ -671,16 +689,16 @@ class Dispatcher:
             with self._cv:
                 while not self._closing:
                     now = time.time()
-                    if any(it["due"] <= now for it in self._queue):
+                    if any(self._due(it, now) for it in self._queue):
                         break
-                    if any(t is not None and t <= now for t in (s.next_digest_at() for s in self.sinks)):
+                    if any(t is not None and t <= now for t in (s.next_digest_at(now) for s in self.sinks)):
                         break       # a cooldown window ended: send its digest
                     nxt = self._next_due(now)
                     self._cv.wait(timeout=None if nxt is None else max(0.05, nxt - now))
                 now = time.time()
                 item = None
                 for i, it in enumerate(self._queue):
-                    if self._closing or it["due"] <= now:
+                    if self._closing or self._due(it, now):
                         item = self._queue.pop(i)
                         break
                 self._inflight = item

@@ -274,6 +274,22 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
         med = f"{rssi[len(rssi)//2]:.0f}" if rssi else "-"
         mle = ", ".join(f"{k}x{v}" for k, v in h["mle"].items()) if h["mle"] else ""
         print(f"{labels[hkey]:{width}s} {h['frames']:6d} {h['polls']:6d} {h['tx']:5d} {h['acked']:6d} {med:>9s}  {mle}")
+    # The pipeline's own per-device figures, over the same frames. The
+    # hour table above counts an ACK on a sequence match alone; the
+    # pipeline additionally requires the ACK to answer the transmission
+    # it has pending, so ack_rate here is the stricter number and the one
+    # the recorder judges a link by. Nothing else in the tool reads
+    # DeviceStats.as_dict.
+    live = next((pipe.devices[a] for a in addrs if a in pipe.devices), None)
+    if live is not None:
+        d = live.as_dict()
+        rssi = "-" if d["rssi_ewma"] is None else (
+            f"{d['rssi_ewma']} dBm (min {d['rssi_min']:.0f}, max {d['rssi_max']:.0f})")
+        acks = "-" if d["ack_rate"] is None else f"{d['ack_rate'] * 100:.0f}% of {d['tx']} unicast"
+        poll = "-" if d["median_poll_interval_s"] is None else (
+            f"{d['polls']} every {fmt_duration(d['median_poll_interval_s'])} (median)")
+        print(f"\nrssi:  {rssi}\nacked: {acks}\npolls: {poll}")
+
     if gaps:
         print(f"\nsilences (>{fmt_duration(cfg.quiet_s)}, the configured [quiet] silence_s):")
         for a, b in gaps[-10:]:

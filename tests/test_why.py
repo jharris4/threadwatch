@@ -498,6 +498,26 @@ class WhyMleAnalysisTest(unittest.TestCase):
         self.assertIn("08:10:04  Child ID Request", section)
         self.assertNotIn("Advertisement", section)
 
+    def test_the_pipelines_own_rssi_ack_and_poll_figures_are_printed(self):
+        # DeviceStats.as_dict had one caller in the repository, a test, so
+        # rssi_min, rssi_max, tx, acked, polls and a 32-entry interval
+        # deque per device were maintained on the per-frame path and never
+        # observed anywhere, while the README says why shows them. The
+        # hour table counts an ACK on a sequence match alone; these are
+        # the pipeline's stricter figures, which is what the recorder
+        # judges a link by.
+        import struct
+        frames = [(self.T0, secured_frame(SED, "00aa", counter=1)),
+                  (self.T0 + 0.002, struct.pack("<HB", 2, 1) + b"\x00\x00")]   # ACK for the first
+        frames += [(self.T0 + 1 + i, secured_frame(SED, "00aa", counter=2 + i)) for i in range(3)]
+        for i in range(3):                                              # polls, two minutes apart
+            frames.append((self.T0 + 10 + 120 * i, secured_frame(SED, "00aa", counter=10 + i, ftype=3)))
+        code, text = self._run(frames)
+        self.assertEqual(code, 0)
+        self.assertIn("acked: 14% of 7 unicast", text)
+        self.assertIn("polls: 3 every 2m (median)", text)
+        self.assertIn("rssi:  -", text)                                 # the test frames carry none
+
     def test_a_device_that_never_tried_to_attach_is_said_so_in_as_many_words(self):
         # The documented reasoning: no rejoin after a silence points at the
         # device rather than at RF, so the absence has to be printed.

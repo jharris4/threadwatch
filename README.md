@@ -29,15 +29,16 @@ question: *why did this device go offline?*
   A daily summary event (frames, devices heard, quiet and unknown ones,
   event counts) says the recorder is still watching.
   Per-device RSSI trend, ACK-success rate and poll cadence are tracked too
-  and shown by `threadwatch why`, not logged as events.
+  and printed by `threadwatch why`, not logged as events.
   Warning/critical events go to any number of alert sinks (plain HTTP with
   headers and a body template, or a local command), so Home Assistant,
   ntfy, Gotify, Discord and friends all work; heartbeats let Gatus,
   Healthchecks.io or Uptime Kuma page when the recorder itself dies
   (docs/ALERTING.md).
 - **`threadwatch why <device>`** — reconstructs one device's story from
-  the ring: hour-by-hour cadence, RSSI, ACKs, silences, and rejoin
-  attempts. This is the "why did X go offline"
+  the ring: hour-by-hour cadence, RSSI, ACKs, the recorder's own RSSI
+  range, ACK rate and median poll interval for the device, silences, and
+  rejoin attempts. This is the "why did X go offline"
   command; `--hours 6` reads only the recent ring files, which on a Pi is
   the difference between seconds and minutes, `--pcap file` reads one
   file instead of the ring (a capture from elsewhere), and `--incident

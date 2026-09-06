@@ -49,15 +49,24 @@ def check_inventory(cfg) -> list[Check]:
     if not isinstance(entries, list):
         return [(FAIL, "inventory", f"{path.name} must be a JSON list")]
     from .names import _EXT_ADDR, _norm, entry_addresses
-    bad, addrs, unnamed = [], 0, 0
-    for e in entries:
+    bad, addrs, unnamed, wrong_shape = [], 0, 0, []
+    for i, e in enumerate(entries, 1):
+        # A null an editor left, or a bare string: the recorder skips it
+        # and keeps recording, and naming it is this check's whole job.
+        # Calling .get() on one made doctor report its own AttributeError.
+        if not isinstance(e, dict):
+            wrong_shape.append(f"entry {i} is {'null' if e is None else 'a ' + type(e).__name__}")
+            continue
         if not (e.get("name") or "").strip():
             unnamed += 1
         for a in entry_addresses(e):
             addrs += 1
             if not _EXT_ADDR.match(_norm(a)):
                 bad.append(a)
-    text = f"{len(entries)} devices, {addrs} addresses"
+    text = f"{len(entries) - len(wrong_shape)} devices, {addrs} addresses"
+    if wrong_shape:
+        return [(WARN, "inventory", f"{text}; skipped, not device objects: {', '.join(wrong_shape[:5])}"
+                                    " (adopt and import refuse to rewrite the file until it is fixed)")]
     if bad:
         return [(WARN, "inventory", f"{text}; ignored (not 16 hex digits): {', '.join(bad[:5])}")]
     if unnamed:

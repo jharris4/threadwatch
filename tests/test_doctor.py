@@ -42,6 +42,15 @@ class DoctorTest(unittest.TestCase):
         self.assertIn("2 devices, 3 addresses; ignored (not 16 hex digits): 0x12", text)
         inv.write_text(json.dumps([{"name": "A", "extendedAddress": "0011223344556677"}]))
         self.assertEqual(doctor.check_inventory(self.cfg)[0][0], "ok")
+        # A stray null or a bare string is the shape doctor exists to name;
+        # calling .get() on one made it report its own AttributeError as
+        # "doctor check crashed" instead.
+        inv.write_text(json.dumps([{"name": "A", "extendedAddress": "0011223344556677"},
+                                   None, "b62c32bf669272db"]))
+        level, _, text = doctor.check_inventory(self.cfg)[0]
+        self.assertEqual(level, "warn")
+        self.assertIn("1 devices, 1 addresses", text)
+        self.assertIn("entry 2 is null, entry 3 is a str", text)
 
     def test_credentials_permissions_and_key(self):
         self.cfg.credentials_path = self.d / "absent.toml"

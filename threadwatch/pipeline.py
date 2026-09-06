@@ -1075,6 +1075,17 @@ class Pipeline:
         and this is not a MAC retry of it (same seq), that one went
         unanswered; enough of those in a row, from a device whose polls
         used to be answered, is starvation."""
+        if (stats.poll_pending_seq is not None and seq != stats.poll_pending_seq
+                and not 0.0 <= ts - stats.poll_pending_ts <= self.quiet_threshold_s(who)):
+            # The pending poll is from the far side of a silence (the
+            # device stopped transmitting, and device_quiet has judged
+            # that): it says nothing about whether polls are answered
+            # now. Anchored on it, the episode clock counted the whole
+            # silence as unanswered polling, so a burst too short to
+            # report became a page "over 10845 s". The run starts afresh
+            # with this poll, as it does after an answered one.
+            stats.poll_pending_seq = None
+            stats.unanswered_polls, stats.unanswered_since = 0, None
         if stats.poll_pending_seq is not None and seq != stats.poll_pending_seq:
             stats.unanswered_polls += 1
             if stats.unanswered_since is None:

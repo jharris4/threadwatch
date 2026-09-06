@@ -1244,6 +1244,38 @@ class PollStarvationTest(unittest.TestCase):
         pipe.ingest(poll(t + 90, SENSOR, 70))                # ...and one more, past the minute
         self.assertEqual(len(self._events(pipe, "poll_starvation")), 1)
 
+    def test_a_silence_before_the_polls_is_not_time_spent_polling_unanswered(self):
+        # The episode clock was anchored on the previous pending poll,
+        # however old: a device back from three hours of silence with one
+        # poll left pending had the silence counted as unanswered polling.
+        # The same burst, too short to report on its own, became a page
+        # "over 10845 s", and the review row claimed three hours.
+        def burst(pipe, t, seq0):
+            pipe.ingest(poll(t, SENSOR, seq0))                           # one unanswered
+            for i in range(1, 12):
+                pipe.ingest(poll(t + 5 * i, SENSOR, (seq0 + i) & 0xFF))  # eleven more, 5 s apart: 55 s
+            return t + 55
+        quiet = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t = self._answered_polls(quiet, 1_700_000_000.0, 5)
+        burst(quiet, t, 10)
+        self.assertEqual(self._events(quiet, "poll_starvation"), [])       # 55 s of evidence: not a minute
+        silent = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t = self._answered_polls(silent, 1_700_000_000.0, 5)
+        silent.ingest(poll(t, SENSOR, 10))                                 # left pending...
+        silent.periodic(t + 3600)
+        self.assertEqual([r["addr"] for r in silent.events.records if r["event"] == "device_quiet"], [SENSOR])
+        end = burst(silent, t + 3 * 3600, 11)                              # ...three hours of silence, same burst
+        self.assertEqual(self._events(silent, "poll_starvation"), [])
+        # Keep polling unanswered past the minute: reported, and the span
+        # is the polling, not the silence.
+        silent.ingest(poll(end + 10, SENSOR, 30))
+        evs = self._events(silent, "poll_starvation")
+        self.assertEqual(len(evs), 1)
+        self.assertEqual(evs[0]["unanswered_polls"], 12)
+        self.assertAlmostEqual(evs[0]["starved_for_s"], 65, delta=1)
+        self.assertAlmostEqual(evs[0]["since"], t + 3 * 3600, delta=1)
+        self.assertIn("12 times over 65 s", evs[0]["note"])
+
     def _starve(self, pipe, t, seq0):
         for i in range(12):
             pipe.ingest(poll(t + 10 * i, SENSOR, (seq0 + i) & 0xFF))

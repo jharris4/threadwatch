@@ -379,10 +379,9 @@ class RunWhyRingTest(unittest.TestCase):
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_identity import AESCCM, KEY, OTHER, PAN, SED, mle_message, secured_frame  # noqa: E402
+from test_identity import KEY, OTHER, PAN, SED, mle_message, secured_frame  # noqa: E402
 
 
-@unittest.skipIf(AESCCM is None, "cryptography not installed")
 class WhyNetworkContextTest(unittest.TestCase):
     """BUG-04: `why` used to identify frames without ingesting them, so an
     MLE advertisement from another device (the one thing that carries a

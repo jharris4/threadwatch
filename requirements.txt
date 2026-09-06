@@ -1,3 +1,5 @@
 pyserial>=3.5
-# Optional: enables [credentials] decryption features
+# Required: the recorder will not start without a network key it can use.
+# load_decryptor raises without this, doctor's credentials check is a hard
+# FAIL, and setup-host.sh aborts on the same import.
 cryptography>=41

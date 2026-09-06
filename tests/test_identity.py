@@ -15,11 +15,14 @@ from threadwatch.pcap import parse_frame  # noqa: E402
 from threadwatch.pipeline import Pipeline  # noqa: E402
 from tests.no_lan import setUpModule, tearDownModule  # noqa: E402, F401  (no mDNS from the suite)
 
-try:
-    from cryptography.hazmat.primitives.ciphers.aead import AESCCM
-    from threadwatch.crypto import Decryptor, derive_keys
-except ImportError:  # pragma: no cover
-    AESCCM = None
+# cryptography is required, not optional: load_decryptor raises without it,
+# doctor.check_credentials is a hard FAIL, and setup-host.sh aborts on the
+# same import. These used to be guarded by "skip if AESCCM is None", which
+# could never fire - three other test modules import the package at module
+# scope, so a run without it is three collection errors before any guard
+# is read - and the guards suggested a configuration nobody tests.
+from cryptography.hazmat.primitives.ciphers.aead import AESCCM  # noqa: E402
+from threadwatch.crypto import Decryptor, derive_keys  # noqa: E402
 
 KEY = bytes(range(16))
 SED = "029a47566a00b543"
@@ -59,7 +62,6 @@ def mle_message(src_ext: str, sequence: int, counter: int, src_ip: bytes, dst_ip
     return bytes([0]) + aux + AESCCM(mle_key, tag_length=4).encrypt(nonce, body, src_ip + dst_ip + aux)
 
 
-@unittest.skipIf(AESCCM is None, "cryptography not installed")
 class KeySequenceTest(unittest.TestCase):
     """The key sequence climbs with every rotation; the search must follow."""
 
@@ -115,7 +117,6 @@ class KeySequenceTest(unittest.TestCase):
         self.assertEqual(d._keys_for_index(0), [])         # an index Thread never uses: nothing to try
 
 
-@unittest.skipIf(AESCCM is None, "cryptography not installed")
 class UnsupportedSecurityTest(unittest.TestCase):
     def test_frames_secured_some_other_way_are_counted_not_dropped_silently(self):
         # The aux header of secured_frame's output starts at byte 9
@@ -135,7 +136,6 @@ class UnsupportedSecurityTest(unittest.TestCase):
         self.assertEqual(d.stats["mac_decrypted"], 1)
 
 
-@unittest.skipIf(AESCCM is None, "cryptography not installed")
 class ResolveShortTest(unittest.TestCase):
     def test_resolver_identifies_sender_and_caches(self):
         d = Decryptor(network_key=KEY)
@@ -388,7 +388,6 @@ LINK_LOCAL = bytes.fromhex("fe80000000000000")
 ALL_NODES = bytes.fromhex("ff020000000000000000000000000001")
 
 
-@unittest.skipIf(AESCCM is None, "cryptography not installed")
 class SixLowpanTest(unittest.TestCase):
     """`udp_ports` is the only way into the MLE layer: no rejoin events, no
     partition detection and no leader without it."""
@@ -416,7 +415,6 @@ class SixLowpanTest(unittest.TestCase):
         self.assertIsNone(Decryptor.udp_ports(b""))
 
 
-@unittest.skipIf(AESCCM is None, "cryptography not installed")
 class HarvestNamesTest(unittest.TestCase):
     def test_dns_labels_are_pulled_out_of_a_registration(self):
         payload = b"\x00\x06\x00\x00" + b"\x0dthreadwatch-1\x05local\x00"
@@ -427,7 +425,6 @@ class HarvestNamesTest(unittest.TestCase):
         self.assertEqual(Decryptor.harvest_names(bytes(range(0, 32)) * 4), [])
 
 
-@unittest.skipIf(AESCCM is None, "cryptography not installed")
 class MleThroughThePipelineTest(unittest.TestCase):
     """Frame -> MAC decryption -> 6LoWPAN -> MLE, as the live pipeline runs
     it: the path that answers "did it try to rejoin?"."""
@@ -491,7 +488,6 @@ class MleThroughThePipelineTest(unittest.TestCase):
             self.assertEqual(pipe.observed_names, {SED: {"threadwatch-1.local": 1}})
 
 
-@unittest.skipIf(AESCCM is None, "cryptography not installed")
 class ThreadKeyScheduleTest(unittest.TestCase):
     """`derive_keys` against a frame decrypted by something that is not us.
 
@@ -545,7 +541,6 @@ def unsecured_mle_frame(src_ext: str, body: bytes, counter: int = 1) -> bytes:
     return header + iphc + udp + b"\xff" + body + b"\x00\x00"
 
 
-@unittest.skipIf(AESCCM is None, "cryptography not installed")
 class UnsecuredMleTest(unittest.TestCase):
     """A suite-255 MLE message carries no MIC, so it is anyone's bytes: it
     must not count as decrypted, teach an address, or move the mesh state."""
@@ -586,7 +581,6 @@ class UnsecuredMleTest(unittest.TestCase):
             self.assertNotIn(OTHER, pipe.seen.table)          # nor a sighting: anyone can send one
 
 
-@unittest.skipIf(AESCCM is None, "cryptography not installed")
 class SightingAuthenticityTest(unittest.TestCase):
     """An extended source address is 64 bits the sender asserts. Liveness
     came from it verbatim, so a forged unsecured frame, or a recording of
@@ -759,7 +753,6 @@ DST_FORMS = {
 PAYLOAD = bytes(range(0x60, 0x80))    # 32 distinct bytes: a mis-sliced payload cannot match
 
 
-@unittest.skipIf(AESCCM is None, "cryptography not installed")
 class IphcAddressMatrixTest(unittest.TestCase):
     """`udp_ports` accumulates its offset through every address branch, so
     one wrong field width yields the wrong ports and a mis-sliced payload

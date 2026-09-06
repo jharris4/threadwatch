@@ -166,7 +166,15 @@ def migrate_legacy(events_dir: Path) -> int:
     finally:
         for fh in handles.values():
             fh.close()
-    working.rename(legacy.with_suffix(".jsonl.migrated"))
+    # The archive is the only copy of the original file, so a second
+    # legacy log arriving in the same state directory must not land on
+    # top of the first one's: .migrated, then .migrated-2, -3, ...
+    archive = legacy.with_suffix(".jsonl.migrated")
+    n = 1
+    while archive.exists():
+        n += 1
+        archive = legacy.with_suffix(f".jsonl.migrated-{n}")
+    working.rename(archive)
     _log(f"event log: split {moved} legacy records into {len(handles)} day file(s)")
     return moved
 

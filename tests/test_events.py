@@ -50,6 +50,21 @@ class PartialLineTest(unittest.TestCase):
 
         self.assertEqual([r["event"] for r in read_day(events, day)], ["after"])
 
+    def test_a_second_legacy_log_does_not_overwrite_the_first_archive(self):
+        import contextlib
+        import io
+        d = Path(tempfile.mkdtemp())
+        events = d / "events"
+        first = [json.dumps(r) for r in _records(4)]
+        second = [json.dumps(r) for r in _records(2)]
+        for lines in (first, second):
+            (d / "events.jsonl").write_text("\n".join(lines) + "\n")
+            with contextlib.redirect_stdout(io.StringIO()):
+                migrate_legacy(events)
+
+        self.assertEqual((d / "events.jsonl.migrated").read_text().splitlines(), first)
+        self.assertEqual((d / "events.jsonl.migrated-2").read_text().splitlines(), second)
+
 
 
 class RetentionTest(unittest.TestCase):

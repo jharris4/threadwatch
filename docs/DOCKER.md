@@ -16,9 +16,9 @@ Docker being installed.
 **Linux hosts only.** The dongle reaches the container as a passed-through
 device, which Docker Desktop on macOS and Windows cannot do.
 
-**Needs Docker Compose 2.20 or newer** (`docker compose version`).
+**Needs Docker Compose 2.24.0 or newer** (`docker compose version`).
 `compose.yaml` marks `config/alerts.env` optional with `env_file`'s
-`required: false`, which Docker documents as arriving in 2.20.0. An older
+`required: false`, which Docker documents as arriving in 2.24.0. An older
 `docker compose`, or the legacy Python `docker-compose` still shipped on
 some NAS and Unraid boxes, rejects the whole file with a schema error
 naming `env_file`, which reads like a corrupt compose file rather than a

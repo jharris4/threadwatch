@@ -36,7 +36,7 @@ services:
     volumes:
       - ./config:/app/config
       - ./data:/app/data
-    # required: false needs Docker Compose 2.20 or newer; an older one
+    # required: false needs Docker Compose 2.24.0 or newer; an older one
     # rejects the whole file naming env_file. docs/DOCKER.md gives the
     # classic form to use instead.
     env_file:

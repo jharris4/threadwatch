@@ -66,7 +66,7 @@ class SuggestTest(unittest.TestCase):
             self.assertEqual(load_observed_names(Path(d)), {AQ: {"x": 1}})
 
 
-class ReportQuietTest(unittest.TestCase):
+class DevicesQuietTest(unittest.TestCase):
     """threadwatch devices's "quiet" is the recorder's own announcement,
     the same set the pages show, not a third window of its own."""
 
@@ -171,7 +171,7 @@ class RotationHintTest(unittest.TestCase):
             self.assertEqual(rotation_hints(report["unknown"], seen.table, names), {})
 
 
-class AdoptTest(unittest.TestCase):
+class NameTest(unittest.TestCase):
     def test_creates_the_file_and_appends_entries(self):
         with tempfile.TemporaryDirectory() as d:
             inv = Path(d) / "config" / "devices.json"
@@ -200,7 +200,7 @@ class AdoptTest(unittest.TestCase):
             self.assertEqual(entry["note"], "rotates")
             self.assertEqual(DeviceNames(inv).name(TV2), "Living Room Apple TV")
 
-    def test_two_adopts_at_once_both_land(self):
+    def test_two_namings_at_once_both_land(self):
         # BUG-12: adopt read, changed and replaced the file with nothing to
         # stop two of them reading the same base and the later write
         # discarding the earlier, acknowledged, change.

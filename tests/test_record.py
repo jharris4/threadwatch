@@ -11,7 +11,11 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests.frames import psdu_for
-from threadwatch.capture import (
+from threadwatch.config import Config
+from threadwatch.crypto import Decryptor
+from threadwatch.events import NullEventLog
+from threadwatch.pipeline import Pipeline
+from threadwatch.record import (
     EXIT_FILE,
     EXIT_SNIFFER_DIED,
     EXIT_STALLED,
@@ -28,10 +32,6 @@ from threadwatch.capture import (
     status_tick,
     watchdog_verdict,
 )
-from threadwatch.config import Config
-from threadwatch.crypto import Decryptor
-from threadwatch.events import NullEventLog
-from threadwatch.pipeline import Pipeline
 
 
 class StatusFileTest(unittest.TestCase):
@@ -109,8 +109,8 @@ class StartupFailureTest(unittest.TestCase):
         import json as json_mod
 
         from threadwatch import alerts
-        from threadwatch.capture import run_capture
         from threadwatch.pipeline import CredentialsError
+        from threadwatch.record import run_record
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Config(data_dir=Path(tmp) / "data", config_dir=Path(tmp))
             cfg.serial_port = "/dev/does-not-matter"
@@ -121,7 +121,7 @@ class StartupFailureTest(unittest.TestCase):
                                                         "severity": "warning", "addr": "a" * 16},
                                              "sinks": ["cmd"], "attempt": 2}) + "\n")
             with self.assertRaises(CredentialsError):
-                run_capture(cfg)
+                run_record(cfg)
             self.assertFalse((cfg.state_dir / alerts.INFLIGHT_FILE).exists())
             kept = [json_mod.loads(l) for l in spool.read_text().splitlines()]
             self.assertEqual([(k["record"]["event"], k["sinks"]) for k in kept], [("device_quiet", ["cmd"])])
@@ -252,12 +252,12 @@ class StatusConsumersTest(unittest.TestCase):
         self.assertIn("mac_decrypted 41", page)         # every crypto key is printed by name
         self.assertIn("0 delivered this run", page)
 
-        self.assertEqual(check_daemon(self.cfg, now)[0][:2], (WARN, "capture"))
+        self.assertEqual(check_daemon(self.cfg, now)[0][:2], (WARN, "recorder"))
         self.assertIn("no frames for 170 s", check_daemon(self.cfg, now)[0][2])
         # ...and it reads as healthy once a frame has just arrived.
         _write_status(self.cfg, "/dev/tty.usbmodem1", 4211, now - 3600, self.pipe,
                       self.ring, self.pipe.decryptor, last_frame_age=1.0, last_frame_ts=now - 1)
-        self.assertEqual(check_daemon(self.cfg, now)[0][:2], (OK, "capture"))
+        self.assertEqual(check_daemon(self.cfg, now)[0][:2], (OK, "recorder"))
         self.assertIn("capturing", Site(self.cfg).header())
 
         out = io.StringIO()
@@ -422,14 +422,14 @@ class StatusTickTest(unittest.TestCase):
         self.assertTrue(self.logs[0].startswith("status.json not written: "), self.logs)
 
 
-class RunCaptureTest(unittest.TestCase):
-    """run_capture itself: the live loop, the watchdog's two verdicts, the
+class RunRecordTest(unittest.TestCase):
+    """run_record itself: the live loop, the watchdog's two verdicts, the
     signal handler and the shutdown, with its two boundaries faked. The
     sniffer is a module standing in for the vendored one, writing pcap
     records into the FIFO from a thread and holding it open until told;
     os._exit is recorded and raises SystemExit so the test gets control
     back. Everything the helpers do is covered elsewhere; this is proof
-    that run_capture calls them, in order, with the right arguments."""
+    that run_record calls them, in order, with the right arguments."""
 
     DEV = "26976e7f7d20964a"
 
@@ -441,7 +441,7 @@ class RunCaptureTest(unittest.TestCase):
         import types
         from unittest import mock
 
-        from threadwatch import capture
+        from threadwatch import record
         self.tmp = tempfile.TemporaryDirectory()
         d = Path(self.tmp.name)
         (d / "credentials.toml").write_text('[credentials]\nnetwork_key = "00112233445566778899aabbccddeeff"\n')
@@ -453,10 +453,10 @@ class RunCaptureTest(unittest.TestCase):
         self.exits: list = []
         self.calls: list = []
         self.hold = threading.Event()          # the fake sniffer keeps the FIFO open until this is set
-        self.reader_open = threading.Event()   # set once run_capture has opened its end
+        self.reader_open = threading.Event()   # set once run_record has opened its end
         self.tick = threading.Event()          # one watchdog tick per set
         self.finished = threading.Event()
-        self.run_over = threading.Event()      # set when run_capture has returned
+        self.run_over = threading.Event()      # set when run_record has returned
         self.fail_stop = False
         test = self
 
@@ -490,15 +490,15 @@ class RunCaptureTest(unittest.TestCase):
         module.Nrf802154Sniffer = FakeSniffer
         for patcher in (mock.patch.dict(sys.modules, {"nrf802154_sniffer": module}),
                         mock.patch.object(os, "_exit", self._exit),
-                        mock.patch.object(capture.EventLog, "close", autospec=True,
+                        mock.patch.object(record.EventLog, "close", autospec=True,
                                           side_effect=lambda log, *a, **k: test.calls.append(("events.close",)))):
             patcher.start()
             self.addCleanup(patcher.stop)
-        spy = mock.patch.object(capture, "record_exit", wraps=capture.record_exit)
+        spy = mock.patch.object(record, "record_exit", wraps=record.record_exit)
         self.record_exit = spy.start()
         self.addCleanup(spy.stop)
-        self._time = capture.time
-        capture.time = types.SimpleNamespace(time=time.time, monotonic=time.monotonic, strftime=time.strftime,
+        self._time = record.time
+        record.time = types.SimpleNamespace(time=time.time, monotonic=time.monotonic, strftime=time.strftime,
                                              localtime=time.localtime, sleep=self._sleep)
         self._handlers = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGINT)}
         # The watchdog is the thread that ends the process for a dead
@@ -521,10 +521,10 @@ class RunCaptureTest(unittest.TestCase):
     def tearDown(self):
         import signal
 
-        from threadwatch import capture
+        from threadwatch import record
         self.finished.set()
         self.hold.set()
-        capture.time = self._time
+        record.time = self._time
         for signo, handler in self._handlers.items():
             signal.signal(signo, handler)
         self.tmp.cleanup()
@@ -550,13 +550,13 @@ class RunCaptureTest(unittest.TestCase):
         import contextlib
         import io
 
-        from threadwatch.capture import run_capture
+        from threadwatch.record import run_record
         out = io.StringIO()
         self.run_over.clear()
         try:
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit) as cm:
-                    run_capture(self.cfg)
+                    run_record(self.cfg)
         finally:
             # Lets a watchdog parked in the faked sleep return, so it sees
             # its own run's stop flag and ends instead of outliving the
@@ -617,13 +617,13 @@ class RunCaptureTest(unittest.TestCase):
     def test_the_watchdog_exits_for_a_dead_sniffer_and_for_a_stall(self):
         from unittest import mock
 
-        from threadwatch import capture
+        from threadwatch import record
         for verdict, ladder in ((EXIT_SNIFFER_DIED, ["events.close"]),
                                 (EXIT_STALLED, ["events.close", "stop"])):
             with self.subTest(verdict=verdict):
                 self.calls.clear(); self.exits.clear(); self.hold.clear(); self.reader_open.clear()
                 self.record_exit.reset_mock()
-                with mock.patch.object(capture, "watchdog_verdict", return_value=verdict):
+                with mock.patch.object(record, "watchdog_verdict", return_value=verdict):
                     import threading
                     def watchdog_left():
                         return any(name != "MainThread" for name, _ in self.exits)

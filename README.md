@@ -236,11 +236,11 @@ default in them is checked against `--help` and the source).
       mdns.py      border routers over mDNS (threadwatch border-routers)
       ha.py        Home Assistant websocket client (names, network key)
       importer.py  threadwatch import: devices.json + credentials.toml from HA and mDNS
-      freeze.py    ring buffer -> snapshot (threadwatch snapshot, snapshot_on_critical)
-      why.py       per-device history reconstruction
+      snapshot.py  ring buffer -> snapshot (threadwatch snapshot, snapshot_on_critical)
+      device.py    per-device history reconstruction (threadwatch device)
       doctor.py    preflight checks (threadwatch doctor)
       config.py    config.toml loading
-      capture.py   the recorder (ring buffer) + replay
+      record.py    the recorder (ring buffer) + replay
       cli.py       command-line interface
     tests/         unittest suite (python3 -m unittest discover -s tests)
     vendor/        Nordic's sniffer extcap module (BSD, unmodified)

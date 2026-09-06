@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from threadwatch import alerts
 from threadwatch import config as config_mod
-from threadwatch.capture import RingWriter
+from threadwatch.record import RingWriter
 
 
 class KeepGbTest(unittest.TestCase):
@@ -36,7 +36,7 @@ class KeepGbTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self._load('[record]\nkeep_gb = "lots"\n')
 
-    def test_keep_snapshots_is_a_whole_number_of_incidents_or_minus_one(self):
+    def test_keep_snapshots_is_a_whole_number_of_snapshots_or_minus_one(self):
         self.assertEqual(self._load("[record]\nkeep_snapshots = 0\n").keep_snapshots, 0)
         self.assertEqual(self._load("[record]\nkeep_snapshots = -1\n").keep_snapshots, -1)
         self.assertEqual(self._load("[record]\nkeep_hours = 24\n").keep_snapshots, 4)
@@ -50,7 +50,7 @@ class KeepGbTest(unittest.TestCase):
             for h in ("00", "01", "02"):
                 (Path(d) / f"threadwatch-20260903-{h}.pcap").write_bytes(b"x" * 1000)
             with self.assertRaises(ValueError):
-                RingWriter(Path(d), keep_files=168, dlt=0, keep_bytes=-5 * 1024 ** 3)
+                RingWriter(Path(d), keep_hours=168, dlt=0, keep_bytes=-5 * 1024 ** 3)
             self.assertEqual(len(list(Path(d).glob("*.pcap"))), 3)
 
 

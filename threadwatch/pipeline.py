@@ -199,14 +199,14 @@ class Pipeline:
             # thread) is a half copy nothing marks as such: discard it and
             # say so, and let the cooldown below see only whole snapshots,
             # so the storm still running gets its snapshot.
-            from .freeze import discard_partials
-            for label in discard_partials(cfg.incidents_dir):
+            from .snapshot import discard_partials
+            for label in discard_partials(cfg.snapshots_dir):
                 # events.emit, not _emit: this is the snapshot path reporting
-                # on itself, and self.freezer is not set until below.
+                # on itself, and self.snapshotter is not set until below.
                 self.events.emit("snapshot_failed", "warning", time.time(), label=label,
                                  note=(f"the copy for {label} was cut short when the recorder last stopped; "
                                        "the half copy was discarded, and the next storm event tries again"))
-        self._last_auto_freeze = 0.0 if ephemeral else self._last_auto_freeze_on_disk()
+        self._last_auto_snapshot = 0.0 if ephemeral else self._last_auto_snapshot_on_disk()
         if not ephemeral and cfg.border_router_browse_s > 0:
             # Imported here rather than at the first browse, minutes in. A
             # deploy rsyncs each changed file into place, giving the path a
@@ -219,7 +219,7 @@ class Pipeline:
             from . import mdns  # noqa: F401  (warmed, used in _poll_border_routers)
         # How a critical event saves the ring: in the background, so the
         # copy (gigabytes on a Pi) never stalls capture. Tests swap it.
-        self.freezer = self._freeze_in_background
+        self.snapshotter = self._snapshot_in_background
         self._summary_day: str | None = None      # local day whose summary is settled
         self._pruned_day: str | None = None       # local day the event log was last pruned on
         self._capped_at: float | None = None      # when rows were last dropped to stay under TRACK_MAX
@@ -242,7 +242,7 @@ class Pipeline:
         self._candidates: list[str] = []
         self._verify_after: dict[str, float] = {}    # short addr -> next re-check of its mapping
         self._foreign_after: dict[tuple, float] = {}  # (short addr, other PAN) -> next MIC check against it
-        self.extra_candidates: list[str] = []        # ext addrs to try first in the nonce search (why)
+        self.extra_candidates: list[str] = []        # ext addrs to try first in the nonce search (device)
         self.mle_names_path = cfg.state_dir / "observed-names.json"
         self.observed_names = {}
         if not ephemeral and self.mle_names_path.exists():
@@ -351,7 +351,7 @@ class Pipeline:
     # heard in that long.
     ROUTER_PREVIOUS_MAX = 32
 
-    # The note capture.record_exit leaves about how the last run ended.
+    # The note record.record_exit leaves about how the last run ended.
     EXIT_FILE = "last-exit.json"
     # How a start describes the end of the run before it, by the reason
     # the note carries; a note-less end (power cut, SIGKILL, a run that
@@ -366,7 +366,7 @@ class Pipeline:
     def _announce_start(self, now: float, last_alive: float | None) -> None:
         """One record per start: how long the recorder was not listening
         (since the last frame any run heard) and why the last run ended,
-        read from the note it left (capture.record_exit) and removed here,
+        read from the note it left (record.record_exit) and removed here,
         so the next start cannot read this run's end off the one before.
         The review's coverage is built from these records, together with
         the clock steps: they are what tells a recorder outage from a
@@ -536,13 +536,13 @@ class Pipeline:
         tmp.write_text(json.dumps({str(b): n for b, n in self._frames_by_hour.items()}))
         tmp.replace(self.frames_by_hour_path)
 
-    def _last_auto_freeze_on_disk(self) -> float:
+    def _last_auto_snapshot_on_disk(self) -> float:
         """When the newest auto-* snapshot was saved, so the cooldown holds
         across a restart: a daemon that comes back mid-storm must not copy
         the whole ring (gigabytes) a second time and fill the card."""
-        from .review import incidents
+        from .review import snapshots
         try:
-            for inc in incidents(self.cfg.incidents_dir):      # newest first
+            for inc in snapshots(self.cfg.snapshots_dir):      # newest first
                 if inc["label"].startswith("auto-"):
                     return float(inc["saved"])
         except OSError:
@@ -551,7 +551,7 @@ class Pipeline:
 
     def _last_frame_heard(self) -> float | None:
         """When a previous run last heard a frame: the stamp status.json
-        carries across runs (capture.last_frame_on_record), or the newest
+        carries across runs (record.last_frame_on_record), or the newest
         last_seen in the table. Both stand still while nothing is heard.
         The status file's write time and the table's save time do not: a
         run that hears nothing still writes both before the watchdog
@@ -667,7 +667,7 @@ class Pipeline:
         # notices all held back.
         for attr in ("_retrans_since", "_retrans_alerted", "_retrans_paged", "_retrans_up", "_retrans_closed",
                      "_win_start", "_next_browse", "_join_scan_evt", "_stale_evt", "_pan_silent_evt",
-                     "_pan_window_start", "_last_auto_freeze", "_storm_evt"):
+                     "_pan_window_start", "_last_auto_snapshot", "_storm_evt"):
             t = getattr(self, attr)
             if t and before(t):
                 setattr(self, attr, t - back)
@@ -878,7 +878,7 @@ class Pipeline:
 
     def _resolve_candidates(self, ts: float) -> list[str]:
         """The extended addresses worth trying as a short-source frame's
-        nonce: the caller's (why), the inventory's, then the table's rows
+        nonce: the caller's (device), the inventory's, then the table's rows
         on our PAN by frames heard, so a forged address heard once never
         displaces a device; ranked again every few seconds, not per frame."""
         built = self._candidates_built
@@ -978,7 +978,7 @@ class Pipeline:
     def ingest(self, f: Frame) -> str | None:
         """Take one frame. Returns the extended address it was attributed
         to (identity), or None, so a caller walking a capture for one
-        device (why) can filter on the same answer without a second pass."""
+        device (the command) can filter on the same answer without a second pass."""
         ts = f.ts
         self.detector.add_frame(ts)
         bucket = int(ts // 3600)
@@ -1172,7 +1172,7 @@ class Pipeline:
             period = details.get("period")
             onsets = details.get("onsets") or []
             # The snapshot is _emit's doing, off the "critical" severity: it
-            # adds the auto_freeze field and the sentence about where the
+            # adds the auto_snapshot field and the sentence about where the
             # packets went, and starts the copy afterwards.
             self._emit("phase_locked_storm", "critical", ts,
                  period_s=round(period, 1) if period else None, onsets=len(onsets),
@@ -1748,10 +1748,10 @@ class Pipeline:
                          "the device has stopped polling altogether: the unanswered polls are "
                          "closed here, and the silence is the story from now on"))
 
-    # -------------------------------------------------- freeze on critical
+    # ------------------------------------------------ snapshot on critical
 
-    AUTO_FREEZE_COOLDOWN_S = 6 * 3600
-    AUTO_FREEZE_RETRY_S = 30 * 60      # after a failed copy: the next critical event tries again
+    AUTO_SNAPSHOT_COOLDOWN_S = 6 * 3600
+    AUTO_SNAPSHOT_RETRY_S = 30 * 60      # after a failed copy: the next critical event tries again
 
     def _emit(self, event: str, severity: str = "info", ts: float | None = None,
               **fields) -> dict:
@@ -1761,14 +1761,14 @@ class Pipeline:
         call some future handler has to remember to make. The two paths
         that stay on events.emit say why where they are.
 
-        A critical event carries auto_freeze (the snapshot label, or None
+        A critical event carries auto_snapshot (the snapshot label, or None
         when saving is off, replaying, or inside the cooldown) and a
         closing sentence saying where its packets went."""
         ts = time.time() if ts is None else ts
         label = None
         if severity == "critical":
-            label = self._auto_freeze(ts, event)
-            fields["auto_freeze"] = label
+            label = self._auto_snapshot(ts, event)
+            fields["auto_snapshot"] = label
             keep = (f"the ring is being saved as {label}" if label
                     else "run 'threadwatch snapshot' to keep the packets")
             note = fields.get("note")
@@ -1779,62 +1779,62 @@ class Pipeline:
             # the log: the snapshot copies the log, and a worker that got
             # to it first left the snapshot without the record that
             # explains it.
-            self.freezer(label, event)
+            self.snapshotter(label, event)
         return record
 
-    def _auto_freeze(self, ts: float, event: str) -> str | None:
+    def _auto_snapshot(self, ts: float, event: str) -> str | None:
         """Reserve a snapshot of the ring for a critical event, at most once
         per cooldown (one storm is one snapshot, however long it rumbles).
         Returns the snapshot label for _emit to log and then hand to
-        self.freezer, or None when off, replaying, or inside the cooldown.
+        self.snapshotter, or None when off, replaying, or inside the cooldown.
         The cooldown is armed here, before the copy starts, so the critical
         events that fire while it runs do not start more copies; a copy
-        that fails shortens it to AUTO_FREEZE_RETRY_S (see _freeze_now).
+        that fails shortens it to AUTO_SNAPSHOT_RETRY_S (see _save_snapshot_now).
         The label carries the event that called for it, so a snapshots
         listing says which one without opening the manifest."""
         if not self.cfg.snapshot_on_critical or self.ephemeral:
             return None
-        if ts - self._last_auto_freeze < self.AUTO_FREEZE_COOLDOWN_S:
+        if ts - self._last_auto_snapshot < self.AUTO_SNAPSHOT_COOLDOWN_S:
             return None
-        self._last_auto_freeze = ts
+        self._last_auto_snapshot = ts
         return f"auto-{event}"
 
-    def _freeze_in_background(self, label: str, trigger: str) -> None:
-        threading.Thread(target=self._freeze_now, args=(label, trigger), daemon=True).start()
+    def _snapshot_in_background(self, label: str, trigger: str) -> None:
+        threading.Thread(target=self._save_snapshot_now, args=(label, trigger), daemon=True).start()
 
-    def _freeze_now(self, label: str, trigger: str) -> None:
+    def _save_snapshot_now(self, label: str, trigger: str) -> None:
         """Take the snapshot _emit reserved. ``trigger`` is the event that
         called for it, recorded in the snapshot's manifest. What this path
         logs goes to events.emit rather than _emit: a snapshot reporting on
         itself must never start another one, least of all from the
         background thread the last one is running on."""
-        from .freeze import freeze_ring, prune_auto_incidents
+        from .snapshot import prune_auto_snapshots, save_snapshot
         # Oldest automatic snapshots go before this one is taken, not
         # after: the room they free is the room this copy needs.
-        dropped = prune_auto_incidents(self.cfg.incidents_dir, max(0, self.cfg.keep_snapshots - 1))
+        dropped = prune_auto_snapshots(self.cfg.snapshots_dir, max(0, self.cfg.keep_snapshots - 1))
         if dropped:
             self.events.emit("snapshots_pruned", "info", time.time(), removed=dropped,
                              note=(f"{len(dropped)} older automatic snapshot(s) removed to keep "
                                    f"[record] keep_snapshots = {self.cfg.keep_snapshots}: "
                                    + ", ".join(dropped)))
-        if not self._room_to_freeze(label):
+        if not self._room_for_snapshot(label):
             return
         try:
-            dest, count = freeze_ring(self.cfg, label, trigger=trigger)
+            dest, count = save_snapshot(self.cfg, label, trigger=trigger)
         except Exception as exc:
-            # Nothing was kept (freeze_ring removes a half copy), so the
+            # Nothing was kept (save_snapshot removes a half copy), so the
             # six-hour cooldown armed for this attempt must not stand: the
             # next storm event after the retry hold tries again.
-            self._last_auto_freeze -= self.AUTO_FREEZE_COOLDOWN_S - self.AUTO_FREEZE_RETRY_S
+            self._last_auto_snapshot -= self.AUTO_SNAPSHOT_COOLDOWN_S - self.AUTO_SNAPSHOT_RETRY_S
             self.events.emit("snapshot_failed", "warning", time.time(), label=label,
                              note=(f"could not save the ring for {label}: {exc}; nothing was kept, and "
-                                   f"the next critical event after {self.AUTO_FREEZE_RETRY_S // 60} min "
+                                   f"the next critical event after {self.AUTO_SNAPSHOT_RETRY_S // 60} min "
                                    f"tries again"))
             return
         self.events.emit("snapshot_saved", "info", time.time(), label=label, path=str(dest),
                          ring_files=count, note=f"{count} ring files kept as {dest.name}")
 
-    def _room_to_freeze(self, label: str) -> bool:
+    def _room_for_snapshot(self, label: str) -> bool:
         """A snapshot is a second copy of the ring. Taking one that leaves
         the ring less room than it still needs trades a week of recording
         for one snapshot, and the recorder exits 1 the moment the card
@@ -1844,7 +1844,7 @@ class Pipeline:
         free, need = sto.get("disk_free"), sto["ring_needs_bytes"]
         if free is None or free - sto["ring_bytes"] >= need:
             return True
-        self._last_auto_freeze -= self.AUTO_FREEZE_COOLDOWN_S - self.AUTO_FREEZE_RETRY_S
+        self._last_auto_snapshot -= self.AUTO_SNAPSHOT_COOLDOWN_S - self.AUTO_SNAPSHOT_RETRY_S
         self.events.emit("snapshot_skipped", "warning", time.time(), label=label,
                          disk_free=free, ring_bytes=sto["ring_bytes"], ring_needs_bytes=need,
                          note=(f"not saving {label}: a copy of the ring ({fmt_bytes(sto['ring_bytes'])}) "

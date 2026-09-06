@@ -139,7 +139,7 @@ def check_dongle(cfg, find: Callable[[], str] | None = None) -> list[Check]:
 
 
 def _find_port() -> str:
-    from .capture import find_sniffer_port
+    from .record import find_sniffer_port
     return find_sniffer_port()
 
 
@@ -151,14 +151,14 @@ def check_daemon(cfg, now: float | None = None) -> list[Check]:
     try:
         st = json.loads(path.read_text())
     except ValueError:
-        return [(WARN, "capture", "status.json is unreadable (mid-write?)")]
+        return [(WARN, "recorder", "status.json is unreadable (mid-write?)")]
     age = now - st.get("updated", 0)
     if age > 90:
-        return [(FAIL, "capture", f"daemon not running: status last written {age / 60:.0f} min ago")]
+        return [(FAIL, "recorder", f"not running: status last written {age / 60:.0f} min ago")]
     fa = st.get("last_frame_age_s", 0)
     if fa > 120:
-        return [(WARN, "capture", f"daemon alive but no frames for {fa:.0f} s (quiet channel? wrong channel?)")]
-    return [(OK, "capture", f"running, last frame {fa:.0f} s ago, {st.get('frames_total', 0):,} frames this run")]
+        return [(WARN, "recorder", f"alive but no frames for {fa:.0f} s (quiet channel? wrong channel?)")]
+    return [(OK, "recorder", f"running, last frame {fa:.0f} s ago, {st.get('frames_total', 0):,} frames this run")]
 
 
 def check_ring(cfg, now: float | None = None) -> list[Check]:
@@ -231,9 +231,9 @@ def check_disk(cfg) -> list[Check]:
     cap = f", capped at {fmt_bytes(sto['keep_bytes'])}" if sto.get("keep_bytes") else ""
     text = (f"{fmt_bytes(free)} free; a full ring ({fmt_bytes(sto['ring_bound_bytes'])}{cap}) "
             f"needs about {fmt_bytes(need)} more{rate}")
-    incidents = sto.get("snapshots_bytes") or 0
-    if incidents:
-        text += f"; snapshots hold {fmt_bytes(incidents)}"
+    saved = sto.get("snapshots_bytes") or 0
+    if saved:
+        text += f"; snapshots hold {fmt_bytes(saved)}"
     if free < need:
         return [(FAIL, "disk", text + ": it will not fit; lower keep_hours, set keep_gb, or move data_dir")]
     if free < need + 1024 ** 3:
@@ -252,7 +252,7 @@ def check_disk(cfg) -> list[Check]:
 
 def check_writable(cfg) -> list[Check]:
     out = []
-    for label, d in (("state", cfg.state_dir), ("ring", cfg.ring_dir), ("snapshots", cfg.incidents_dir)):
+    for label, d in (("state", cfg.state_dir), ("ring", cfg.ring_dir), ("snapshots", cfg.snapshots_dir)):
         probe = d / ".doctor-probe"
         try:
             d.mkdir(parents=True, exist_ok=True)

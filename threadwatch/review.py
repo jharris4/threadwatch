@@ -17,8 +17,8 @@ import time
 from pathlib import Path
 
 from .events import day_bounds, day_of, iter_days, list_days, next_day, prev_day, read_day
-from .freeze import STAGING_DIR
 from .names import DeviceNames, LastSeen, reception, rloc16_role
+from .snapshot import STAGING_DIR
 
 SEVERITY_RANK = {"info": 0, "notice": 1, "warning": 2, "critical": 3}
 
@@ -740,7 +740,7 @@ def storage(cfg) -> dict:
     ring = sorted(p.name for p in cfg.ring_dir.glob("threadwatch-*.pcap")) if cfg.ring_dir.exists() else []
     out = {"ring_files": len(ring), "ring_span": _span(ring), "ring_bytes": _dir_size(cfg.ring_dir),
            "keep_hours": cfg.keep_hours,
-           "snapshots_bytes": _dir_size(cfg.incidents_dir) if cfg.incidents_dir.exists() else 0,
+           "snapshots_bytes": _dir_size(cfg.snapshots_dir) if cfg.snapshots_dir.exists() else 0,
            "events_bytes": _dir_size(cfg.events_dir) if cfg.events_dir.exists() else 0}
     try:
         usage = shutil.disk_usage(cfg.data_dir if cfg.data_dir.exists() else cfg.data_dir.parent)
@@ -761,13 +761,13 @@ def storage(cfg) -> dict:
     return out
 
 
-def incidents(incidents_dir: Path) -> list[dict]:
+def snapshots(snapshots_dir: Path) -> list[dict]:
     """Saved snapshots (threadwatch snapshot), newest first: label, when
     saved, the hours their pcaps cover, size, whether events came along."""
-    if not incidents_dir.exists():
+    if not snapshots_dir.exists():
         return []
     out = []
-    for d in incidents_dir.iterdir():
+    for d in snapshots_dir.iterdir():
         if not d.is_dir() or d.name == STAGING_DIR:      # a copy still running, or cut short, is not a snapshot
             continue
         stamp, _, label = d.name.partition("_")
@@ -793,7 +793,7 @@ def fmt_bytes(n: int | None) -> str:
     return f"{n:.1f} TB"
 
 
-def capture_for_day(ring_dir: Path, incidents_dir: Path, day: str) -> dict:
+def recording_for_day(ring_dir: Path, snapshots_dir: Path, day: str) -> dict:
     """Whether packets for a day still exist: ring files (one week) and any
     saved snapshots whose pcaps cover it. A snapshot belongs to the days
     its packets span, not the moment it was saved: the storm logged on
@@ -803,7 +803,7 @@ def capture_for_day(ring_dir: Path, incidents_dir: Path, day: str) -> dict:
     stamp = day.replace("-", "")
     ring = sorted(p.name for p in ring_dir.glob(f"threadwatch-{stamp}-*.pcap")) if ring_dir.exists() else []
     kept = []
-    for inc in incidents(incidents_dir):
+    for inc in snapshots(snapshots_dir):
         span = inc["span"]
         if (span[0][:8] <= stamp <= span[1][:8]) if span else inc["day"] == day:
             kept.append(inc["name"])

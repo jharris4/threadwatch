@@ -107,16 +107,16 @@ def print_history(events_dir: Path, addrs: list[str], now: float | None = None) 
         print(f"  ... {len(episodes) - len(shown)} more: threadwatch serve, /device/{addrs[0]}")
 
 
-def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
-            hours: float | None = None, incident_dir: Path | None = None) -> int:
+def run_device(cfg: Config, target: str, pcap_file: Path | None = None,
+            hours: float | None = None, snapshot_dir: Path | None = None) -> int:
     """Print the device's story. Returns 0, or 1 when some of the files
     could not be read (the report then covers the rest); exits with a
-    message when none could. With ``incident_dir`` the story is the saved
-    snapshot's: its pcaps, and (cfg.for_incident) its inventory and event
+    message when none could. With ``snapshot_dir`` the story is the saved
+    snapshot's: its pcaps, and (cfg.for_snapshot) its inventory and event
     log, so the names and the history are the ones current when it was
-    frozen."""
-    if incident_dir is not None:
-        cfg = cfg.for_incident(incident_dir)
+    saved."""
+    if snapshot_dir is not None:
+        cfg = cfg.for_snapshot(snapshot_dir)
     addrs, display = resolve_target(cfg, target)
     addr_set = set(addrs)
     decryptor = load_decryptor(cfg)
@@ -129,10 +129,10 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
 
     if pcap_file:
         files = [pcap_file]
-    elif incident_dir is not None:
-        ring = sorted(incident_dir.glob("*.pcap"))
+    elif snapshot_dir is not None:
+        ring = sorted(snapshot_dir.glob("*.pcap"))
         if not ring:
-            raise SystemExit(f"no pcap files in snapshot {incident_dir.name}")
+            raise SystemExit(f"no pcap files in snapshot {snapshot_dir.name}")
         files = select_recent(ring, hours, now=newest_hour_end(ring))
         if not files:
             raise SystemExit(f"no files in the snapshot's last {hours:g} h (it spans "
@@ -249,7 +249,7 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
               "what follows covers the rest only")
     if not pcap_file:
         window = f"last {hours:g} h: " if hours is not None else ""
-        source = f"snapshot {incident_dir.name}: " if incident_dir is not None else ""
+        source = f"snapshot {snapshot_dir.name}: " if snapshot_dir is not None else ""
         print(f"analyzed {source}{window}{len(files)} ring file(s), {files[0].name[12:23]} to {files[-1].name[12:23]}")
     if first_ts is None:
         print("No frames from this device in the analyzed window.")

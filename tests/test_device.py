@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch.why import select_recent
+from threadwatch.device import select_recent
 
 NOW = time.mktime(time.strptime("2026-09-03 10:20", "%Y-%m-%d %H:%M"))
 
@@ -44,8 +44,8 @@ class EventHistoryTest(unittest.TestCase):
     def test_merges_every_address_of_a_device_newest_first(self):
         import tempfile
 
+        from threadwatch.device import event_history
         from threadwatch.events import EventLog
-        from threadwatch.why import event_history
         a1, a2, other = "b62c32bf669272db", "e6c279e8f0c70298", "26976e7f7d20964a"
         with tempfile.TemporaryDirectory() as d:
             log = EventLog(Path(d) / "events")
@@ -67,8 +67,8 @@ class EventHistoryTest(unittest.TestCase):
         import os
         import tempfile
 
+        from threadwatch.device import print_history
         from threadwatch.events import EventLog, day_of
-        from threadwatch.why import print_history
         addr = "b62c32bf669272db"
         old_tz = os.environ.get("TZ")
         os.environ["TZ"] = "America/New_York"
@@ -96,7 +96,7 @@ class EventHistoryTest(unittest.TestCase):
             time.tzset()
 
     def test_empty_without_an_event_log(self):
-        from threadwatch.why import event_history
+        from threadwatch.device import event_history
         self.assertEqual(event_history(Path("/nonexistent/events"), ["b62c32bf669272db"], NOW), [])
 
 
@@ -112,8 +112,8 @@ class HourTableTest(unittest.TestCase):
         import tempfile
 
         from threadwatch.config import Config
+        from threadwatch.device import run_device
         from threadwatch.pcap import DLT_NOFCS, Frame, PcapWriter
-        from threadwatch.why import run_why
         fcf = 1 | 0x0040 | (2 << 10) | (1 << 12) | (3 << 14)        # data, pan compressed, short dst, ext src
 
         def psdu(seq):
@@ -131,7 +131,7 @@ class HourTableTest(unittest.TestCase):
                     w.write(Frame(ts=ts, raw=psdu(i), psdu=psdu(i), rssi=None, channel=None, lqi=None))
             out, err = io.StringIO(), io.StringIO()
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-                run_why(cfg, self.DEV, pcap)
+                run_device(cfg, self.DEV, pcap)
         self.assertIn("credentials: loaded", err.getvalue())
         lines = out.getvalue().splitlines()
         start = next(i for i, l in enumerate(lines) if l.startswith("hour"))
@@ -152,7 +152,7 @@ class HourTableTest(unittest.TestCase):
         self.assertEqual([(r[0], r[1], r[2]) for r in rows], [("09-03", "08h", "1"), ("09-03", "09h", "1")])
 
 
-class RunWhyTest(unittest.TestCase):
+class RunDeviceTest(unittest.TestCase):
     """`why` tells one device's story. Everything it counts - frames, polls,
     transmissions, ACKs - has to be that device's; the whole mesh's traffic
     attributed to one device answers the question confidently and wrongly."""
@@ -185,8 +185,8 @@ class RunWhyTest(unittest.TestCase):
         import tempfile
 
         from threadwatch.config import Config
+        from threadwatch.device import run_device
         from threadwatch.pcap import DLT_NOFCS, Frame, PcapWriter
-        from threadwatch.why import run_why
         with tempfile.TemporaryDirectory() as d:
             cred = Path(d) / "credentials.toml"
             cred.write_text('[credentials]\nnetwork_key = "00112233445566778899aabbccddeeff"\n')
@@ -200,7 +200,7 @@ class RunWhyTest(unittest.TestCase):
                     w.write(Frame(ts=ts, raw=psdu, psdu=psdu, rssi=None, channel=None, lqi=None))
             out = io.StringIO()
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-                self.rc = run_why(cfg, target or self.DEV, pcap)
+                self.rc = run_device(cfg, target or self.DEV, pcap)
         return out.getvalue()
 
     def _rows(self, text):
@@ -259,7 +259,7 @@ class RunWhyTest(unittest.TestCase):
         import tempfile
 
         from threadwatch.config import Config
-        from threadwatch.why import run_why
+        from threadwatch.device import run_device
         with tempfile.TemporaryDirectory() as d:
             cred = Path(d) / "credentials.toml"
             cred.write_text('[credentials]\nnetwork_key = "00112233445566778899aabbccddeeff"\n')
@@ -270,7 +270,7 @@ class RunWhyTest(unittest.TestCase):
                 out, err = io.StringIO(), io.StringIO()
                 with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                     with self.assertRaises(SystemExit) as cm:
-                        run_why(cfg, self.DEV, path)
+                        run_device(cfg, self.DEV, path)
                 self.assertIn(str(path), str(cm.exception))
                 self.assertIn("could not read", str(cm.exception))
                 self.assertNotIn("No frames from this device", out.getvalue())
@@ -290,14 +290,14 @@ class RunWhyTest(unittest.TestCase):
         self.assertIn("check `threadwatch devices` for unknowns", text)
 
 
-class RunWhyRingTest(unittest.TestCase):
+class RunDeviceRingTest(unittest.TestCase):
     """`why` without --pcap reads the ring: the files of the last --hours
     (or all of them), says which, and carries on past one it cannot read
     while saying that too. This is the form an operator runs during an
     outage; the tests above only ever handed it one file."""
 
-    DEV = RunWhyTest.DEV
-    OTHER = RunWhyTest.OTHER
+    DEV = RunDeviceTest.DEV
+    OTHER = RunDeviceTest.OTHER
 
     def setUp(self):
         import tempfile
@@ -329,23 +329,23 @@ class RunWhyRingTest(unittest.TestCase):
 
     def _frames(self, hours_ago, n, seq0=0):
         t0 = self.now - hours_ago * 3600
-        return [(t0 + i, RunWhyTest._psdu(self, self.DEV, seq0 + i)) for i in range(n)]
+        return [(t0 + i, RunDeviceTest._psdu(self, self.DEV, seq0 + i)) for i in range(n)]
 
     def _run(self, hours=None):
         import contextlib
         import io
 
-        from threadwatch.why import run_why
+        from threadwatch.device import run_device
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            rc = run_why(self.cfg, self.DEV, None, hours=hours)
+            rc = run_device(self.cfg, self.DEV, None, hours=hours)
         return rc, out.getvalue(), err.getvalue()
 
     @staticmethod
     def _frames_in_table(text):
-        return sum(int(row[2]) for row in RunWhyTest._rows(None, text))
+        return sum(int(row[2]) for row in RunDeviceTest._rows(None, text))
 
-    def test_an_incident_is_read_with_its_own_names_and_history(self):
+    def test_a_snapshot_is_read_with_its_own_names_and_history(self):
         # An incident frozen months ago, read on a box whose inventory has
         # moved on: the names, the event log and the recorder's coverage
         # are the incident's own. The silence between its two files was
@@ -354,8 +354,8 @@ class RunWhyRingTest(unittest.TestCase):
         import io
         import json
 
-        from threadwatch.why import run_why
-        inc = self.cfg.incidents_dir / "20260903T100000_storm"
+        from threadwatch.device import run_device
+        inc = self.cfg.snapshots_dir / "20260903T100000_storm"
         inc.mkdir(parents=True)
         for hours_ago, seq0 in ((3, 0), (1, 100)):
             self._ring_file(hours_ago, self._frames(hours_ago, 5, seq0))
@@ -371,7 +371,7 @@ class RunWhyRingTest(unittest.TestCase):
                  silent_for_s=1800, last_seen=self.now - 2.5 * 3600, reception="good")
         out = io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-            rc = run_why(self.cfg, "Frozen AQ", None, hours=None, incident_dir=inc)
+            rc = run_device(self.cfg, "Frozen AQ", None, hours=None, snapshot_dir=inc)
         text = out.getvalue()
         self.assertEqual(rc, 0)
         self.assertIn(f"analyzed snapshot {inc.name}: 2 ring file(s)", text)
@@ -382,7 +382,7 @@ class RunWhyRingTest(unittest.TestCase):
         # --hours counts back from the incident's newest file, not from now.
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit) as cm:
-                run_why(self.cfg, self.DEV, None, hours=0.5, incident_dir=inc / "nothing-here")
+                run_device(self.cfg, self.DEV, None, hours=0.5, snapshot_dir=inc / "nothing-here")
         self.assertIn("no pcap files in snapshot", str(cm.exception))
 
     def test_no_ring_is_said_plainly(self):
@@ -440,8 +440,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_identity import KEY, OTHER, PAN, SED, mle_message, secured_frame  # noqa: E402
 
 
-class WhyMleAnalysisTest(unittest.TestCase):
-    """The rejoin evidence the command exists to show. why.py's whole MLE
+class DeviceMleAnalysisTest(unittest.TestCase):
+    """The rejoin evidence the command exists to show. device.py's whole MLE
     half - parse_mle, the per-hour histogram, and the collection of
     Parent Request / Child ID Request / Announce into the attach-attempts
     section - had no test: it could have returned an empty histogram for
@@ -468,8 +468,8 @@ class WhyMleAnalysisTest(unittest.TestCase):
         import tempfile
 
         from threadwatch.config import Config
+        from threadwatch.device import run_device
         from threadwatch.pcap import Frame, PcapWriter
-        from threadwatch.why import run_why
         with tempfile.TemporaryDirectory() as d:
             cred = Path(d) / "credentials.toml"
             cred.write_text(f'[credentials]\nnetwork_key = "{KEY.hex()}"\n')
@@ -481,7 +481,7 @@ class WhyMleAnalysisTest(unittest.TestCase):
                     w.write(Frame(ts=ts, raw=raw, psdu=raw, rssi=None, channel=None, lqi=None))
             out = io.StringIO()
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-                code = run_why(cfg, target, pcap)
+                code = run_device(cfg, target, pcap)
         return code, out.getvalue()
 
     def test_the_histogram_and_the_attach_section_name_what_the_device_sent(self):
@@ -550,7 +550,7 @@ class WhyMleAnalysisTest(unittest.TestCase):
         self.assertIn("neither a 16-hex-char address nor a known device name", str(cm.exception))
 
 
-class WhyIncidentWindowTest(unittest.TestCase):
+class DeviceSnapshotWindowTest(unittest.TestCase):
     """--hours inside a saved snapshot counts back from where the copy
     stopped, not from now, so it can select nothing."""
 
@@ -560,23 +560,23 @@ class WhyIncidentWindowTest(unittest.TestCase):
         import tempfile
 
         from threadwatch.config import Config
+        from threadwatch.device import run_device
         from threadwatch.pcap import PcapWriter
-        from threadwatch.why import run_why
         with tempfile.TemporaryDirectory() as d:
             cred = Path(d) / "credentials.toml"
             cred.write_text(f'[credentials]\nnetwork_key = "{KEY.hex()}"\n')
             cfg = Config(data_dir=Path(d) / "data", credentials_path=cred)
-            inc = cfg.incidents_dir / "20260903T100000_storm"
+            inc = cfg.snapshots_dir / "20260903T100000_storm"
             inc.mkdir(parents=True)
             for name in files:
                 with open(inc / f"threadwatch-{name}.pcap", "wb") as fh:
                     PcapWriter(fh, 195)
             out = io.StringIO()
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-                code = run_why(cfg, SED, hours=hours, incident_dir=inc)
+                code = run_device(cfg, SED, hours=hours, snapshot_dir=inc)
             return code, out.getvalue()
 
-    def test_the_window_counts_back_from_the_freeze_not_from_now(self):
+    def test_the_window_counts_back_from_the_snapshot_not_from_now(self):
         # These files are days old by the time anyone reads the bundle, so
         # counting back from now would select nothing from any incident.
         code, text = self._run(hours=48)
@@ -594,7 +594,7 @@ class WhyIncidentWindowTest(unittest.TestCase):
         self.assertIn("no pcap files in snapshot", str(cm.exception))
 
 
-class WhyNetworkContextTest(unittest.TestCase):
+class DeviceNetworkContextTest(unittest.TestCase):
     """BUG-04: `why` used to identify frames without ingesting them, so an
     MLE advertisement from another device (the one thing that carries a
     key sequence past the decryptor's initial search) was skipped as not
@@ -606,8 +606,8 @@ class WhyNetworkContextTest(unittest.TestCase):
         import tempfile
 
         from threadwatch.config import Config
+        from threadwatch.device import run_device
         from threadwatch.pcap import Frame, PcapWriter
-        from threadwatch.why import run_why
         with tempfile.TemporaryDirectory() as d:
             cred = Path(d) / "credentials.toml"
             cred.write_text(f'[credentials]\nnetwork_key = "{KEY.hex()}"\n')
@@ -619,7 +619,7 @@ class WhyNetworkContextTest(unittest.TestCase):
                     w.write(Frame(ts=ts, raw=raw, psdu=raw, rssi=None, channel=None, lqi=None))
             out = io.StringIO()
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-                run_why(cfg, target, pcap)
+                run_device(cfg, target, pcap)
         return out.getvalue()
 
     @staticmethod

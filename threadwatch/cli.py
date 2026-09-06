@@ -23,17 +23,17 @@ def _inventory_path(cfg) -> Path:
     return cfg.devices_path or cfg.config_dir / "devices.json"
 
 
-def _find_incident(cfg, want: str, parser, command: str) -> Path:
+def _find_snapshot(cfg, want: str, parser, command: str) -> Path:
     """The snapshot directory a user named: by its directory name, its
     label as typed when it was saved, or that label's filename-safe form;
     a path to the directory itself also works. One match, or an error."""
-    from .freeze import safe_label
-    from .review import incidents
+    from .review import snapshots
+    from .snapshot import safe_label
     as_path = Path(want)
     if as_path.is_dir():
         return as_path
     want = want.strip().rstrip("/")
-    items = incidents(cfg.incidents_dir)
+    items = snapshots(cfg.snapshots_dir)
     hits = ([i for i in items if i["name"] == want]
             or [i for i in items if i["label"] == want]
             or [i for i in items if i["label"] == safe_label(want)])
@@ -42,7 +42,7 @@ def _find_incident(cfg, want: str, parser, command: str) -> Path:
     if len(hits) > 1:
         parser.exit(1, f"threadwatch {command}: {want!r} names {len(hits)} snapshots; "
                        f"use the full name: {', '.join(i['name'] for i in hits)}\n")
-    return cfg.incidents_dir / hits[0]["name"]
+    return cfg.snapshots_dir / hits[0]["name"]
 
 
 def _print_episodes(episodes: list, floor: int, ranks: dict, what: str) -> int:
@@ -83,21 +83,21 @@ def main(argv=None) -> int:
                           help="a saved snapshot (name or label): its pcaps, judged with its own inventory "
                                "and state; any pcaps given are read instead of its own")
 
-    p_freeze = sub.add_parser("snapshot", help="save the current ring buffer as a snapshot")
-    p_freeze.add_argument("label", nargs="?", default="snapshot")
+    p_snapshot = sub.add_parser("snapshot", help="save the current ring buffer as a snapshot")
+    p_snapshot.add_argument("label", nargs="?", default="snapshot")
 
-    p_report = sub.add_parser("devices", help="device last-seen / quiet / unknown-address report")
-    p_report.add_argument("--quiet-minutes", type=float, default=None,
+    p_devices = sub.add_parser("devices", help="device last-seen / quiet / unknown-address report")
+    p_devices.add_argument("--quiet-minutes", type=float, default=None,
                           help="list every device silent this many minutes (wall clock) as quiet, instead of "
                                "the devices the recorder has announced quiet (the same set the review pages "
                                "show: [quiet] silence_s of silence it was up to hear)")
-    p_report.add_argument("--suggest", action="store_true",
+    p_devices.add_argument("--suggest", action="store_true",
                           help="print a ready-to-paste devices.json entry per unknown address "
                                "instead of the report (names prefilled from harvested SRP hostnames)")
 
-    p_adopt = sub.add_parser("name", help="name an address: add it to devices.json")
-    p_adopt.add_argument("addr", help="16-hex extended address (from 'devices')")
-    p_adopt.add_argument("name", help="device name; an existing name gains the address (rotation)")
+    p_name = sub.add_parser("name", help="name an address: add it to devices.json")
+    p_name.add_argument("addr", help="16-hex extended address (from 'devices')")
+    p_name.add_argument("name", help="device name; an existing name gains the address (rotation)")
 
     p_imp = sub.add_parser("import", help="fill devices.json and credentials.toml from Home Assistant (Matter "
                                           "devices, the network key) and mDNS (border routers)")
@@ -116,13 +116,13 @@ def main(argv=None) -> int:
                                                  "with their current extended addresses")
     p_br.add_argument("--seconds", type=float, default=4.0, help="how long to wait for answers")
 
-    p_why = sub.add_parser("device", help="reconstruct one device's story from the ring buffer")
-    p_why.add_argument("device", help="device name (from devices.json) or 16-hex extended address")
-    p_why.add_argument("--pcap", type=Path, help="analyze this file instead of the ring")
-    p_why.add_argument("--snapshot", metavar="NAME",
+    p_device = sub.add_parser("device", help="reconstruct one device's story from the ring buffer")
+    p_device.add_argument("device", help="device name (from devices.json) or 16-hex extended address")
+    p_device.add_argument("--pcap", type=Path, help="analyze this file instead of the ring")
+    p_device.add_argument("--snapshot", metavar="NAME",
                        help="analyze a saved snapshot (name or label) instead of the ring, with the "
                             "inventory and event log saved with it")
-    p_why.add_argument("--hours", type=float,
+    p_device.add_argument("--hours", type=float,
                        help="only the ring files covering the last N hours (default: the whole ring)")
 
     p_events = sub.add_parser("events", help="show recent events, or one day's")
@@ -135,13 +135,13 @@ def main(argv=None) -> int:
     p_events.add_argument("--severity", choices=("info", "notice", "warning", "critical"),
                           help="only records at this severity or above")
 
-    p_web = sub.add_parser("serve", help="serve the review pages (day-by-day events, devices)")
-    p_web.add_argument("--bind", help="address to listen on (default: [web] bind, else 127.0.0.1; "
+    p_serve = sub.add_parser("serve", help="serve the review pages (day-by-day events, devices)")
+    p_serve.add_argument("--bind", help="address to listen on (default: [web] bind, else 127.0.0.1; "
                                       "\"0.0.0.0\" serves the LAN, where nothing authenticates)")
-    p_web.add_argument("--port", type=int, help="port (default: [web] port, else 8080)")
+    p_serve.add_argument("--port", type=int, help="port (default: [web] port, else 8080)")
 
-    p_inc = sub.add_parser("snapshots", help="list saved snapshots, or delete one")
-    p_inc.add_argument("--delete", metavar="NAME", help="remove this snapshot (its directory name, or a "
+    p_snapshots = sub.add_parser("snapshots", help="list saved snapshots, or delete one")
+    p_snapshots.add_argument("--delete", metavar="NAME", help="remove this snapshot (its directory name, or a "
                                                           "label that names exactly one)")
 
     sub.add_parser("doctor", help="check this box is fit to record: dongle, config, key file, disk, "
@@ -166,19 +166,19 @@ def main(argv=None) -> int:
     from .pipeline import CredentialsError
 
     if args.cmd == "record":
-        from .capture import run_capture
+        from .record import run_record
         try:
-            run_capture(cfg)
+            run_record(cfg)
         except CredentialsError as exc:
             parser.exit(2, f"threadwatch record: {exc}\n")
         return 0
 
     if args.cmd == "replay":
-        from .capture import run_replay
+        from .record import run_replay
         paths = list(args.pcap)
         if args.snapshot:
-            inc = _find_incident(cfg, args.snapshot, parser, "replay")
-            cfg = cfg.for_incident(inc)
+            inc = _find_snapshot(cfg, args.snapshot, parser, "replay")
+            cfg = cfg.for_snapshot(inc)
             paths = paths or [inc]
         if not paths:
             parser.error("give pcap files, a directory of them, or --snapshot NAME")
@@ -201,22 +201,22 @@ def main(argv=None) -> int:
         return 0
 
     if args.cmd == "snapshot":
-        from .freeze import freeze_ring
-        dest, count = freeze_ring(cfg, args.label)
+        from .snapshot import save_snapshot
+        dest, count = save_snapshot(cfg, args.label)
         print(f"saved {count} ring files -> {dest}")
         return 0
 
     if args.cmd == "device":
-        from .why import run_why
+        from .device import run_device
         if args.pcap and args.hours is not None:
             parser.error("--hours selects ring files; it does not apply with --pcap")
         if args.pcap and args.snapshot:
             parser.error("--pcap and --snapshot each say what to read; give one")
         if args.hours is not None and args.hours <= 0:
             parser.error("--hours must be positive")
-        incident = _find_incident(cfg, args.snapshot, parser, "device") if args.snapshot else None
+        incident = _find_snapshot(cfg, args.snapshot, parser, "device") if args.snapshot else None
         try:
-            return run_why(cfg, args.device, args.pcap, hours=args.hours, incident_dir=incident)
+            return run_device(cfg, args.device, args.pcap, hours=args.hours, snapshot_dir=incident)
         except CredentialsError as exc:
             parser.exit(2, f"threadwatch device: {exc}\n")
 
@@ -312,12 +312,12 @@ def main(argv=None) -> int:
     if args.cmd == "snapshots":
         import sys
 
-        from .review import fmt_bytes, incidents
-        items = incidents(cfg.incidents_dir)
+        from .review import fmt_bytes, snapshots
+        items = snapshots(cfg.snapshots_dir)
         if args.delete:
-            target = _find_incident(cfg, args.delete, parser, "snapshots")
-            if target.parent.resolve() != cfg.incidents_dir.resolve():
-                parser.exit(1, f"threadwatch snapshots: {target} is not under {cfg.incidents_dir}\n")
+            target = _find_snapshot(cfg, args.delete, parser, "snapshots")
+            if target.parent.resolve() != cfg.snapshots_dir.resolve():
+                parser.exit(1, f"threadwatch snapshots: {target} is not under {cfg.snapshots_dir}\n")
             size = next((i["bytes"] for i in items if i["name"] == target.name), 0)
             shutil.rmtree(target)
             print(f"deleted {target} ({fmt_bytes(size)})")
@@ -331,7 +331,7 @@ def main(argv=None) -> int:
                   f"{fmt_bytes(i['bytes']):>9s}  {i['pcaps']:3d} pcaps  {span}"
                   + ("  +events" if i["events"] else ""))
         total = sum(i["bytes"] for i in items)
-        print(f"{len(items)} snapshot(s), {fmt_bytes(total)} in {cfg.incidents_dir}", file=sys.stderr)
+        print(f"{len(items)} snapshot(s), {fmt_bytes(total)} in {cfg.snapshots_dir}", file=sys.stderr)
         return 0
 
     if args.cmd == "doctor":

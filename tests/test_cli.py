@@ -125,7 +125,7 @@ class AlertTestUnbuiltTest(CliCase):
         self.assertEqual((code, out.splitlines()), (0, ["sinks (1):", "  ok   all: true"]))
 
 
-class IncidentsTest(CliCase):
+class SnapshotsTest(CliCase):
     def test_list_and_delete(self):
         code, out, _ = self.run_cli("snapshots")
         self.assertEqual((code, out.strip()), (0, "no snapshots (threadwatch snapshot <label> makes one)"))
@@ -156,8 +156,8 @@ class IncidentsTest(CliCase):
         self.assertIn("no snapshot named", err)
 
 
-class AdoptTest(CliCase):
-    def test_adopted_name_is_read_back_from_beside_the_config_file(self):
+class NameTest(CliCase):
+    def test_a_named_address_is_read_back_from_beside_the_config_file(self):
         from unittest import mock
 
         from threadwatch import config as config_mod
@@ -174,8 +174,8 @@ class AdoptTest(CliCase):
         self.assertEqual(DeviceNames(cfg.devices_path).name("66417fe110ed6950"), "Office AQ")
 
 
-class FreezeTest(CliCase):
-    def test_freeze_copies_ring_state_and_events(self):
+class SnapshotTest(CliCase):
+    def test_snapshot_copies_ring_state_and_events(self):
         from threadwatch.config import load
         (self.d / "config.toml").write_text(
             f'[record]\ndata_dir = "{self.d / "data"}"\n[devices]\ninventory = "devices.json"\n'
@@ -193,7 +193,7 @@ class FreezeTest(CliCase):
         code, out, _ = self.run_cli("snapshot", "my label/with junk")
         self.assertEqual(code, 0)
         self.assertIn("saved 2 ring files", out)
-        inc = next(p for p in cfg.incidents_dir.iterdir() if not p.name.startswith("."))
+        inc = next(p for p in cfg.snapshots_dir.iterdir() if not p.name.startswith("."))
         self.assertTrue(inc.name.endswith("_my-label-with-junk"))
         self.assertEqual(sorted(p.name for p in inc.iterdir()),
                          ["border-routers.json", "config.toml", "devices.json", "events", "last-seen.json",
@@ -320,15 +320,15 @@ class EventsFilterTest(CliCase):
 class DispatchTest(CliCase):
     """main()'s subcommand wiring: the exit codes scripts and the systemd
     unit key on, the argument conflicts, and the containment check that
-    keeps --delete inside the incidents directory. The handlers were
+    keeps --delete inside the snapshots directory. The handlers were
     driven only through their inner functions, so a mis-wired argument or
     a wrong parser.exit code was invisible to the suite."""
 
-    def test_deleting_an_incident_outside_the_incidents_directory_is_refused(self):
-        # _find_incident takes a path to a directory as given, so a path
+    def test_deleting_a_snapshot_outside_the_snapshots_directory_is_refused(self):
+        # _find_snapshot takes a path to a directory as given, so a path
         # anywhere on the box reaches shutil.rmtree without this check.
         from threadwatch.config import load
-        load(Path(self.cfg)).incidents_dir.mkdir(parents=True)
+        load(Path(self.cfg)).snapshots_dir.mkdir(parents=True)
         outside = self.d / "not-a-snapshot"
         outside.mkdir()
         (outside / "keep.txt").write_text("mine")
@@ -346,9 +346,9 @@ class DispatchTest(CliCase):
         self.assertEqual(code, 1)
         self.assertIn("no snapshot named 'no-such-snapshot'", err)
 
-    def test_an_incident_inside_the_directory_is_deleted_by_name_or_label(self):
+    def test_a_snapshot_inside_the_directory_is_deleted_by_name_or_label(self):
         from threadwatch.config import load
-        inc = load(Path(self.cfg)).incidents_dir / "20260903T120000_storm-at-noon"
+        inc = load(Path(self.cfg)).snapshots_dir / "20260903T120000_storm-at-noon"
         inc.mkdir(parents=True)
         (inc / "threadwatch-20260903-11.pcap").write_bytes(b"x" * 10)
         code, out, err = self.run_cli("snapshots", "--delete", "storm at noon")   # the label as typed
@@ -356,7 +356,7 @@ class DispatchTest(CliCase):
         self.assertIn("deleted", out)
         self.assertFalse(inc.exists())
 
-    def test_why_refuses_the_argument_combinations_that_contradict_each_other(self):
+    def test_device_refuses_the_argument_combinations_that_contradict_each_other(self):
         for args, message in ((("--pcap", "x.pcap", "--hours", "6"), "does not apply with --pcap"),
                               (("--pcap", "x.pcap", "--snapshot", "n"), "give one"),
                               (("--hours", "0"), "--hours must be positive"),
@@ -368,14 +368,14 @@ class DispatchTest(CliCase):
     def test_a_missing_network_key_is_exit_2_from_device_as_it_is_from_record(self):
         # Scripts and the systemd unit tell "this box cannot decrypt" from
         # "this box broke" by the code, so both commands promise 2.
-        from threadwatch import capture as capture_mod
-        from threadwatch import why as why_mod
+        from threadwatch import device as device_mod
+        from threadwatch import record as record_mod
         from threadwatch.pipeline import CredentialsError
 
         def refuse(*a, **kw):
             raise CredentialsError("credentials.toml is missing")
 
-        for cmd, mod, name in (("device", why_mod, "run_why"), ("record", capture_mod, "run_capture")):
+        for cmd, mod, name in (("device", device_mod, "run_device"), ("record", record_mod, "run_record")):
             real = getattr(mod, name)
             setattr(mod, name, refuse)
             try:
@@ -424,7 +424,7 @@ class DispatchTest(CliCase):
         self.assertIn("hub  Apple AppleTV", out)
         self.assertIn("b62c32bf669272db  -> not in devices.json", out)
 
-    def test_adopt_reports_a_bad_address_as_exit_1_and_writes_nothing(self):
+    def test_name_reports_a_bad_address_as_exit_1_and_writes_nothing(self):
         inv = self.d / "devices.json"
         (self.d / "config.toml").write_text(f'[record]\ndata_dir = "{self.d / "data"}"\n'
                                             f'[devices]\ninventory = "devices.json"\n')
@@ -484,7 +484,7 @@ class DispatchTest(CliCase):
         self.assertIn("FAIL credentials", out)
 
 
-class ReportSuggestTest(CliCase):
+class DevicesSuggestTest(CliCase):
     """The recorder files the hostnames it harvests in observed-names.json;
     `threadwatch devices --suggest` turns them into inventory entries."""
 
@@ -642,7 +642,7 @@ class ReplayTest(CliCase):
         self.assertEqual(code, f"threadwatch replay: no pcap files in {self.d}")
         self.assertEqual(self.run_cli("replay")[0], 2)                               # nothing named: usage error
 
-    def test_replay_reads_an_incident_with_the_inventory_frozen_in_it(self):
+    def test_replay_reads_a_snapshot_with_the_inventory_saved_in_it(self):
         from threadwatch.pcap import DLT_NOFCS
         (self.d / "config.toml").write_text(f'[record]\ndata_dir = "{self.d / "data"}"\n'
                                             '[devices]\ninventory = "devices.json"\n')

@@ -1,4 +1,4 @@
-"""freeze_ring against a ring that keeps rotating."""
+"""save_snapshot against a ring that keeps rotating."""
 
 import shutil
 import sys
@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch import freeze
+from threadwatch import snapshot
 from threadwatch.config import Config
 
 
@@ -24,7 +24,7 @@ class BundleTest(unittest.TestCase):
                 'command = [\n  "curl", "-H", "Auth: hunter3",\n  "https://x.example/{event}",\n]\n'
                 'min_severity = "warning"\n[[heartbeats]]\nfailure_url = "https://hc.example/fail"\n'
                 '[credentials]\nnetwork_key = "00112233"\nfile = "credentials.toml"\n')
-        out = freeze.redact_config(text)
+        out = snapshot.redact_config(text)
         for secret in ("9f3a", "hunter2", "hunter3", "NTFY_TOKEN", "hc.example", "00112233"):
             self.assertNotIn(secret, out)
         parsed = tomllib.loads(out)
@@ -34,7 +34,7 @@ class BundleTest(unittest.TestCase):
                                                       "command": "<redacted>", "min_severity": "warning"}])
         self.assertEqual(parsed["heartbeats"], [{"failure_url": "<redacted>"}])
         self.assertEqual(parsed["credentials"], {"network_key": "<redacted>", "file": "credentials.toml"})
-        self.assertEqual(freeze.redact_config(""), "")
+        self.assertEqual(snapshot.redact_config(""), "")
 
     def test_the_shapes_that_used_to_slip_past_the_redaction(self):
         # Three leaks, all in configurations an operator would write:
@@ -50,7 +50,7 @@ class BundleTest(unittest.TestCase):
                 '[alerts.sinks.headers]\nAuthorization = "Bearer hunter2"\n"X-Api-Key" = "k9"\n'
                 '[credentials]\nnetwork_key = """\n00112233445566778899aabbccddeeff\n"""\n'
                 'file = "credentials.toml"\n')
-        out = freeze.redact_config(text)
+        out = snapshot.redact_config(text)
         for secret in ("abc123", "hunter2", "k9", "00112233"):
             self.assertNotIn(secret, out)
         parsed = tomllib.loads(out)
@@ -66,7 +66,7 @@ class BundleTest(unittest.TestCase):
 
         from threadwatch.config import REPO_ROOT
         text = (REPO_ROOT / "config" / "config.example.toml").read_text()
-        out = freeze.redact_config(text)
+        out = snapshot.redact_config(text)
         self.assertEqual(tomllib.loads(out).keys(), tomllib.loads(text).keys())
         self.assertIn("# ", out)                       # the comments explain what was in force
 
@@ -80,7 +80,7 @@ class BundleTest(unittest.TestCase):
                          channel=15, pan_id=0x4e21)
             cfg.ring_dir.mkdir(parents=True)
             (cfg.ring_dir / "threadwatch-20260903-01.pcap").write_bytes(b"x" * 10)
-            dest, count = freeze.freeze_ring(cfg, "auto-storm", now=1_756_900_000.0, trigger="phase_locked_storm")
+            dest, count = snapshot.save_snapshot(cfg, "auto-storm", now=1_756_900_000.0, trigger="phase_locked_storm")
             m = json.loads((dest / "manifest.json").read_text())
             self.assertEqual((m["format"], m["label"], m["trigger"], m["channel"], m["pan_id"], m["ring_files"],
                               m["span"], m["inventory"], m["config"], m["events_days"], m["saved_at"]),
@@ -93,12 +93,12 @@ class BundleTest(unittest.TestCase):
             # Nothing to copy: the manifest says so instead of failing.
             bare = Config(data_dir=d / "data2")
             bare.ring_dir.mkdir(parents=True)
-            dest, _ = freeze.freeze_ring(bare, "bare")
+            dest, _ = snapshot.save_snapshot(bare, "bare")
             m = json.loads((dest / "manifest.json").read_text())
             self.assertEqual((m["inventory"], m["config"], m["span"], m["files"]), (None, None, None, {}))
 
 
-class FreezeTest(unittest.TestCase):
+class SnapshotTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.cfg = Config(data_dir=Path(self.tmp.name) / "data")
@@ -117,15 +117,15 @@ class FreezeTest(unittest.TestCase):
                 src.unlink()                    # RingWriter._prune got there first
             return real(src, dst, *a, **kw)
 
-        freeze.shutil.copy2 = copy2
+        snapshot.shutil.copy2 = copy2
         try:
-            dest, count = freeze.freeze_ring(self.cfg, "storm")
+            dest, count = snapshot.save_snapshot(self.cfg, "storm")
         finally:
-            freeze.shutil.copy2 = real
+            snapshot.shutil.copy2 = real
         self.assertEqual(count, 2)
         self.assertEqual(sorted(p.name[-7:-5] for p in dest.glob("*.pcap")), ["01", "02"])
 
-    def test_a_snapshot_short_of_what_was_copied_is_a_failure_not_an_incident(self):
+    def test_a_snapshot_short_of_what_was_copied_is_a_failure_not_a_snapshot(self):
         # The last line of defence for the bundle's one promise: that it
         # holds every ring file it says it does. If it stopped firing, a
         # truncated incident would be written, manifested and reported as
@@ -138,17 +138,17 @@ class FreezeTest(unittest.TestCase):
                 Path(dst).unlink()          # copied, then gone: the count and the directory disagree
             return out
 
-        freeze.shutil.copy2 = copy2
+        snapshot.shutil.copy2 = copy2
         try:
             with self.assertRaises(OSError) as cm:
-                freeze.freeze_ring(self.cfg, "storm")
+                snapshot.save_snapshot(self.cfg, "storm")
         finally:
-            freeze.shutil.copy2 = real
+            snapshot.shutil.copy2 = real
         self.assertIn("3 ring files were copied but the snapshot holds 2", str(cm.exception))
-        self.assertEqual(list(self.cfg.incidents_dir.glob("*_storm")), [])
-        self.assertEqual(list((self.cfg.incidents_dir / freeze.STAGING_DIR).iterdir()), [])
+        self.assertEqual(list(self.cfg.snapshots_dir.glob("*_storm")), [])
+        self.assertEqual(list((self.cfg.snapshots_dir / snapshot.STAGING_DIR).iterdir()), [])
 
-    def test_a_copy_that_fails_leaves_no_half_incident_behind(self):
+    def test_a_copy_that_fails_leaves_no_half_snapshot_behind(self):
         real = shutil.copy2
 
         def copy2(src, dst, *a, **kw):
@@ -156,55 +156,55 @@ class FreezeTest(unittest.TestCase):
                 raise OSError(28, "No space left on device")
             return real(src, dst, *a, **kw)
 
-        freeze.shutil.copy2 = copy2
+        snapshot.shutil.copy2 = copy2
         try:
             with self.assertRaises(OSError) as cm:
-                freeze.freeze_ring(self.cfg, "storm")
+                snapshot.save_snapshot(self.cfg, "storm")
         finally:
-            freeze.shutil.copy2 = real
+            snapshot.shutil.copy2 = real
         self.assertEqual(cm.exception.errno, 28)
-        names = [p.name for p in self.cfg.incidents_dir.iterdir()]
-        self.assertEqual(names, [freeze.STAGING_DIR])        # nothing that reads as an incident
-        self.assertEqual(list((self.cfg.incidents_dir / freeze.STAGING_DIR).iterdir()), [])
+        names = [p.name for p in self.cfg.snapshots_dir.iterdir()]
+        self.assertEqual(names, [snapshot.STAGING_DIR])        # nothing that reads as an incident
+        self.assertEqual(list((self.cfg.snapshots_dir / snapshot.STAGING_DIR).iterdir()), [])
         self.assertEqual(len(list(self.cfg.ring_dir.glob("*.pcap"))), 3)     # the ring itself untouched
 
-    def test_a_copy_in_progress_is_not_an_incident_until_it_is_whole(self):
-        from threadwatch.review import incidents
+    def test_a_copy_in_progress_is_not_a_snapshot_until_it_is_whole(self):
+        from threadwatch.review import snapshots
         real = shutil.copy2
         seen_during = []
 
         def copy2(src, dst, *a, **kw):
-            seen_during.append(([p.name for p in self.cfg.incidents_dir.iterdir()], incidents(self.cfg.incidents_dir)))
+            seen_during.append(([p.name for p in self.cfg.snapshots_dir.iterdir()], snapshots(self.cfg.snapshots_dir)))
             return real(src, dst, *a, **kw)
 
-        freeze.shutil.copy2 = copy2
+        snapshot.shutil.copy2 = copy2
         try:
-            dest, count = freeze.freeze_ring(self.cfg, "storm")
+            dest, count = snapshot.save_snapshot(self.cfg, "storm")
         finally:
-            freeze.shutil.copy2 = real
+            snapshot.shutil.copy2 = real
         self.assertEqual(count, 3)
-        self.assertTrue(all(names == [freeze.STAGING_DIR] and listed == [] for names, listed in seen_during))
-        self.assertEqual(sorted(p.name for p in self.cfg.incidents_dir.iterdir()),
-                         sorted([dest.name, freeze.STAGING_DIR]))                          # renamed into place
-        self.assertEqual(list((self.cfg.incidents_dir / freeze.STAGING_DIR).iterdir()), [])
-        self.assertEqual([i["label"] for i in incidents(self.cfg.incidents_dir)], ["storm"])
+        self.assertTrue(all(names == [snapshot.STAGING_DIR] and listed == [] for names, listed in seen_during))
+        self.assertEqual(sorted(p.name for p in self.cfg.snapshots_dir.iterdir()),
+                         sorted([dest.name, snapshot.STAGING_DIR]))                          # renamed into place
+        self.assertEqual(list((self.cfg.snapshots_dir / snapshot.STAGING_DIR).iterdir()), [])
+        self.assertEqual([i["label"] for i in snapshots(self.cfg.snapshots_dir)], ["storm"])
 
     def test_a_half_copy_left_by_a_dead_run_is_discarded_at_the_next_start(self):
         # os._exit (the stall watchdog, a SIGTERM) unwinds no thread: the
-        # except in freeze_ring never ran, and the .partial directory stayed.
-        left = self.cfg.incidents_dir / freeze.STAGING_DIR / "20260904T200112_auto-storm"
+        # except in save_snapshot never ran, and the .partial directory stayed.
+        left = self.cfg.snapshots_dir / snapshot.STAGING_DIR / "20260904T200112_auto-storm"
         left.mkdir(parents=True)
         (left / "threadwatch-20260904-19.pcap").write_bytes(b"x" * 50)
-        whole = self.cfg.incidents_dir / "20260903T120000_manual"
+        whole = self.cfg.snapshots_dir / "20260903T120000_manual"
         whole.mkdir()
-        self.assertEqual(freeze.discard_partials(self.cfg.incidents_dir), ["auto-storm"])
-        self.assertEqual(sorted(p.name for p in self.cfg.incidents_dir.iterdir()),
-                         sorted([whole.name, freeze.STAGING_DIR]))
+        self.assertEqual(snapshot.discard_partials(self.cfg.snapshots_dir), ["auto-storm"])
+        self.assertEqual(sorted(p.name for p in self.cfg.snapshots_dir.iterdir()),
+                         sorted([whole.name, snapshot.STAGING_DIR]))
         self.assertFalse(left.exists())
-        self.assertEqual(freeze.discard_partials(self.cfg.incidents_dir), [])
-        self.assertEqual(freeze.discard_partials(self.cfg.incidents_dir / "missing"), [])
+        self.assertEqual(snapshot.discard_partials(self.cfg.snapshots_dir), [])
+        self.assertEqual(snapshot.discard_partials(self.cfg.snapshots_dir / "missing"), [])
 
-    def test_a_freeze_still_running_is_not_a_leftover_for_the_next_start(self):
+    def test_a_copy_still_running_is_not_a_leftover_for_the_next_start(self):
         # BUG-10: a manual freeze is another process and may overlap a
         # recorder restart, whose start-up cleanup removed its staging
         # directory mid-copy; the copies after that failed as "source
@@ -212,7 +212,7 @@ class FreezeTest(unittest.TestCase):
         # success with a count and no packets.
         import threading
 
-        from threadwatch.review import incidents
+        from threadwatch.review import snapshots
         cfg = self.cfg
         cfg.events_dir.mkdir(parents=True)
         (cfg.events_dir / "2026-09-03.jsonl").write_text("")
@@ -230,34 +230,34 @@ class FreezeTest(unittest.TestCase):
 
         def worker():
             try:
-                result["ok"] = freeze.freeze_ring(cfg, "manual", now=1_700_000_000)
+                result["ok"] = snapshot.save_snapshot(cfg, "manual", now=1_700_000_000)
             except BaseException as exc:
                 result["err"] = exc
 
-        freeze.shutil.copy2 = copy2
+        snapshot.shutil.copy2 = copy2
         try:
             t = threading.Thread(target=worker)
             t.start()
             self.assertTrue(copied.wait(5))
-            self.assertEqual(freeze.discard_partials(cfg.incidents_dir), [])  # recorder starting: nothing to discard
-            staging = cfg.incidents_dir / freeze.STAGING_DIR
+            self.assertEqual(snapshot.discard_partials(cfg.snapshots_dir), [])  # recorder starting: nothing to discard
+            staging = cfg.snapshots_dir / snapshot.STAGING_DIR
             names = sorted(p.name for p in staging.iterdir())
             self.assertEqual(len(names), 2, names)                              # the copy and its held lock
-            self.assertTrue(names[1] == names[0] + freeze.LOCK_SUFFIX and (staging / names[0]).is_dir(), names)
+            self.assertTrue(names[1] == names[0] + snapshot.LOCK_SUFFIX and (staging / names[0]).is_dir(), names)
             self.assertEqual([p.name[-7:-5] for p in (staging / names[0]).glob("*.pcap")], ["00"])   # still there
             resume.set()
             t.join(5)
         finally:
-            freeze.shutil.copy2 = real
+            snapshot.shutil.copy2 = real
             resume.set()
         self.assertNotIn("err", result, result.get("err"))
         dest, count = result["ok"]
         self.assertEqual(count, 3)
         self.assertEqual(sorted(p.name[-7:-5] for p in dest.glob("*.pcap")), ["00", "01", "02"])
         self.assertTrue((dest / "events").is_dir())
-        self.assertEqual([i["label"] for i in incidents(cfg.incidents_dir)], ["manual"])
-        self.assertEqual(list((cfg.incidents_dir / freeze.STAGING_DIR).iterdir()), [])    # lock and staging gone
-        self.assertEqual(freeze.discard_partials(cfg.incidents_dir), [])
+        self.assertEqual([i["label"] for i in snapshots(cfg.snapshots_dir)], ["manual"])
+        self.assertEqual(list((cfg.snapshots_dir / snapshot.STAGING_DIR).iterdir()), [])    # lock and staging gone
+        self.assertEqual(snapshot.discard_partials(cfg.snapshots_dir), [])
 
     def test_a_destination_that_vanishes_mid_copy_is_a_failure_not_a_success(self):
         real = shutil.copy2
@@ -267,39 +267,39 @@ class FreezeTest(unittest.TestCase):
                 shutil.rmtree(dst.parent)                       # something removed the staging directory
             return real(src, dst, *a, **kw)
 
-        freeze.shutil.copy2 = copy2
+        snapshot.shutil.copy2 = copy2
         try:
             with self.assertRaises(FileNotFoundError):
-                freeze.freeze_ring(self.cfg, "manual")
+                snapshot.save_snapshot(self.cfg, "manual")
         finally:
-            freeze.shutil.copy2 = real
-        from threadwatch.review import incidents
-        self.assertEqual(incidents(self.cfg.incidents_dir), [])
+            snapshot.shutil.copy2 = real
+        from threadwatch.review import snapshots
+        self.assertEqual(snapshots(self.cfg.snapshots_dir), [])
         self.assertEqual(len(list(self.cfg.ring_dir.glob("*.pcap"))), 3)     # the sources were all there
 
     def test_a_dead_runs_lock_does_not_protect_its_leftover(self):
-        staging = self.cfg.incidents_dir / freeze.STAGING_DIR
+        staging = self.cfg.snapshots_dir / snapshot.STAGING_DIR
         left = staging / "20260904T200112_auto-storm"
         left.mkdir(parents=True)
         (left / "threadwatch-20260904-19.pcap").write_bytes(b"x")
-        (staging / (left.name + freeze.LOCK_SUFFIX)).write_bytes(b"")       # nobody holds it: the run is gone
-        (staging / ("20260904T200500_manual" + freeze.LOCK_SUFFIX)).write_bytes(b"")   # died before mkdir
-        self.assertEqual(freeze.discard_partials(self.cfg.incidents_dir), ["auto-storm"])
+        (staging / (left.name + snapshot.LOCK_SUFFIX)).write_bytes(b"")       # nobody holds it: the run is gone
+        (staging / ("20260904T200500_manual" + snapshot.LOCK_SUFFIX)).write_bytes(b"")   # died before mkdir
+        self.assertEqual(snapshot.discard_partials(self.cfg.snapshots_dir), ["auto-storm"])
         self.assertEqual(list(staging.iterdir()), [])
 
-    def test_a_freeze_right_after_a_write_holds_that_record(self):
+    def test_a_snapshot_right_after_a_write_holds_that_record(self):
         # BUG-02: the ring writer buffered records in Python; a freeze copies
         # the active file through its own handle and saw a zero-byte pcap
         # early in the hour, or an older tail later in it.
-        from threadwatch.capture import RingWriter
         from threadwatch.pcap import Frame, PcapStreamReader
+        from threadwatch.record import RingWriter
         for f in self.cfg.ring_dir.glob("*.pcap"):
             f.unlink()
-        ring = RingWriter(self.cfg.ring_dir, keep_files=10, dlt=230)
+        ring = RingWriter(self.cfg.ring_dir, keep_hours=10, dlt=230)
         try:
             ring.write(Frame(ts=1_700_000_000.25, raw=b"\x01\x02\x03\x04\x05", psdu=b"",
                              rssi=None, channel=None, lqi=None))
-            dest, count = freeze.freeze_ring(self.cfg, "now", now=1_700_000_010)
+            dest, count = snapshot.save_snapshot(self.cfg, "now", now=1_700_000_010)
         finally:
             ring.close()
         self.assertEqual(count, 1)
@@ -308,100 +308,100 @@ class FreezeTest(unittest.TestCase):
             frames = list(PcapStreamReader(fh))
         self.assertEqual([(f.ts, f.raw) for f in frames], [(1_700_000_000.25, b"\x01\x02\x03\x04\x05")])
 
-    def test_a_dead_freeze_with_a_label_ending_in_lock_is_discarded_not_fatal(self):
+    def test_a_dead_copy_with_a_label_ending_in_lock_is_discarded_not_fatal(self):
         # safe_label keeps periods, so `threadwatch snapshot debug.lock` stages
         # a directory whose name ends in the lock suffix. Cleanup used to
         # skip it as a lock, then open it as one and raise IsADirectoryError
         # on every start until someone removed it by hand.
-        staging = self.cfg.incidents_dir / freeze.STAGING_DIR
+        staging = self.cfg.snapshots_dir / snapshot.STAGING_DIR
         left = staging / "20260905T120000_debug.lock"
         left.mkdir(parents=True)
         (left / "threadwatch-20260905-11.pcap").write_bytes(b"x")
-        (staging / (left.name + freeze.LOCK_SUFFIX)).write_bytes(b"")       # its own lock, nobody holds it
-        self.assertEqual(freeze.discard_partials(self.cfg.incidents_dir), ["debug.lock"])
+        (staging / (left.name + snapshot.LOCK_SUFFIX)).write_bytes(b"")       # its own lock, nobody holds it
+        self.assertEqual(snapshot.discard_partials(self.cfg.snapshots_dir), ["debug.lock"])
         self.assertEqual(list(staging.iterdir()), [])
         # And a finished freeze with that label is a whole incident.
-        dest, count = freeze.freeze_ring(self.cfg, "debug.lock", now=1_700_000_000)
+        dest, count = snapshot.save_snapshot(self.cfg, "debug.lock", now=1_700_000_000)
         self.assertEqual(count, 3)
-        self.assertEqual(freeze.discard_partials(self.cfg.incidents_dir), [])
+        self.assertEqual(snapshot.discard_partials(self.cfg.snapshots_dir), [])
         self.assertTrue(dest.is_dir())
 
-    def test_a_label_ending_in_partial_is_a_whole_incident_like_any_other(self):
+    def test_a_label_ending_in_partial_is_a_whole_snapshot_like_any_other(self):
         # BUG-01: safe_label keeps periods, so "test.partial" used to name a
         # finished incident the way a half copy was named; the listing hid
         # it and the next start deleted it.
-        from threadwatch.review import incidents
-        dest, count = freeze.freeze_ring(self.cfg, "test.partial", now=1_700_000_000)
+        from threadwatch.review import snapshots
+        dest, count = snapshot.save_snapshot(self.cfg, "test.partial", now=1_700_000_000)
         self.assertEqual(count, 3)
         self.assertEqual(dest.name.rpartition("_")[2], "test.partial")
-        self.assertEqual([i["label"] for i in incidents(self.cfg.incidents_dir)], ["test.partial"])
-        self.assertEqual(freeze.discard_partials(self.cfg.incidents_dir), [])          # the next start
+        self.assertEqual([i["label"] for i in snapshots(self.cfg.snapshots_dir)], ["test.partial"])
+        self.assertEqual(snapshot.discard_partials(self.cfg.snapshots_dir), [])          # the next start
         self.assertTrue(dest.is_dir())
         self.assertEqual(len(list(dest.glob("*.pcap"))), 3)
-        self.assertEqual([i["label"] for i in incidents(self.cfg.incidents_dir)], ["test.partial"])
+        self.assertEqual([i["label"] for i in snapshots(self.cfg.snapshots_dir)], ["test.partial"])
 
-    def test_an_existing_incident_or_half_copy_is_never_written_into(self):
+    def test_an_existing_snapshot_or_half_copy_is_never_written_into(self):
         now = 1_756_900_000.0
-        dest, _count = freeze.freeze_ring(self.cfg, "storm", now=now)
+        dest, _count = snapshot.save_snapshot(self.cfg, "storm", now=now)
         before = sorted(p.name for p in dest.iterdir())
         (dest / "threadwatch-20260903-00.pcap").write_bytes(b"kept")       # the incident as the operator left it
         with self.assertRaises(FileExistsError) as cm:
-            freeze.freeze_ring(self.cfg, "storm", now=now)                 # the same label, the same second
+            snapshot.save_snapshot(self.cfg, "storm", now=now)                 # the same label, the same second
         self.assertIn(dest.name, str(cm.exception))
         self.assertEqual(sorted(p.name for p in dest.iterdir()), before)
         self.assertEqual((dest / "threadwatch-20260903-00.pcap").read_bytes(), b"kept")
-        self.assertEqual(list((self.cfg.incidents_dir / freeze.STAGING_DIR).iterdir()), [])   # no half copy left
+        self.assertEqual(list((self.cfg.snapshots_dir / snapshot.STAGING_DIR).iterdir()), [])   # no half copy left
         # A half copy under the same name (a freeze still running, or one
         # a dead run left) is not a directory to add to either.
-        partial = self.cfg.incidents_dir / freeze.STAGING_DIR / dest.name.replace("storm", "quiet")
+        partial = self.cfg.snapshots_dir / snapshot.STAGING_DIR / dest.name.replace("storm", "quiet")
         partial.mkdir()
         (partial / "stale.pcap").write_bytes(b"x")
         with self.assertRaises(FileExistsError):
-            freeze.freeze_ring(self.cfg, "quiet", now=now)
+            snapshot.save_snapshot(self.cfg, "quiet", now=now)
         self.assertEqual([p.name for p in partial.iterdir()], ["stale.pcap"])
-        self.assertEqual(sorted(p.name for p in self.cfg.incidents_dir.iterdir()),
-                         sorted([dest.name, freeze.STAGING_DIR]))
+        self.assertEqual(sorted(p.name for p in self.cfg.snapshots_dir.iterdir()),
+                         sorted([dest.name, snapshot.STAGING_DIR]))
 
 
-class IncidentRetentionTest(unittest.TestCase):
+class SnapshotRetentionTest(unittest.TestCase):
     """Automatic snapshots are the only ones nobody remembers to delete."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.cfg = Config(data_dir=Path(self.tmp.name) / "data")
-        self.cfg.incidents_dir.mkdir(parents=True)
+        self.cfg.snapshots_dir.mkdir(parents=True)
 
     def tearDown(self):
         self.tmp.cleanup()
 
     def _incident(self, name: str) -> Path:
-        d = self.cfg.incidents_dir / name
+        d = self.cfg.snapshots_dir / name
         d.mkdir()
         (d / "threadwatch-20260903-00.pcap").write_bytes(b"x" * 100)
         return d
 
     def _names(self):
-        return sorted(p.name for p in self.cfg.incidents_dir.iterdir())
+        return sorted(p.name for p in self.cfg.snapshots_dir.iterdir())
 
-    def test_the_oldest_automatic_incidents_go_and_the_named_ones_stay(self):
+    def test_the_oldest_automatic_snapshots_go_and_the_named_ones_stay(self):
         for stamp in ("20260901T000000", "20260902T000000", "20260903T000000"):
             self._incident(f"{stamp}_auto-storm")
         self._incident("20260831T000000_the-night-it-broke")   # frozen by hand, older than all of them
-        self._incident(f"{freeze.STAGING_DIR}")                # a copy in progress is not an incident
-        removed = freeze.prune_auto_incidents(self.cfg.incidents_dir, 2)
+        self._incident(f"{snapshot.STAGING_DIR}")                # a copy in progress is not an incident
+        removed = snapshot.prune_auto_snapshots(self.cfg.snapshots_dir, 2)
         self.assertEqual(removed, ["20260901T000000_auto-storm"])
-        self.assertEqual(self._names(), [freeze.STAGING_DIR, "20260831T000000_the-night-it-broke",
+        self.assertEqual(self._names(), [snapshot.STAGING_DIR, "20260831T000000_the-night-it-broke",
                                          "20260902T000000_auto-storm", "20260903T000000_auto-storm"])
 
     def test_keep_zero_prunes_them_all_and_a_negative_keep_is_no_cap(self):
         for stamp in ("20260901T000000", "20260902T000000"):
             self._incident(f"{stamp}_auto-storm")
-        self.assertEqual(freeze.prune_auto_incidents(self.cfg.incidents_dir, -1), [])
+        self.assertEqual(snapshot.prune_auto_snapshots(self.cfg.snapshots_dir, -1), [])
         self.assertEqual(len(self._names()), 2)
-        self.assertEqual(freeze.prune_auto_incidents(self.cfg.incidents_dir, 0),
+        self.assertEqual(snapshot.prune_auto_snapshots(self.cfg.snapshots_dir, 0),
                          ["20260901T000000_auto-storm", "20260902T000000_auto-storm"])
         self.assertEqual(self._names(), [])
-        self.assertEqual(freeze.prune_auto_incidents(self.cfg.incidents_dir / "gone", 1), [])
+        self.assertEqual(snapshot.prune_auto_snapshots(self.cfg.snapshots_dir / "gone", 1), [])
 
 
 if __name__ == "__main__":

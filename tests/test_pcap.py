@@ -10,14 +10,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch.capture import RingWriter
 from threadwatch.pcap import DLT_NOFCS, DLT_TAP, Frame, PcapStreamReader, PcapWriter, complete_length
+from threadwatch.record import RingWriter
 
 
 class RingSizeCapTest(unittest.TestCase):
     def test_oldest_go_until_under_the_byte_cap_but_never_the_current_file(self):
         with tempfile.TemporaryDirectory() as d:
-            ring = RingWriter(Path(d), keep_files=10, dlt=0, keep_bytes=2500)
+            ring = RingWriter(Path(d), keep_hours=10, dlt=0, keep_bytes=2500)
             for h in ("00", "01", "02", "03"):
                 (Path(d) / f"threadwatch-20260903-{h}.pcap").write_bytes(b"x" * 1000)
             ring._prune()
@@ -25,7 +25,7 @@ class RingSizeCapTest(unittest.TestCase):
             (Path(d) / "threadwatch-20260903-03.pcap").write_bytes(b"x" * 9000)   # one huge current file
             ring._prune()
             self.assertEqual(sorted(p.name[-7:-5] for p in Path(d).glob("*.pcap")), ["03"])
-            ring = RingWriter(Path(d), keep_files=10, dlt=0)                        # no cap: files only
+            ring = RingWriter(Path(d), keep_hours=10, dlt=0)                        # no cap: files only
             (Path(d) / "threadwatch-20260903-04.pcap").write_bytes(b"x" * 9000)
             ring._prune()
             self.assertEqual(len(list(Path(d).glob("*.pcap"))), 2)
@@ -38,7 +38,7 @@ class RingSizeCapTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             (Path(d) / "threadwatch-20260904-08.pcap").write_bytes(b"x" * 50_000)
             (Path(d) / "threadwatch-20260904-09.pcap").write_bytes(b"x" * 50_000)
-            ring = RingWriter(Path(d), keep_files=168, dlt=0, keep_bytes=150_000)
+            ring = RingWriter(Path(d), keep_hours=168, dlt=0, keep_bytes=150_000)
             self.assertEqual(ring._prune_step, 65536)
             ts = time.mktime(time.strptime("2026-09-04 10:00:00", "%Y-%m-%d %H:%M:%S"))
             frame = lambda i: Frame(ts=ts + i, raw=b"\x00" * 1000, psdu=b"", rssi=None, channel=None, lqi=None)
@@ -59,7 +59,7 @@ class RingSizeCapTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             for h in ("12", "13", "14", "15"):
                 (Path(d) / f"threadwatch-20260904-{h}.pcap").write_bytes(b"x" * 1000)
-            ring = RingWriter(Path(d), keep_files=4, dlt=0)
+            ring = RingWriter(Path(d), keep_hours=4, dlt=0)
             ts = time.mktime(time.strptime("2026-09-04 09:30:00", "%Y-%m-%d %H:%M:%S"))
             ring.write(Frame(ts=ts, raw=b"\x00" * 20, psdu=b"", rssi=None, channel=None, lqi=None))
             self.assertTrue(ring.current_path.exists())
@@ -69,14 +69,14 @@ class RingSizeCapTest(unittest.TestCase):
         import time
 
         with tempfile.TemporaryDirectory() as d:
-            ring = RingWriter(Path(d), keep_files=0, dlt=0)
+            ring = RingWriter(Path(d), keep_hours=0, dlt=0)
             ts = time.mktime(time.strptime("2026-09-04 10:00:00", "%Y-%m-%d %H:%M:%S"))
             ring.write(Frame(ts=ts, raw=b"\x00" * 20, psdu=b"", rssi=None, channel=None, lqi=None))
             self.assertTrue(ring.current_path.exists())
 
     def test_byte_cap_counts_only_what_the_file_cap_keeps(self):
         with tempfile.TemporaryDirectory() as d:
-            ring = RingWriter(Path(d), keep_files=2, dlt=0, keep_bytes=2500)
+            ring = RingWriter(Path(d), keep_hours=2, dlt=0, keep_bytes=2500)
             for h in ("00", "01", "02", "03"):
                 (Path(d) / f"threadwatch-20260903-{h}.pcap").write_bytes(b"x" * 1000)
             ring._prune()
@@ -89,7 +89,7 @@ class RingSizeCapTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             for h in ("00", "01", "02", "03", "04", "05"):
                 (Path(d) / f"threadwatch-20260903-{h}.pcap").write_bytes(b"x" * 1000)
-            ring = RingWriter(Path(d), keep_files=3, dlt=0)
+            ring = RingWriter(Path(d), keep_hours=3, dlt=0)
             ring._prune()
             self.assertEqual(sorted(p.name[-7:-5] for p in Path(d).glob("*.pcap")), ["03", "04", "05"])
 
@@ -122,12 +122,12 @@ class TruncatedRingTest(unittest.TestCase):
         huge = whole + struct.pack("<LLLL", 1, 0, 0x7FFFFFFF, 0x7FFFFFFF) + b"x" * 32
         self.assertEqual(complete_length_of(huge), len(whole))
         with tempfile.TemporaryDirectory() as d:
-            ring = RingWriter(Path(d), keep_files=5, dlt=DLT_NOFCS)
+            ring = RingWriter(Path(d), keep_hours=5, dlt=DLT_NOFCS)
             ring.write(frame(1_700_000_000.0)); ring.close()
             path = ring.current_path
             with open(path, "ab") as fh:
                 fh.write(b"\x00" * 4096)
-            ring2 = RingWriter(Path(d), keep_files=5, dlt=DLT_NOFCS)     # the resume trims the NULs
+            ring2 = RingWriter(Path(d), keep_hours=5, dlt=DLT_NOFCS)     # the resume trims the NULs
             ring2.write(frame(1_700_000_002.0)); ring2.close()
             with open(path, "rb") as fh:
                 self.assertEqual([round(f.ts) for f in PcapStreamReader(fh)], [1_700_000_000, 1_700_000_002])
@@ -142,13 +142,13 @@ class TruncatedRingTest(unittest.TestCase):
 
     def test_resumed_hour_file_drops_the_fragment_before_appending(self):
         with tempfile.TemporaryDirectory() as d:
-            ring = RingWriter(Path(d), keep_files=5, dlt=DLT_NOFCS)
+            ring = RingWriter(Path(d), keep_hours=5, dlt=DLT_NOFCS)
             ring.write(frame(1_700_000_000.0)); ring.write(frame(1_700_000_001.0))
             ring.close()
             path = ring.current_path
             with open(path, "r+b") as fh:
                 fh.truncate(path.stat().st_size - 3)   # killed mid-record
-            ring2 = RingWriter(Path(d), keep_files=5, dlt=DLT_NOFCS)
+            ring2 = RingWriter(Path(d), keep_hours=5, dlt=DLT_NOFCS)
             ring2.write(frame(1_700_000_002.0))
             ring2.close()
             with open(path, "rb") as fh:
@@ -165,7 +165,7 @@ class ResumeHeaderMatchTest(unittest.TestCase):
     flight recorder, since the frames still read back."""
 
     def _rewritten(self, d, existing_dlt=None, endian="<"):
-        ring = RingWriter(Path(d), keep_files=5, dlt=DLT_TAP)
+        ring = RingWriter(Path(d), keep_hours=5, dlt=DLT_TAP)
         ring.write(frame(1_700_000_000.0))
         ring.close()
         path = ring.current_path
@@ -177,7 +177,7 @@ class ResumeHeaderMatchTest(unittest.TestCase):
         path.write_bytes(bytes(data))
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            ring2 = RingWriter(Path(d), keep_files=5, dlt=DLT_TAP)
+            ring2 = RingWriter(Path(d), keep_hours=5, dlt=DLT_TAP)
             ring2.write(frame(1_700_000_002.0))
             ring2.close()
         return path, out.getvalue()
@@ -255,13 +255,13 @@ class CorruptRecordMidFileTest(unittest.TestCase):
     def test_the_resuming_writer_leaves_the_file_whole_and_says_so(self):
         data = self._file()
         with tempfile.TemporaryDirectory() as d:
-            ring = RingWriter(Path(d), keep_files=5, dlt=DLT_NOFCS)
+            ring = RingWriter(Path(d), keep_hours=5, dlt=DLT_NOFCS)
             ring.write(frame(1_700_000_000.0)); ring.close()
             path = ring.current_path
             path.write_bytes(data)
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
-                ring2 = RingWriter(Path(d), keep_files=5, dlt=DLT_NOFCS)
+                ring2 = RingWriter(Path(d), keep_hours=5, dlt=DLT_NOFCS)
                 ring2.write(frame(1_700_000_040.0)); ring2.close()
             self.assertEqual(out.getvalue(), f"[threadwatch] {path.name}: 25 bytes in 1 place(s) are not "
                                              "readable records; left in place, readers skip them\n")
@@ -274,7 +274,7 @@ class CorruptRecordMidFileTest(unittest.TestCase):
                 fh.truncate(path.stat().st_size - 3)
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
-                ring3 = RingWriter(Path(d), keep_files=5, dlt=DLT_NOFCS)
+                ring3 = RingWriter(Path(d), keep_hours=5, dlt=DLT_NOFCS)
                 ring3.write(frame(1_700_000_041.0)); ring3.close()
             self.assertIn("dropping 22 trailing bytes of a record cut short", out.getvalue())
             with open(path, "rb") as fh:
@@ -379,16 +379,16 @@ class FcsTest(unittest.TestCase):
 
 
 class RingHourNamingTest(unittest.TestCase):
-    """One file per local hour. The name is a contract: `why.select_recent`
+    """One file per local hour. The name is a contract: `device.select_recent`
     parses it to pick a window, and per-file retention drops one hour at a
     time rather than a whole day."""
 
-    def test_two_hours_of_one_day_become_two_files_why_can_window(self):
+    def test_two_hours_of_one_day_become_two_files_device_can_window(self):
         import time
 
-        from threadwatch.why import RING_NAME, select_recent
+        from threadwatch.device import RING_NAME, select_recent
         with tempfile.TemporaryDirectory() as d:
-            ring = RingWriter(Path(d), keep_files=10, dlt=DLT_NOFCS)
+            ring = RingWriter(Path(d), keep_hours=10, dlt=DLT_NOFCS)
             for stamp in ("2026-09-04 08:30:00", "2026-09-04 09:10:00"):
                 ring.write(frame(time.mktime(time.strptime(stamp, "%Y-%m-%d %H:%M:%S"))))
             ring.close()
@@ -473,13 +473,13 @@ class FormatRejectionTest(unittest.TestCase):
 
     def test_the_ring_says_so_when_it_starts_an_unreadable_hour_file_over(self):
         with tempfile.TemporaryDirectory() as d:
-            ring = RingWriter(Path(d), keep_files=5, dlt=DLT_NOFCS)
+            ring = RingWriter(Path(d), keep_hours=5, dlt=DLT_NOFCS)
             ring.write(frame(1_700_000_000.0)); ring.close()
             path = ring.current_path
             path.write_bytes(b"not a capture at all" * 5)
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
-                ring2 = RingWriter(Path(d), keep_files=5, dlt=DLT_NOFCS)
+                ring2 = RingWriter(Path(d), keep_hours=5, dlt=DLT_NOFCS)
                 ring2.write(frame(1_700_000_002.0)); ring2.close()
             self.assertEqual(out.getvalue(), f"[threadwatch] {path.name}: 100 bytes with no usable pcap header; "
                                              "starting the hour's file over\n")
@@ -489,7 +489,7 @@ class FormatRejectionTest(unittest.TestCase):
             path.write_bytes(b"")
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
-                ring3 = RingWriter(Path(d), keep_files=5, dlt=DLT_NOFCS)
+                ring3 = RingWriter(Path(d), keep_hours=5, dlt=DLT_NOFCS)
                 ring3.write(frame(1_700_000_003.0)); ring3.close()
             self.assertEqual(out.getvalue(), "")
             with open(path, "rb") as fh:

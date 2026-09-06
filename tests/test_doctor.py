@@ -100,13 +100,13 @@ class DoctorTest(unittest.TestCase):
         self.assertEqual(level, "ok")
         self.assertIn("capped at 8 KB", text)
 
-    def test_disk_check_counts_the_incidents_and_the_snapshot_still_to_come(self):
+    def test_disk_check_counts_the_snapshots_and_the_one_still_to_come(self):
         from threadwatch import review
         self.cfg.ring_dir.mkdir(parents=True)
         (self.cfg.ring_dir / "threadwatch-20260903-08.pcap").write_bytes(b"x" * 4096)
-        self.cfg.incidents_dir.mkdir(parents=True)
-        (self.cfg.incidents_dir / "20260903T080000_auto-storm").mkdir()
-        (self.cfg.incidents_dir / "20260903T080000_auto-storm" / "a.pcap").write_bytes(b"x" * 8192)
+        self.cfg.snapshots_dir.mkdir(parents=True)
+        (self.cfg.snapshots_dir / "20260903T080000_auto-storm").mkdir()
+        (self.cfg.snapshots_dir / "20260903T080000_auto-storm" / "a.pcap").write_bytes(b"x" * 8192)
         self.assertIn("snapshots hold 8 KB", doctor.check_disk(self.cfg)[0][2])
         # With snapshot_on_critical on, room for one more whole copy of the
         # ring is part of the judgement: without it the recorder refuses.

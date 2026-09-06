@@ -309,7 +309,7 @@ class ResolveShortTest(unittest.TestCase):
             pipe.ingest(parse_frame(t0 + 5000, secured_frame(OTHER, "abcd", 1, pan=0x58bc, key=foreign), 195))
             self.assertEqual(dec.stats["short_candidates_tried"], before)
 
-    def test_a_malformed_address_in_last_seen_does_not_crash_the_capture_loop(self):
+    def test_a_malformed_address_in_last_seen_does_not_crash_the_record_loop(self):
         # The inventory's addresses are checked before they reach the
         # nonce search; the table's keys were not, and bytes.fromhex on a
         # "0x" prefix raised in ingest, outside every except, on the next

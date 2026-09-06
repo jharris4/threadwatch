@@ -51,7 +51,7 @@ _LABEL = re.compile(r"[^A-Za-z0-9._-]+")
 # A copy in progress is built under this directory, beside the finished
 # snapshots, and renamed into place only once whole. The recorder leaves
 # through os._exit on every path, which unwinds nothing: a copy it
-# interrupts must not be findable as a snapshot (review.incidents lists
+# interrupts must not be findable as a snapshot (review.snapshots lists
 # only the snapshots directory itself), and a leftover is discarded at the
 # next start (discard_partials). Staging lives in its own directory rather
 # than under a name suffix so that no label a user can type (safe_label
@@ -212,7 +212,7 @@ def _take_lock(path: Path, wait: bool) -> int | None:
     raise OSError(f"could not take the lock {path.name}")
 
 
-def freeze_ring(cfg, label: str = "snapshot", now: float | None = None,
+def save_snapshot(cfg, label: str = "snapshot", now: float | None = None,
                 trigger: str | None = None) -> tuple[Path, int]:
     """Save the ring. Returns (snapshot dir, ring files copied). The
     label is reduced to filename-safe characters (safe_label); ``trigger``
@@ -220,8 +220,8 @@ def freeze_ring(cfg, label: str = "snapshot", now: float | None = None,
     label = safe_label(label)
     now = now or time.time()
     stamp = time.strftime("%Y%m%dT%H%M%S", time.localtime(now))
-    final = cfg.incidents_dir / f"{stamp}_{label}"
-    staging = cfg.incidents_dir / STAGING_DIR
+    final = cfg.snapshots_dir / f"{stamp}_{label}"
+    staging = cfg.snapshots_dir / STAGING_DIR
     dest = staging / final.name
     # Never over a snapshot that exists (the same label twice in one
     # second), and never into a half copy another run is building or
@@ -283,15 +283,15 @@ def freeze_ring(cfg, label: str = "snapshot", now: float | None = None,
     return final, count
 
 
-def prune_auto_incidents(incidents_dir: Path, keep: int) -> list[str]:
+def prune_auto_snapshots(snapshots_dir: Path, keep: int) -> list[str]:
     """Remove all but the newest ``keep`` automatic snapshots and return
     their names, oldest first. Only those snapshot_on_critical made
     (label ``auto-*``) are pruned: a snapshot somebody saved by hand and
     named is kept, however old, because nothing else remembers to.
     ``keep`` of 0 prunes every automatic one; a negative keep is no cap."""
-    if keep < 0 or not incidents_dir.is_dir():
+    if keep < 0 or not snapshots_dir.is_dir():
         return []
-    autos = sorted(d for d in incidents_dir.iterdir()
+    autos = sorted(d for d in snapshots_dir.iterdir()
                    if d.is_dir() and d.name != STAGING_DIR and d.name.partition("_")[2].startswith("auto-"))
     removed = []
     for d in autos[:max(0, len(autos) - keep)]:
@@ -300,13 +300,13 @@ def prune_auto_incidents(incidents_dir: Path, keep: int) -> list[str]:
     return removed
 
 
-def discard_partials(incidents_dir: Path) -> list[str]:
+def discard_partials(snapshots_dir: Path) -> list[str]:
     """Remove the half copies a previous run left behind (a copy cut short
     by a restart or the stall watchdog) and return their labels. Nothing in
     one can be trusted to be whole, and the ring it was copied from is
     still there for the retry. A copy still being built (its
     lock is held) is not a leftover and is left alone."""
-    staging = incidents_dir / STAGING_DIR
+    staging = snapshots_dir / STAGING_DIR
     if not staging.is_dir():
         return []
     labels = []

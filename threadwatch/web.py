@@ -23,7 +23,6 @@ from .review import (
     DEVICE_HISTORY_DAYS,
     DEVICE_SORTS,
     SEVERITY_RANK,
-    capture_for_day,
     coverage,
     coverage_since,
     day_episodes,
@@ -35,10 +34,11 @@ from .review import (
     episode_blind_s,
     fmt_bytes,
     fmt_duration,
-    incidents,
     live_address,
     now_card,
+    recording_for_day,
     select_devices,
+    snapshots,
     storage,
     today,
 )
@@ -386,7 +386,7 @@ class Site:
         if floor:
             eps = [e for e in eps if SEVERITY_RANK.get(e["severity"], 0) >= floor]
         q = f"?min={min_severity}" if floor else ""
-        cap = capture_for_day(self.cfg.ring_dir, self.cfg.incidents_dir, day)
+        cap = recording_for_day(self.cfg.ring_dir, self.cfg.snapshots_dir, day)
         avail = days_available(self.cfg.events_dir)
         first = avail[0] if avail else day
         is_today = day == today()
@@ -656,8 +656,8 @@ class Site:
         return self.page("status", f'<h1>status</h1><table class="facts">{"".join(dl)}</table>'
                                    f'<p><a class="muted" href="/api/status">JSON</a></p>')
 
-    def incidents_page(self) -> str:
-        items = incidents(self.cfg.incidents_dir)
+    def snapshots_page(self) -> str:
+        items = snapshots(self.cfg.snapshots_dir)
         trs = []
         for i in items:
             span = f'{i["span"][0]} to {i["span"][1]}' if i["span"] else '<span class="muted">no ring files</span>'
@@ -671,7 +671,7 @@ class Site:
                  if trs else '<p class="empty">no snapshots</p>')
         intro = (f'<p class="muted">Snapshots of the ring buffer taken with '
                  f'<code>threadwatch snapshot &lt;label&gt;</code>, '
-                 f'kept forever under <code>{esc(self.cfg.incidents_dir)}</code>. Open them in Wireshark or with '
+                 f'kept forever under <code>{esc(self.cfg.snapshots_dir)}</code>. Open them in Wireshark or with '
                  f'<code>threadwatch device --pcap</code> / <code>replay</code>.</p>')
         return self.page("snapshots", f'<h1>snapshots</h1>{intro}{table}')
 
@@ -699,7 +699,7 @@ class Site:
         if path == "/api/status":
             return {**self.status(), "storage": storage(self.cfg)}
         if path == "/api/snapshots":
-            return {"snapshots": incidents(self.cfg.incidents_dir)}
+            return {"snapshots": snapshots(self.cfg.snapshots_dir)}
         if path.startswith("/api/day/"):
             day = path[len("/api/day/"):]
             if not valid_day(day):
@@ -709,7 +709,7 @@ class Site:
                 ep.pop("events", None)
             from .events import read_day
             return {"day": day, "episodes": eps, "records": read_day(self.cfg.events_dir, day),
-                    "recording": capture_for_day(self.cfg.ring_dir, self.cfg.incidents_dir, day),
+                    "recording": recording_for_day(self.cfg.ring_dir, self.cfg.snapshots_dir, day),
                     "coverage": coverage(self.cfg.events_dir, day, status=self.status())}
         if path == "/api/devices":
             seen = self.seen()
@@ -774,7 +774,7 @@ class Site:
         if path == "/status":
             return 200, "text/html; charset=utf-8", self.status_page().encode()
         if path == "/snapshots":
-            return 200, "text/html; charset=utf-8", self.incidents_page().encode()
+            return 200, "text/html; charset=utf-8", self.snapshots_page().encode()
         if path.startswith("/device/"):
             target = unquote(path[len("/device/"):]).strip()
             if not target or len(target) > 100:

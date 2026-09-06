@@ -41,7 +41,7 @@ def find_sniffer_port() -> str:
 
 class RingWriter:
     """Hourly pcap files in a ring directory, oldest pruned beyond
-    keep_files, and beyond keep_bytes of total size when that is set (a
+    keep_hours, and beyond keep_bytes of total size when that is set (a
     small SD card is a harder limit than a week).
 
     The byte cap is kept while the hour's file grows, not only at the
@@ -54,13 +54,13 @@ class RingWriter:
 
     PRUNE_STEP = 4 * 1024 * 1024
 
-    def __init__(self, ring_dir: Path, keep_files: int, dlt: int, keep_bytes: int | None = None):
+    def __init__(self, ring_dir: Path, keep_hours: int, dlt: int, keep_bytes: int | None = None):
         if keep_bytes is not None and keep_bytes <= 0:
             # _prune would otherwise delete every file but the current one
             # at every rotation and call it a size cap.
             raise ValueError(f"keep_bytes must be positive or None, not {keep_bytes}")
         self.ring_dir = ring_dir
-        self.keep_files = keep_files
+        self.keep_hours = keep_hours
         self.keep_bytes = keep_bytes
         # A small cap is checked in proportion (a 64 KiB step under a few
         # MiB), a large one every few MiB: a stat of every ring file each.
@@ -154,7 +154,7 @@ class RingWriter:
         files = sorted(self.ring_dir.glob("threadwatch-*.pcap"))
         current = self.current_path if self.current_path in files else None
         candidates = [f for f in files if f != current]
-        drop = min(max(0, len(files) - self.keep_files), len(candidates))
+        drop = min(max(0, len(files) - self.keep_hours), len(candidates))
         if self.keep_bytes is not None:
             sizes = [f.stat().st_size if f.exists() else 0 for f in candidates]
             held = current.stat().st_size if current and current.exists() else 0
@@ -277,7 +277,7 @@ def capture_healthy(last_frame_mono: float | None, now: float,
     return now - last_frame_mono < timeout
 
 
-def run_capture(cfg: Config) -> None:
+def run_record(cfg: Config) -> None:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "vendor"))
     from nrf802154_sniffer import Nrf802154Sniffer
     # Set on the way out, so the watchdog stops ticking rather than writing
@@ -602,7 +602,7 @@ def run_replay(cfg: Config, pcap_path: Path | list[Path]) -> None:
                           "place(s) that are not readable records", file=sys.stderr, flush=True)
         except (OSError, PcapFormatError) as exc:
             # A path that does not exist, cannot be read, or is not a pcap:
-            # one line and exit 1 (as `why` does), not a traceback and not a
+            # one line and exit 1 (as `device` does), not a traceback and not a
             # zero-frame JSON that reads as a quiet capture.
             raise SystemExit(f"threadwatch replay: could not read {path}: {exc}") from None
     if last:

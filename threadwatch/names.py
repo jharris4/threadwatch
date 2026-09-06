@@ -126,7 +126,7 @@ class DeviceNames:
             entry = self.entry_for_border_router(host) or (self.entry_named(rec["name"]) if rec.get("name") else None)
             # The current address, then every address the hub retired
             # (the recorder writes each rotation to `previous`): a retired
-            # address keeps the name, so the device page and `why` still
+            # address keeps the name, so the device page and `device` still
             # tell the device's story across its reboots, in every process
             # and not only the one that saw the rotation happen.
             retired = [_norm(str(p.get("addr") or "")) for p in (rec.get("previous") or []) if isinstance(p, dict)]

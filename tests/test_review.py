@@ -441,16 +441,16 @@ class DayViewTest(unittest.TestCase):
         kinds = [(e["kind"], e["addr"]) for e in devices_history(self.cfg.events_dir, [TV1, TV2])]
         self.assertEqual(kinds, [("rejoin", TV2), ("quiet", TV1)])
 
-    def test_incidents_and_storage(self):
-        from threadwatch.review import fmt_bytes, incidents, storage
-        inc = self.cfg.incidents_dir / "20260902T141500_storm"
+    def test_snapshots_and_storage(self):
+        from threadwatch.review import fmt_bytes, snapshots, storage
+        inc = self.cfg.snapshots_dir / "20260902T141500_storm"
         inc.mkdir(parents=True)
         (inc / "threadwatch-20260902-12.pcap").write_bytes(b"x" * 2048)
         (inc / "threadwatch-20260902-14.pcap").write_bytes(b"x" * 1024)
         (inc / "events").mkdir()
-        (self.cfg.incidents_dir / "20260901T080000_older").mkdir()
-        (self.cfg.incidents_dir / "notes.txt").write_text("not an incident")
-        items = incidents(self.cfg.incidents_dir)
+        (self.cfg.snapshots_dir / "20260901T080000_older").mkdir()
+        (self.cfg.snapshots_dir / "notes.txt").write_text("not an incident")
+        items = snapshots(self.cfg.snapshots_dir)
         self.assertEqual([i["label"] for i in items], ["storm", "older"])
         self.assertEqual((items[0]["pcaps"], items[0]["span"], items[0]["bytes"], items[0]["events"], items[0]["day"]),
                          (2, ("20260902-12", "20260902-14"), 3072, True, "2026-09-02"))
@@ -472,18 +472,18 @@ class DayViewTest(unittest.TestCase):
         self.assertEqual(storage(self.cfg)["ring_needs_bytes"], 0)
         self.assertEqual((fmt_bytes(512), fmt_bytes(2048), fmt_bytes(5 * 1024 ** 3)), ("512 B", "2 KB", "5.0 GB"))
 
-    def test_incidents_are_filed_by_the_days_their_packets_cover(self):
-        from threadwatch.review import capture_for_day
-        late = self.cfg.incidents_dir / "20260904T000500_auto-storm"      # frozen just after midnight...
+    def test_snapshots_are_filed_by_the_days_their_packets_cover(self):
+        from threadwatch.review import recording_for_day
+        late = self.cfg.snapshots_dir / "20260904T000500_auto-storm"      # frozen just after midnight...
         late.mkdir(parents=True)
         for h in ("20260830-22", "20260830-23", "20260831-00"):           # ...holding the storm's evening
             (late / f"threadwatch-{h}.pcap").write_bytes(b"x")
-        (self.cfg.incidents_dir / "20260904T090000_empty").mkdir()          # no pcaps: its freeze day
-        by_day = {d: capture_for_day(self.cfg.ring_dir, self.cfg.incidents_dir, d)["snapshots"]
+        (self.cfg.snapshots_dir / "20260904T090000_empty").mkdir()          # no pcaps: its freeze day
+        by_day = {d: recording_for_day(self.cfg.ring_dir, self.cfg.snapshots_dir, d)["snapshots"]
                   for d in ("2026-08-29", "2026-08-30", "2026-08-31", "2026-09-04")}
         self.assertEqual(by_day, {"2026-08-29": [], "2026-08-30": [late.name], "2026-08-31": [late.name],
                                   "2026-09-04": ["20260904T090000_empty"]})
-        self.assertEqual(capture_for_day(self.cfg.ring_dir, Path(self.tmp.name) / "none", "2026-08-30")["snapshots"],
+        self.assertEqual(recording_for_day(self.cfg.ring_dir, Path(self.tmp.name) / "none", "2026-08-30")["snapshots"],
                          [])
 
     def test_chooser_links_survive_url_special_characters_in_names(self):
@@ -622,7 +622,7 @@ class DayViewTest(unittest.TestCase):
             self.assertEqual(get(f"/day/{day}/")[0], 200)
             status, body = get("/help")
             self.assertIn("Phase-locked storm", body)
-            inc = self.cfg.incidents_dir / f"{day.replace('-', '')}T141500_storm"
+            inc = self.cfg.snapshots_dir / f"{day.replace('-', '')}T141500_storm"
             inc.mkdir(parents=True)
             (inc / "threadwatch-20260902-12.pcap").write_bytes(b"x" * 100)
             status, body = get("/snapshots")
@@ -1038,7 +1038,7 @@ class EveryEventKindTest(unittest.TestCase):
                            "partition 12345 leader r3 -> partition 67890 leader r5", 1)] * 2)
         self.assertEqual([e["start"] for e in eps], [T0, T0 + 60])
 
-    def test_storm_freeze_and_alert_test_rows(self):
+    def test_storm_snapshot_and_alert_test_rows(self):
         eps = group_episodes([
             rec("phase_locked_storm", "critical", T0, period_s=80.5, onsets=3, baseline_frames_per_window=250.0,
                 note="traffic floods recurring every 80 s"),

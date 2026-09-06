@@ -54,7 +54,7 @@ class StateFileShapeTest(unittest.TestCase):
         import contextlib
         import io
 
-        from threadwatch.capture import last_frame_on_record
+        from threadwatch.record import last_frame_on_record
         for body in self.BODIES:
             with self.subTest(body=body), tempfile.TemporaryDirectory() as tmp:
                 cfg = self._cfg(Path(tmp))
@@ -117,7 +117,7 @@ class OnePanAnswerTest(unittest.TestCase):
     def test_the_pages_read_the_pan_the_recorder_judges_by(self):
         from types import SimpleNamespace
 
-        from threadwatch.capture import _write_status
+        from threadwatch.record import _write_status
         from threadwatch.review import dominant_pan, now_card
         pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
         t0 = 1_700_000_000.0
@@ -793,7 +793,7 @@ class QuietPolicyTest(unittest.TestCase):
         clock = {"wall": T, "mono": 0.0}
         pipe._wall, pipe._mono, pipe._clock = (lambda: clock["wall"]), (lambda: clock["mono"]), (T, 0.0)
         scalars = ("_next_browse", "_join_scan_evt", "_stale_evt", "_pan_silent_evt",
-                   "_pan_window_start", "_last_auto_freeze", "_storm_evt")
+                   "_pan_window_start", "_last_auto_snapshot", "_storm_evt")
         for attr in scalars:
             setattr(pipe, attr, T + 60)
         pipe._resolve_after["0001"] = T + 60
@@ -982,11 +982,11 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual((rec["period_s"], rec["onsets"]), (80.5, 3))
         self.assertIn("every 80 s", rec["note"])
 
-    def test_critical_event_freezes_the_ring_once_per_cooldown(self):
+    def test_critical_event_saves_the_ring_once_per_cooldown(self):
         self.cfg.snapshot_on_critical = True
         pipe = self._pipe()
         frozen = []
-        pipe.freezer = lambda label, trigger: frozen.append((label, trigger))
+        pipe.snapshotter = lambda label, trigger: frozen.append((label, trigger))
         pipe.detector.storm_active = True
         pipe.detector.storm_details = {"period": 80.5, "onsets": [1.0, 2.0, 3.0]}
         # The detector ends a storm when flooding stops; hold it on regardless.
@@ -995,77 +995,77 @@ class QuietPolicyTest(unittest.TestCase):
         for dt in (0, 2 * 3600, 7 * 3600):                 # storm on; still on; past the six-hour cooldown
             pipe.ingest(frame(t0 + dt, ROUTER))
         storms = [r for r in pipe.events.records if r["event"] == "phase_locked_storm"]
-        self.assertEqual([r["auto_freeze"] for r in storms],
+        self.assertEqual([r["auto_snapshot"] for r in storms],
                          ["auto-phase_locked_storm", None, "auto-phase_locked_storm"])
         self.assertIn("being saved as auto-phase_locked_storm", storms[0]["note"])
         self.assertIn("run 'threadwatch snapshot'", storms[1]["note"])
         self.assertEqual(frozen, [("auto-phase_locked_storm", "phase_locked_storm")] * 2)
 
-    def test_any_critical_event_freezes_and_names_itself_as_the_trigger(self):
+    def test_any_critical_event_saves_and_names_itself_as_the_trigger(self):
         # The freeze hangs off the severity, not off the storm handler: an
         # event added later at "critical" keeps its packets, and its
         # snapshot says which event asked for it.
-        from threadwatch.review import incidents
+        from threadwatch.review import snapshots
         self.cfg.snapshot_on_critical = True
         self.cfg.ring_dir.mkdir(parents=True, exist_ok=True)
         (self.cfg.ring_dir / "threadwatch-20231114-22.pcap").write_bytes(b"ring")
         pipe = self._pipe()
-        pipe.freezer = pipe._freeze_now                    # in this thread, so the copy is done on return
+        pipe.snapshotter = pipe._save_snapshot_now                    # in this thread, so the copy is done on return
         rec = pipe._emit("leader_lost", "critical", 1_700_000_000.0,
                          note="no leader has claimed the partition for 5 min")
-        self.assertEqual(rec["auto_freeze"], "auto-leader_lost")
+        self.assertEqual(rec["auto_snapshot"], "auto-leader_lost")
         self.assertEqual(rec["note"], "no leader has claimed the partition for 5 min; "
                                       "the ring is being saved as auto-leader_lost")
-        inc = incidents(self.cfg.incidents_dir)
+        inc = snapshots(self.cfg.snapshots_dir)
         self.assertEqual([i["label"] for i in inc], ["auto-leader_lost"])
-        manifest = json.loads((self.cfg.incidents_dir / inc[0]["name"] / "manifest.json").read_text())
+        manifest = json.loads((self.cfg.snapshots_dir / inc[0]["name"] / "manifest.json").read_text())
         self.assertEqual(manifest["trigger"], "leader_lost")
 
     def test_a_critical_event_with_no_note_still_says_where_its_packets_went(self):
         self.cfg.snapshot_on_critical = False               # off: the reader is told to freeze by hand
         pipe = self._pipe()
         rec = pipe._emit("leader_lost", "critical", 1_700_000_000.0)
-        self.assertIsNone(rec["auto_freeze"])
+        self.assertIsNone(rec["auto_snapshot"])
         self.assertEqual(rec["note"], "run 'threadwatch snapshot' to keep the packets")
 
-    def test_the_daily_summary_never_freezes_however_loud_it_is_set(self):
+    def test_the_daily_summary_never_saves_however_loud_it_is_set(self):
         # [summary] severity is how loudly the digest is delivered, not a
         # claim that something critical happened.
         self.cfg.snapshot_on_critical = True
         self.cfg.summary_severity = "critical"
         self.cfg.summary_hour = 0                         # any hour of the day will do
         pipe = self._pipe()
-        pipe.freezer = lambda label, trigger: self.fail("froze for the daily summary")
+        pipe.snapshotter = lambda label, trigger: self.fail("froze for the daily summary")
         pipe.ingest(frame(1_700_000_000.0, ROUTER))
         pipe._maybe_summarize(1_700_000_000.0 + 12 * 3600, 0x4e21)
         summaries = [r for r in pipe.events.records if r["event"] == "daily_summary"]
         self.assertEqual(len(summaries), 1)
-        self.assertNotIn("auto_freeze", summaries[0])
+        self.assertNotIn("auto_snapshot", summaries[0])
 
-    def test_auto_freeze_cooldown_survives_a_restart(self):
+    def test_auto_snapshot_cooldown_survives_a_restart(self):
         self.cfg.snapshot_on_critical = True
         t0 = 1_700_000_000.0
         for age, label in ((2 * 3600, "auto-storm"), (30 * 3600, "auto-storm"), (60, "manual")):
             stamp = time.strftime("%Y%m%dT%H%M%S", time.localtime(t0 - age))
-            (self.cfg.incidents_dir / f"{stamp}_{label}").mkdir(parents=True)
+            (self.cfg.snapshots_dir / f"{stamp}_{label}").mkdir(parents=True)
         pipe = self._pipe()                                # a restart mid-storm
         frozen = []
-        pipe.freezer = lambda label, trigger: frozen.append(label)
+        pipe.snapshotter = lambda label, trigger: frozen.append(label)
         pipe.detector.storm_active = True
         pipe.detector.storm_details = {"period": 80.5, "onsets": [1.0, 2.0, 3.0]}
         pipe.detector.add_frame = lambda ts: setattr(pipe.detector, "storm_active", True)
         pipe.ingest(frame(t0, ROUTER))                     # 2 h after the last auto freeze: held
         pipe.ingest(frame(t0 + 5 * 3600, ROUTER))          # 7 h after it: frozen again
-        storms = [r["auto_freeze"] for r in pipe.events.records if r["event"] == "phase_locked_storm"]
+        storms = [r["auto_snapshot"] for r in pipe.events.records if r["event"] == "phase_locked_storm"]
         self.assertEqual(storms, [None, "auto-phase_locked_storm"])
         self.assertEqual(frozen, ["auto-phase_locked_storm"])
-        self.assertEqual(Pipeline(self.cfg, NullEventLog(), stub_decryptor(), ephemeral=True)._last_auto_freeze, 0.0)
+        self.assertEqual(Pipeline(self.cfg, NullEventLog(), stub_decryptor(), ephemeral=True)._last_auto_snapshot, 0.0)
 
-    def test_a_freeze_cut_short_by_the_last_run_does_not_hold_the_cooldown(self):
+    def test_a_copy_cut_short_by_the_last_run_does_not_hold_the_cooldown(self):
         self.cfg.snapshot_on_critical = True
         t0 = 1_700_000_000.0
         stamp = time.strftime("%Y%m%dT%H%M%S", time.localtime(t0 - 600))
-        half = self.cfg.incidents_dir / ".staging" / f"{stamp}_auto-storm"    # the run died 10 min ago, mid-copy
+        half = self.cfg.snapshots_dir / ".staging" / f"{stamp}_auto-storm"    # the run died 10 min ago, mid-copy
         half.mkdir(parents=True)
         (half / "threadwatch-20231114-21.pcap").write_bytes(b"ring")
         pipe = self._pipe()
@@ -1073,9 +1073,9 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual([r["label"] for r in failed], ["auto-storm"])
         self.assertIn("cut short", failed[0]["note"])
         self.assertFalse(half.exists())
-        self.assertEqual(pipe._last_auto_freeze, 0.0)
+        self.assertEqual(pipe._last_auto_snapshot, 0.0)
         frozen = []
-        pipe.freezer = lambda label, trigger: frozen.append(label)
+        pipe.snapshotter = lambda label, trigger: frozen.append(label)
         pipe.detector.storm_active = True
         pipe.detector.storm_details = {"period": 80.5, "onsets": [1.0, 2.0, 3.0]}
         pipe.detector.add_frame = lambda ts: setattr(pipe.detector, "storm_active", True)
@@ -1088,30 +1088,30 @@ class QuietPolicyTest(unittest.TestCase):
         # incident without the record that explains it. Running the copy
         # in the ingest thread is the worker-first order, forced.
         from threadwatch.events import EventLog
-        from threadwatch.review import incidents
+        from threadwatch.review import snapshots
         self.cfg.snapshot_on_critical = True
         self.cfg.ring_dir.mkdir(parents=True, exist_ok=True)
         (self.cfg.ring_dir / "threadwatch-20231114-22.pcap").write_bytes(b"ring")
         log = EventLog(self.cfg.events_dir)
         pipe = Pipeline(self.cfg, log, stub_decryptor())
-        pipe.freezer = pipe._freeze_now
+        pipe.snapshotter = pipe._save_snapshot_now
         pipe.detector.storm_active = True
         pipe.detector.storm_details = {"period": 80.5, "onsets": [1.0, 2.0, 3.0]}
         pipe.detector.add_frame = lambda ts: setattr(pipe.detector, "storm_active", True)
         t0 = 1_700_000_000.0
         pipe.ingest(frame(t0, ROUTER))
-        inc = incidents(self.cfg.incidents_dir)
+        inc = snapshots(self.cfg.snapshots_dir)
         self.assertEqual([i["label"] for i in inc], ["auto-phase_locked_storm"])
-        copied = self.cfg.incidents_dir / inc[0]["name"] / "events" / log.path_for(t0).name
+        copied = self.cfg.snapshots_dir / inc[0]["name"] / "events" / log.path_for(t0).name
         recs = [json.loads(line) for line in copied.read_text().splitlines()]
         storms = [r for r in recs if r["event"] == "phase_locked_storm"]
-        self.assertEqual([r["auto_freeze"] for r in storms], ["auto-phase_locked_storm"])
+        self.assertEqual([r["auto_snapshot"] for r in storms], ["auto-phase_locked_storm"])
         # The live log has both, the storm first.
         live = [json.loads(line) for line in log.path_for(t0).read_text().splitlines()]
         self.assertEqual([r["event"] for r in live if r["event"] == "phase_locked_storm"], ["phase_locked_storm"])
 
-    def test_a_failed_freeze_is_retried_after_a_hold_not_six_hours(self):
-        from threadwatch import freeze as freeze_mod
+    def test_a_failed_snapshot_is_retried_after_a_hold_not_six_hours(self):
+        from threadwatch import snapshot as snapshot_mod
         self.cfg.snapshot_on_critical = True
         pipe = self._pipe()
         attempts = []
@@ -1121,12 +1121,12 @@ class QuietPolicyTest(unittest.TestCase):
             self.assertEqual(trigger, "phase_locked_storm")
             if len(attempts) == 1:
                 raise OSError(28, "No space left on device")
-            return cfg.incidents_dir / f"20231114T221500_{label}", 3
+            return cfg.snapshots_dir / f"20231114T221500_{label}", 3
 
-        original = freeze_mod.freeze_ring
-        freeze_mod.freeze_ring = flaky
+        original = snapshot_mod.save_snapshot
+        snapshot_mod.save_snapshot = flaky
         try:
-            pipe.freezer = pipe._freeze_now                # in this thread, so each outcome is known at once
+            pipe.snapshotter = pipe._save_snapshot_now                # in this thread, so each outcome is known at once
             pipe.detector.storm_active = True
             pipe.detector.storm_details = {"period": 80.5, "onsets": [1.0, 2.0, 3.0]}
             pipe.detector.add_frame = lambda ts: setattr(pipe.detector, "storm_active", True)
@@ -1134,8 +1134,8 @@ class QuietPolicyTest(unittest.TestCase):
             for dt in (0, 31 * 60, 2 * 3600):             # the storm event repeats every 30 min at most
                 pipe.ingest(frame(t0 + dt, ROUTER))
         finally:
-            freeze_mod.freeze_ring = original
-        storms = [r["auto_freeze"] for r in pipe.events.records if r["event"] == "phase_locked_storm"]
+            snapshot_mod.save_snapshot = original
+        storms = [r["auto_snapshot"] for r in pipe.events.records if r["event"] == "phase_locked_storm"]
         self.assertEqual(storms, ["auto-phase_locked_storm",           # failed; retried; then the real cooldown
                                   "auto-phase_locked_storm", None])
         self.assertEqual(attempts, ["auto-phase_locked_storm"] * 2)
@@ -1145,47 +1145,47 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertIn("tries again", failed[0]["note"])
         self.assertEqual([r["ring_files"] for r in pipe.events.records if r["event"] == "snapshot_saved"], [3])
 
-    def test_freeze_off_by_default_and_never_in_replay(self):
+    def test_snapshots_off_by_default_and_never_in_replay(self):
         for ephemeral in (False, True):
             self.cfg.snapshot_on_critical = ephemeral        # on only for the replay case
             pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor(), ephemeral=ephemeral)
-            pipe.freezer = lambda label, trigger: self.fail("froze")
+            pipe.snapshotter = lambda label, trigger: self.fail("froze")
             pipe.detector.storm_active = True
             pipe.detector.storm_details = {"period": 60.0, "onsets": [1.0, 2.0, 3.0]}
             pipe.ingest(frame(1_700_000_000.0, ROUTER))
             rec = [r for r in pipe.events.records if r["event"] == "phase_locked_storm"][0]
-            self.assertIsNone(rec["auto_freeze"])
+            self.assertIsNone(rec["auto_snapshot"])
 
-    def test_the_background_freeze_logs_the_incident(self):
+    def test_the_background_copy_logs_the_snapshot(self):
         pipe = self._pipe()
         self.cfg.ring_dir.mkdir(parents=True, exist_ok=True)
         (self.cfg.ring_dir / "threadwatch-20231114-22.pcap").write_bytes(b"ring")
-        pipe._freeze_now("auto-storm", "phase_locked_storm")
+        pipe._save_snapshot_now("auto-storm", "phase_locked_storm")
         rec = [r for r in pipe.events.records if r["event"] == "snapshot_saved"][0]
         self.assertEqual(rec["ring_files"], 1)
         self.assertTrue(rec["path"].endswith("_auto-storm"))
         self.assertTrue((Path(rec["path"]) / "threadwatch-20231114-22.pcap").exists())
 
-    def test_each_automatic_freeze_prunes_the_oldest_ones_before_it_copies(self):
+    def test_each_automatic_snapshot_prunes_the_oldest_ones_before_it_copies(self):
         # Nothing but this prunes an incident, and each is a whole ring:
         # four auto-freezes a day for ever fills the card the ring lives on.
-        from threadwatch.review import incidents
+        from threadwatch.review import snapshots
         pipe = self._pipe()
         self.cfg.keep_snapshots = 2
         self.cfg.ring_dir.mkdir(parents=True, exist_ok=True)
         (self.cfg.ring_dir / "threadwatch-20231114-22.pcap").write_bytes(b"ring")
-        self.cfg.incidents_dir.mkdir(parents=True, exist_ok=True)
+        self.cfg.snapshots_dir.mkdir(parents=True, exist_ok=True)
         for name in ("20231101T000000_auto-storm", "20231102T000000_auto-storm",
                      "20231103T000000_the-night-it-broke"):
-            (self.cfg.incidents_dir / name).mkdir()
-        pipe._freeze_now("auto-storm", "phase_locked_storm")
-        kept = sorted(i["name"] for i in incidents(self.cfg.incidents_dir))
+            (self.cfg.snapshots_dir / name).mkdir()
+        pipe._save_snapshot_now("auto-storm", "phase_locked_storm")
+        kept = sorted(i["name"] for i in snapshots(self.cfg.snapshots_dir))
         self.assertEqual(kept[:2], ["20231102T000000_auto-storm", "20231103T000000_the-night-it-broke"])
         self.assertTrue(kept[2].endswith("_auto-storm"))       # the one just taken
         pruned = [r for r in pipe.events.records if r["event"] == "snapshots_pruned"]
         self.assertEqual([r["removed"] for r in pruned], [["20231101T000000_auto-storm"]])
 
-    def test_a_freeze_that_would_crowd_the_ring_out_is_refused_not_attempted(self):
+    def test_a_snapshot_that_would_crowd_the_ring_out_is_refused_not_attempted(self):
         # A snapshot is a second copy of the ring. Taking one that leaves
         # the ring less room than it still needs trades a week of recording
         # for one incident, and the recorder exits 1 when the card fills.
@@ -1193,12 +1193,12 @@ class QuietPolicyTest(unittest.TestCase):
         pipe = self._pipe()
         self.cfg.ring_dir.mkdir(parents=True, exist_ok=True)
         (self.cfg.ring_dir / "threadwatch-20231114-22.pcap").write_bytes(b"ring")
-        pipe._last_auto_freeze = 1_700_000_000.0
+        pipe._last_auto_snapshot = 1_700_000_000.0
         real = review.storage
         review.storage = lambda cfg: {**real(cfg), "disk_free": 1000, "ring_bytes": 900,
                                       "ring_needs_bytes": 500}
         try:
-            pipe._freeze_now("auto-storm", "phase_locked_storm")
+            pipe._save_snapshot_now("auto-storm", "phase_locked_storm")
         finally:
             review.storage = real
         self.assertEqual([r for r in pipe.events.records if r["event"] == "snapshot_saved"], [])
@@ -1206,8 +1206,8 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual(len(skipped), 1)
         self.assertIn("delete snapshots", skipped[0]["note"])
         # Nothing was kept, so the six-hour hold must not stand either.
-        self.assertEqual(pipe._last_auto_freeze,
-                         1_700_000_000.0 - pipe.AUTO_FREEZE_COOLDOWN_S + pipe.AUTO_FREEZE_RETRY_S)
+        self.assertEqual(pipe._last_auto_snapshot,
+                         1_700_000_000.0 - pipe.AUTO_SNAPSHOT_COOLDOWN_S + pipe.AUTO_SNAPSHOT_RETRY_S)
 
     def test_beacon_requests_count_as_join_scanning(self):
         import struct
@@ -1225,8 +1225,8 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual(len(ev), 1)
         self.assertEqual(ev[0]["count_60s"], 5)
 
-    def test_why_resolves_every_address_of_a_name_listed_twice(self):
-        from threadwatch.why import resolve_target
+    def test_device_resolves_every_address_of_a_name_listed_twice(self):
+        from threadwatch.device import resolve_target
         d = Path(self.tmp.name)
         (d / "devices.json").write_text(json.dumps([
             {"name": "Living Room Apple TV", "extendedAddress": ROUTER.upper()},
@@ -2058,7 +2058,7 @@ class RetransmissionConfirmTest(unittest.TestCase):
 
 class RecorderStartTest(unittest.TestCase):
     """Every start says how long the recorder was not listening and how
-    the run before it ended, from the note capture.record_exit left."""
+    the run before it ended, from the note record.record_exit left."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

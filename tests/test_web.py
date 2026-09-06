@@ -187,7 +187,7 @@ class PageBranchTest(unittest.TestCase):
         self.assertIn(f'<a href="/device/{TV1}">Living Room Apple TV</a>', body)
         self.assertNotIn("not matched to a device yet", body)
 
-    def test_the_status_page_and_the_header_say_when_capture_has_gone_stale(self):
+    def test_the_status_page_and_the_header_say_when_recording_has_gone_stale(self):
         _st, body = self.get("/status")
         self.assertIn("no status file: the recorder has not run here", body)
         self.assertIn("no status yet", body)                       # the header too

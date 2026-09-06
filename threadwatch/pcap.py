@@ -77,7 +77,7 @@ def _record_is_plausible(incl: int, snaplen: int) -> bool:
 
 # How far back and forward a record's stamp may sit from the one before
 # it and still be believed. A ring file holds an hour and its stamps are
-# the host clock; a capture given to `why` or `replay` may hold days.
+# the host clock; a capture given to `device` or `replay` may hold days.
 _STAMP_BACK_S = 86400
 _STAMP_AHEAD_S = 7 * 86400
 
@@ -314,7 +314,7 @@ def is_poll(f: "Frame") -> bool:
     """Is this frame a Data Request, the MAC command a sleepy end device
     polls its parent with? The command id is 4; a secured command carries
     no readable id, and the secured MAC commands a Thread device sends are
-    its polls. The one place this is decided: the live pipeline, `why` and
+    its polls. The one place this is decided: the live pipeline, `device` and
     the review rows count polls with it, so a beacon request (command 7,
     a join scan) is a poll to none of them."""
     return f.ftype == 3 and f.cmd in (None, 4)

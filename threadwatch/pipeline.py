@@ -601,7 +601,9 @@ class Pipeline:
     def _rewind(self, now: float, back: float, since_check: float) -> None:
         """Move every stamp taken before a backward step of ``back`` seconds
         back with the clock: last-seen rows, blindness, the retransmission
-        elevation and its cooldowns, the per-device poll state. A stamp is
+        elevation and its cooldowns, the per-device poll state, every
+        pipeline cooldown and deadline, and when the last-seen table was
+        last written. A stamp is
         from before the step when it is later than now, or older than the
         last check: a frame stamped by the corrected clock is at most
         ``since_check`` old. The stamps in between are left where they
@@ -623,11 +625,33 @@ class Pipeline:
                 t = getattr(stats, attr)
                 if t and before(t):
                     setattr(stats, attr, t - back)
+        # Every wall-clock scalar the pipeline compares against, whether it
+        # is a stamp ("when this last happened") or a deadline ("not before
+        # this"). Each is read as `now < stamp` or `now - stamp < window`,
+        # so one left the step ahead of the clock suppresses its check for
+        # the whole length of the step: no mDNS browse, so a hub that
+        # rotates its address in the window keeps the dead one and then
+        # reads as quiet; no ring freeze for a critical event; no
+        # configured_pan_silent; join-scan, stale-credential and storm
+        # notices all held back.
         for attr in ("_retrans_since", "_retrans_alerted", "_retrans_paged", "_retrans_up", "_retrans_closed",
-                     "_win_start"):
+                     "_win_start", "_next_browse", "_join_scan_evt", "_stale_evt", "_pan_silent_evt",
+                     "_pan_window_start", "_last_auto_freeze", "_storm_evt"):
             t = getattr(self, attr)
             if t and before(t):
                 setattr(self, attr, t - back)
+        # The per-short-address retry deadlines, same test: left in the
+        # future, an unresolved address is not retried until the clock
+        # climbs back and its frames stay unattributed until then.
+        for deadlines in (self._resolve_after, self._verify_after, self._foreign_after):
+            for key, t in list(deadlines.items()):
+                if before(t):
+                    deadlines[key] = t - back
+        # maybe_save writes the last-seen table at most once a minute; with
+        # its stamp a step ahead it stops writing until the clock catches
+        # up, and a host cut in that window loses everything since.
+        if before(self.seen._last_save):
+            self.seen._last_save -= back
         # The duplicate window is two seconds wide, so there is nothing in
         # it worth moving: dropping it costs at most one window of genuine
         # retransmission detection, and keeps stamps from before the step

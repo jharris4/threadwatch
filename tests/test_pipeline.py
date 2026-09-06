@@ -748,6 +748,44 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertAlmostEqual(rec["silent_for_s"], 31 * 60, delta=5)
         self.assertEqual(len([r for r in pipe.events.records if r["event"] == "clock_step"]), 1)
 
+    def test_a_clock_step_back_moves_every_cooldown_and_deadline_with_it(self):
+        # Each of these is read as `now < stamp` or `now - stamp < window`.
+        # Left the step ahead of the clock, each suppresses its own check
+        # for the whole length of the step: no mDNS browse, so a hub that
+        # rotates its address in the window keeps the dead one and then
+        # reads as quiet; no ring freeze for a critical event; no
+        # configured_pan_silent; join-scan, stale-credential and storm
+        # notices held back; and maybe_save stops writing the last-seen
+        # table, so a host cut in the window loses everything since.
+        T = time.time()
+        pipe = self._pipe()
+        clock = {"wall": T, "mono": 0.0}
+        pipe._wall, pipe._mono, pipe._clock = (lambda: clock["wall"]), (lambda: clock["mono"]), (T, 0.0)
+        scalars = ("_next_browse", "_join_scan_evt", "_stale_evt", "_pan_silent_evt",
+                   "_pan_window_start", "_last_auto_freeze", "_storm_evt")
+        for attr in scalars:
+            setattr(pipe, attr, T + 60)
+        pipe._resolve_after["0001"] = T + 60
+        pipe._verify_after["0002"] = T + 60
+        pipe._foreign_after[("0003", 0x1234)] = T + 60
+
+        clock.update(wall=T + 20 - 1800, mono=20.0)             # the clock steps back 30 min
+        pipe.periodic(clock["wall"])
+
+        self.assertEqual([r["step_s"] for r in pipe.events.records if r["event"] == "clock_step"], [-1800])
+        for attr in scalars:
+            self.assertEqual(getattr(pipe, attr), T + 60 - 1800, attr)
+        self.assertEqual(pipe._resolve_after["0001"], T + 60 - 1800)
+        self.assertEqual(pipe._verify_after["0002"], T + 60 - 1800)
+        self.assertEqual(pipe._foreign_after[("0003", 0x1234)], T + 60 - 1800)
+        # maybe_save writes the table at most once a minute; with its stamp
+        # a step ahead it stops writing until the clock catches up, and a
+        # host cut in that window loses everything since. (periodic saves,
+        # so the rewind is exercised on its own here.)
+        pipe.seen._last_save = T + 60
+        pipe._rewind(T + 20 - 1800, 1800, 20.0)
+        self.assertEqual(pipe.seen._last_save, T + 60 - 1800)
+
     def test_a_clock_step_back_does_not_re_announce_a_silence_already_on_record(self):
         # The quiet flag names the device_quiet record it stands for by its
         # stamp. A backward step moves the row's measurements back with the

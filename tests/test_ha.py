@@ -122,6 +122,37 @@ class WebSocketFramingTest(unittest.TestCase):
         sock = FakeSocket(bytes([0x81, 0x80 | 126]) + struct.pack(">H", 500) + mask + masked)
         self.assertEqual(FrameReader(sock.recv, sock.sendall).message(), text.decode())
 
+    def test_a_declared_length_is_not_trusted_for_the_allocation(self):
+        # The 64-bit length comes from the peer, and the default HA_URL is
+        # plaintext HTTP to an mDNS-resolved name, so the peer is not
+        # necessarily Home Assistant. 2 GiB declared used to be 2 GiB
+        # allocated, and the recorder runs on the same 1 GB Pi.
+        asked = []
+
+        class Counting(FakeSocket):
+            def recv(self, n):
+                asked.append(n)
+                return super().recv(n)
+
+        header = bytes([0x81, 127]) + struct.pack(">Q", 2 * 1024 ** 3)
+        with self.assertRaises(HAError) as cm:
+            FrameReader(Counting(header).recv, lambda b: None).message()
+        self.assertIn("over the", str(cm.exception))
+        self.assertLessEqual(max(asked), ha.RECV_CHUNK)
+        # A frame within the limit still reads, in chunks of RECV_CHUNK.
+        asked.clear()
+        payload = json.dumps({"k": "v" * 200_000}).encode()
+        sock = Counting(server_frame(0x1, payload))
+        self.assertEqual(json.loads(FrameReader(sock.recv, lambda b: None).message()),
+                         {"k": "v" * 200_000})
+        self.assertLessEqual(max(asked), ha.RECV_CHUNK)
+        # ...and neither can a run of continuation frames add up past it.
+        parts = b"".join(server_frame(0x1 if i == 0 else 0x0, b"x" * (1024 ** 2), fin=False)
+                         for i in range(ha.MAX_FRAME_BYTES // 1024 ** 2 + 1))
+        with self.assertRaises(HAError) as cm:
+            FrameReader(FakeSocket(parts).recv, lambda b: None).message()
+        self.assertIn("over the", str(cm.exception))
+
     def test_a_hung_or_lost_peer_is_an_haerror_not_a_traceback(self):
         # The socket timeout fires as TimeoutError inside recv; a reset
         # arrives as ConnectionResetError. Both reach the caller as the

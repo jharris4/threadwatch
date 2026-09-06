@@ -101,6 +101,18 @@ def encode_frame(opcode: int, payload: bytes) -> bytes:
     return head + mask + masked
 
 
+# The largest websocket frame, and the largest message reassembled from
+# them, that Home Assistant is believed to send: its device registry on a
+# large install is a few hundred KB. The declared length is a 64-bit number
+# from the peer, and the default HA_URL is plaintext HTTP to an
+# mDNS-resolved name, so the peer is not necessarily Home Assistant: an
+# announced 2 GiB was allocated as asked, and the OOM killer's choice on a
+# 1 GB Pi running the recorder beside this is not guaranteed.
+MAX_FRAME_BYTES = 8 * 1024 * 1024
+# One recv never asks for more than this, however much is still to come.
+RECV_CHUNK = 65536
+
+
 class FrameReader:
     """Reassembles messages from a byte stream: fragmentation, ping/pong,
     close. ``recv`` is any callable returning bytes (b"" at EOF)."""
@@ -111,7 +123,7 @@ class FrameReader:
     def _exact(self, n: int) -> bytes:
         while len(self._buf) < n:
             try:
-                chunk = self._recv(max(4096, n - len(self._buf)))
+                chunk = self._recv(min(RECV_CHUNK, max(4096, n - len(self._buf))))
             except TimeoutError as exc:
                 # The socket timeout (ws_connect) bounds one silent read; a
                 # Home Assistant that has hung answers nothing at all, and
@@ -142,6 +154,9 @@ class FrameReader:
                 n = struct.unpack(">H", self._exact(2))[0]
             elif n == 127:
                 n = struct.unpack(">Q", self._exact(8))[0]
+            if n > MAX_FRAME_BYTES or sum(len(p) for p in parts) + n > MAX_FRAME_BYTES:
+                raise HAError(f"websocket frame declares {n} bytes, over the {MAX_FRAME_BYTES} byte limit: "
+                              "is that really Home Assistant answering?")
             mask = self._exact(4) if masked else b""
             data = self._exact(n)
             if mask:

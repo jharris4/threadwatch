@@ -6,6 +6,7 @@ import json
 import struct
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -309,6 +310,172 @@ class EventsFilterTest(CliCase):
         self.assertEqual(code, 0, err)
         self.assertIn("Living Room Apple TV quiet for 60m", out)
         self.assertNotIn("was quiet before", out)
+
+
+class DispatchTest(CliCase):
+    """main()'s subcommand wiring: the exit codes scripts and the systemd
+    unit key on, the argument conflicts, and the containment check that
+    keeps --delete inside the incidents directory. The handlers were
+    driven only through their inner functions, so a mis-wired argument or
+    a wrong parser.exit code was invisible to the suite."""
+
+    def test_deleting_an_incident_outside_the_incidents_directory_is_refused(self):
+        # _find_incident takes a path to a directory as given, so a path
+        # anywhere on the box reaches shutil.rmtree without this check.
+        from threadwatch.config import load
+        load(Path(self.cfg)).incidents_dir.mkdir(parents=True)
+        outside = self.d / "not-an-incident"
+        outside.mkdir()
+        (outside / "keep.txt").write_text("mine")
+        code, _, err = self.run_cli("incidents", "--delete", str(outside))
+        self.assertEqual(code, 1)
+        self.assertIn("is not under", err)
+        self.assertTrue((outside / "keep.txt").exists())
+        traversal = self.d / "data" / "incidents" / ".." / ".." / "not-an-incident"
+        code, _, err = self.run_cli("incidents", "--delete", str(traversal))
+        self.assertEqual(code, 1)
+        self.assertIn("is not under", err)
+        self.assertTrue((outside / "keep.txt").exists())
+        # A name nothing matches is a different error, and deletes nothing.
+        code, _, err = self.run_cli("incidents", "--delete", "no-such-incident")
+        self.assertEqual(code, 1)
+        self.assertIn("no incident named 'no-such-incident'", err)
+
+    def test_an_incident_inside_the_directory_is_deleted_by_name_or_label(self):
+        from threadwatch.config import load
+        inc = load(Path(self.cfg)).incidents_dir / "20260903T120000_storm-at-noon"
+        inc.mkdir(parents=True)
+        (inc / "threadwatch-20260903-11.pcap").write_bytes(b"x" * 10)
+        code, out, err = self.run_cli("incidents", "--delete", "storm at noon")   # the label as typed
+        self.assertEqual(code, 0, err)
+        self.assertIn("deleted", out)
+        self.assertFalse(inc.exists())
+
+    def test_why_refuses_the_argument_combinations_that_contradict_each_other(self):
+        for args, message in ((("--pcap", "x.pcap", "--hours", "6"), "does not apply with --pcap"),
+                              (("--pcap", "x.pcap", "--incident", "n"), "give one"),
+                              (("--hours", "0"), "--hours must be positive"),
+                              (("--hours", "-1"), "--hours must be positive")):
+            code, _, err = self.run_cli("why", "Office AQ", *args)
+            self.assertEqual(code, 2, args)
+            self.assertIn(message, err)
+
+    def test_a_missing_network_key_is_exit_2_from_why_as_it_is_from_capture(self):
+        # Scripts and the systemd unit tell "this box cannot decrypt" from
+        # "this box broke" by the code, so both commands promise 2.
+        from threadwatch import capture as capture_mod, why as why_mod
+        from threadwatch.pipeline import CredentialsError
+
+        def refuse(*a, **kw):
+            raise CredentialsError("credentials.toml is missing")
+
+        for cmd, mod, name in (("why", why_mod, "run_why"), ("capture", capture_mod, "run_capture")):
+            real = getattr(mod, name)
+            setattr(mod, name, refuse)
+            try:
+                code, _, err = self.run_cli(cmd, *(["Office AQ"] if cmd == "why" else []))
+            finally:
+                setattr(mod, name, real)
+            self.assertEqual(code, 2, cmd)
+            self.assertIn(f"threadwatch {cmd}: credentials.toml is missing", err)
+
+    def test_replay_needs_something_to_read(self):
+        code, _, err = self.run_cli("replay")
+        self.assertEqual(code, 2)
+        self.assertIn("give pcap files, a directory of them, or --incident NAME", err)
+
+    def test_events_day_wants_a_date(self):
+        from threadwatch.config import load
+        from threadwatch.events import EventLog, day_of
+        log = EventLog(load(Path(self.cfg)).events_dir)
+        log.emit("alert_test", "info", time.time(), name="x", note="something to read")
+        code, out, err = self.run_cli("events", "--day", day_of(time.time()))
+        self.assertEqual(code, 0, err)
+        self.assertIn("alert_test", out)
+        code, _, err = self.run_cli("events", "--day", "notaday")
+        self.assertEqual(code, 2)
+        self.assertIn("--day wants YYYY-MM-DD", err)
+
+    def test_border_routers_reports_an_empty_lan_as_exit_1_and_names_what_it_found(self):
+        from threadwatch import mdns
+        real = mdns.browse
+        mdns.browse = lambda timeout=4.0, **kw: []
+        try:
+            code, out, _ = self.run_cli("border-routers")
+        finally:
+            mdns.browse = real
+        self.assertEqual(code, 1)
+        self.assertIn("no Thread border routers answered over mDNS", out)
+        found = [{"instance": "hub", "ext": "b62c32bf669272db", "hostname": "hub.local",
+                  "vendor": "Apple", "model": "AppleTV", "network_name": "home",
+                  "ext_pan_id": "dead", "addresses": ["fd00::1"]}]
+        mdns.browse = lambda timeout=4.0, **kw: found
+        try:
+            code, out, _ = self.run_cli("border-routers")
+        finally:
+            mdns.browse = real
+        self.assertEqual(code, 0)
+        self.assertIn("hub  Apple AppleTV", out)
+        self.assertIn("b62c32bf669272db  -> not in devices.json", out)
+
+    def test_adopt_reports_a_bad_address_as_exit_1_and_writes_nothing(self):
+        inv = self.d / "devices.json"
+        (self.d / "config.toml").write_text(f'[capture]\ndata_dir = "{self.d / "data"}"\n'
+                                            f'[devices]\ninventory = "devices.json"\n')
+        inv.write_text("[]")
+        code, _, err = self.run_cli("adopt", "not-an-address", "Office AQ")
+        self.assertEqual(code, 1)
+        self.assertIn("threadwatch adopt:", err)
+        self.assertEqual(inv.read_text(), "[]")
+        code, out, err = self.run_cli("adopt", "26976e7f7d20964a", "Office AQ")
+        self.assertEqual(code, 0, err)
+        self.assertIn("Office AQ", out)
+        self.assertIn("restart it to use the name", out)
+        self.assertIn("26976e7f7d20964a", inv.read_text().lower())
+
+    def test_import_reports_a_home_assistant_failure_as_exit_1(self):
+        from threadwatch import importer
+        from threadwatch.ha import HAError
+        real = importer.run_import
+
+        def refuse(*a, **kw):
+            raise HAError("cannot reach Home Assistant at ha.local:8123")
+
+        importer.run_import = refuse
+        try:
+            code, _, err = self.run_cli("import", "--no-mdns")
+        finally:
+            importer.run_import = real
+        self.assertEqual(code, 1)
+        self.assertIn("threadwatch import: cannot reach Home Assistant", err)
+
+    def test_status_says_so_when_the_daemon_has_never_run(self):
+        code, out, _ = self.run_cli("status")
+        self.assertEqual(code, 1)
+        self.assertIn("no status file", out)
+
+    def test_report_suggest_prints_entries_and_a_rotation_hint(self):
+        from threadwatch.config import load
+        from threadwatch.names import LastSeen
+        cfg = load(Path(self.cfg))
+        seen = LastSeen(cfg.state_dir / "last-seen.json")
+        now = time.time()
+        seen.table["26976e7f7d20964a"] = {"first_seen": now - 3600, "last_seen": now, "frames": 500,
+                                          "rssi": -60.0, "types": {}}
+        seen.save()
+        code, out, err = self.run_cli("report", "--suggest")
+        self.assertEqual(code, 0, err)
+        self.assertIn("26976e7f7d20964a", out.lower())
+        self.assertIn("paste into devices.json", err)
+        code, out, err = self.run_cli("report")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["unknown"][0]["addr"], "26976e7f7d20964a")
+        self.assertIn("1 unknown address(es) seen", err)
+
+    def test_doctor_runs_and_its_exit_code_is_the_report_s(self):
+        code, out, _ = self.run_cli("doctor")
+        self.assertEqual(code, 1)                       # no credentials in this fixture
+        self.assertIn("FAIL credentials", out)
 
 
 if __name__ == "__main__":

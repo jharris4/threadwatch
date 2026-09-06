@@ -342,6 +342,42 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertIn("Basement AQ repeated frames to Irrigation", ev[0]["note"])
         self.assertEqual(ev[0]["severity"], "notice")   # one bad link: logged, not paged
 
+    def test_a_neighbours_retransmissions_are_not_ours(self):
+        # Every other detector skips foreign rows; the retransmission
+        # window counted every frame on the channel, so a neighbour's mesh
+        # retrying to its own router paged as ours, naming our device
+        # that happened to hold the same short address as the far end.
+        d = Path(self.tmp.name)
+        (d / "devices.json").write_text(json.dumps([{"name": "Hall Router", "extendedAddress": ROUTER}]))
+        pipe = self._pipe()
+        pipe.decryptor.short_to_ext["8801"] = ROUTER            # our router's RLOC16
+        t = 1_700_000_000.0
+        for m in range(10):
+            for i in range(150):
+                pipe.ingest(frame(t + m * 60 + i * 0.4, STRANGER, seq=i))          # ours, clean
+        base = t + 10 * 60
+        for i in range(150):
+            pipe.ingest(frame(base + i * 0.4, STRANGER, seq=i))
+        for k in range(3):                                      # three neighbours retrying to 8801 on their PAN
+            src = f"{0x2000 + k:016x}"
+            for i in range(50):
+                for rep in range(3):
+                    pipe.ingest(frame(base + i + rep * 0.1, src, pan=OTHER_PAN, seq=i, dst="8801"))
+        pipe.ingest(frame(base + 61, STRANGER, seq=200))       # closes the window
+        self.assertEqual([r for r in pipe.events.records if r["event"] == "retransmission_elevation"], [])
+        # Our own repeats in the next minute are still seen, against a
+        # baseline the neighbour never touched.
+        base = t + 11 * 60
+        for i in range(100):
+            pipe.ingest(frame(base + i * 0.3, STRANGER, seq=i))
+        for i in range(20):
+            for rep in range(4):
+                pipe.ingest(frame(base + i * 2.5 + rep * 0.2, SENSOR, seq=i, dst="8801"))
+        pipe.ingest(frame(base + 61, STRANGER, seq=200))
+        ev = [r for r in pipe.events.records if r["event"] == "retransmission_elevation"]
+        self.assertEqual(len(ev), 1)
+        self.assertEqual((ev[0]["addr"], ev[0]["top_target"]), (SENSOR, "Hall Router"))
+
     def test_mesh_wide_retransmissions_page(self):
         pipe = self._pipe()
         t = 1_700_000_000.0

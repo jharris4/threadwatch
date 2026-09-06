@@ -142,7 +142,7 @@ class Pipeline:
         self._last_who: Optional[str] = None
         self.beacon_times = deque(maxlen=16)
         self._join_scan_evt = 0.0
-        self.dup_recent = {}                    # (src, seq) -> ts
+        self.dup_recent = {}                    # (src, seq, pan) -> ts
         self.retrans_counts = deque(maxlen=30)  # per-window (dups, frames)
         self._win_dups = 0
         self._win_frames = 0
@@ -982,19 +982,27 @@ class Pipeline:
                 # A configured PAN is ours however little it talks; a
                 # guessed one must strictly lead before anything is foreign.
                 lead = float("inf") if self.cfg.pan_id is not None else self.own_pans.get(dominant, 0)
-                for pan, n in self.own_pans.items():
-                    if pan != dominant and 3 <= n < lead and pan not in self._foreign_reported:
-                        self._foreign_reported.add(pan)
+                for other, n in self.own_pans.items():       # not `pan`: the frame's own PAN is read below
+                    if other != dominant and 3 <= n < lead and other not in self._foreign_reported:
+                        self._foreign_reported.add(other)
                         self.events.emit("possible_foreign_pan", "notice", ts,
-                                         pan=f"0x{pan:04x}", src=self._last_src_by_pan.get(pan),
+                                         pan=f"0x{other:04x}", src=self._last_src_by_pan.get(other),
                                          dominant_pan=f"0x{dominant:04x}",
                                          note="repeated foreign-PAN sightings; verify in Wireshark")
 
-        # Retransmission-rate window (duplicate src+seq within 2 s).
+        # Retransmission-rate window (duplicate src+seq within 2 s). Frames
+        # from another PAN are left out, as every other judgement leaves
+        # them out: a neighbour's mesh retrying to its own router paged
+        # for a problem on someone else's network, blamed on whichever of
+        # our devices held the same short address (RLOC16s come from the
+        # same small space in every mesh), and dragged the baseline about
+        # so a real elevation of ours could hide behind a noisy neighbour.
         if self._win_start == 0.0:
             self._win_start = ts
-        if f.ftype in (1, 3) and f.src and f.seq is not None:
-            key = (f.src, f.seq)
+        dominant = self.dominant_pan()
+        foreign = pan is not None and dominant is not None and pan != dominant
+        if f.ftype in (1, 3) and f.src and f.seq is not None and not foreign:
+            key = (f.src, f.seq, pan)
             last = self.dup_recent.get(key)
             if last is not None and ts - last < 2.0:
                 self._win_dups += 1

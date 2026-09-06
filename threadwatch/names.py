@@ -53,7 +53,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Iterator
 
 
 _EXT_ADDR = re.compile(r"^[0-9a-f]{16}$")
@@ -82,7 +82,7 @@ class AmbiguousName(ValueError):
 
 
 class DeviceNames:
-    def __init__(self, inventory_path: Optional[Path], learned_path: Optional[Path] = None):
+    def __init__(self, inventory_path: Path | None, learned_path: Path | None = None):
         """``learned_path``: the recorder's border-routers.json, whose
         hostname -> address bindings name a rebooted Apple hub's new
         address after the inventory (which lists only old ones)."""
@@ -140,11 +140,11 @@ class DeviceNames:
                 if entry is not None and a not in self.by_addr:
                     self.by_addr[a] = entry
 
-    def entry_named(self, name: str) -> Optional[dict]:
+    def entry_named(self, name: str) -> dict | None:
         want = name.strip().lower()
         return next((e for e in self.entries if (e.get("name") or "").strip().lower() == want), None)
 
-    def entry_for_border_router(self, hostname: str) -> Optional[dict]:
+    def entry_for_border_router(self, hostname: str) -> dict | None:
         """The entry that names this border router explicitly."""
         want = hostname.rstrip(".").lower()
         return next((e for e in self.entries
@@ -155,7 +155,7 @@ class DeviceNames:
         border router's new address after a reboot)."""
         self.by_addr[_norm(addr)] = entry
 
-    def name(self, addr: str) -> Optional[str]:
+    def name(self, addr: str) -> str | None:
         entry = self.by_addr.get(_norm(addr))
         return (str(entry["name"]) if entry and entry.get("name") else None)
 
@@ -211,7 +211,7 @@ def _warn_once(path, message: str) -> None:
 class LastSeen:
     """Tracks when each source address (extended, 16-hex-char) last transmitted."""
 
-    def __init__(self, state_path: Optional[Path]):
+    def __init__(self, state_path: Path | None):
         """``state_path`` None: an in-memory table that is never saved
         (replay must not touch the live recorder's state).
 
@@ -223,7 +223,7 @@ class LastSeen:
         file aside as <name>.corrupt instead of writing over it."""
         self.state_path = state_path
         self.table: dict[str, dict] = {}
-        self.unreadable: Optional[Exception] = None
+        self.unreadable: Exception | None = None
         if state_path is not None and state_path.exists():
             try:
                 table = json.loads(state_path.read_text())
@@ -261,8 +261,8 @@ class LastSeen:
         self._dirty = False
         self._last_save = 0.0
 
-    def touch(self, addr: Optional[str], ts: float, ftype: Optional[int],
-              pan: Optional[int] = None, rssi: Optional[float] = None) -> None:
+    def touch(self, addr: str | None, ts: float, ftype: int | None,
+              pan: int | None = None, rssi: float | None = None) -> None:
         if not addr or len(addr) != 16:  # extended addresses only
             return
         row = self.table.setdefault(addr, {"first_seen": ts, "frames": 0, "types": {}})
@@ -326,9 +326,9 @@ class LastSeen:
             return
         print(f"[threadwatch] unreadable {self.state_path.name} kept as {kept.name}", flush=True)
 
-    def report(self, names: DeviceNames, quiet_after_s: Optional[float] = None,
-               now: Optional[float] = None, min_rssi_dbm: float = -82.0,
-               dominant: Optional[int] = None) -> dict:
+    def report(self, names: DeviceNames, quiet_after_s: float | None = None,
+               now: float | None = None, min_rssi_dbm: float = -82.0,
+               dominant: int | None = None) -> dict:
         """Quiet, active and unknown devices. "Quiet" is one thing
         everywhere: what the recorder announced (the row's persisted
         quiet_reported flag, set after [quiet] silence_s of silence it
@@ -369,7 +369,7 @@ class LastSeen:
         return {"quiet": quiet, "active_count": len(active), "unknown": unknown}
 
 
-def load_border_routers(path: Optional[Path]) -> dict[str, dict]:
+def load_border_routers(path: Path | None) -> dict[str, dict]:
     """border-routers.json: {hostname: {addr, name, instance, vendor, model,
     since, seen, previous: [{addr, until}]}}, written by the recorder."""
     if path is None:
@@ -399,7 +399,7 @@ def load_names(cfg) -> DeviceNames:
     return DeviceNames(cfg.devices_path, cfg.state_dir / "border-routers.json")
 
 
-def rloc16_role(rloc16: Optional[str]) -> Optional[dict]:
+def rloc16_role(rloc16: str | None) -> dict | None:
     """What a Thread short address says about its holder. The top six bits
     are a router id; a zero low ten bits is the router itself, anything
     else is one of its children. 0xF000 is router 60; 0xC004 is child 4
@@ -415,7 +415,7 @@ def rloc16_role(rloc16: Optional[str]) -> Optional[dict]:
             "role": "router" if cid == 0 else "child"}
 
 
-def reception(rssi: Optional[float], min_rssi_dbm: float) -> str:
+def reception(rssi: float | None, min_rssi_dbm: float) -> str:
     """How much a silence from this address means, given how well we hear it."""
     if rssi is None:
         return "unknown"
@@ -488,7 +488,7 @@ MIN_SIGHTINGS = 2
 
 
 def suggest_entries(unknown: list[dict], observed: dict[str, dict[str, int]],
-                    hints: Optional[dict[str, dict]] = None) -> list[dict]:
+                    hints: dict[str, dict] | None = None) -> list[dict]:
     """A devices.json entry per unknown address from a LastSeen report, ready
     to paste. The name is the most-sighted harvested hostname seen at least
     MIN_SIGHTINGS times, or blank

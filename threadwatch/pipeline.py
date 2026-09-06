@@ -32,7 +32,6 @@ import threading
 import time
 from collections import deque
 from pathlib import Path
-from typing import Optional
 
 from .detect import Detector
 from .events import EventLog, day_of, prune_days, read_day
@@ -124,30 +123,30 @@ class Pipeline:
                 self.seen._dirty = True
             if row.get("pan") is not None:
                 self.own_pans[row["pan"]] = self.own_pans.get(row["pan"], 0) + int(row.get("frames") or 0)
-        self._dominant: Optional[int] = None
+        self._dominant: int | None = None
         self._update_dominant(None)
         self._pan_window: dict[int, int] = {}     # frames per source PAN since the window opened
-        self._pan_window_start: Optional[float] = None
+        self._pan_window_start: float | None = None
         self._pan_silent_evt = 0.0
         self._foreign_reported: set[int] = set()
-        self._last_src_by_pan: dict[int, Optional[str]] = {}
+        self._last_src_by_pan: dict[int, str | None] = {}
         # All three are fed straight from mDNS answers, which anyone on the
         # LAN can forge in any number, so each is bounded (PENDING_MAX,
         # LOGGED_MAX): a LAN has a handful of border routers, not hundreds.
         self._unheard_logged: set[str] = set()      # mDNS addresses never heard on air, complained about once
         self._stale_logged: set[tuple] = set()      # (hostname, address) stale mDNS answers, complained about once
         self._pending_routers: dict[str, dict] = {}  # ext -> the mDNS record waiting for that address to be heard
-        self.partition: Optional[tuple] = None
+        self.partition: tuple | None = None
         self._crypto_mark = (0, 0)          # (decrypted, failed) when decryption last worked
         self._stale_evt = 0.0
         # Border routers on the LAN: hostname -> current address (mDNS).
         self.routers_path = cfg.state_dir / "border-routers.json"
         self.routers: dict[str, dict] = {} if ephemeral else load_border_routers(self.routers_path)
         self._browse_thread = None
-        self._browse_result: Optional[list] = None
+        self._browse_result: list | None = None
         self._next_browse = 0.0
-        self.last_frame: Optional[Frame] = None
-        self._last_who: Optional[str] = None
+        self.last_frame: Frame | None = None
+        self._last_who: str | None = None
         self.beacon_times = deque(maxlen=16)
         self._join_scan_evt = 0.0
         self.dup_recent = {}                    # (src, seq, pan) -> ts
@@ -161,7 +160,7 @@ class Pipeline:
         # The elevation in progress, if any: when its first elevated minute
         # began, the baseline frozen then, sub-threshold minutes since the
         # last elevated one, and whether it has paged.
-        self._retrans_since: Optional[float] = None
+        self._retrans_since: float | None = None
         self._retrans_base = 0.0
         self._retrans_lull = 0
         self._retrans_confirmed = False
@@ -175,7 +174,7 @@ class Pipeline:
         # window before the restart is kept so the first window after it
         # can subtract the unobserved gap from the elevation's age.
         self.retrans_path = cfg.state_dir / "retransmissions.json"
-        self._retrans_closed: Optional[float] = None
+        self._retrans_closed: float | None = None
         if not ephemeral:
             self._load_retrans()
         # The storm detector as the last run left it, for the same reason
@@ -221,9 +220,9 @@ class Pipeline:
         # How a critical event freezes the ring: in the background, so the
         # copy (gigabytes on a Pi) never stalls capture. Tests swap it.
         self.freezer = self._freeze_in_background
-        self._summary_day: Optional[str] = None      # local day whose summary is settled
-        self._pruned_day: Optional[str] = None       # local day the event log was last pruned on
-        self._capped_at: Optional[float] = None      # when rows were last dropped to stay under TRACK_MAX
+        self._summary_day: str | None = None      # local day whose summary is settled
+        self._pruned_day: str | None = None       # local day the event log was last pruned on
+        self._capped_at: float | None = None      # when rows were last dropped to stay under TRACK_MAX
         # The highest frame counter accepted from each device, MAC and MLE,
         # with when (see _verify); seeded from the rows so a restart does
         # not take a replay of yesterday's frames for the device.
@@ -238,8 +237,8 @@ class Pipeline:
         self._resolve_after: dict[str, float] = {}   # short addr -> next attempt ts
         self._resolve_fails: dict[str, int] = {}     # short addr -> searches that found nobody, in a row
         self._resolve_tokens = float(self.RESOLVE_TRIALS_BURST)   # candidate trials in hand (see identity)
-        self._resolve_tokens_ts: Optional[float] = None
-        self._candidates_built: Optional[float] = None
+        self._resolve_tokens_ts: float | None = None
+        self._candidates_built: float | None = None
         self._candidates: list[str] = []
         self._verify_after: dict[str, float] = {}    # short addr -> next re-check of its mapping
         self._foreign_after: dict[tuple, float] = {}  # (short addr, other PAN) -> next MIC check against it
@@ -364,7 +363,7 @@ class Pipeline:
              "crashed": "the last run crashed",
              "unknown": "the last run left no note of how it ended (power cut, or killed)"}
 
-    def _announce_start(self, now: float, last_alive: Optional[float]) -> None:
+    def _announce_start(self, now: float, last_alive: float | None) -> None:
         """One record per start: how long the recorder was not listening
         (since the last frame any run heard) and why the last run ended,
         read from the note it left (capture.record_exit) and removed here,
@@ -550,7 +549,7 @@ class Pipeline:
             pass
         return 0.0
 
-    def _last_frame_heard(self) -> Optional[float]:
+    def _last_frame_heard(self) -> float | None:
         """When a previous run last heard a frame: the stamp status.json
         carries across runs (capture.last_frame_on_record), or the newest
         last_seen in the table. Both stand still while nothing is heard.
@@ -707,7 +706,7 @@ class Pipeline:
     DOMINANT_MIN_FRAMES = 10
     DOMINANT_LEAD = 2
 
-    def dominant_pan(self) -> Optional[int]:
+    def dominant_pan(self) -> int | None:
         """This network's PAN: the configured one, else the guess so far."""
         return self.cfg.pan_id if self.cfg.pan_id is not None else self._dominant
 
@@ -742,7 +741,7 @@ class Pipeline:
                          "foreign and none is judged: threadwatch import prints the dataset's PAN; "
                          "update pan_id and restart."))
 
-    def _update_dominant(self, ts: Optional[float]) -> None:
+    def _update_dominant(self, ts: float | None) -> None:
         """Adopt or replace the guessed PAN from the frame tally. ``ts`` is
         None at start-up, when the tally is the table's history."""
         if self.cfg.pan_id is not None or not self.own_pans:
@@ -827,7 +826,7 @@ class Pipeline:
     # first accepted copy is a replay.
     RETRY_WINDOW_S = 2.0
 
-    def _verify(self, f: Frame, who: Optional[str]) -> tuple[Optional[bytes], bool]:
+    def _verify(self, f: Frame, who: str | None) -> tuple[bytes | None, bool]:
         """Does this frame vouch for its sender? An extended address is
         64 bits the sender asserts, so a frame counts as a sighting of
         the device only when the MIC says the sender holds the network
@@ -903,7 +902,7 @@ class Pipeline:
         self._resolve_tokens_ts = ts
         return self._resolve_tokens >= 1.0
 
-    def identity(self, f: Frame) -> Optional[str]:
+    def identity(self, f: Frame) -> str | None:
         """The extended address a frame came from, when we can know it.
 
         Frames with an extended source answer themselves. Short-source
@@ -976,7 +975,7 @@ class Pipeline:
 
     # ------------------------------------------------------------ ingest
 
-    def ingest(self, f: Frame) -> Optional[str]:
+    def ingest(self, f: Frame) -> str | None:
         """Take one frame. Returns the extended address it was attributed
         to (identity), or None, so a caller walking a capture for one
         device (why) can filter on the same answer without a second pass."""
@@ -1200,8 +1199,8 @@ class Pipeline:
             self.seen._dirty = True
         row["rloc16_ts"] = ts
 
-    def _poll_sent(self, who: str, stats: DeviceStats, seq: Optional[int], ts: float,
-                   dst: Optional[str] = None) -> None:
+    def _poll_sent(self, who: str, stats: DeviceStats, seq: int | None, ts: float,
+                   dst: str | None = None) -> None:
         """A poll went out. If the previous one is still waiting for its ACK
         and this is not a MAC retry of it (same seq), that one went
         unanswered; enough of those in a row, from a device whose polls
@@ -1308,7 +1307,7 @@ class Pipeline:
                     parent=parent, note=note, **extra)
         stats.poll_pending_seq, stats.poll_pending_ts = seq, ts
 
-    def _parent_of(self, dst: Optional[str]) -> tuple:
+    def _parent_of(self, dst: str | None) -> tuple:
         """The poll's destination is the parent's RLOC16: name it, so the
         question "whose ACKs are missing" is answered in the record.
         Returns (parent label, parent's extended address, 'its parent ...')."""
@@ -1319,8 +1318,8 @@ class Pipeline:
         whom = f"its parent {parent} ({dst})" if parent else "its parent"
         return parent, parent_addr, whom
 
-    def _confirm_starvation(self, who: str, stats: DeviceStats, row: Optional[dict],
-                            ts: float, dst: Optional[str]) -> None:
+    def _confirm_starvation(self, who: str, stats: DeviceStats, row: dict | None,
+                            ts: float, dst: str | None) -> None:
         """The page behind [polls] confirm_s: the starvation logged at notice
         is still open and another poll has just gone unanswered."""
         held = ts - (stats.confirm_at - self.cfg.poll_confirm_s)
@@ -1374,7 +1373,7 @@ class Pipeline:
                        + (" (before the starvation was confirmed: it was logged, not paged)"
                           if unconfirmed else ""))
 
-    def leader_device(self, router_id: Optional[int] = None) -> dict:
+    def leader_device(self, router_id: int | None = None) -> dict:
         """Which device holds a router id (the leader's, by default), as far
         as the sniffer knows. A router id is the top six bits of an RLOC16,
         so router 60 answers to short address 0xF000; the MLE layer learns
@@ -1395,7 +1394,7 @@ class Pipeline:
         label = who.get("leader_name") or who.get("leader_addr")
         return f"r{router_id} ({label})" if label else f"r{router_id}"
 
-    def partition_status(self) -> Optional[dict]:
+    def partition_status(self) -> dict | None:
         """The 'partition' entry of status.json and the replay summary."""
         # Read once: the watchdog thread calls this while the capture
         # thread may replace self.partition between the test and the
@@ -1407,7 +1406,7 @@ class Pipeline:
             return None
         return {"id": part[0], "leader_router": part[1], **self.leader_device()}
 
-    def _label(self, addr: Optional[str]) -> Optional[str]:
+    def _label(self, addr: str | None) -> str | None:
         """Name for any address form: extended, or a short one the decryptor
         has mapped; falls back to the address itself."""
         if not addr:
@@ -1669,7 +1668,7 @@ class Pipeline:
             tmp.write_text(json.dumps(self.observed_names, indent=1))
             tmp.replace(self.mle_names_path)
 
-    def _check_links(self, now: float, dominant: Optional[int]) -> None:
+    def _check_links(self, now: float, dominant: int | None) -> None:
         """Slow link degradation (link.py) for every device on our PAN."""
         for addr, row in self.seen.table.items():
             pan = row.get("pan")
@@ -1754,7 +1753,7 @@ class Pipeline:
     AUTO_FREEZE_COOLDOWN_S = 6 * 3600
     AUTO_FREEZE_RETRY_S = 30 * 60      # after a failed freeze: the next critical event tries again
 
-    def _emit(self, event: str, severity: str = "info", ts: Optional[float] = None,
+    def _emit(self, event: str, severity: str = "info", ts: float | None = None,
               **fields) -> dict:
         """Log an event, and freeze the ring when it is a critical one. Every
         event the pipeline raises goes through here rather than straight to
@@ -1783,7 +1782,7 @@ class Pipeline:
             self.freezer(label, event)
         return record
 
-    def _auto_freeze(self, ts: float, event: str) -> Optional[str]:
+    def _auto_freeze(self, ts: float, event: str) -> str | None:
         """Reserve a snapshot of the ring for a critical event, at most once
         per cooldown (one storm is one incident, however long it rumbles).
         Returns the incident label for _emit to log and then hand to
@@ -1855,7 +1854,7 @@ class Pipeline:
 
     # ------------------------------------------------------ daily summary
 
-    def _maybe_summarize(self, now: float, dominant: Optional[int]) -> None:
+    def _maybe_summarize(self, now: float, dominant: int | None) -> None:
         """One daily_summary per local day, at [summary] hour. The event log
         is the record of whether today's went out, so a restart neither
         repeats it nor loses it; a recorder that was down at the hour
@@ -1891,7 +1890,7 @@ class Pipeline:
             return read_day(events_dir, day)
         return [r for r in getattr(self.events, "records", []) if day_of(r["ts"]) == day]
 
-    def summary(self, now: float, dominant: Optional[int] = None) -> dict:
+    def summary(self, now: float, dominant: int | None = None) -> dict:
         """The last 24 hours in one record: what the recorder saw, who it
         has lost track of, and what it logged. Devices on a foreign PAN
         are left out, as everywhere else."""

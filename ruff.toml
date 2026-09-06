@@ -27,6 +27,7 @@ select = [
     "E501",     # line too long
     "B",        # bugbear: loop-variable closures, re-raise without from
     "SIM115",   # files opened without a context manager
+    "UP045",    # Optional[X] for X | None
     "RUF100",   # a noqa that suppresses nothing
 ]
 
@@ -39,7 +40,6 @@ select = [
 #
 # Considered and rejected, so the next person does not re-litigate them:
 #   I001    import sorting, 97 hits, pure churn
-#   UP045   Optional[X] -> X | None, 184 hits, same
 #   E702    grouped statements on one line, a deliberate idiom in the
 #           test helpers where several .clear() calls belong together
 #   E741    `l` for a line inside a comprehension, also deliberate

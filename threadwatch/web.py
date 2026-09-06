@@ -14,7 +14,6 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Optional
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from .events import DAY_RE, day_bounds, day_of, next_day, prev_day
@@ -174,11 +173,11 @@ def esc(x) -> str:
     return html.escape("" if x is None else str(x))
 
 
-def hm(ts: Optional[float]) -> str:
+def hm(ts: float | None) -> str:
     return time.strftime("%H:%M", time.localtime(ts)) if ts else ""
 
 
-def when(ts: Optional[float], day: str, stacked: bool = False) -> str:
+def when(ts: float | None, day: str, stacked: bool = False) -> str:
     """HH:MM, plus the day when it is not the page's own day, so a row
     carried over from an earlier day says so. ``stacked`` puts the day on
     its own line under the time (for the narrow time column); otherwise it
@@ -194,7 +193,7 @@ def when(ts: Optional[float], day: str, stacked: bool = False) -> str:
     return f'{hm(ts)} <span class="muted">{label}</span>'
 
 
-def ago(ts: Optional[float], now: Optional[float] = None) -> str:
+def ago(ts: float | None, now: float | None = None) -> str:
     if not ts:
         return "never"
     return fmt_duration((now or time.time()) - ts) + " ago"
@@ -219,7 +218,7 @@ class Site:
     def names(self) -> DeviceNames:
         return load_names(self.cfg)
 
-    def leader_router(self) -> Optional[int]:
+    def leader_router(self) -> int | None:
         part = self.status().get("partition") or {}
         return part.get("leader_router")
 

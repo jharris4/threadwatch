@@ -48,7 +48,6 @@ either clock: both resume where they stood.
 
 from __future__ import annotations
 
-from typing import Optional
 
 DAY_S = 86400.0
 WARMUP_FRAMES = 200
@@ -56,7 +55,7 @@ PAUSE_GAP_S = 30 * 60.0
 
 
 def assess(row: dict, now: float, drop_db: float, hold_s: float,
-           pause_gap_s: float = PAUSE_GAP_S) -> Optional[str]:
+           pause_gap_s: float = PAUSE_GAP_S) -> str | None:
     """Update one last-seen row's link bookkeeping. Returns "degraded" the
     moment a drop has held long enough to announce, "recovered" when an
     announced drop has ended (the signal came back, or the daily refresh

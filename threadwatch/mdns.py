@@ -25,7 +25,6 @@ import select
 import socket
 import struct
 import time
-from typing import Optional
 
 MDNS_GROUP, MDNS_PORT = "224.0.0.251", 5353
 SERVICE = "_meshcop._udp.local"
@@ -68,7 +67,7 @@ def build_query(questions: list[tuple[str, int]], unicast_reply: bool = True) ->
 
 
 def read_name(data: bytes, off: int, depth: int = 0,
-              end: Optional[int] = None) -> tuple[str, int]:
+              end: int | None = None) -> tuple[str, int]:
     """A possibly compressed name at ``off``: (name, offset after it)."""
     labels: list[str] = []
     limit = len(data) if end is None else min(end, len(data))

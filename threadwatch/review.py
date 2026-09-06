@@ -15,7 +15,6 @@ import json
 import threading
 import time
 from pathlib import Path
-from typing import Optional
 
 from .events import day_bounds, day_of, iter_days, list_days, next_day, prev_day, read_day
 from .freeze import STAGING_DIR
@@ -34,7 +33,7 @@ def _label(rec: dict) -> str:
     return rec.get("name") or rec.get("addr") or rec.get("src") or ""
 
 
-def _addr(rec: dict) -> Optional[str]:
+def _addr(rec: dict) -> str | None:
     return rec.get("addr") or rec.get("src")
 
 
@@ -52,7 +51,7 @@ def fmt_duration(seconds: float) -> str:
     return f"{days}d{hours}h"
 
 
-def group_episodes(records: list[dict], now: Optional[float] = None) -> list[dict]:
+def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
     """Collapse records into episodes.
 
     Each episode: {kind, start, end, severity, count, title, detail, addr,
@@ -68,9 +67,9 @@ def group_episodes(records: list[dict], now: Optional[float] = None) -> list[dic
     rejoin: dict[str, dict] = {}
     open_link: dict[str, dict] = {}
     open_starved: dict[str, dict] = {}
-    first_seen: Optional[dict] = None
-    join_scan: Optional[dict] = None
-    recorder: Optional[dict] = None
+    first_seen: dict | None = None
+    join_scan: dict | None = None
+    recorder: dict | None = None
 
     def new(kind, rec, title, detail="", **extra):
         ep = {"kind": kind, "start": rec["ts"], "end": rec["ts"], "severity": rec["severity"],
@@ -276,7 +275,7 @@ def fmt_episode(ep: dict, stamp_fmt: str = "%m-%d %H:%M") -> str:
 EPISODE_WINDOW_DAYS = 31
 
 
-def day_episodes(events_dir: Path, day: str, now: Optional[float] = None) -> list[dict]:
+def day_episodes(events_dir: Path, day: str, now: float | None = None) -> list[dict]:
     """Episodes that touch a day. Grouping runs over the days around it
     (EPISODE_WINDOW_DAYS either side), so a silence that began days ago
     and is still open appears on every day it covers with its real
@@ -354,7 +353,7 @@ def coverage_records(events_dir: Path, day: str) -> list[dict]:
     return out
 
 
-def coverage_since(events_dir: Path) -> Optional[float]:
+def coverage_since(events_dir: Path) -> float | None:
     """When the first start on record is: before it the log cannot say
     whether the recorder was listening (the starts were not logged), and
     a day page from then says so rather than showing a clean day."""
@@ -399,8 +398,8 @@ def _subtract(segments: list[dict], holes: list[dict]) -> list[dict]:
     return out
 
 
-def coverage(events_dir: Path, day: str, now: Optional[float] = None,
-             status: Optional[dict] = None) -> list[dict]:
+def coverage(events_dir: Path, day: str, now: float | None = None,
+             status: dict | None = None) -> list[dict]:
     """The parts of ``day`` the recorder was not listening (state "blind":
     not running, or a forward clock step) or may not have been
     ("uncertain": running but hearing nothing, or hearing other PANs
@@ -464,7 +463,7 @@ def coverage(events_dir: Path, day: str, now: Optional[float] = None,
     return sorted(out, key=lambda x: (x["start"], x["state"]))
 
 
-def episode_blind_s(ep: dict, segments: list[dict], now: Optional[float] = None) -> float:
+def episode_blind_s(ep: dict, segments: list[dict], now: float | None = None) -> float:
     """How much of an episode's span the recorder was not listening for:
     the figure beside a silence that says how much of it nobody was there
     to hear. A quiet spell spans from the device's last frame; anything
@@ -522,7 +521,7 @@ def day_index(events_dir: Path) -> list[dict]:
 
 
 def device_rows(seen: LastSeen, names: DeviceNames, min_rssi_dbm: float,
-                now: Optional[float] = None, leader_router: Optional[int] = None) -> list[dict]:
+                now: float | None = None, leader_router: int | None = None) -> list[dict]:
     """One dict per tracked address. The live role comes from the RLOC16 the
     recorder last saw the device use: router or child, which router it is
     or hangs off, and whether it holds the partition's leader id."""
@@ -588,7 +587,7 @@ DEVICE_SORTS = {
 }
 
 
-def select_devices(rows: list[dict], dominant: Optional[int], only: str = "", sort: str = "name") -> list[dict]:
+def select_devices(rows: list[dict], dominant: int | None, only: str = "", sort: str = "name") -> list[dict]:
     """The devices page's subset and order. An unknown filter or sort name
     is ignored rather than an error: the page still renders."""
     f = DEVICE_FILTERS.get(only)
@@ -598,8 +597,8 @@ def select_devices(rows: list[dict], dominant: Optional[int], only: str = "", so
     return sorted(rows, key=s[1])
 
 
-def dominant_pan(seen: LastSeen, configured: Optional[int] = None,
-                 state_dir: Optional[Path] = None) -> Optional[int]:
+def dominant_pan(seen: LastSeen, configured: int | None = None,
+                 state_dir: Path | None = None) -> int | None:
     """This network's PAN, as the recorder judges it: [network] pan_id
     when set, else the PAN the recorder adopted (status.json, written
     every 30 s), else the one the tracked addresses send most frames on.
@@ -636,8 +635,8 @@ def dominant_pan(seen: LastSeen, configured: Optional[int] = None,
 
 
 def now_card(seen: LastSeen, names: DeviceNames, events_dir: Path, min_rssi_dbm: float,
-             day: str, now: Optional[float] = None, pan_id: Optional[int] = None,
-             state_dir: Optional[Path] = None) -> dict:
+             day: str, now: float | None = None, pan_id: int | None = None,
+             state_dir: Path | None = None) -> dict:
     """What matters at this moment, for the top of today's page: devices
     quiet right now (as the recorder announced them), devices whose signal
     is down, unknown addresses still to name, and the day's daily_summary
@@ -684,7 +683,7 @@ def live_address(addrs: list[str], table: dict[str, dict]) -> str:
 DEVICE_HISTORY_DAYS = 90
 
 
-def devices_history(events_dir: Path, addrs: list[str], now: Optional[float] = None,
+def devices_history(events_dir: Path, addrs: list[str], now: float | None = None,
                     days: int = DEVICE_HISTORY_DAYS) -> list[dict]:
     """Every episode involving one device over the last ``days``, newest
     first. A rotating device is several addresses with one story, so they
@@ -709,7 +708,7 @@ def devices_history(events_dir: Path, addrs: list[str], now: Optional[float] = N
     return sorted(episodes, key=lambda e: e["start"], reverse=True)
 
 
-def device_history(events_dir: Path, addr: str, now: Optional[float] = None,
+def device_history(events_dir: Path, addr: str, now: float | None = None,
                    days: int = DEVICE_HISTORY_DAYS) -> list[dict]:
     """devices_history for a single address."""
     return devices_history(events_dir, [addr], now, days)
@@ -722,7 +721,7 @@ def _dir_size(path: Path) -> int:
         return 0
 
 
-def _span(pcaps: list[str]) -> Optional[tuple[str, str]]:
+def _span(pcaps: list[str]) -> tuple[str, str] | None:
     """First and last hour covered by ring-named pcaps, as YYYYMMDD-HH."""
     hours = sorted(n[12:23] for n in pcaps if n.startswith("threadwatch-") and n.endswith(".pcap") and len(n) == 28)
     return (hours[0], hours[-1]) if hours else None
@@ -784,7 +783,7 @@ def incidents(incidents_dir: Path) -> list[dict]:
     return out
 
 
-def fmt_bytes(n: Optional[int]) -> str:
+def fmt_bytes(n: int | None) -> str:
     if n is None:
         return "?"
     for unit in ("B", "KB", "MB", "GB", "TB"):

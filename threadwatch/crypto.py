@@ -24,7 +24,6 @@ import hashlib
 import re
 import struct
 from dataclasses import dataclass, field
-from typing import Optional
 
 from cryptography.hazmat.primitives.ciphers.aead import AESCCM
 from cryptography.exceptions import InvalidTag
@@ -54,16 +53,16 @@ def derive_keys(network_key: bytes, sequence: int) -> tuple[bytes, bytes]:
 class MleInfo:
     command: int
     command_name: str
-    partition_id: Optional[int] = None
-    leader_router_id: Optional[int] = None
-    source_addr16: Optional[int] = None
+    partition_id: int | None = None
+    leader_router_id: int | None = None
+    source_addr16: int | None = None
     # False for a security-suite-255 message: it carried no MIC, so it
     # came from anything on the channel and proves nothing. Only the
     # command is reported for it; its TLVs are never read.
     secured: bool = True
     # The MLE frame counter of a secured message: the pipeline keeps the
     # highest accepted per sender, so a replayed message is not a sighting.
-    counter: Optional[int] = None
+    counter: int | None = None
 
 
 @dataclass
@@ -73,7 +72,7 @@ class Decryptor:
     short_to_ext: dict = field(default_factory=dict)
     # The highest key sequence a frame has decrypted under, None until one
     # has. The MAC key search is centred on it (see _keys_for_index).
-    key_sequence: Optional[int] = None
+    key_sequence: int | None = None
     _keys_by_index: dict = field(default_factory=dict)  # key_index -> (sequence basis, [(seq, mle, mac)])
     stats: dict = field(default_factory=lambda: {
         "mac_decrypted": 0, "mac_failed": 0, "mac_no_ext_addr": 0, "mac_unsupported": 0,
@@ -113,15 +112,15 @@ class Decryptor:
 
     # ------------------------------------------------------------------ MAC
 
-    def decrypt_frame(self, psdu: bytes, src_ext_hex: Optional[str],
-                      src_short_hex: Optional[str]) -> Optional[bytes]:
+    def decrypt_frame(self, psdu: bytes, src_ext_hex: str | None,
+                      src_short_hex: str | None) -> bytes | None:
         """Return the decrypted MAC payload of a secured data frame, or the
         plaintext payload for unsecured frames, or None when undecryptable.
         The returned bytes start at the MAC payload (after aux header)."""
         return self.decrypt_frame_counter(psdu, src_ext_hex, src_short_hex)[0]
 
-    def decrypt_frame_counter(self, psdu: bytes, src_ext_hex: Optional[str],
-                              src_short_hex: Optional[str]) -> tuple[Optional[bytes], Optional[int]]:
+    def decrypt_frame_counter(self, psdu: bytes, src_ext_hex: str | None,
+                              src_short_hex: str | None) -> tuple[bytes | None, int | None]:
         """decrypt_frame, plus the MAC frame counter of a secured frame that
         passed its MIC: the proof that the sender holds the key and used
         this extended address as its nonce. None for an unsecured frame
@@ -152,7 +151,7 @@ class Decryptor:
         sec = self._secured_parts(psdu)
         return bool(sec) and self._decrypt_with_ext(sec, ext_hex) is not None
 
-    def resolve_short(self, psdu: bytes, short_hex: str, candidates) -> Optional[str]:
+    def resolve_short(self, psdu: bytes, short_hex: str, candidates) -> str | None:
         """Learn which extended address a short-source secured frame came from.
 
         The MAC nonce is the sender's extended address, so trying each
@@ -210,7 +209,7 @@ class Decryptor:
         """True when the frame is secured the Thread way and worth a nonce search."""
         return bool(self._secured_parts(psdu))
 
-    def _decrypt_with_ext(self, sec, ext_hex: str) -> Optional[bytes]:
+    def _decrypt_with_ext(self, sec, ext_hex: str) -> bytes | None:
         key_index, counter, sec_level, open_part, secret = sec
         # A candidate that is not an extended address (a stray form in a
         # state file the loaders did not catch) is nobody, not a crash in
@@ -242,7 +241,7 @@ class Decryptor:
         return None
 
     @staticmethod
-    def _mac_header_len(p: bytes) -> Optional[int]:
+    def _mac_header_len(p: bytes) -> int | None:
         fcf = struct.unpack("<H", p[0:2])[0]
         pan_comp = bool(fcf & 0x0040)
         dst_mode = (fcf >> 10) & 0x3
@@ -265,9 +264,9 @@ class Decryptor:
         return bytes(b)
 
     @staticmethod
-    def udp_ports(payload: bytes, mac_src_ext: Optional[str] = None,
-                  mac_dst_ext: Optional[str] = None,
-                  mac_dst_short: Optional[str] = None):
+    def udp_ports(payload: bytes, mac_src_ext: str | None = None,
+                  mac_dst_ext: str | None = None,
+                  mac_dst_short: str | None = None):
         """Best-effort 6LoWPAN IPHC+NHC parse.
 
         Returns (sport, dport, udp_payload, src_ip16, dst_ip16) where the IPs
@@ -368,9 +367,9 @@ class Decryptor:
 
     # ------------------------------------------------------------------ MLE
 
-    def parse_mle(self, udp_payload: bytes, src_ext_hex: Optional[str],
-                  src_ip: Optional[bytes] = None,
-                  dst_ip: Optional[bytes] = None) -> Optional[MleInfo]:
+    def parse_mle(self, udp_payload: bytes, src_ext_hex: str | None,
+                  src_ip: bytes | None = None,
+                  dst_ip: bytes | None = None) -> MleInfo | None:
         """Decrypt and parse an MLE message (UDP port 19788).
 
         MLE's AES-CCM auth data is srcIPv6 || dstIPv6 || security header

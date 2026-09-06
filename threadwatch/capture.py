@@ -10,7 +10,6 @@ import threading
 import time
 import traceback
 from pathlib import Path
-from typing import Optional
 
 from .alerts import HeartbeatRunner, build_heartbeats, build_sinks
 from . import __version__
@@ -55,7 +54,7 @@ class RingWriter:
 
     PRUNE_STEP = 4 * 1024 * 1024
 
-    def __init__(self, ring_dir: Path, keep_files: int, dlt: int, keep_bytes: Optional[int] = None):
+    def __init__(self, ring_dir: Path, keep_files: int, dlt: int, keep_bytes: int | None = None):
         if keep_bytes is not None and keep_bytes <= 0:
             # _prune would otherwise delete every file but the current one
             # at every rotation and call it a size cap.
@@ -194,8 +193,8 @@ EXIT_REASONS = {0: "stopped", 1: "crashed", EXIT_STALLED: "stalled", 3: "stream_
 EXIT_FILE = "last-exit.json"
 
 
-def record_exit(state_dir: Path, code: int, last_frame_ts: Optional[float] = None,
-                now: Optional[float] = None) -> Optional[str]:
+def record_exit(state_dir: Path, code: int, last_frame_ts: float | None = None,
+                now: float | None = None) -> str | None:
     """Leave a note of how this run ended for the next start to read:
     the Pipeline announces the restart with the cause and the gap, and
     the review's coverage tells the recorder's own outage from a
@@ -217,7 +216,7 @@ def record_exit(state_dir: Path, code: int, last_frame_ts: Optional[float] = Non
     return reason
 
 
-def watchdog_verdict(age: float, ring_open: bool, sniffer_alive: bool) -> Optional[int]:
+def watchdog_verdict(age: float, ring_open: bool, sniffer_alive: bool) -> int | None:
     """What the watchdog does on this tick: an exit code, or None to keep
     waiting. A sniffer thread that died before the ring opened never got
     the serial port (held by a stale process, or gone after enumeration):
@@ -256,7 +255,7 @@ class Housekeeping:
 
     def __init__(self) -> None:
         self.last_tick = 0.0             # frame clock at the last tick
-        self.last_mono: Optional[float] = None
+        self.last_mono: float | None = None
 
     def due(self, now: float, mono: float) -> bool:
         """Called per frame with its wall-clock stamp and the monotonic
@@ -268,8 +267,8 @@ class Housekeeping:
         return run
 
 
-def capture_healthy(last_frame_mono: Optional[float], now: float,
-                    timeout: float = STALL_TIMEOUT_S) -> Optional[bool]:
+def capture_healthy(last_frame_mono: float | None, now: float,
+                    timeout: float = STALL_TIMEOUT_S) -> bool | None:
     """The heartbeat's answer: unknown (None) until this run has heard a
     frame, then healthy while the last one is fresher than the stall
     timeout, so the beat stops before the watchdog exits."""
@@ -473,7 +472,7 @@ def run_capture(cfg: Config) -> None:
 
 
 def status_tick(cfg, port, beat: dict, started: float, started_mono: float, pipe: Pipeline,
-                decryptor, prior_frame: Optional[float], log, sniffer=None) -> float:
+                decryptor, prior_frame: float | None, log, sniffer=None) -> float:
     """One watchdog tick: refresh status.json once the ring is open, and
     return the stall clock's reading (seconds since this run's last frame,
     or since it started). The file's last_frame_ts is when a frame was
@@ -492,7 +491,7 @@ def status_tick(cfg, port, beat: dict, started: float, started_mono: float, pipe
     return age
 
 
-def last_frame_on_record(state_dir: Path) -> Optional[float]:
+def last_frame_on_record(state_dir: Path) -> float | None:
     """When the recorder last heard a frame, as the status.json of a
     previous run recorded it; None when no run has heard one."""
     try:
@@ -505,7 +504,7 @@ def last_frame_on_record(state_dir: Path) -> Optional[float]:
 
 
 def _write_status(cfg, port, total, started, pipe: Pipeline, ring, decryptor,
-                  last_frame_age: float = 0.0, last_frame_ts: Optional[float] = None,
+                  last_frame_age: float = 0.0, last_frame_ts: float | None = None,
                   dropped_lines: int = 0) -> None:
     # last_frame_age_s is this run's view (the watchdog's stall clock);
     # last_frame_ts is the wall-clock time of the last frame any run heard,

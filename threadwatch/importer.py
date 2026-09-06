@@ -28,7 +28,7 @@ from __future__ import annotations
 import copy
 import json
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable
 
 from .names import _norm, entry_addresses, inventory_lock, read_inventory
 
@@ -186,8 +186,8 @@ def plan_border_routers(entries: list[dict], routers: list[dict]) -> tuple[list[
     return entries, changes
 
 
-def run_import(cfg, inventory_path: Path, *, write: bool = False, url: Optional[str] = None,
-               env_file: Optional[Path] = None, dataset_id: Optional[str] = None,
+def run_import(cfg, inventory_path: Path, *, write: bool = False, url: str | None = None,
+               env_file: Path | None = None, dataset_id: str | None = None,
                use_ha: bool = True, use_mdns: bool = True, mdns_seconds: float = 4.0,
                devices: bool = True, credentials: bool = True,
                out: Callable[[str], None] = print) -> int:
@@ -205,8 +205,8 @@ def run_import(cfg, inventory_path: Path, *, write: bool = False, url: Optional[
         return _import(cfg, inventory_path, **kw)
 
 
-def _import(cfg, inventory_path: Path, *, write: bool, url: Optional[str], env_file: Optional[Path],
-            dataset_id: Optional[str], use_ha: bool, use_mdns: bool, mdns_seconds: float,
+def _import(cfg, inventory_path: Path, *, write: bool, url: str | None, env_file: Path | None,
+            dataset_id: str | None, use_ha: bool, use_mdns: bool, mdns_seconds: float,
             devices: bool, credentials: bool, out: Callable[[str], None]) -> int:
     from .ha import HomeAssistant, connection_settings, current_key, thread_dataset, thread_devices, write_private
     from .pipeline import credentials_path

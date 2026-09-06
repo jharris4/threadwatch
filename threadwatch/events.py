@@ -21,7 +21,7 @@ import re
 import threading
 import time
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Iterator
 
 from .alerts import SEVERITIES, SPOOL_FILE, Dispatcher, Sink, record_id  # noqa: F401  (re-exported)
 
@@ -65,7 +65,7 @@ def _close_partial_line(path: Path) -> None:
 
 
 class EventLog:
-    def __init__(self, events_dir: Path, sinks: Optional[list[Sink]] = None):
+    def __init__(self, events_dir: Path, sinks: list[Sink] | None = None):
         self.dir = events_dir
         # The spool sits beside the log, in data/state: what the last run
         # could not deliver is sent at this start (alerts.Dispatcher).
@@ -92,7 +92,7 @@ class EventLog:
         return any(r.get("event") == event and r.get("addr") == addr and r.get("ts") == ts
                    for r in read_day(self.dir, day_of(ts)))
 
-    def emit(self, event: str, severity: str = "info", ts: Optional[float] = None,
+    def emit(self, event: str, severity: str = "info", ts: float | None = None,
              **fields) -> dict:
         record = {"ts": ts if ts is not None else time.time(),
                   "event": event, "severity": severity, **fields}
@@ -114,7 +114,7 @@ class NullEventLog(EventLog):
         self.records: list[dict] = []
         self.dispatcher = Dispatcher([], _log)
 
-    def emit(self, event: str, severity: str = "info", ts: Optional[float] = None,
+    def emit(self, event: str, severity: str = "info", ts: float | None = None,
              **fields) -> dict:
         record = {"ts": ts if ts is not None else time.time(),
                   "event": event, "severity": severity, **fields}
@@ -250,7 +250,7 @@ def read_day(events_dir: Path, day: str) -> list[dict]:
     return list(out)
 
 
-def prune_days(events_dir: Path, keep_days: int, now: Optional[float] = None) -> list[str]:
+def prune_days(events_dir: Path, keep_days: int, now: float | None = None) -> list[str]:
     """Delete day files older than ``keep_days`` local days (0: none), and
     return the days deleted. Nothing else bounds the event log: the ring
     has keep_files and keep_gb, and without this every incident freeze
@@ -274,8 +274,8 @@ def prune_days(events_dir: Path, keep_days: int, now: Optional[float] = None) ->
     return gone
 
 
-def iter_days(events_dir: Path, first: Optional[str] = None,
-              last: Optional[str] = None) -> Iterator[tuple[str, list[dict]]]:
+def iter_days(events_dir: Path, first: str | None = None,
+              last: str | None = None) -> Iterator[tuple[str, list[dict]]]:
     for day in list_days(events_dir):
         if first and day < first:
             continue

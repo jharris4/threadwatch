@@ -36,7 +36,7 @@ import struct
 import time
 import urllib.parse
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 DEFAULT_URL = "http://homeassistant.local:8123"
@@ -71,7 +71,7 @@ def load_env(path: Path) -> dict[str, str]:
     return out
 
 
-def connection_settings(env_path: Path, url_override: Optional[str] = None) -> tuple[str, str]:
+def connection_settings(env_path: Path, url_override: str | None = None) -> tuple[str, str]:
     """(url, token) from the env file, the environment, and the flag, in
     rising precedence for the URL; the token comes from the file or the
     environment. Raises HAError with the setup steps when there is none."""
@@ -232,8 +232,8 @@ class HomeAssistant:
 
     def __init__(self, url: str, token: str):
         self.url, self._token = url, token
-        self._sock: Optional[socket.socket] = None
-        self._reader: Optional[FrameReader] = None
+        self._sock: socket.socket | None = None
+        self._reader: FrameReader | None = None
         self._next_id = 1
 
     def connect(self) -> "HomeAssistant":
@@ -331,7 +331,7 @@ class HomeAssistant:
 
 # ------------------------------------------------------------ what to fetch
 
-def normalize_ext(mac: Optional[str]) -> Optional[str]:
+def normalize_ext(mac: str | None) -> str | None:
     """'aa:bb:cc:dd:ee:ff:00:11' -> 'AABBCCDDEEFF0011'; None unless it is
     a 64-bit address (a Wi-Fi device's 48-bit MAC is not what we want)."""
     if not mac:
@@ -407,7 +407,7 @@ def parse_dataset_tlv(hex_tlv: str) -> dict:
     return out
 
 
-def select_dataset(datasets: list[dict], dataset_id: Optional[str] = None) -> dict:
+def select_dataset(datasets: list[dict], dataset_id: str | None = None) -> dict:
     """The preferred dataset, or the only one, or the one asked for."""
     if dataset_id:
         for d in datasets:
@@ -425,7 +425,7 @@ def select_dataset(datasets: list[dict], dataset_id: Optional[str] = None) -> di
     raise HAError(f"several Thread datasets and none preferred: {listing}; pick one with --dataset-id")
 
 
-def thread_dataset(ha: HomeAssistant, dataset_id: Optional[str] = None) -> dict:
+def thread_dataset(ha: HomeAssistant, dataset_id: str | None = None) -> dict:
     """Network name, channel, PAN ids and the key of the chosen dataset."""
     listing = ha.call("thread/list_datasets") or {}
     chosen = select_dataset(listing.get("datasets") or [], dataset_id)
@@ -453,7 +453,7 @@ def write_private(path: Path, text: str) -> None:
     tmp.replace(path)
 
 
-def current_key(path: Path) -> Optional[str]:
+def current_key(path: Path) -> str | None:
     try:
         import tomllib
         return str(tomllib.loads(path.read_text()).get("credentials", {}).get("network_key", "")).lower() or None

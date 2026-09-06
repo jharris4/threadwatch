@@ -6,14 +6,13 @@ import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 from .detect import DetectorConfig
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
-def repo_commit() -> Optional[str]:
+def repo_commit() -> str | None:
     """The checkout's commit, when this is running from one (a deploy by
     rsync ships no .git). What tells a host running the code you pushed
     from one running a six-month-old copy."""
@@ -34,23 +33,23 @@ class Config:
     # silences count and which PANs are foreign; when unset the recorder
     # guesses from which PAN it hears most, which a busier neighbour on the
     # same channel can win (see Pipeline.dominant_pan).
-    pan_id: Optional[int] = None
-    serial_port: Optional[str] = None          # auto-detect when unset
+    pan_id: int | None = None
+    serial_port: str | None = None          # auto-detect when unset
     data_dir: Path = REPO_ROOT / "data"
     keep_files: int = 168                      # ring: hourly files, one week
-    keep_bytes: Optional[int] = None           # ring: total size cap ([capture] keep_gb), None = files only
+    keep_bytes: int | None = None           # ring: total size cap ([capture] keep_gb), None = files only
     freeze_on_critical: bool = False           # snapshot the ring when a critical event fires
     incidents_keep: int = 4                    # how many auto-* incidents to keep; -1 = no cap
-    devices_path: Optional[Path] = None
+    devices_path: Path | None = None
     detector: DetectorConfig = field(default_factory=DetectorConfig)
     config_dir: Path = REPO_ROOT / "config"
-    config_path: Optional[Path] = None         # the file load() read, None when defaults stood
-    credentials_path: Optional[Path] = None
+    config_path: Path | None = None         # the file load() read, None when defaults stood
+    credentials_path: Path | None = None
     # A frozen incident to read state and events from instead of
     # data/state (replay and why --incident): its copies of the state
     # files and the event log sit at its top level, and nothing is ever
     # written there. See for_incident.
-    frozen_dir: Optional[Path] = None
+    frozen_dir: Path | None = None
     # Silence (seconds) before a device_quiet event. 30 min: the 2026-09-02
     # soak (9.8 h, 22 sleepy end devices) showed 19 of them never silent for
     # 3 min and the rest under 30 min once marginal-reception devices are
@@ -149,7 +148,7 @@ class Config:
         return self.state_dir / "events"
 
 
-def load(path: Optional[Path]) -> Config:
+def load(path: Path | None) -> Config:
     cfg = Config()
     if path is None:
         default = REPO_ROOT / "config" / "config.toml"

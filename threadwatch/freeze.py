@@ -21,7 +21,6 @@ import re
 import shutil
 import time
 from pathlib import Path
-from typing import Optional
 
 from . import __version__
 from .config import repo_commit
@@ -118,7 +117,7 @@ def redact_config(text: str) -> str:
     return "\n".join(out) + ("\n" if text.endswith("\n") else "")
 
 
-def _run_state(text: str, depth: int, open_ml: Optional[str]) -> tuple[int, Optional[str]]:
+def _run_state(text: str, depth: int, open_ml: str | None) -> tuple[int, str | None]:
     """Walk one line from the given state and report what it leaves open:
     net brackets, and the ''' or \"\"\" of a string still running. Counting
     brackets alone missed a multi-line basic string, whose body was then
@@ -160,7 +159,7 @@ def _run_state(text: str, depth: int, open_ml: Optional[str]) -> tuple[int, Opti
 _commit = repo_commit
 
 
-def write_manifest(cfg, dest: Path, label: str, now: float, trigger: Optional[str]) -> dict:
+def write_manifest(cfg, dest: Path, label: str, now: float, trigger: str | None) -> dict:
     """manifest.json: what the bundle holds and the recorder that made it.
     Written last, so a bundle without one was cut short."""
     files = {str(p.relative_to(dest)): p.stat().st_size for p in sorted(dest.rglob("*")) if p.is_file()}
@@ -190,7 +189,7 @@ def write_manifest(cfg, dest: Path, label: str, now: float, trigger: Optional[st
     return manifest
 
 
-def _take_lock(path: Path, wait: bool) -> Optional[int]:
+def _take_lock(path: Path, wait: bool) -> int | None:
     """Hold an exclusive lock on the file at ``path``, creating it. Returns
     the descriptor to close when done, or None when another live process
     holds it and ``wait`` is off. The file is opened again when it was
@@ -214,7 +213,7 @@ def _take_lock(path: Path, wait: bool) -> Optional[int]:
 
 
 def freeze_ring(cfg, label: str = "incident", now: float | None = None,
-                trigger: Optional[str] = None) -> tuple[Path, int]:
+                trigger: str | None = None) -> tuple[Path, int]:
     """Snapshot the ring. Returns (incident dir, ring files copied). The
     label is reduced to filename-safe characters (safe_label); ``trigger``
     names the event that asked for the freeze, for the manifest."""

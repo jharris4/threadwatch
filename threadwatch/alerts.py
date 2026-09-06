@@ -60,7 +60,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 SEVERITIES = ("info", "notice", "warning", "critical")
 
@@ -149,7 +149,7 @@ class _Fields(dict):
         return v
 
 
-def template_fields(record: dict, severity_values: Optional[dict] = None) -> dict:
+def template_fields(record: dict, severity_values: dict | None = None) -> dict:
     sev = record.get("severity", "info")
     idx = SEVERITIES.index(sev) if sev in SEVERITIES else 0
     name = record.get("name") or ""
@@ -191,7 +191,7 @@ def _severity_value(sev: str, idx: int, table: dict):
 
 
 def render(template: str, record: dict, json_escape: bool,
-           severity_values: Optional[dict] = None) -> str:
+           severity_values: dict | None = None) -> str:
     fields = _Fields(template_fields(record, severity_values), json_escape)
     return string.Formatter().vformat(template, (), fields)
 
@@ -254,7 +254,7 @@ class Sink:
     # Which event names this sink takes: an allowlist (None = every name), then
     # a denylist. Checked before the cooldown, so a name a sink does not want
     # never opens a window and never appears in a digest.
-    events: Optional[frozenset] = None
+    events: frozenset | None = None
     ignore_events: frozenset = frozenset()
     _last: dict = field(default_factory=dict)      # event -> start of its current window
     _pending: dict = field(default_factory=dict)   # event -> records held back this window
@@ -299,7 +299,7 @@ class Sink:
     def _held_since(self, ev: str) -> float:
         return self._since.get(ev, self._last.get(ev, 0.0))
 
-    def next_digest_at(self, now: Optional[float] = None) -> Optional[float]:
+    def next_digest_at(self, now: float | None = None) -> float | None:
         """When the earliest window with held-back records ends, or None.
         A window that began after ``now`` (the clock stepped back) ends now."""
         if not self._pending:
@@ -333,7 +333,7 @@ class HttpSink(Sink):
     url: str = ""
     method: str = "POST"
     headers: dict = field(default_factory=dict)
-    body: Optional[str] = None                     # template; None = raw record
+    body: str | None = None                     # template; None = raw record
     severity_values: dict = field(default_factory=dict)
 
     def __post_init__(self):
@@ -471,7 +471,7 @@ def _ntfy_preset(raw: dict) -> dict:
 PRESETS = {"ntfy": _ntfy_preset}
 
 
-def _event_filter(raw: dict, key: str, name: str, log: Callable[[str], None]) -> Optional[frozenset]:
+def _event_filter(raw: dict, key: str, name: str, log: Callable[[str], None]) -> frozenset | None:
     """``events`` / ``ignore_events``: a list of event names, or absent.
 
     A name the recorder never emits is almost certainly a typo, and a typo in
@@ -493,7 +493,7 @@ def _event_filter(raw: dict, key: str, name: str, log: Callable[[str], None]) ->
 
 
 def build_sink(raw: dict, index: int, log: Callable[[str], None],
-               unbuilt: Optional[list] = None) -> Optional[Sink]:
+               unbuilt: list | None = None) -> Sink | None:
     """Turn one [[alerts.sinks]] table into a Sink, or None if disabled.
     A sink that is enabled but cannot be built (a ${VARIABLE} it names is
     not set) is logged and, when ``unbuilt`` is given, appended to it as
@@ -551,7 +551,7 @@ def _check_unique_names(kind: str, items) -> None:
         seen.add(it.name)
 
 
-def build_sinks(alerts_raw: dict, log: Callable[[str], None], unbuilt: Optional[list] = None) -> list[Sink]:
+def build_sinks(alerts_raw: dict, log: Callable[[str], None], unbuilt: list | None = None) -> list[Sink]:
     sinks: list[Sink] = []
     # Legacy single-webhook form, kept working as a shorthand.
     if alerts_raw.get("webhook_url"):
@@ -616,7 +616,7 @@ class Dispatcher:
     otherwise discard it.
     """
 
-    def __init__(self, sinks: list[Sink], log: Callable[[str], None], spool: Optional[Path] = None,
+    def __init__(self, sinks: list[Sink], log: Callable[[str], None], spool: Path | None = None,
                  retry_delays: tuple = RETRY_DELAYS_S, retry_cap_s: float = RETRY_CAP_S,
                  stale_s: float = STALE_S):
         self.sinks = sinks
@@ -629,14 +629,14 @@ class Dispatcher:
         self._max_delay = max(retry_cap_s, *retry_delays) if retry_delays else retry_cap_s
         self._queue: list[dict] = []          # {record, sinks, attempt, due}
         self._undelivered: list[dict] = []    # for the spool: {record, sinks: [names], attempt}
-        self._inflight: Optional[dict] = None
+        self._inflight: dict | None = None
         self._cv = threading.Condition()
         self._closing = False
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
         self.delivered = 0
         self.given_up = 0
         self.resumed = 0
-        self._inflight_spool: Optional[Path] = None   # the loaded spool, kept until the queue drains
+        self._inflight_spool: Path | None = None   # the loaded spool, kept until the queue drains
         if sinks:
             self._load_spool()
             self._thread = threading.Thread(target=self._run, daemon=True,
@@ -675,7 +675,7 @@ class Dispatcher:
                 self._queue.append({"record": record, "sinks": targets, "attempt": 0, "due": now})
             self._cv.notify()   # a held-back record changes the next digest time
 
-    def deliver_now(self, record: dict, ignore_cooldown: bool = True) -> list[tuple[Sink, Optional[str]]]:
+    def deliver_now(self, record: dict, ignore_cooldown: bool = True) -> list[tuple[Sink, str | None]]:
         """Synchronous delivery for tests and `threadwatch alert-test`.
 
         Returns (sink, error-or-None) per eligible sink.
@@ -705,7 +705,7 @@ class Dispatcher:
     def _due(self, item: dict, now: float) -> bool:
         return item["due"] <= now or item["due"] - now > self._max_delay
 
-    def _next_due(self, now: float) -> Optional[float]:
+    def _next_due(self, now: float) -> float | None:
         times = [now if self._due(it, now) else it["due"] for it in self._queue]
         times += [t for t in (s.next_digest_at(now) for s in self.sinks) if t is not None]
         return min(times) if times else None
@@ -748,7 +748,7 @@ class Dispatcher:
             if drained:
                 self._drop_inflight_spool()
 
-    def _failed(self, sink: Sink, record: dict, item: Optional[dict], exc: Exception) -> None:
+    def _failed(self, sink: Sink, record: dict, item: dict | None, exc: Exception) -> None:
         """A send that raised: try again later, spool it when the process
         is leaving, or give it up when the record is too old to be news."""
         err = _describe_error(exc)
@@ -970,8 +970,8 @@ class Heartbeat:
     interval_s: float = 60.0
     method: str = "POST"
     headers: dict = field(default_factory=dict)
-    body: Optional[str] = None
-    failure_url: Optional[str] = None     # hit instead of url when unhealthy
+    body: str | None = None
+    failure_url: str | None = None     # hit instead of url when unhealthy
     timeout_s: float = 10.0
     _inflight: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
@@ -999,7 +999,7 @@ class Heartbeat:
 
 
 def build_heartbeats(raw_list: list, log: Callable[[str], None],
-                     unbuilt: Optional[list] = None) -> list[Heartbeat]:
+                     unbuilt: list | None = None) -> list[Heartbeat]:
     """The [[heartbeats]] tables as Heartbeats. ``unbuilt`` collects, as
     build_sink does, the enabled ones a missing ${VARIABLE} kept out."""
     out: list[Heartbeat] = []
@@ -1050,7 +1050,7 @@ class HeartbeatRunner:
         if beats and start:
             threading.Thread(target=self._run, daemon=True, name="heartbeat").start()
 
-    def push_all(self, healthy: Optional[bool] = None) -> list[tuple[Heartbeat, Optional[str]]]:
+    def push_all(self, healthy: bool | None = None) -> list[tuple[Heartbeat, str | None]]:
         state = self.healthy() if healthy is None else healthy
         out = []
         if state is None:

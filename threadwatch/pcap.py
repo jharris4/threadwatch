@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 import struct
 from dataclasses import dataclass
-from typing import BinaryIO, Iterator, Optional
+from typing import BinaryIO, Iterator
 
 DLT_TAP = 283
 DLT_NOFCS = 230
@@ -41,17 +41,17 @@ class Frame:
     ts: float                 # epoch seconds (float)
     raw: bytes                # bytes as captured (including TAP header if DLT 283)
     psdu: bytes               # 802.15.4 PHY payload (MAC frame)
-    rssi: Optional[float]     # dBm, TAP only
-    channel: Optional[int]    # TAP only
-    lqi: Optional[int]        # TAP only
+    rssi: float | None     # dBm, TAP only
+    channel: int | None    # TAP only
+    lqi: int | None        # TAP only
     # MAC header fields (None when not present / not parseable)
-    ftype: Optional[int] = None      # 0 beacon, 1 data, 2 ack, 3 command
-    seq: Optional[int] = None
-    dst_pan: Optional[int] = None
-    dst: Optional[str] = None        # hex string, 4 chars (short) or 16 (extended)
-    src_pan: Optional[int] = None
-    src: Optional[str] = None
-    cmd: Optional[int] = None        # MAC command id, unsecured command frames only
+    ftype: int | None = None      # 0 beacon, 1 data, 2 ack, 3 command
+    seq: int | None = None
+    dst_pan: int | None = None
+    dst: str | None = None        # hex string, 4 chars (short) or 16 (extended)
+    src_pan: int | None = None
+    src: str | None = None
+    cmd: int | None = None        # MAC command id, unsecured command frames only
 
 
 def _read_exact(stream: BinaryIO, n: int) -> bytes:

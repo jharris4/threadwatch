@@ -10,12 +10,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import unittest as _ut
-
 from threadwatch.capture import RingWriter
+from threadwatch.pcap import DLT_NOFCS, DLT_TAP, Frame, PcapStreamReader, PcapWriter, complete_length
 
 
-class RingSizeCapTest(_ut.TestCase):
+class RingSizeCapTest(unittest.TestCase):
     def test_oldest_go_until_under_the_byte_cap_but_never_the_current_file(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:
@@ -38,7 +37,6 @@ class RingSizeCapTest(_ut.TestCase):
         import tempfile
         import time
 
-        from threadwatch.pcap import Frame
         with tempfile.TemporaryDirectory() as d:
             (Path(d) / "threadwatch-20260904-08.pcap").write_bytes(b"x" * 50_000)
             (Path(d) / "threadwatch-20260904-09.pcap").write_bytes(b"x" * 50_000)
@@ -61,7 +59,6 @@ class RingSizeCapTest(_ut.TestCase):
         import tempfile
         import time
 
-        from threadwatch.pcap import Frame
         with tempfile.TemporaryDirectory() as d:
             for h in ("12", "13", "14", "15"):
                 (Path(d) / f"threadwatch-20260904-{h}.pcap").write_bytes(b"x" * 1000)
@@ -75,7 +72,6 @@ class RingSizeCapTest(_ut.TestCase):
         import tempfile
         import time
 
-        from threadwatch.pcap import Frame
         with tempfile.TemporaryDirectory() as d:
             ring = RingWriter(Path(d), keep_files=0, dlt=0)
             ts = time.mktime(time.strptime("2026-09-04 10:00:00", "%Y-%m-%d %H:%M:%S"))
@@ -102,7 +98,6 @@ class RingSizeCapTest(_ut.TestCase):
             ring = RingWriter(Path(d), keep_files=3, dlt=0)
             ring._prune()
             self.assertEqual(sorted(p.name[-7:-5] for p in Path(d).glob("*.pcap")), ["03", "04", "05"])
-from threadwatch.pcap import DLT_NOFCS, DLT_TAP, Frame, PcapStreamReader, PcapWriter, complete_length  # noqa: E402
 
 
 def frame(ts):
@@ -307,7 +302,7 @@ def complete_length_of(data: bytes) -> int:
         return complete_length(tmp.name)
 
 
-class TapHeaderTest(_ut.TestCase):
+class TapHeaderTest(unittest.TestCase):
     """DLT 283 is what the dongle actually produces; a corrupt ring file
     must not take the parser with it."""
 
@@ -370,7 +365,7 @@ class TapHeaderTest(_ut.TestCase):
         self.assertEqual(f.psdu, b"\xab" * 6)
 
 
-class FcsTest(_ut.TestCase):
+class FcsTest(unittest.TestCase):
     """A capture that keeps the FCS (DLT 195, or TAP declaring one) is read
     as its on-air bytes: the MIC on a secured frame and the MLE MIC in an
     unsecured one both end before the FCS, and the ring's own frames
@@ -393,7 +388,7 @@ class FcsTest(_ut.TestCase):
         self.assertEqual(parse_frame(1, b"\x01", DLT_WITHFCS).psdu, b"")               # shorter than its FCS
 
 
-class RingHourNamingTest(_ut.TestCase):
+class RingHourNamingTest(unittest.TestCase):
     """One file per local hour. The name is a contract: `why.select_recent`
     parses it to pick a window, and per-file retention drops one hour at a
     time rather than a whole day."""
@@ -416,7 +411,7 @@ class RingHourNamingTest(_ut.TestCase):
             self.assertEqual([p.name for p in recent], ["threadwatch-20260904-09.pcap"])
 
 
-class PanCompressionTest(_ut.TestCase):
+class PanCompressionTest(unittest.TestCase):
     """PAN ID compression (FCF bit 6) means the source PAN is the
     destination's and is left off the wire, which is only so when there
     is a destination. With the bit set and no destination address the

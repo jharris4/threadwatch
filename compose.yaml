@@ -36,6 +36,9 @@ services:
     volumes:
       - ./config:/app/config
       - ./data:/app/data
+    # required: false needs Docker Compose 2.20 or newer; an older one
+    # rejects the whole file naming env_file. docs/DOCKER.md gives the
+    # classic form to use instead.
     env_file:
       - path: ./config/alerts.env   # alert/heartbeat secrets, optional
         required: false

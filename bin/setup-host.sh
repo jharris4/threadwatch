@@ -120,13 +120,11 @@ if [ ! -f "$REPO/config/config.toml" ]; then
 else
   echo "    config/config.toml present"
 fi
-for secret in ha.env; do
-  if [ -f "$REPO/config/$secret" ]; then
-    chown "$RUN_USER": "$REPO/config/$secret"
-    chmod 400 "$REPO/config/$secret"
-    echo "    $secret locked to 0400"
-  fi
-done
+if [ -f "$REPO/config/ha.env" ]; then
+  chown "$RUN_USER": "$REPO/config/ha.env"
+  chmod 400 "$REPO/config/ha.env"
+  echo "    ha.env locked to 0400"
+fi
 if [ -f "$REPO/config/credentials.toml" ]; then
   chown "$RUN_USER": "$REPO/config/credentials.toml"
   chmod 400 "$REPO/config/credentials.toml"
@@ -146,10 +144,35 @@ echo "==> systemd services"
 if ! command -v systemctl >/dev/null; then
   echo "    no systemd on this host: run '$REPO/bin/threadwatch capture' and 'web' under your own supervisor"
 else
+  # Rendered beside the target and moved into place, not written through
+  # a redirect: the redirect truncated the live unit before anything was
+  # written, so a failure part-way left a half unit that systemd would
+  # take at the next reload or reboot. The substitution is awk's, done by
+  # index/substr rather than sed's s|| or awk's own gsub replacement: a
+  # |, & or \ in the clone path or the user name is a metacharacter to
+  # both, and would corrupt the ExecStart it landed in.
   for unit in threadwatch threadwatch-web; do
-    sed -e "s|__USER__|$RUN_USER|g" \
-        -e "s|__REPO__|$REPO|g" \
-        "$REPO/systemd/$unit.service" > "/etc/systemd/system/$unit.service"
+    tmp="$(mktemp "/etc/systemd/system/$unit.service.XXXXXX")"
+    # Values come through the environment, not -v: awk expands escape
+    # sequences in a -v assignment, so a backslash in the path would be
+    # eaten before the substitution ever saw it.
+    if ! UNIT_USER="$RUN_USER" UNIT_REPO="$REPO" awk '
+      BEGIN { user = ENVIRON["UNIT_USER"]; repo = ENVIRON["UNIT_REPO"] }
+      function rep(s, from, to,   out, i) {
+        while ((i = index(s, from)) > 0) {
+          out = out substr(s, 1, i - 1) to
+          s = substr(s, i + length(from))
+        }
+        return out s
+      }
+      { print rep(rep($0, "__USER__", user), "__REPO__", repo) }
+    ' "$REPO/systemd/$unit.service" > "$tmp"; then
+      rm -f "$tmp"
+      echo "    ERROR: could not render $unit.service; the installed unit is untouched" >&2
+      exit 1
+    fi
+    chmod 644 "$tmp"
+    mv "$tmp" "/etc/systemd/system/$unit.service"
   done
   # The units start after time-sync.target. As shipped that target is
   # reached when timesyncd has *started*, not when the clock is right, and

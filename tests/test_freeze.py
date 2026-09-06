@@ -124,6 +124,29 @@ class FreezeTest(unittest.TestCase):
         self.assertEqual(count, 2)
         self.assertEqual(sorted(p.name[-7:-5] for p in dest.glob("*.pcap")), ["01", "02"])
 
+    def test_a_snapshot_short_of_what_was_copied_is_a_failure_not_an_incident(self):
+        # The last line of defence for the bundle's one promise: that it
+        # holds every ring file it says it does. If it stopped firing, a
+        # truncated incident would be written, manifested and reported as
+        # whole, and nothing else would notice.
+        real = shutil.copy2
+
+        def copy2(src, dst, *a, **kw):
+            out = real(src, dst, *a, **kw)
+            if src.name.endswith("-01.pcap"):
+                Path(dst).unlink()          # copied, then gone: the count and the directory disagree
+            return out
+
+        freeze.shutil.copy2 = copy2
+        try:
+            with self.assertRaises(OSError) as cm:
+                freeze.freeze_ring(self.cfg, "storm")
+        finally:
+            freeze.shutil.copy2 = real
+        self.assertIn("3 ring files were copied but the snapshot holds 2", str(cm.exception))
+        self.assertEqual(list(self.cfg.incidents_dir.glob("*_storm")), [])
+        self.assertEqual(list((self.cfg.incidents_dir / freeze.STAGING_DIR).iterdir()), [])
+
     def test_a_copy_that_fails_leaves_no_half_incident_behind(self):
         real = shutil.copy2
 

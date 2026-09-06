@@ -6,7 +6,11 @@ fires. Copies every ring file plus the state files, the event log, the
 inventory and the configuration (secrets blanked) into
 data/snapshots/<stamp>_<label>, with a manifest naming them all, so the
 snapshot can be read on its own, months later or on another machine,
-with the names and settings that were current when it was saved. The
+with the names and the history that were current when it was saved. The
+configuration travels as a record of what judged these packets, not as
+settings that are applied on reading: replay and device take their
+thresholds from the live configuration (Config.for_snapshot), which is
+what docs/ANALYSIS.md tells a reader to line up when the two differ. The
 file being written is copied as it is; a partial last record at its tail
 is harmless (readers stop cleanly). A ring file pruned while the copy
 runs is skipped, not fatal.

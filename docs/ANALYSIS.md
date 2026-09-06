@@ -119,7 +119,8 @@ Each snapshot is one directory:
                              was saved, channel and PAN, the hours the packets span, every file
                              with its size, and the commands that read it
       devices.json           the inventory as it was: the names to judge these packets by
-      config.toml            the configuration in force, with every url, header, command, token,
+      config.toml            the configuration in force at the time (a record: it is not loaded when
+                             the snapshot is read, see below), with every url, header, command, token,
                              topic, password and key blanked to "<redacted>" at whatever depth it
                              was written (credentials.toml, alerts.env and ha.env are never
                              copied). Written back out from the parsed file, so the settings are
@@ -174,7 +175,26 @@ listening for (from the log's coverage, docs/REVIEW.md), so a gap the
 recorder slept through is not read as the device's. `--hours` counts
 back from the snapshot's newest file, not from now. Nothing is written
 to the snapshot or to the live state; the live credentials are used, as
-they are the only ones. The state files are plain JSON
+they are the only ones.
+
+The *settings* are the live ones too. What comes from the bundle is what
+was saved in it — the names, the state and the event log — while the
+detector thresholds, `[quiet] silence_s`, the channel and the configured
+PAN come from the `config.toml` this host runs on now. The snapshot's own
+`config.toml` is a record of what judged those packets when they were
+captured, and is deliberately not loaded: its sinks and URLs are
+redacted, and reading a bundle — possibly one somebody else saved — must
+not turn a file inside it into settings this host acts on. So a replay
+run after you have changed a threshold can reach a different verdict
+from the one in the snapshot's event log. To reproduce the original
+analysis, compare the two files and line the settings up:
+
+```bash
+SNAP=data/snapshots/20260901T031500_storm-at-noon
+diff "$SNAP"/config.toml config/config.toml     # what has changed since it was saved
+```
+
+The state files are plain JSON
 (`python3 -m json.tool "$SNAP"/last-seen.json`), and the copied event log
 is what `threadwatch events` would have shown at the time, readable
 with `jq` or any JSON-lines tool; `threadwatch events` itself reads only

@@ -115,8 +115,13 @@ class Config:
         """This configuration turned on a saved snapshot: state, events
         and (when the copy kept one) the inventory come from the
         snapshot's copies, so names and history are the ones current when
-        it was saved, not today's. Everything else, the credentials
-        above all, is the live configuration's."""
+        it was saved, not today's. Everything else is the live
+        configuration's - the credentials above all, but the detector
+        thresholds, the quiet window, the channel and the configured PAN
+        too. The snapshot's own config.toml is a record of what judged
+        those packets, and is deliberately not loaded: its sinks are
+        redacted, and reading a bundle must not turn a stranger's file
+        into settings this host runs on."""
         import dataclasses
         inventory = snapshot_dir / "devices.json"
         return dataclasses.replace(self, snapshot_dir=snapshot_dir,

@@ -762,13 +762,13 @@ def storage(cfg) -> dict:
 
 
 def incidents(incidents_dir: Path) -> list[dict]:
-    """Frozen incidents (threadwatch freeze), newest first: label, when
-    frozen, the hours their pcaps cover, size, whether events came along."""
+    """Saved snapshots (threadwatch snapshot), newest first: label, when
+    saved, the hours their pcaps cover, size, whether events came along."""
     if not incidents_dir.exists():
         return []
     out = []
     for d in incidents_dir.iterdir():
-        if not d.is_dir() or d.name == STAGING_DIR:      # a copy still running, or cut short, is not an incident
+        if not d.is_dir() or d.name == STAGING_DIR:      # a copy still running, or cut short, is not a snapshot
             continue
         stamp, _, label = d.name.partition("_")
         try:
@@ -795,11 +795,11 @@ def fmt_bytes(n: int | None) -> str:
 
 def capture_for_day(ring_dir: Path, incidents_dir: Path, day: str) -> dict:
     """Whether packets for a day still exist: ring files (one week) and any
-    frozen incidents whose pcaps cover it. An incident belongs to the days
-    its packets span, not the moment it was frozen: the storm logged on
-    one day is usually frozen after midnight, and the day page for the
+    saved snapshots whose pcaps cover it. A snapshot belongs to the days
+    its packets span, not the moment it was saved: the storm logged on
+    one day is usually saved after midnight, and the day page for the
     storm is where the packets are wanted. One with no pcaps is filed
-    under its freeze day."""
+    under the day it was saved."""
     stamp = day.replace("-", "")
     ring = sorted(p.name for p in ring_dir.glob(f"threadwatch-{stamp}-*.pcap")) if ring_dir.exists() else []
     kept = []

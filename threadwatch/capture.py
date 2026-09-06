@@ -1,4 +1,4 @@
-"""Continuous capture daemon: dongle -> ring buffer pcaps + live pipeline."""
+"""The recorder: dongle -> ring buffer pcaps + live pipeline."""
 
 from __future__ import annotations
 
@@ -78,10 +78,10 @@ class RingWriter:
         if hour != self.current_hour:
             self._rotate(hour)
         self.writer.write(frame)
-        # Hand each record to the OS as it is written. A freeze (manual ones
+        # Hand each record to the OS as it is written. A snapshot (ones taken by hand
         # run in another process) copies the active file through its own
         # handle and sees only what has left this buffer: without this, the
-        # packets right before an incident's trigger, or the whole file
+        # packets right before a snapshot's trigger, or the whole file
         # early in the hour, were missing from the snapshot. This is a
         # write(2) per frame, not a sync: the kernel still writes the card
         # back on its own schedule.
@@ -144,7 +144,7 @@ class RingWriter:
                           "with no usable pcap header; starting the hour's file over", flush=True)
             self.fh = open(self.current_path, "wb")   # noqa: SIM115  (the ring writer owns this until rotation)
             self.writer = PcapWriter(self.fh, self.dlt)
-        self.fh.flush()                     # the header, so an early freeze copies a readable pcap
+        self.fh.flush()                     # the header, so an early snapshot copies a readable pcap
         self._prune()
         self._pruned_at = self.fh.tell()
 
@@ -545,7 +545,7 @@ def _write_status(cfg, port, total, started, pipe: Pipeline, ring, decryptor,
 
 def replay_files(paths: list[Path]) -> list[Path]:
     """The pcaps a replay reads, in order: a file as given, a directory
-    (an incident, or the ring) as every pcap in it by name, which for
+    (a snapshot, or the ring) as every pcap in it by name, which for
     ring files is by hour. Nothing to read is an error, not an empty run."""
     out: list[Path] = []
     for p in paths:

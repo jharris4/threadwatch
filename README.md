@@ -29,21 +29,21 @@ question: *why did this device go offline?*
   A daily summary event (frames, devices heard, quiet and unknown ones,
   event counts) says the recorder is still watching.
   Per-device RSSI trend, ACK-success rate and poll cadence are tracked too
-  and printed by `threadwatch why`, not logged as events.
+  and printed by `threadwatch device`, not logged as events.
   Warning/critical events go to any number of alert sinks (plain HTTP with
   headers and a body template, or a local command), so Home Assistant,
   ntfy, Gotify, Discord and friends all work; heartbeats let Gatus,
   Healthchecks.io or Uptime Kuma page when the recorder itself dies
   (docs/ALERTING.md).
-- **`threadwatch why <device>`** — reconstructs one device's story from
+- **`threadwatch device <device>`** — reconstructs one device's story from
   the ring: hour-by-hour cadence, RSSI, ACKs, the recorder's own RSSI
   range, ACK rate and median poll interval for the device, silences, and
   rejoin attempts. This is the "why did X go offline"
   command; `--hours 6` reads only the recent ring files, which on a Pi is
   the difference between seconds and minutes, `--pcap file` reads one
-  file instead of the ring (a capture from elsewhere), and `--incident
-  name` reads a frozen incident whole, with the names and the event log
-  frozen in it. Each silence says how much of it the recorder was not
+  file instead of the ring (a capture from elsewhere), and `--snapshot
+  name` reads a saved snapshot whole, with the names and the event log
+  saved in it. Each silence says how much of it the recorder was not
   listening for. The device's episodes from
   the event log (kept long after the packets roll off) follow, so a
   repeat offender shows as one.
@@ -61,15 +61,15 @@ question: *why did this device go offline?*
   poll starvation, the partition and its leader, and SRP-based
   auto-naming live. The pcaps are stored exactly as received, so the key
   is applied on read and payloads at rest stay encrypted.
-- **Incident freeze**: `threadwatch freeze my-label` snapshots the ring
+- **Snapshots**: `threadwatch snapshot my-label` saves the ring
   buffer before it rolls over, with the inventory, the configuration
   (secrets blanked), the state files, the event log and a manifest, so
-  the incident reads on its own months later; with `freeze_on_critical`
+  the snapshot reads on its own months later; with `snapshot_on_critical`
   in config.toml the recorder does it by itself whenever an event of
   `critical` severity fires (the phase-locked storm is the only one
   today), at most once per six hours. `threadwatch
-  incidents` lists and deletes them; `replay --incident` and `why
-  --incident` read one whole. What an incident holds and how to analyse
+  snapshots` lists and deletes them; `replay --snapshot` and `device
+  --snapshot` read one whole. What a snapshot holds and how to analyse
   one is in docs/ANALYSIS.md.
 - **Offline analysis**: `threadwatch replay file.pcap` runs the whole
   pipeline over any capture, and over several files or a directory of
@@ -110,8 +110,8 @@ question: *why did this device go offline?*
 4. `bin/threadwatch doctor` says whether the box is fit to record.
 5. `sudo systemctl restart threadwatch` — the setup script in step 2
    already enabled and started it; this picks up the key from step 3.
-   `bin/threadwatch status` says it is recording. (To watch capture start
-   by hand, `sudo systemctl stop threadwatch` first: one capture process
+   `bin/threadwatch status` says it is recording. (To watch the recorder
+   start by hand, `sudo systemctl stop threadwatch` first: one recorder
    per host, or the second one pages the household for silences the first
    is already hearing. docs/OPERATIONS.md.)
 6. `http://127.0.0.1:8080/` on the recorder host reads the event log back
@@ -121,7 +121,7 @@ question: *why did this device go offline?*
    8080:127.0.0.1:8080 user@host`, or set `[web] bind = "0.0.0.0"` in
    config.toml to serve the LAN.
 7. When something feels wrong: `bin/threadwatch status`, and
-   `bin/threadwatch freeze` before the evidence rolls off
+   `bin/threadwatch snapshot` before the evidence rolls off
    (docs/OPERATIONS.md: logs, restarts, what every doctor line means).
 
 "Is the host running the code I pushed?" is
@@ -136,7 +136,7 @@ question after a deploy that may not have landed.
 802.15.4 frames carry extended addresses, not names, and Thread devices
 use randomized addresses (Apple TVs rotate them over time — record every
 address you've seen per device, the inventory format supports it).
-`threadwatch report` surfaces unknown addresses with how well the
+`threadwatch devices` surfaces unknown addresses with how well the
 sniffer hears them and first/last-seen times (its quiet list is what the
 recorder has announced; `--quiet-minutes 90` lists instead every device
 silent that long on the wall clock, a different question, useful for a
@@ -144,14 +144,14 @@ table no recorder is judging); identify a
 device by power-cycling it and watching which address disappears and
 returns, then name it:
 
-    bin/threadwatch adopt 66417fe110ed6950 "Office Air Quality"
-    bin/threadwatch report --suggest    # ready-to-paste entries for every unknown
+    bin/threadwatch name 66417fe110ed6950 "Office Air Quality"
+    bin/threadwatch devices --suggest   # ready-to-paste entries for every unknown
 
-`adopt` appends to `config/devices.json` (an existing name gains the
+`name` appends to `config/devices.json` (an existing name gains the
 address, which is how a rotation is recorded); `--suggest` prefills names
 from SRP hostnames, and flags an unknown
 address that appeared just as a named device's last address fell silent
-as probably that device's new address, with the `adopt` line to run. If
+as probably that device's new address, with the `name` line to run. If
 Home Assistant is your Thread controller, `threadwatch import` fills
 devices.json from it and from the LAN's border routers, and
 credentials.toml too (docs/HOME-ASSISTANT.md).
@@ -178,12 +178,12 @@ not 16 hex digits is dropped with a journal line and the rest of the
 entry stands; an entry that is not an object is skipped; a file that is
 not a list, or not valid JSON, is ignored whole, with a journal line and
 a `FAIL` from `threadwatch doctor`, and every device is unknown until it
-is fixed. One address may belong to one entry: `adopt` refuses to move an
+is fixed. One address may belong to one entry: `name` refuses to move an
 address already listed under another name, which is an edit for you to
 make. The daemon reads the file at start, so restart it after editing.
 
 `config/devices.json.lock` appears beside it. It is an empty file
-`adopt` and `import` hold with flock so two edits queue instead of one
+`name` and `import` hold with flock so two edits queue instead of one
 overwriting the other. It is not a crash artefact, and it stays there
 between runs.
 
@@ -205,10 +205,10 @@ and no secrets.
 
 The module boundaries are the layout below, and one invariant holds
 them together: there is a single per-frame `Pipeline` (pipeline.py) and
-`capture`, `replay` and `why` all run it. The daemon runs it live, with
+`record`, `replay` and `device` all run it. The recorder runs it live, with
 the event log and the sinks; the two analysis commands run it with
 `ephemeral=True`, which starts from an empty last-seen table, persists
-nothing to `data/state`, browses no mDNS, freezes nothing and sends to no
+nothing to `data/state`, browses no mDNS, saves nothing and sends to no
 sink (events collect in memory). A detector or a decoder is written once
 and behaves the same in all three, and an analysis command can never
 touch the live recorder's state. Keep that: a new detector goes in the
@@ -230,24 +230,24 @@ default in them is checked against `--help` and the source).
       crypto.py    Thread decryption (MLE, 6LoWPAN, SRP names)
       events.py    append-only event log, one file per day
       review.py    events -> episodes, day index, device summaries
-      web.py       read-only review pages (threadwatch web)
+      web.py       read-only review pages (threadwatch serve)
       alerts.py    alert sinks (http/command/ntfy preset) + heartbeats
       names.py     address->name inventory, last-seen tracking
       mdns.py      border routers over mDNS (threadwatch border-routers)
       ha.py        Home Assistant websocket client (names, network key)
       importer.py  threadwatch import: devices.json + credentials.toml from HA and mDNS
-      freeze.py    ring buffer -> incident (threadwatch freeze, freeze_on_critical)
+      freeze.py    ring buffer -> snapshot (threadwatch snapshot, snapshot_on_critical)
       why.py       per-device history reconstruction
       doctor.py    preflight checks (threadwatch doctor)
       config.py    config.toml loading
-      capture.py   live daemon (ring buffer) + replay
+      capture.py   the recorder (ring buffer) + replay
       cli.py       command-line interface
     tests/         unittest suite (python3 -m unittest discover -s tests)
     vendor/        Nordic's sniffer extcap module (BSD, unmodified)
     firmware/      sniffer firmware hex + prebuilt DFU package
     bin/           threadwatch CLI shim, flash-dongle.sh, setup-host.sh (host install),
                    push-to-host.sh (deploy a checkout to the recorder)
-    systemd/       service unit templates (capture, web review)
+    systemd/       service unit templates (record, web review)
     Dockerfile, compose.yaml   the container alternative (docs/DOCKER.md)
     config/        examples for config.toml, devices.json, alerts.env, ha.env
     docs/          analysis cookbook, alerting, credentials, Docker, Home Assistant, operations, review pages

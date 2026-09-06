@@ -147,7 +147,7 @@ def check_daemon(cfg, now: float | None = None) -> list[Check]:
     now = now or time.time()
     path = cfg.state_dir / "status.json"
     if not path.exists():
-        return [(WARN, "capture", "no status.json: the capture daemon has never run here")]
+        return [(WARN, "recorder", "no status.json: the recorder has never run here")]
     try:
         st = json.loads(path.read_text())
     except ValueError:

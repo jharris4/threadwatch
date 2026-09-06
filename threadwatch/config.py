@@ -45,8 +45,8 @@ class Config:
     config_dir: Path = REPO_ROOT / "config"
     config_path: Path | None = None         # the file load() read, None when defaults stood
     credentials_path: Path | None = None
-    # A frozen incident to read state and events from instead of
-    # data/state (replay and why --incident): its copies of the state
+    # A saved snapshot to read state and events from instead of
+    # data/state (replay and device --snapshot): its copies of the state
     # files and the event log sit at its top level, and nothing is ever
     # written there. See for_incident.
     frozen_dir: Path | None = None
@@ -95,14 +95,14 @@ class Config:
     # [events] day files older than this are deleted by the recorder, at
     # start and once a day. 0 keeps them for ever. The pages read a month
     # either side of a day (review.EPISODE_WINDOW_DAYS), so history past
-    # that costs disk and the freeze copy only.
+    # that costs disk and the snapshot copy only.
     events_keep_days: int = 365
     # Loopback, not 0.0.0.0: the pages have no authentication of any kind
     # and publish every device name and EUI-64, each device's role, parent
     # and last-seen time, and the whole event history - a per-room,
     # per-hour trace of the home. Reaching them from another machine is an
     # explicit [web] bind, so nobody gets it by not reading the comment.
-    web_bind: str = "127.0.0.1"                # [web] review pages (threadwatch web)
+    web_bind: str = "127.0.0.1"                # [web] review pages (threadwatch serve)
     web_port: int = 8080
     alerts_raw: dict = field(default_factory=dict)      # [alerts] table, verbatim
     heartbeats_raw: list = field(default_factory=list)  # [[heartbeats]] tables, verbatim
@@ -112,10 +112,10 @@ class Config:
         return self.data_dir / "ring"
 
     def for_incident(self, incident_dir: Path) -> "Config":
-        """This configuration turned on a frozen incident: state, events
-        and (when the freeze kept one) the inventory come from the
-        incident's copies, so names and history are the ones current when
-        it was frozen, not today's. Everything else, the credentials
+        """This configuration turned on a saved snapshot: state, events
+        and (when the copy kept one) the inventory come from the
+        snapshot's copies, so names and history are the ones current when
+        it was saved, not today's. Everything else, the credentials
         above all, is the live configuration's."""
         import dataclasses
         inventory = incident_dir / "devices.json"
@@ -354,7 +354,7 @@ def load(path: Path | None) -> Config:
         if raw.get("credentials", {}).get("file"):
             cfg.credentials_path = (Path(path).parent / raw["credentials"]["file"]).resolve()
     if cfg.devices_path is None:
-        # Beside the config file first: that is where `threadwatch adopt`
+        # Beside the config file first: that is where `threadwatch name`
         # writes when [devices] inventory is unset, so a --config elsewhere
         # reads back the names it adopted. The repo default is the fallback.
         for candidate in (cfg.config_dir / "devices.json", REPO_ROOT / "config" / "devices.json"):

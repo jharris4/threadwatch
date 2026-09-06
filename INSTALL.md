@@ -133,7 +133,7 @@ from the host. To remove a config file from the host, delete it there.
 - Storage: about 7 MB/hour, 1.2 GB/week, measured on a 50-device mesh
   at rest; a storm multiplies that, and 30 MB/hour is a safe ceiling to
   budget for (it is what `doctor` assumes until the ring has measured
-  itself). Pruned automatically (`keep_files`; `keep_gb` caps the total
+  itself). Pruned automatically (`keep_hours`; `keep_gb` caps the total
   size when the disk is the harder limit). Set `data_dir` in config.toml
   to put it on a bigger or faster disk.
 - Keep NTP on. pcap timestamps that match your other logs are half the
@@ -148,13 +148,13 @@ from the host. To remove a config file from the host, delete it there.
 ```bash
 bin/threadwatch doctor          # dongle, key file, disk, clock, services, ring, sinks: ok/warn/FAIL (exit 1 = a FAIL)
 bin/threadwatch status          # daemon alive? frames flowing? storm state?
-bin/threadwatch report          # who's gone quiet; unknown addresses to name
-bin/threadwatch adopt <addr> "<name>"   # ...and name one (report --suggest drafts entries)
+bin/threadwatch devices         # who's gone quiet; unknown addresses to name
+bin/threadwatch name <addr> "<name>"    # ...and name one (devices --suggest drafts entries)
 bin/threadwatch events --episodes   # what happened lately, grouped
-bin/threadwatch why "<name>" --hours 6  # one device's story from the recent ring files
+bin/threadwatch device "<name>" --hours 6  # one device's story from the recent ring files
 # ...or open http://127.0.0.1:8080/ on the host for the same thing day by day (docs/REVIEW.md)
-bin/threadwatch freeze mylabel  # preserve the ring buffer NOW (incident!)
-bin/threadwatch incidents       # what is frozen and how big; --delete <name or label> when done with one
+bin/threadwatch snapshot mylabel # save the ring buffer NOW (before it rolls off!)
+bin/threadwatch snapshots       # what is saved and how big; --delete <name or label> when done with one
 bin/threadwatch replay f.pcap   # run detection over any pcap
 ```
 
@@ -166,8 +166,8 @@ Every command takes `--config /path/to/config.toml` before the command
 name, for a second recorder on one host or a layout that is not the
 repo's: `bin/threadwatch --config /srv/tw2/config.toml doctor`. The
 `devices.json` and `credentials.toml` beside that file are used (and
-`adopt` writes there), while `data/` stays the repo's unless that file
-sets `[capture] data_dir`. The shim passes the repo's own config first,
+`name` writes there), while `data/` stays the repo's unless that file
+sets `[record] data_dir`. The shim passes the repo's own config first,
 and the last `--config` wins.
 
 ## Without systemd (macOS, or a Linux without it)
@@ -192,8 +192,8 @@ checked)" and `services` "no systemd here (not checked)"; both are fine.
 Then, in two terminals:
 
 ```bash
-bin/threadwatch capture              # Ctrl-C stops it cleanly
-bin/threadwatch web                  # http://localhost:8080/
+bin/threadwatch record               # Ctrl-C stops it cleanly
+bin/threadwatch serve                # http://localhost:8080/
 ```
 
 That is enough for desk use. Nothing in the repo keeps them running

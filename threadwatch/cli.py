@@ -24,8 +24,8 @@ def _inventory_path(cfg) -> Path:
 
 
 def _find_incident(cfg, want: str, parser, command: str) -> Path:
-    """The incident directory a user named: by its directory name, its
-    label as typed at freeze time, or that label's filename-safe form;
+    """The snapshot directory a user named: by its directory name, its
+    label as typed when it was saved, or that label's filename-safe form;
     a path to the directory itself also works. One match, or an error."""
     from .freeze import safe_label
     from .review import incidents
@@ -241,7 +241,7 @@ def main(argv=None) -> int:
             # With --episodes the floor is applied to the episodes, after
             # grouping (as the day page does): the notice that closes a
             # warning (device_returned, poll_answered) is what tells a
-            # recovered incident from an open one, and filtering it out
+            # recovered episode from an open one, and filtering it out
             # first turned every recovery into "still quiet".
             if not args.episodes and SEVERITY_RANK.get(rec.get("severity", "info"), 0) < floor:
                 return False

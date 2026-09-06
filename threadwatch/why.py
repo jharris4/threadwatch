@@ -1,4 +1,4 @@
-"""`threadwatch why <device>`: reconstruct one device's story from the ring.
+"""`threadwatch device <device>`: reconstruct one device's story from the ring.
 
 Walks the ring pcaps (or a given file) and produces a per-hour narrative for
 one device: cadence, RSSI trend, ACK health, MLE activity (with credentials),
@@ -61,8 +61,8 @@ event_history = devices_history   # every address of a rotating device, newest f
 
 def newest_hour_end(files: list[Path]) -> float | None:
     """When the newest ring-named file's hour ends: what "the last N
-    hours" of a frozen incident counts back from, since its files stop
-    where the freeze was, not now."""
+    hours" of a saved snapshot counts back from, since its files stop
+    where the snapshot was taken, not now."""
     import time as _t
     ends = []
     for path in files:
@@ -111,8 +111,8 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
             hours: float | None = None, incident_dir: Path | None = None) -> int:
     """Print the device's story. Returns 0, or 1 when some of the files
     could not be read (the report then covers the rest); exits with a
-    message when none could. With ``incident_dir`` the story is the frozen
-    incident's: its pcaps, and (cfg.for_incident) its inventory and event
+    message when none could. With ``incident_dir`` the story is the saved
+    snapshot's: its pcaps, and (cfg.for_incident) its inventory and event
     log, so the names and the history are the ones current when it was
     frozen."""
     if incident_dir is not None:
@@ -132,15 +132,15 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
     elif incident_dir is not None:
         ring = sorted(incident_dir.glob("*.pcap"))
         if not ring:
-            raise SystemExit(f"no pcap files in incident {incident_dir.name}")
+            raise SystemExit(f"no pcap files in snapshot {incident_dir.name}")
         files = select_recent(ring, hours, now=newest_hour_end(ring))
         if not files:
-            raise SystemExit(f"no files in the incident's last {hours:g} h (it spans "
+            raise SystemExit(f"no files in the snapshot's last {hours:g} h (it spans "
                              f"{ring[0].name[12:23]} to {ring[-1].name[12:23]})")
     else:
         ring = sorted(cfg.ring_dir.glob("threadwatch-*.pcap"))
         if not ring:
-            raise SystemExit("no ring files; is the capture daemon running?")
+            raise SystemExit("no ring files; is the recorder running?")
         files = select_recent(ring, hours)
         if not files:
             raise SystemExit(f"no ring files in the last {hours:g} h (the ring spans "
@@ -249,7 +249,7 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
               "what follows covers the rest only")
     if not pcap_file:
         window = f"last {hours:g} h: " if hours is not None else ""
-        source = f"incident {incident_dir.name}: " if incident_dir is not None else ""
+        source = f"snapshot {incident_dir.name}: " if incident_dir is not None else ""
         print(f"analyzed {source}{window}{len(files)} ring file(s), {files[0].name[12:23]} to {files[-1].name[12:23]}")
     if first_ts is None:
         print("No frames from this device in the analyzed window.")

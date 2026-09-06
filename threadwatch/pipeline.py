@@ -170,7 +170,7 @@ class Pipeline:
         # elevation made the elevated rate the whole baseline: the first
         # minute's rate is the median of a history of one, twice that is
         # never reached, and the same rate a minute later, however high,
-        # was normal for the rest of the incident. The close of the last
+        # was normal for the rest of the elevation. The close of the last
         # window before the restart is kept so the first window after it
         # can subtract the unobserved gap from the elevation's age.
         self.retrans_path = cfg.state_dir / "retransmissions.json"
@@ -195,16 +195,16 @@ class Pipeline:
         self.frames_by_hour_path = cfg.state_dir / "frames-by-hour.json"
         self._frames_by_hour: dict[int, int] = {} if ephemeral else self._load_frames_by_hour()
         if not ephemeral:
-            # A freeze the last run did not finish (os._exit unwinds no
+            # A copy the last run did not finish (os._exit unwinds no
             # thread) is a half copy nothing marks as such: discard it and
-            # say so, and let the cooldown below see only whole incidents,
+            # say so, and let the cooldown below see only whole snapshots,
             # so the storm still running gets its snapshot.
             from .freeze import discard_partials
             for label in discard_partials(cfg.incidents_dir):
-                # events.emit, not _emit: this is the freeze path reporting
+                # events.emit, not _emit: this is the snapshot path reporting
                 # on itself, and self.freezer is not set until below.
                 self.events.emit("snapshot_failed", "warning", time.time(), label=label,
-                                 note=(f"the freeze for {label} was cut short when the recorder last stopped; "
+                                 note=(f"the copy for {label} was cut short when the recorder last stopped; "
                                        "the half copy was discarded, and the next storm event tries again"))
         self._last_auto_freeze = 0.0 if ephemeral else self._last_auto_freeze_on_disk()
         if not ephemeral and cfg.border_router_browse_s > 0:
@@ -213,11 +213,11 @@ class Pipeline:
             # new inode while this process keeps the old one only for what
             # it has already loaded, so a module first imported after a
             # push-to-host --push-only is the new code loading into an old
-            # process. Everything else the pipeline reaches lazily (freeze,
+            # process. Everything else the pipeline reaches lazily (snapshot,
             # review, crypto) is already loaded by the time a run is up;
             # this was the one that was not.
             from . import mdns  # noqa: F401  (warmed, used in _poll_border_routers)
-        # How a critical event freezes the ring: in the background, so the
+        # How a critical event saves the ring: in the background, so the
         # copy (gigabytes on a Pi) never stalls capture. Tests swap it.
         self.freezer = self._freeze_in_background
         self._summary_day: str | None = None      # local day whose summary is settled
@@ -537,7 +537,7 @@ class Pipeline:
         tmp.replace(self.frames_by_hour_path)
 
     def _last_auto_freeze_on_disk(self) -> float:
-        """When the newest auto-* incident was frozen, so the cooldown holds
+        """When the newest auto-* snapshot was saved, so the cooldown holds
         across a restart: a daemon that comes back mid-storm must not copy
         the whole ring (gigabytes) a second time and fill the card."""
         from .review import incidents
@@ -662,7 +662,7 @@ class Pipeline:
         # so one left the step ahead of the clock suppresses its check for
         # the whole length of the step: no mDNS browse, so a hub that
         # rotates its address in the window keeps the dead one and then
-        # reads as quiet; no ring freeze for a critical event; no
+        # reads as quiet; no ring snapshot for a critical event; no
         # configured_pan_silent; join-scan, stale-credential and storm
         # notices all held back.
         for attr in ("_retrans_since", "_retrans_alerted", "_retrans_paged", "_retrans_up", "_retrans_closed",
@@ -1171,7 +1171,7 @@ class Pipeline:
             details = self.detector.storm_details
             period = details.get("period")
             onsets = details.get("onsets") or []
-            # The freeze is _emit's doing, off the "critical" severity: it
+            # The snapshot is _emit's doing, off the "critical" severity: it
             # adds the auto_freeze field and the sentence about where the
             # packets went, and starts the copy afterwards.
             self._emit("phase_locked_storm", "critical", ts,
@@ -1751,25 +1751,25 @@ class Pipeline:
     # -------------------------------------------------- freeze on critical
 
     AUTO_FREEZE_COOLDOWN_S = 6 * 3600
-    AUTO_FREEZE_RETRY_S = 30 * 60      # after a failed freeze: the next critical event tries again
+    AUTO_FREEZE_RETRY_S = 30 * 60      # after a failed copy: the next critical event tries again
 
     def _emit(self, event: str, severity: str = "info", ts: float | None = None,
               **fields) -> dict:
-        """Log an event, and freeze the ring when it is a critical one. Every
+        """Log an event, and save the ring when it is a critical one. Every
         event the pipeline raises goes through here rather than straight to
         events.emit, so what keeps the packets is the severity and not a
         call some future handler has to remember to make. The two paths
         that stay on events.emit say why where they are.
 
-        A critical event carries auto_freeze (the incident label, or None
-        when the freeze is off, replaying, or inside the cooldown) and a
+        A critical event carries auto_freeze (the snapshot label, or None
+        when saving is off, replaying, or inside the cooldown) and a
         closing sentence saying where its packets went."""
         ts = time.time() if ts is None else ts
         label = None
         if severity == "critical":
             label = self._auto_freeze(ts, event)
             fields["auto_freeze"] = label
-            keep = (f"the ring is being frozen as {label}" if label
+            keep = (f"the ring is being saved as {label}" if label
                     else "run 'threadwatch snapshot' to keep the packets")
             note = fields.get("note")
             fields["note"] = f"{note}; {keep}" if note else keep
@@ -1777,20 +1777,20 @@ class Pipeline:
         if label:
             # The copy starts only once the event that called for it is in
             # the log: the snapshot copies the log, and a worker that got
-            # to it first left the incident without the record that
+            # to it first left the snapshot without the record that
             # explains it.
             self.freezer(label, event)
         return record
 
     def _auto_freeze(self, ts: float, event: str) -> str | None:
         """Reserve a snapshot of the ring for a critical event, at most once
-        per cooldown (one storm is one incident, however long it rumbles).
-        Returns the incident label for _emit to log and then hand to
+        per cooldown (one storm is one snapshot, however long it rumbles).
+        Returns the snapshot label for _emit to log and then hand to
         self.freezer, or None when off, replaying, or inside the cooldown.
         The cooldown is armed here, before the copy starts, so the critical
         events that fire while it runs do not start more copies; a copy
         that fails shortens it to AUTO_FREEZE_RETRY_S (see _freeze_now).
-        The label carries the event that called for it, so an incidents
+        The label carries the event that called for it, so a snapshots
         listing says which one without opening the manifest."""
         if not self.cfg.snapshot_on_critical or self.ephemeral:
             return None
@@ -1804,8 +1804,8 @@ class Pipeline:
 
     def _freeze_now(self, label: str, trigger: str) -> None:
         """Take the snapshot _emit reserved. ``trigger`` is the event that
-        called for it, recorded in the incident's manifest. What this path
-        logs goes to events.emit rather than _emit: a freeze reporting on
+        called for it, recorded in the snapshot's manifest. What this path
+        logs goes to events.emit rather than _emit: a snapshot reporting on
         itself must never start another one, least of all from the
         background thread the last one is running on."""
         from .freeze import freeze_ring, prune_auto_incidents
@@ -1837,7 +1837,7 @@ class Pipeline:
     def _room_to_freeze(self, label: str) -> bool:
         """A snapshot is a second copy of the ring. Taking one that leaves
         the ring less room than it still needs trades a week of recording
-        for one incident, and the recorder exits 1 the moment the card
+        for one snapshot, and the recorder exits 1 the moment the card
         fills. Refuse it and say so; the ring keeps running."""
         from .review import fmt_bytes, storage
         sto = storage(self.cfg)

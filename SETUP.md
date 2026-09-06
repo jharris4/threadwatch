@@ -76,7 +76,7 @@ page the household with false quiet alerts before the second one fails
 
 ```bash
 sudo systemctl stop threadwatch
-bin/threadwatch capture   # prints: capturing channel N from /dev/...; Ctrl-C after a few seconds
+bin/threadwatch record    # prints: capturing channel N from /dev/...; Ctrl-C after a few seconds
 sudo systemctl start threadwatch
 ```
 

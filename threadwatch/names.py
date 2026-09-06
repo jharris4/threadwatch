@@ -37,10 +37,10 @@ named from the entry without anyone editing this file. The addresses
 the entry lists still name the device on their own, so nothing depends
 on mDNS being reachable.
 
-Two helpers keep the file from being hand-written: `threadwatch report
+Two helpers keep the file from being hand-written: `threadwatch devices
 --suggest` prints a ready-to-paste entry per unknown address, prefilled
 with any SRP hostname the credentialed pipeline harvested for it, and
-`threadwatch adopt <addr> <name>` appends one (or adds a rotated address
+`threadwatch name <addr> <name>` appends one (or adds a rotated address
 to a device already listed under that name).
 """
 

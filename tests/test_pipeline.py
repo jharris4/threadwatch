@@ -997,7 +997,7 @@ class QuietPolicyTest(unittest.TestCase):
         storms = [r for r in pipe.events.records if r["event"] == "phase_locked_storm"]
         self.assertEqual([r["auto_freeze"] for r in storms],
                          ["auto-phase_locked_storm", None, "auto-phase_locked_storm"])
-        self.assertIn("being frozen as auto-phase_locked_storm", storms[0]["note"])
+        self.assertIn("being saved as auto-phase_locked_storm", storms[0]["note"])
         self.assertIn("run 'threadwatch snapshot'", storms[1]["note"])
         self.assertEqual(frozen, [("auto-phase_locked_storm", "phase_locked_storm")] * 2)
 
@@ -1015,7 +1015,7 @@ class QuietPolicyTest(unittest.TestCase):
                          note="no leader has claimed the partition for 5 min")
         self.assertEqual(rec["auto_freeze"], "auto-leader_lost")
         self.assertEqual(rec["note"], "no leader has claimed the partition for 5 min; "
-                                      "the ring is being frozen as auto-leader_lost")
+                                      "the ring is being saved as auto-leader_lost")
         inc = incidents(self.cfg.incidents_dir)
         self.assertEqual([i["label"] for i in inc], ["auto-leader_lost"])
         manifest = json.loads((self.cfg.incidents_dir / inc[0]["name"] / "manifest.json").read_text())
@@ -3030,7 +3030,7 @@ class StormEscalationCooldownTest(unittest.TestCase):
     Pipeline borrowed the same setting as the floor of its own
     phase_locked_storm cooldown, so the identical frames through the
     identical pipeline reported 37 storm events offline against the
-    recorder's 2, and anyone reconciling a frozen incident against the day
+    recorder's 2, and anyone reconciling a snapshot against the day
     page saw two different stories."""
 
     def _cfg(self, tmp):

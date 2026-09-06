@@ -79,7 +79,7 @@ class EventLog:
 
     def close(self, timeout: float = 15.0) -> None:
         """Deliver what the sinks still hold (see Dispatcher.close); the
-        capture daemon calls this on every way out."""
+        recorder calls this on every way out."""
         self.dispatcher.close(timeout)
 
     def path_for(self, ts: float) -> Path:
@@ -253,7 +253,7 @@ def read_day(events_dir: Path, day: str) -> list[dict]:
 def prune_days(events_dir: Path, keep_days: int, now: float | None = None) -> list[str]:
     """Delete day files older than ``keep_days`` local days (0: none), and
     return the days deleted. Nothing else bounds the event log: the ring
-    has keep_files and keep_gb, and without this every incident freeze
+    has keep_hours and keep_gb, and without this every snapshot
     copies the whole history and a day page's window is the only thing
     keeping its cost flat."""
     if keep_days <= 0:

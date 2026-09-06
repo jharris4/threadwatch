@@ -189,7 +189,7 @@ class PageBranchTest(unittest.TestCase):
 
     def test_the_status_page_and_the_header_say_when_capture_has_gone_stale(self):
         _st, body = self.get("/status")
-        self.assertIn("no status file: the capture daemon has not run here", body)
+        self.assertIn("no status file: the recorder has not run here", body)
         self.assertIn("no status yet", body)                       # the header too
         self.status(updated=self.now - 600, last_frame_age_s=30)
         _st, body = self.get("/status")

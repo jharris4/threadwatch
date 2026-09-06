@@ -1,4 +1,4 @@
-"""status.json as the capture daemon writes it, and what a later run reads back."""
+"""status.json as the recorder writes it, and what a later run reads back."""
 
 import json
 import sys

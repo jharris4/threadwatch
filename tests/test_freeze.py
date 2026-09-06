@@ -309,7 +309,7 @@ class FreezeTest(unittest.TestCase):
         self.assertEqual([(f.ts, f.raw) for f in frames], [(1_700_000_000.25, b"\x01\x02\x03\x04\x05")])
 
     def test_a_dead_freeze_with_a_label_ending_in_lock_is_discarded_not_fatal(self):
-        # safe_label keeps periods, so `threadwatch freeze debug.lock` stages
+        # safe_label keeps periods, so `threadwatch snapshot debug.lock` stages
         # a directory whose name ends in the lock suffix. Cleanup used to
         # skip it as a lock, then open it as one and raise IsADirectoryError
         # on every start until someone removed it by hand.

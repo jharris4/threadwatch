@@ -205,7 +205,7 @@ class DoctorTest(unittest.TestCase):
             ("FAIL", "credentials"),        # no network key: the recorder would not start
             ("warn", "border routers"),     # no_lan answers with an empty LAN
             ("ok", "dongle"),               # the stub finder above
-            ("warn", "capture"),            # never run here
+            ("warn", "recorder"),           # never run here
             ("warn", "ring"),               # no ring files
             ("ok", "last-seen"), ("ok", "blind-spans"),
             ("ok", "disk"),
@@ -281,7 +281,7 @@ class DoctorTest(unittest.TestCase):
         subjects = [c[1] for c in checks]
         self.assertNotIn("dongle", subjects)
         self.assertNotIn("clock", subjects)
-        for s in ("config", "inventory", "credentials", "capture", "ring", "last-seen", "disk", "writable",
+        for s in ("config", "inventory", "credentials", "recorder", "ring", "last-seen", "disk", "writable",
                   "alerts", "web"):                                       # every other check still ran
             self.assertIn(s, subjects)
         out = io.StringIO()

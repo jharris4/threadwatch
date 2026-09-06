@@ -95,7 +95,7 @@ reach the pages.
 
 ## Layout
 
-- `./config` is mounted read-write into `capture` (so `adopt` can write
+- `./config` is mounted read-write into `capture` (so `name` can write
   `devices.json`) and read-only into `web`. `web` also runs as uid 65534
   (`nobody`), not 1000: it is the only published process and nothing in
   front of it authenticates, and `credentials.toml`, `alerts.env` and
@@ -103,9 +103,9 @@ reach the pages.
   `web` does read is world-readable. If your host writes with umask 077,
   the pages fail to load: set `web`'s `user:` to the same uid:gid as
   `capture`.
-- `./data` holds the ring, state and incidents, exactly as native.
+- `./data` holds the ring, state and snapshots, exactly as native.
 - The container runs as uid 1000, not root, so the ring files, state,
-  incidents and any `devices.json` it writes belong to an ordinary user
+  snapshots and any `devices.json` it writes belong to an ordinary user
   and a native install can read and write the same `data/` afterwards.
   1000 is the first ordinary user on Raspberry Pi OS, Debian and most NAS
   images. If yours is someone else, set `user:` in `compose.yaml` to their
@@ -153,9 +153,9 @@ a one-off container over the same volumes:
 
 ```bash
 docker compose run --rm --no-deps capture status
-docker compose run --rm --no-deps capture report --suggest
-docker compose run --rm --no-deps capture why "Office AQ" --hours 6
-docker compose run --rm --no-deps capture freeze mylabel
+docker compose run --rm --no-deps capture devices --suggest
+docker compose run --rm --no-deps capture device "Office AQ" --hours 6
+docker compose run --rm --no-deps capture snapshot mylabel
 ```
 
 ## Update

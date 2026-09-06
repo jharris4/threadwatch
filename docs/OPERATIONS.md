@@ -18,7 +18,7 @@ journalctl -u threadwatch-web -n 50   # the review pages' own log
 ```
 
 Under Docker it is `docker compose logs -f capture` (and `web`); without a
-supervisor it is the terminal you started `bin/threadwatch capture` in. The
+supervisor it is the terminal you started `bin/threadwatch record` in. The
 start-up lines say what was loaded (sinks, heartbeats, `credentials:
 loaded`, `capturing channel N from /dev/...`), and every exit says why it
 left (the "Exit codes" section below). Storm alerts, quiet devices and the
@@ -52,7 +52,7 @@ either unit that is not running afterwards.
 
 ## One capture process per host
 
-Exactly one `threadwatch capture` may run against a dongle and a data
+Exactly one `threadwatch record` may run against a dongle and a data
 directory. Nothing stops a second one, and it does damage before it
 fails: it grabs the same auto-detected port, deletes and recreates the
 shared `capture.fifo`, and, before it has heard a frame, judges the shared
@@ -64,14 +64,14 @@ running capture by hand, stop the service, and start it again after:
 
 ```bash
 sudo systemctl stop threadwatch
-bin/threadwatch capture        # Ctrl-C when done
+bin/threadwatch record         # Ctrl-C when done
 sudo systemctl start threadwatch
 ```
 
 (Docker: `docker compose stop capture`.) Everything else is safe beside
 a running recorder: `doctor`, `status`, `report`, `why`, `replay`,
-`events`, `incidents`, `freeze`, `border-routers`, `alert-test`, `web`,
-and `adopt` and `import`, which write `config/` files the daemon reads
+`events`, `snapshots`, `snapshot`, `border-routers`, `alert-test`, `serve`,
+and `name` and `import`, which write `config/` files the recorder reads
 only at its next start. `replay` and `why` run the pipeline in a mode that
 writes nothing to `data/state` and sends nothing to any sink.
 
@@ -86,7 +86,7 @@ the line; under Docker, `docker compose ps` and the log.
 | --- | --- | --- |
 | 0 | `stopped after N frames` | a requested stop (`systemctl stop`, Ctrl-C) |
 | 1 | a traceback, then `capture crashed` | an unexpected error; or, before capture began, `No nRF 802.15.4 sniffer found` or a refused `[alerts]` table |
-| 2 | `threadwatch capture: credentials.toml ...` or `threadwatch: [network] ...` | refused before capture began: no or bad network key, or a config value out of range |
+| 2 | `threadwatch record: credentials.toml ...` or `threadwatch: [network] ...` | refused before capture began: no or bad network key, or a config value out of range |
 | 2 | `no frames for Ns - capture stalled` | the watchdog: three minutes without a frame after capture had begun |
 | 3 | `capture stream ended` | the sniffer closed the stream: dongle unplugged, or its process died |
 | 4 | `sniffer thread died before delivering any data` | the serial port could not be opened: held by another process, or gone |
@@ -124,11 +124,11 @@ each of these too.
 | `alert-test` | any sink or heartbeat failed | |
 | `border-routers` | none answered over mDNS | |
 | `import` | Home Assistant refused, or `devices.json` will not parse | |
-| `adopt` | the address is already listed under another name | |
+| `name` | the address is already listed under another name | |
 | `why` | some of the pcap files could not be read (the report covers the rest) | no network key, or one that cannot be read |
 | `replay` | | the same |
 | `capture` | | the same, or a config value out of range |
-| `replay`, `why`, `incidents --delete` | `--incident NAME` matches no incident, or more than one | |
+| `replay`, `device`, `snapshots --delete` | `--snapshot NAME` matches no snapshot, or more than one | |
 
 
 ## Troubleshooting
@@ -163,9 +163,9 @@ non-`ok` line means and what to do about it:
 | `last-seen` is unreadable | the last-seen table is damaged: no device has a history and none can go quiet | "What lives under data/" below |
 | `last-seen` kept aside as last-seen.json.corrupt | an earlier table was moved aside after failing to parse | repair and put it back, or delete it (same section) |
 | `blind-spans` is unreadable | the recorder does not know when it was last off, so a silence that spans one of its own outages is charged to the device in full | delete the file: the next outage rebuilds it, at the price of one round of `device_quiet` for anything quiet since before it |
-| `disk` it will not fit | free space is below what a full ring needs | lower `keep_files`, set `keep_gb`, or move `data_dir` |
+| `disk` it will not fit | free space is below what a full ring needs | lower `keep_hours`, set `keep_gb`, or move `data_dir` |
 | `disk` under 1 GB to spare | it fits, barely | same, before it does not |
-| `writable` state / ring / incidents dir | the service user cannot write there | `chown -R <user> data/`, or check the mount |
+| `writable` state / ring / snapshots dir | the service user cannot write there | `chown -R <user> data/`, or check the mount |
 | `clock` NTP not synchronized | timestamps will not line up with other logs | `timedatectl`; `sudo timedatectl set-ntp true`; check the network |
 | `services` not installed | the systemd units are not there | `sudo bin/setup-host.sh` |
 | `services` failed / inactive | a unit is down | the journal says why; `reset-failed` and restart as above |
@@ -185,7 +185,7 @@ The daemon's own diagnostics, with what to do when one keeps appearing:
 
 - **`sniffer thread died before delivering any data (serial port busy or
   gone?)`**, then exit 4: the dongle's port could not be opened. Usually a
-  second capture process holds it (`ps ax | grep 'threadwatch capture'`; see
+  second recorder holds it (`ps ax | grep 'threadwatch record'`; see
   "One capture process per host" above), or the dongle left between
   enumeration and open. Stop the extra process, or replug the dongle.
 - **`no frames for Ns - capture stalled (host slept? dongle gone?)`**, then
@@ -230,7 +230,7 @@ show the same file.) The fields:
 | `uptime_s` | this run's age |
 | `current_file` | the ring file being written; `null` until this run's first frame opens one |
 | `devices_tracked` | addresses heard this run |
-| `dominant_pan` | the PAN the recorder judges by: `[network] pan_id`, else the one it adopted (ten frames to adopt, twice as many to replace); `null` before it has one. `report` and the review pages read it here, so quiet and foreign mean the same thing everywhere |
+| `dominant_pan` | the PAN the recorder judges by: `[network] pan_id`, else the one it adopted (ten frames to adopt, twice as many to replace); `null` before it has one. `devices` and the review pages read it here, so quiet and foreign mean the same thing everywhere |
 | `partition` | null until the MLE layer has seen an advertisement, then `id`, `leader_router` (the leader's router id), `leader_rloc16`, and `leader_addr` / `leader_name` once that router id has been matched to a device |
 | `detector` | the storm detector: `baseline_frames_per_window` (calm frames per 10 s), `recent_windows` (the last six counts), `storm_active`, `flood_onsets_recent`, `alerts_sent` |
 | `crypto` | the decryption counters, below, and `key_sequence`, the highest Thread key sequence a frame has decrypted under (null until one has) |
@@ -262,12 +262,12 @@ that found and did not find a sender; `parse_failed` is frames the
 
 ## What lives under data/
 
-`data/` (or `[capture] data_dir`) is everything the recorder knows. Back
+`data/` (or `[record] data_dir`) is everything the recorder knows. Back
 it up if you care about the history; nothing else holds it.
 
     data/
-      ring/threadwatch-YYYYMMDD-HH.pcap   hourly captures, the oldest pruned past keep_files / keep_gb
-      incidents/<stamp>_<label>/          frozen copies of the ring (docs/ANALYSIS.md)
+      ring/threadwatch-YYYYMMDD-HH.pcap   hourly captures, the oldest pruned past keep_hours / keep_gb
+      snapshots/<stamp>_<label>/          saved copies of the ring (docs/ANALYSIS.md)
       state/
         status.json          the daemon's status, rewritten every 30 s (below)
         last-seen.json       one row per extended address: first and last heard, frame count,
@@ -279,7 +279,7 @@ it up if you care about the history; nothing else holds it.
         observed-names.json  SRP hostnames harvested from the mesh (report --suggest uses them)
         frames-by-hour.json  frames per hour, the last day or so, for the daily summary
         retransmissions.json the retransmission detector's last 30 minute rates and the
-                             elevation in progress, so a restart mid-incident keeps its baseline
+                             elevation in progress, so a restart mid-elevation keeps its baseline
         storm.json           the storm detector's traffic windows, onsets and last page, so a
                              restart mid-storm is not blind for five minutes and does not page
                              the same storm again

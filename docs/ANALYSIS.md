@@ -54,24 +54,24 @@ quiet channel the timers spread out naturally.
 
 ## Identifying a device without a controller
 
-1. `threadwatch report` — unknown addresses with frame counts,
+1. `threadwatch devices` — unknown addresses with frame counts,
    reception quality (RSSI at the sniffer) and first/last-seen.
 2. Power-cycle the suspect device; watch which address goes silent and
-   returns (`threadwatch report` again, or live in Wireshark).
+   returns (`threadwatch devices` again, or live in Wireshark).
 3. Record the mapping in `config/devices.json`. Keep old addresses —
    some devices (Apple TVs) rotate their extended address.
 
 ## Replaying a capture
 
 `bin/threadwatch replay file.pcap` runs the whole pipeline over a pcap
-(a ring file, an incident's hour, a capture from another dongle) and
+(a ring file, a snapshot's hour, a capture from another dongle) and
 prints one JSON object on stdout (`credentials: loaded` goes to stderr,
 so the output pipes into `jq`). Several files, or a directory of them
-(the ring, an incident), are one run in name order, which for ring files
+(the ring, a snapshot), are one run in name order, which for ring files
 is hour order: a silence or a storm that spans two hourly files is judged
 once, across the boundary, as the recorder judged it.
-`replay --incident <name or label>` reads a frozen incident with the
-inventory and state frozen in it ("Frozen incidents", below). A capture that keeps the FCS on each
+`replay --snapshot <name or label>` reads a saved snapshot with the
+inventory and state saved in it ("Snapshots", below). A capture that keeps the FCS on each
 frame (link type 195, or TAP with an FCS-type field) is read with it
 stripped, so its secured frames decrypt and its MLE messages verify
 as the ring's own do; the FCS itself is not checked:
@@ -88,38 +88,38 @@ It is read-only in every direction. The pipeline runs in its ephemeral
 mode: it starts from an empty last-seen table (so the first frame from
 every device is a `device_first_seen`, and no `device_quiet` refers to
 history from before the file), writes nothing under `data/state`, browses
-no mDNS, freezes nothing, and sends nothing to any alert sink; the events
+no mDNS, saves nothing, and sends nothing to any alert sink; the events
 are collected in memory and printed. Running it against a live recorder's
 ring file, on the recorder itself, disturbs neither the recorder nor the
 household. One difference from live: the storm detector's alert cooldown
 is zeroed, so every `phase_locked_storm` in the file shows rather than
 the first per half hour.
 
-## Frozen incidents
+## Snapshots
 
-`threadwatch freeze <label>` copies the ring before it rolls over, and so
-does the recorder itself when `[capture] freeze_on_critical` is set and
+`threadwatch snapshot <label>` copies the ring before it rolls over, and so
+does the recorder itself when `[record] snapshot_on_critical` is set and
 any event of `critical` severity fires — `phase_locked_storm` is the only
 one today (at most once per six hours, counted from the newest automatic
-incident on disk). Automatic incidents are capped by
-`[capture] incidents_keep` (4 by default): the oldest `auto-*` ones go
-before each new snapshot is taken. Incidents you froze by hand are never
-pruned, so delete them yourself with `threadwatch incidents --delete`. A
+snapshot on disk). Automatic snapshots are capped by
+`[record] keep_snapshots` (4 by default): the oldest `auto-*` ones go
+before each new snapshot is taken. Snapshots you saved by hand are never
+pruned, so delete them yourself with `threadwatch snapshots --delete`. A
 snapshot that would leave the ring less room than it still needs is
-refused, with an `incident_freeze_skipped` warning saying so.
+refused, with a `snapshot_skipped` warning saying so.
 
-Each incident is one directory:
+Each snapshot is one directory:
 
-    data/incidents/20260901T031500_storm-at-noon/
+    data/snapshots/20260901T031500_storm-at-noon/
       threadwatch-20260825-04.pcap ... threadwatch-20260901-03.pcap   every ring file, as it was
       manifest.json          what the bundle holds: threadwatch version and commit, when and why it
-                             was frozen, channel and PAN, the hours the packets span, every file
+                             was saved, channel and PAN, the hours the packets span, every file
                              with its size, and the commands that read it
       devices.json           the inventory as it was: the names to judge these packets by
       config.toml            the configuration in force, with every url, header, command, token,
                              topic, password and key blanked to "<redacted>" (credentials.toml,
                              alerts.env and ha.env are never copied)
-      status.json            the daemon's status at freeze time
+      status.json            the recorder's status at the time
       last-seen.json         the last-seen table: first/last heard, frames, RSSI per address
       observed-names.json    SRP hostnames harvested from the mesh
       frames-by-hour.json    the frame counts behind the daily summary
@@ -129,49 +129,49 @@ Each incident is one directory:
       storm.json             the storm detector's windows, onsets and last page
       events/                a copy of the whole event log, one file per day
 
-The name is the freeze time (local, `YYYYMMDDTHHMMSS`) and the label
+The name is the time it was saved (local, `YYYYMMDDTHHMMSS`) and the label
 reduced to filename-safe characters: letters, digits, `.`, `_` and `-`,
 with any run of anything else replaced by `-` (`storm at noon` becomes
-`storm-at-noon`; an empty label becomes `incident`). Automatic ones are
-labelled `auto-` and the event that called for the freeze
+`storm-at-noon`; an empty label becomes `snapshot`). Automatic ones are
+labelled `auto-` and the event that called for it
 (`auto-phase_locked_storm`), and the manifest's `trigger` names that event
 too. The ring file being written is copied as it is, so
 its last record can be cut short; readers stop cleanly there.
-A copy still running is built under `data/incidents/.staging/` and
+A copy still running is built under `data/snapshots/.staging/` and
 renamed into place once whole; one cut short by a restart stays there,
-where the listing never sees it, and the daemon deletes it at its next
-start. A freeze still running when the daemon starts (a manual one that
-overlaps a restart) holds a lock on its copy and is left to finish.
+where the listing never sees it, and the recorder deletes it at its next
+start. A copy still running when the recorder starts (one taken by hand that
+overlaps a restart) holds a lock on it and is left to finish.
 
-Nothing prunes an incident: each one is the size of the ring (about
-1.2 GB for a week at rest) and stays until `threadwatch incidents --delete
-<name or label>` removes it. `threadwatch incidents` and the `/incidents`
+Nothing prunes a snapshot: each one is the size of the ring (about
+1.2 GB for a week at rest) and stays until `threadwatch snapshots --delete
+<name or label>` removes it. `threadwatch snapshots` and the `/snapshots`
 page list them with the hours their packets cover, and a day page says
-when an incident holds that day's packets after the ring has let it go.
+when a snapshot holds that day's packets after the ring has let it go.
 
-An incident is read as a whole, with what was frozen in it:
+A snapshot is read as a whole, with what was saved in it:
 
 ```bash
-bin/threadwatch replay --incident storm-at-noon              # every hour as one run: detector + events
-bin/threadwatch why "Office AQ" --incident storm-at-noon     # one device across the whole span
-bin/threadwatch why "Office AQ" --incident storm-at-noon --hours 6   # its last six hours
-INC=data/incidents/20260901T031500_storm-at-noon
-mergecap -w "$INC.pcap" "$INC"/*.pcap && wireshark "$INC.pcap"    # the week in one Wireshark window
+bin/threadwatch replay --snapshot storm-at-noon              # every hour as one run: detector + events
+bin/threadwatch device "Office AQ" --snapshot storm-at-noon  # one device across the whole span
+bin/threadwatch device "Office AQ" --snapshot storm-at-noon --hours 6   # its last six hours
+SNAP=data/snapshots/20260901T031500_storm-at-noon
+mergecap -w "$SNAP.pcap" "$SNAP"/*.pcap && wireshark "$SNAP.pcap"   # the week in one Wireshark window
 ```
 
-`--incident` takes the directory name, the label as typed at freeze time,
-or a path to the directory. Names come from the incident's own
-`devices.json` and `border-routers.json`, and `why`'s history from its
-copy of the event log: an incident read after a device rotated its
+`--snapshot` takes the directory name, the label as typed at the time,
+or a path to the directory. Names come from the snapshot's own
+`devices.json` and `border-routers.json`, and `device`'s history from its
+copy of the event log: a snapshot read after a device rotated its
 address, or was renamed, is still judged by what was true when it was
-frozen. `why` marks each silence with how much of it the recorder was not
+saved. `device` marks each silence with how much of it the recorder was not
 listening for (from the log's coverage, docs/REVIEW.md), so a gap the
 recorder slept through is not read as the device's. `--hours` counts
-back from the incident's newest file, not from now. Nothing is written
-to the incident or to the live state; the live credentials are used, as
+back from the snapshot's newest file, not from now. Nothing is written
+to the snapshot or to the live state; the live credentials are used, as
 they are the only ones. The state files are plain JSON
-(`python3 -m json.tool "$INC"/last-seen.json`), and the copied event log
-is what `threadwatch events` would have shown at freeze time, readable
+(`python3 -m json.tool "$SNAP"/last-seen.json`), and the copied event log
+is what `threadwatch events` would have shown at the time, readable
 with `jq` or any JSON-lines tool; `threadwatch events` itself reads only
 the live log.
 

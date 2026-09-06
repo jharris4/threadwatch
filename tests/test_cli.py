@@ -486,7 +486,7 @@ class DispatchTest(CliCase):
 
 class ReportSuggestTest(CliCase):
     """The recorder files the hostnames it harvests in observed-names.json;
-    `threadwatch report --suggest` turns them into inventory entries."""
+    `threadwatch devices --suggest` turns them into inventory entries."""
 
     DEV = "26976e7f7d20964a"
 

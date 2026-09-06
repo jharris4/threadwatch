@@ -1,7 +1,7 @@
 # Thread credentials
 
 threadwatch needs the Thread network key, and the recorder does not start
-without it (`threadwatch doctor` says so; so does `threadwatch capture`).
+without it (`threadwatch doctor` says so; so does `threadwatch record`).
 Most of what it watches lives behind MAC-layer encryption:
 
 - Sleepy end devices poll and talk from their 16-bit short address and
@@ -64,7 +64,7 @@ else, point config.toml at it:
 file = "credentials.toml"     # relative to the config directory
 ```
 
-`threadwatch capture`, `replay` and `why` print `credentials: loaded` when
+`threadwatch record`, `replay` and `device` print `credentials: loaded` when
 the file is good (`replay` and `why` on stderr, so their output stays
 usable), and stop with the reason when it is missing or malformed.
 

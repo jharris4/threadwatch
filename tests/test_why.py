@@ -1,4 +1,4 @@
-"""`threadwatch why`: which ring files a time window selects."""
+"""`threadwatch device`: which ring files a time window selects."""
 
 import sys
 import time
@@ -374,7 +374,7 @@ class RunWhyRingTest(unittest.TestCase):
             rc = run_why(self.cfg, "Frozen AQ", None, hours=None, incident_dir=inc)
         text = out.getvalue()
         self.assertEqual(rc, 0)
-        self.assertIn(f"analyzed incident {inc.name}: 2 ring file(s)", text)
+        self.assertIn(f"analyzed snapshot {inc.name}: 2 ring file(s)", text)
         self.assertIn(f"=== Frozen AQ ({self.DEV}) ===", text)
         self.assertIn("(recorder not listening for 60m of it)", text)
         self.assertIn("Frozen AQ quiet for", text)                     # the incident's log, not the live one
@@ -383,16 +383,16 @@ class RunWhyRingTest(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit) as cm:
                 run_why(self.cfg, self.DEV, None, hours=0.5, incident_dir=inc / "nothing-here")
-        self.assertIn("no pcap files in incident", str(cm.exception))
+        self.assertIn("no pcap files in snapshot", str(cm.exception))
 
     def test_no_ring_is_said_plainly(self):
         with self.assertRaises(SystemExit) as cm:
             self._run()
-        self.assertEqual(str(cm.exception), "no ring files; is the capture daemon running?")
+        self.assertEqual(str(cm.exception), "no ring files; is the recorder running?")
         self.cfg.ring_dir.mkdir(parents=True)                         # a ring directory with nothing in it
         with self.assertRaises(SystemExit) as cm:
             self._run(hours=2)
-        self.assertEqual(str(cm.exception), "no ring files; is the capture daemon running?")
+        self.assertEqual(str(cm.exception), "no ring files; is the recorder running?")
 
     def test_a_window_the_ring_does_not_reach_names_what_the_ring_spans(self):
         self._ring_file(6, self._frames(6, 2))
@@ -551,7 +551,7 @@ class WhyMleAnalysisTest(unittest.TestCase):
 
 
 class WhyIncidentWindowTest(unittest.TestCase):
-    """--hours inside a frozen incident counts back from where the freeze
+    """--hours inside a saved snapshot counts back from where the copy
     stopped, not from now, so it can select nothing."""
 
     def _run(self, hours, files=("20260903-08", "20260903-09")):
@@ -581,7 +581,7 @@ class WhyIncidentWindowTest(unittest.TestCase):
         # counting back from now would select nothing from any incident.
         code, text = self._run(hours=48)
         self.assertEqual(code, 0)
-        self.assertIn("analyzed incident 20260903T100000_storm: last 48 h: 2 ring file(s)", text)
+        self.assertIn("analyzed snapshot 20260903T100000_storm: last 48 h: 2 ring file(s)", text)
         code, text = self._run(hours=0.25)
         self.assertEqual(code, 0)
         self.assertIn("last 0.25 h: 1 ring file(s), 20260903-09 to 20260903-09", text)
@@ -591,7 +591,7 @@ class WhyIncidentWindowTest(unittest.TestCase):
         # it, and a name that does not parse as an hour is always kept.)
         with self.assertRaises(SystemExit) as cm:
             self._run(hours=1, files=())
-        self.assertIn("no pcap files in incident", str(cm.exception))
+        self.assertIn("no pcap files in snapshot", str(cm.exception))
 
 
 class WhyNetworkContextTest(unittest.TestCase):

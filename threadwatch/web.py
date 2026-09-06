@@ -1,7 +1,7 @@
 """Read-only review pages: what happened on a day, what a device has done.
 
 Standard library only, server-rendered HTML, no JavaScript required. Runs
-as its own process (``threadwatch web``) reading the state directory, so it
+as its own process (``threadwatch serve``) reading the state directory, so it
 can never affect capture. No authentication: LAN or your own proxy.
 """
 
@@ -580,7 +580,7 @@ class Site:
             dl.append(f'<tr><th>{esc(k)}</th><td>{v}</td></tr>')
 
         if not st:
-            row("capture", '<span class="bad">no status file: the capture daemon has not run here</span>')
+            row("recorder", '<span class="bad">no status file: the recorder has not run here</span>')
         else:
             age = now - st.get("updated", 0)
             alive = age < 90
@@ -688,7 +688,7 @@ class Site:
                 '<i>yesterday</i>, and a silence not yet over keeps carrying forward until the '
                 'device returns. The strip of days shows how many events '
                 'each day had, with warnings in amber and criticals in red. Packets are kept for a '
-                'week in the ring buffer and forever in frozen incidents; the top of a day page says '
+                'week in the ring buffer and forever in snapshots; the top of a day page says '
                 'which still exist. The devices page shows how well the sniffer hears each device: '
                 '<i>marginal</i> means its silences are more likely fading than failure.</p>')
         return self.page("what these mean", f'<h1>What these events mean</h1>{sev}{conv}{items}')

@@ -67,7 +67,7 @@ class SuggestTest(unittest.TestCase):
 
 
 class ReportQuietTest(unittest.TestCase):
-    """threadwatch report's "quiet" is the recorder's own announcement,
+    """threadwatch devices's "quiet" is the recorder's own announcement,
     the same set the pages show, not a third window of its own."""
 
     def _seen(self):

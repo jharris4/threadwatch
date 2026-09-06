@@ -4,8 +4,8 @@ Alerts are for things that need a look now. Everything else lands in the
 event log, and the review pages are how you read it back later: what
 happened on a day, and what one device has been doing.
 
-    bin/threadwatch web            # http://127.0.0.1:8080/, or [web] in config.toml
-    bin/threadwatch web --bind 0.0.0.0 --port 8081     # for one run, over the config
+    bin/threadwatch serve          # http://127.0.0.1:8080/, or [web] in config.toml
+    bin/threadwatch serve --bind 0.0.0.0 --port 8081   # for one run, over the config
 
 `setup-host.sh` installs it as `threadwatch-web.service`, a separate
 read-only process from capture, so a page bug can never cost frames.
@@ -27,11 +27,11 @@ proxy that authenticates.
   links and a strip of recent days with their event counts. Under the
   headline card, a coverage bar says whether the recorder was there to
   hear the day ("Coverage", below). Whether the
-  packets for that day still exist (ring files last a week; frozen
-  incidents last forever) is shown at the top. Today's page opens with a
+  packets for that day still exist (ring files last a week; snapshots
+  last forever) is shown at the top. Today's page opens with a
   *right now* card: devices quiet at this moment (the ones the recorder
   has announced, after `[quiet] silence_s` of silence it was up to hear;
-  `threadwatch report` and the daily summary list the same set), devices
+  `threadwatch devices` and the daily summary list the same set), devices
   whose signal is down, and unnamed addresses; any day that has a daily
   summary shows it under that. Today's page reloads itself every minute.
   `?min=notice` or `?min=warning` hides the rows below that severity
@@ -67,13 +67,13 @@ proxy that authenticates.
   that is recording, partition and
   which device leads it (linked, once its RLOC16 has been matched),
   storm detector, crypto counters) plus storage: ring size and hourly
-  rate, incidents and event log size, and free disk against what a full
-  ring still needs (keep_files hours at the measured rate, or keep_gb
+  rate, snapshots and event log size, and free disk against what a full
+  ring still needs (keep_hours hours at the measured rate, or keep_gb
   plus one hour when set, since the hour being written is never pruned;
   the doctor's disk check uses the same figure).
-- **/incidents**: every frozen incident with when it was frozen, the
+- **/snapshots**: every saved snapshot with when it was saved, the
   hours its packets cover, and its size. Day pages link to it.
-- **/api/status** (with a `storage` block), **/api/incidents**,
+- **/api/status** (with a `storage` block), **/api/snapshots**,
   **/api/days**, **/api/day/YYYY-MM-DD**, **/api/devices**,
   **/api/device/<addr or name>**:
   the same data as JSON, for Home Assistant or anything else. The day
@@ -122,7 +122,7 @@ The same grouping is available on the command line:
     bin/threadwatch events --episodes            # latest records, grouped
     bin/threadwatch events --day 2026-09-02      # one day, raw
     bin/threadwatch events --device "Apple TV" --severity warning -n 10   # one device, paged things only
-    bin/threadwatch why "Office AQ"              # one device: ring narrative, then its episodes
+    bin/threadwatch device "Office AQ"           # one device: ring narrative, then its episodes
 
 ## Coverage
 
@@ -163,11 +163,11 @@ had stopped hearing, which is why that stretch is amber, not red.
 
 `data/state/events/YYYY-MM-DD.jsonl`, one small file per local day (a
 busy day is a few kilobytes), kept for `[events] keep_days` (a year by
-default; 0 keeps them for ever) and pruned by the capture daemon at start
-and once a day. `threadwatch freeze` copies the whole directory into the
-incident. A single `events.jsonl` from before
+default; 0 keeps them for ever) and pruned by the recorder at start
+and once a day. `threadwatch snapshot` copies the whole directory into the
+snapshot. A single `events.jsonl` from before
 day rolling is split into day files automatically the first time the
-capture daemon (or `threadwatch events`) runs; the web process only
+recorder (or `threadwatch events`) runs; the web process only
 reads. The original is kept beside them as `events.jsonl.migrated` (a
 second one becomes `.migrated-2`) and never pruned. It is a safe
 permanent leftover: every record in it is already in the day files.

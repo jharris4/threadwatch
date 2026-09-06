@@ -81,7 +81,7 @@ involved; a Linux router: avahi's reflector). `threadwatch doctor` and
 waits `--seconds N` for answers, 4 by default, and exits 1 when nothing
 answers). HomeKit-only
 end devices such as locks never appear anywhere: name those with
-`threadwatch report --suggest` and `threadwatch adopt`, or the
+`threadwatch devices --suggest` and `threadwatch name`, or the
 power-cycle method in docs/ANALYSIS.md.
 
 ## 1. Receive alerts in HA
@@ -145,7 +145,7 @@ actions:
   - action: notify.notify
     data:
       title: "Thread mesh problem"
-      message: "2+ Thread devices unavailable — check threadwatch status / freeze the ring buffer."
+      message: "2+ Thread devices unavailable — check threadwatch status / snapshot the ring buffer."
 ```
 
 ## 3. Without the import command
@@ -163,9 +163,9 @@ gives every router's `ExtAddress` (children appear in their parent's
 `ChildTable` by id only; `ot-ctl child table` on the border router
 lists its own children's addresses); cross-reference with
 the HA UI (Settings → Devices → your Thread devices) and write
-`config/devices.json` entries. Then let `threadwatch report`'s
+`config/devices.json` entries. Then let `threadwatch devices`'s
 unknown-address list catch newcomers and address rotations (Apple TVs
-rotate; append, never replace, addresses: `threadwatch adopt <new-addr>
+rotate; append, never replace, addresses: `threadwatch name <new-addr>
 "Living Room Apple TV"` does exactly that).
 
 ## 4. Reading HA/OTBR evidence during an incident

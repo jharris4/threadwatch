@@ -1,12 +1,12 @@
-"""Preserve the ring buffer as an incident before it rolls over.
+"""Save the ring buffer as a snapshot before it rolls over.
 
-Used by `threadwatch freeze <label>` and, with [capture]
-freeze_on_critical, by the pipeline itself the moment a critical event
+Used by `threadwatch snapshot <label>` and, with [record]
+snapshot_on_critical, by the pipeline itself the moment a critical event
 fires. Copies every ring file plus the state files, the event log, the
 inventory and the configuration (secrets blanked) into
-data/incidents/<stamp>_<label>, with a manifest naming them all, so the
-incident can be read on its own, months later or on another machine,
-with the names and settings that were current when it was frozen. The
+data/snapshots/<stamp>_<label>, with a manifest naming them all, so the
+snapshot can be read on its own, months later or on another machine,
+with the names and settings that were current when it was saved. The
 file being written is copied as it is; a partial last record at its tail
 is harmless (readers stop cleanly). A ring file pruned while the copy
 runs is skipped, not fatal.
@@ -26,7 +26,7 @@ from . import __version__
 from .config import repo_commit
 
 # border-routers.json is the hostname -> address history of every hub that
-# rotates its address: without it an incident cannot name the border
+# rotates its address: without it a snapshot cannot name the border
 # router on the very day it rebooted, the device most worth reading.
 STATE_FILES = ("status.json", "last-seen.json", "observed-names.json", "frames-by-hour.json",
                "border-routers.json", "blind-spans.json", "retransmissions.json",
@@ -49,17 +49,17 @@ _TABLE_LINE = re.compile(r"^\s*\[\[?\s*(.+?)\s*\]\]?\s*(?:#.*)?$")
 MANIFEST = "manifest.json"
 _LABEL = re.compile(r"[^A-Za-z0-9._-]+")
 # A copy in progress is built under this directory, beside the finished
-# incidents, and renamed into place only once whole. The capture daemon
-# leaves through os._exit on every path, which unwinds nothing: a freeze it
-# interrupts must not be findable as an incident (review.incidents lists
-# only the incidents directory itself), and a leftover is discarded at the
+# snapshots, and renamed into place only once whole. The recorder leaves
+# through os._exit on every path, which unwinds nothing: a copy it
+# interrupts must not be findable as a snapshot (review.incidents lists
+# only the snapshots directory itself), and a leftover is discarded at the
 # next start (discard_partials). Staging lives in its own directory rather
 # than under a name suffix so that no label a user can type (safe_label
-# keeps periods, so "test.partial" is one) can make a whole incident look
+# keeps periods, so "test.partial" is one) can make a whole snapshot look
 # like a half copy.
 STAGING_DIR = ".staging"
-# Beside each staging directory, a file the freeze building it holds an
-# advisory lock on for as long as it runs. A manual freeze is another
+# Beside each staging directory, a file the copy building it holds an
+# advisory lock on for as long as it runs. A snapshot taken by hand is another
 # process and may overlap a recorder restart; the start-up cleanup takes
 # the lock before removing a directory, so a copy still being built is
 # left alone, and a dead run's lock is free whatever its PID (the kernel
@@ -68,9 +68,9 @@ LOCK_SUFFIX = ".lock"
 
 
 def safe_label(label: str) -> str:
-    """The filename-safe form a label takes in an incident's directory name
-    ("storm at noon" -> "storm-at-noon"). `incidents --delete` applies the
-    same rule, so the label a user typed at freeze time finds it again."""
+    """The filename-safe form a label takes in a snapshot's directory name
+    ("storm at noon" -> "storm-at-noon"). `snapshots --delete` applies the
+    same rule, so the label a user typed at the time finds it again."""
     return _LABEL.sub("-", label.strip()).strip("-") or "snapshot"
 
 
@@ -84,7 +84,7 @@ def _is_secret(key: str) -> bool:
 def redact_config(text: str) -> str:
     """The configuration with every secret value blanked. Line-based rather
     than a tomllib round-trip, so the file keeps its comments and its shape
-    and stays valid TOML: a reader of the incident sees which sinks and
+    and stays valid TOML: a reader of the snapshot sees which sinks and
     settings were in force without seeing where they pointed."""
     out = []
     depth, open_ml, skipping = 0, None, False
@@ -214,26 +214,26 @@ def _take_lock(path: Path, wait: bool) -> int | None:
 
 def freeze_ring(cfg, label: str = "snapshot", now: float | None = None,
                 trigger: str | None = None) -> tuple[Path, int]:
-    """Snapshot the ring. Returns (incident dir, ring files copied). The
+    """Save the ring. Returns (snapshot dir, ring files copied). The
     label is reduced to filename-safe characters (safe_label); ``trigger``
-    names the event that asked for the freeze, for the manifest."""
+    names the event that asked for it, for the manifest."""
     label = safe_label(label)
     now = now or time.time()
     stamp = time.strftime("%Y%m%dT%H%M%S", time.localtime(now))
     final = cfg.incidents_dir / f"{stamp}_{label}"
     staging = cfg.incidents_dir / STAGING_DIR
     dest = staging / final.name
-    # Never over an incident that exists (the same label twice in one
-    # second), and never into a half copy another freeze is building or
-    # a dead run left behind: an incident is whole or it is nothing.
+    # Never over a snapshot that exists (the same label twice in one
+    # second), and never into a half copy another run is building or
+    # a dead run left behind: a snapshot is whole or it is nothing.
     if final.exists():
-        raise FileExistsError(f"incident {final.name} already exists; nothing was copied over it")
+        raise FileExistsError(f"snapshot {final.name} already exists; nothing was copied over it")
     staging.mkdir(parents=True, exist_ok=True)
     lock = dest.with_name(dest.name + LOCK_SUFFIX)
-    fd = _take_lock(lock, wait=True)      # a same-named freeze finishing: wait, then find its incident
+    fd = _take_lock(lock, wait=True)      # a same-named copy finishing: wait, then find its snapshot
     try:
         if final.exists():
-            raise FileExistsError(f"incident {final.name} already exists; nothing was copied over it")
+            raise FileExistsError(f"snapshot {final.name} already exists; nothing was copied over it")
         dest.mkdir(exist_ok=False)
         count = 0
         try:
@@ -258,9 +258,9 @@ def freeze_ring(cfg, label: str = "snapshot", now: float | None = None,
                     shutil.copy2(src, dest / extra)
             if cfg.events_dir.exists():
                 shutil.copytree(cfg.events_dir, dest / "events", dirs_exist_ok=True)
-            # The names and settings in force now: an incident read after
+            # The names and settings in force now: a snapshot read after
             # a device rotated its address, or the quiet window changed,
-            # must be judged by what was current when it was frozen.
+            # must be judged by what was current when it was saved.
             if cfg.devices_path and cfg.devices_path.exists():
                 shutil.copy2(cfg.devices_path, dest / "devices.json")
             if cfg.config_path and cfg.config_path.exists():
@@ -271,7 +271,7 @@ def freeze_ring(cfg, label: str = "snapshot", now: float | None = None,
             write_manifest(cfg, dest, label, now, trigger)
         except BaseException:
             # A copy cut short by a full disk, an I/O error or Ctrl-C would
-            # otherwise stay behind looking like a whole incident, with nothing
+            # otherwise stay behind looking like a whole snapshot, with nothing
             # to say it is not. Remove it (on a full disk that also gives the
             # ring its space back) and let the caller report and retry.
             shutil.rmtree(dest, ignore_errors=True)
@@ -284,9 +284,9 @@ def freeze_ring(cfg, label: str = "snapshot", now: float | None = None,
 
 
 def prune_auto_incidents(incidents_dir: Path, keep: int) -> list[str]:
-    """Remove all but the newest ``keep`` automatic incidents and return
-    their names, oldest first. Only the snapshots freeze_on_critical made
-    (label ``auto-*``) are pruned: an incident somebody froze by hand and
+    """Remove all but the newest ``keep`` automatic snapshots and return
+    their names, oldest first. Only those snapshot_on_critical made
+    (label ``auto-*``) are pruned: a snapshot somebody saved by hand and
     named is kept, however old, because nothing else remembers to.
     ``keep`` of 0 prunes every automatic one; a negative keep is no cap."""
     if keep < 0 or not incidents_dir.is_dir():
@@ -301,17 +301,17 @@ def prune_auto_incidents(incidents_dir: Path, keep: int) -> list[str]:
 
 
 def discard_partials(incidents_dir: Path) -> list[str]:
-    """Remove the half copies a previous run left behind (a freeze cut short
+    """Remove the half copies a previous run left behind (a copy cut short
     by a restart or the stall watchdog) and return their labels. Nothing in
     one can be trusted to be whole, and the ring it was copied from is
-    still there for the retry. A copy a live freeze is still building (its
+    still there for the retry. A copy still being built (its
     lock is held) is not a leftover and is left alone."""
     staging = incidents_dir / STAGING_DIR
     if not staging.is_dir():
         return []
     labels = []
     # What is a half copy and what is a lock is told by kind, never by
-    # name: safe_label keeps periods, so a user can freeze "debug.lock" and
+    # name: safe_label keeps periods, so a user can save "debug.lock" and
     # leave a staging directory whose name ends in the lock suffix. Read by
     # suffix, that directory was skipped here and then opened as a lock
     # file below, and the IsADirectoryError stopped every start after it.
@@ -321,7 +321,7 @@ def discard_partials(incidents_dir: Path) -> list[str]:
         lock = d.with_name(d.name + LOCK_SUFFIX)
         fd = _take_lock(lock, wait=False)
         if fd is None:
-            continue            # a freeze still running in another process
+            continue            # a copy still running in another process
         try:
             shutil.rmtree(d, ignore_errors=True)
             labels.append(d.name.partition("_")[2] or d.name)

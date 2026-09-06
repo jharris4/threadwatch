@@ -290,5 +290,5 @@ def _import(cfg, inventory_path: Path, *, write: bool, url: str | None, env_file
     if not write:
         out("(nothing written: add --write to apply)")
     elif wrote:
-        out("(the capture daemon reads both files at start: restart it to use them)")
+        out("(the recorder reads both files at start: restart it to use them)")
     return 0

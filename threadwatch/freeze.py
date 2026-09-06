@@ -32,14 +32,21 @@ from .config import REPO_ROOT
 # router on the very day it rebooted, the device most worth reading.
 STATE_FILES = ("status.json", "last-seen.json", "observed-names.json", "frames-by-hour.json",
                "border-routers.json", "blind-spans.json", "retransmissions.json")
-# The configuration goes along with its secrets blanked: a value under one
-# of these keys, anywhere in the file, is replaced by "<redacted>" (a
-# value that runs on over lines, an array or a table, is swallowed whole).
+# The configuration goes along with its secrets blanked: a value whose key
+# contains one of these words, anywhere in the file, is replaced by
+# "<redacted>" (a value that runs on over lines - an array, a table, a
+# """ string - is swallowed whole), as is every key inside a table whose
+# own name contains one, such as [alerts.sinks.headers]. Matching is on
+# containment, not on the whole key: webhook_url, Authorization and
+# X-Api-Key are the shapes an operator actually writes, and over-redacting
+# a bundle costs nothing while under-redacting one ships a bearer token.
 # Secrets are meant to live in alerts.env as ${VAR} references, but a
 # token pasted into a URL or a header must not travel with the packets.
 # credentials.toml, alerts.env and ha.env are never copied.
-REDACT_KEYS = re.compile(r"^(\s*)(url|failure_url|headers|command|token|topic|password|secret|auth|username|\w*key)"
-                         r"(\s*=)", re.IGNORECASE)
+REDACT_WORDS = ("url", "header", "command", "token", "topic", "password",
+                "secret", "auth", "username", "key")
+_KEY_LINE = re.compile(r"""^(\s*)([A-Za-z0-9_-]+|"[^"]*"|'[^']*')(\s*=)""")
+_TABLE_LINE = re.compile(r"^\s*\[\[?\s*(.+?)\s*\]\]?\s*(?:#.*)?$")
 MANIFEST = "manifest.json"
 _LABEL = re.compile(r"[^A-Za-z0-9._-]+")
 # A copy in progress is built under this directory, beside the finished
@@ -68,35 +75,76 @@ def safe_label(label: str) -> str:
     return _LABEL.sub("-", label.strip()).strip("-") or "incident"
 
 
+def _is_secret(key: str) -> bool:
+    """Is a key (or the last segment of a table's name) one whose value must
+    not leave the host?"""
+    k = key.strip().strip("\"'").lower()
+    return any(word in k for word in REDACT_WORDS)
+
+
 def redact_config(text: str) -> str:
-    """The configuration with every value under a REDACT_KEYS key blanked.
-    Line-based: the file stays valid TOML with the same shape, so a reader
-    of the incident sees which sinks and settings were in force without
-    seeing where they pointed."""
+    """The configuration with every secret value blanked. Line-based rather
+    than a tomllib round-trip, so the file keeps its comments and its shape
+    and stays valid TOML: a reader of the incident sees which sinks and
+    settings were in force without seeing where they pointed."""
     out = []
-    depth = 0
+    depth, open_ml, skipping = 0, None, False
+    secret_table = False
     for line in text.splitlines():
-        if depth:
-            # Inside a value that runs on: count its brackets until closed.
-            depth += _bracket_depth(line)
+        if depth or open_ml is not None:
+            # Inside a value that runs on over lines: follow it to its end,
+            # dropping it if it belongs to a key that is being blanked.
+            depth, open_ml = _run_state(line, depth, open_ml)
+            if not skipping:
+                out.append(line)
             continue
-        m = REDACT_KEYS.match(line)
+        table = _TABLE_LINE.match(line)
+        if table:
+            # [alerts.sinks.headers] and the like: the secret is not the
+            # table's value but every key inside it (Authorization,
+            # X-Api-Key), none of which reads as sensitive on its own.
+            secret_table = _is_secret(table.group(1).rsplit(".", 1)[-1])
+            out.append(line)
+            continue
+        m = _KEY_LINE.match(line)
         if not m:
             out.append(line)
             continue
-        out.append(f'{m.group(1)}{m.group(2)} = "<redacted>"')
-        depth = max(0, _bracket_depth(line[m.end():]))
+        skipping = secret_table or _is_secret(m.group(2))
+        rest = line[m.end():] if skipping else line
+        out.append(f'{m.group(1)}{m.group(2)} = "<redacted>"' if skipping else line)
+        depth, open_ml = _run_state(rest, 0, None)
+        depth = max(0, depth)
     return "\n".join(out) + ("\n" if text.endswith("\n") else "")
 
 
-def _bracket_depth(text: str) -> int:
-    """Net brackets opened on a line, outside its strings."""
-    depth, quote = 0, None
-    for ch in text:
+def _run_state(text: str, depth: int, open_ml: Optional[str]) -> tuple[int, Optional[str]]:
+    """Walk one line from the given state and report what it leaves open:
+    net brackets, and the ''' or \"\"\" of a string still running. Counting
+    brackets alone missed a multi-line basic string, whose body was then
+    copied out verbatim and left the config.toml in the bundle invalid."""
+    i, quote = 0, None
+    while i < len(text):
+        ch = text[i]
+        if open_ml is not None:
+            if text.startswith(open_ml, i):
+                i, open_ml = i + 3, None
+            else:
+                i += 1
+            continue
         if quote:
+            if ch == "\\" and quote == '"':
+                i += 2
+                continue
             if ch == quote:
                 quote = None
-        elif ch in "\"'":
+            i += 1
+            continue
+        if text.startswith('"""', i) or text.startswith("'''", i):
+            open_ml = text[i:i + 3]
+            i += 3
+            continue
+        if ch in "\"'":
             quote = ch
         elif ch == "#":
             break
@@ -104,7 +152,8 @@ def _bracket_depth(text: str) -> int:
             depth += 1
         elif ch in "]}":
             depth -= 1
-    return depth
+        i += 1
+    return depth, open_ml
 
 
 def _commit() -> Optional[str]:

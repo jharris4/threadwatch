@@ -36,6 +36,39 @@ class BundleTest(unittest.TestCase):
         self.assertEqual(parsed["credentials"], {"network_key": "<redacted>", "file": "credentials.toml"})
         self.assertEqual(freeze.redact_config(""), "")
 
+    def test_the_shapes_that_used_to_slip_past_the_redaction(self):
+        # Three leaks, all in configurations an operator would write:
+        # webhook_url (the whole authentication for a Home Assistant
+        # webhook) matched nothing; a headers sub-table put the bearer
+        # token on a line whose own key reads as innocent; and a
+        # multi-line basic string opened no run, so its body was copied
+        # out verbatim and left the bundle's config.toml invalid TOML.
+        import tomllib
+        text = ('[alerts]\nwebhook_url = "https://ha.local/api/webhook/abc123"\n'
+                'note = """\nkept: two lines\nof prose\n"""\n'
+                '[[alerts.sinks]]\nname = "phone"\nmin_severity = "warning"\n'
+                '[alerts.sinks.headers]\nAuthorization = "Bearer hunter2"\n"X-Api-Key" = "k9"\n'
+                '[credentials]\nnetwork_key = """\n00112233445566778899aabbccddeeff\n"""\n'
+                'file = "credentials.toml"\n')
+        out = freeze.redact_config(text)
+        for secret in ("abc123", "hunter2", "k9", "00112233"):
+            self.assertNotIn(secret, out)
+        parsed = tomllib.loads(out)
+        self.assertEqual(parsed["alerts"]["webhook_url"], "<redacted>")
+        self.assertEqual(parsed["alerts"]["note"], "kept: two lines\nof prose\n")
+        self.assertEqual(parsed["alerts"]["sinks"], [{"name": "phone", "min_severity": "warning",
+                                                      "headers": {"Authorization": "<redacted>",
+                                                                  "X-Api-Key": "<redacted>"}}])
+        self.assertEqual(parsed["credentials"], {"network_key": "<redacted>", "file": "credentials.toml"})
+
+    def test_the_shipped_example_config_survives_redaction_as_valid_toml(self):
+        import tomllib
+        from threadwatch.config import REPO_ROOT
+        text = (REPO_ROOT / "config" / "config.example.toml").read_text()
+        out = freeze.redact_config(text)
+        self.assertEqual(tomllib.loads(out).keys(), tomllib.loads(text).keys())
+        self.assertIn("# ", out)                       # the comments explain what was in force
+
     def test_the_bundle_names_everything_it_holds(self):
         import json
         with tempfile.TemporaryDirectory() as d:

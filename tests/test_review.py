@@ -184,6 +184,78 @@ class LongEpisodeTest(unittest.TestCase):
         self.assertEqual([r["count"] for r in rows], [2, 1])
 
 
+class HistoryScanCostTest(unittest.TestCase):
+    """Two request paths used to walk every day file on disk, once per
+    address in devices_history's case. Retention is a year: the pages got
+    slower every month with no plateau, on the Pi they are designed for."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name) / "events"
+        self.dir.mkdir(parents=True)
+        self.days = []
+        for i in range(200):
+            day = day_of(T0 - i * 86400)
+            self.days.append(day)
+            ts = day_bounds(day)[0] + 3600
+            (self.dir / f"{day}.jsonl").write_text("".join(
+                json.dumps({"ts": ts + n, "event": "mle_rejoin_attempt", "severity": "notice",
+                            "addr": AQ if n % 2 else TV1, "name": "x", "command": "Parent Request",
+                            "id": f"{day}-{n}"}) + "\n" for n in range(20)))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _reads(self, call):
+        """Which day files one call reads. events.iter_days and review both
+        reach read_day, so both names are counted."""
+        import threadwatch.events as events_mod
+        import threadwatch.review as review_mod
+        opened = []
+        real = events_mod.read_day
+
+        def counting(events_dir, day):
+            opened.append(day)
+            return real(events_dir, day)
+
+        events_mod.read_day = review_mod.read_day = counting
+        try:
+            call()
+        finally:
+            events_mod.read_day = review_mod.read_day = real
+        return opened
+
+    def test_a_device_page_reads_its_window_once_however_many_addresses(self):
+        from threadwatch.review import DEVICE_HISTORY_DAYS, EPISODE_WINDOW_DAYS, devices_history
+        window = DEVICE_HISTORY_DAYS + EPISODE_WINDOW_DAYS + 1
+        one = self._reads(lambda: devices_history(self.dir, [AQ], now=T0))
+        self.assertLessEqual(len(one), window)
+        self.assertLess(len(one), len(self.days))
+        # A rotating hub is several addresses with one story, not several
+        # walks of the history.
+        five = self._reads(lambda: devices_history(self.dir, [AQ, TV1, TV2, "%016x" % 1, "%016x" % 2], now=T0))
+        self.assertEqual(len(five), len(one))
+        self.assertEqual(len(set(five)), len(five))
+        eps = devices_history(self.dir, [AQ, TV1], now=T0)
+        self.assertTrue(eps)
+        self.assertTrue(all(e["start"] >= T0 - (DEVICE_HISTORY_DAYS + EPISODE_WINDOW_DAYS) * 86400 for e in eps))
+
+    def test_the_day_index_re_counts_only_the_files_that_changed(self):
+        from threadwatch.review import day_index
+        first = day_index(self.dir)
+        self.assertEqual(len(first), len(self.days))
+        self.assertEqual(first[0]["total"], 20)
+        self.assertEqual(self._reads(lambda: day_index(self.dir)), [])      # every count cached
+        self.assertEqual(day_index(self.dir), first)
+        changed = self.days[0]
+        with open(self.dir / f"{changed}.jsonl", "a") as fh:
+            fh.write(json.dumps({"ts": T0, "event": "alert_test", "severity": "critical",
+                                 "name": "x", "id": "new"}) + "\n")
+        self.assertEqual(self._reads(lambda: day_index(self.dir)), [changed])
+        self.assertEqual(day_index(self.dir)[0], {"day": changed, "total": 21, "info": 0,
+                                                  "notice": 20, "warning": 0, "critical": 1})
+
+
 class DayBoundaryTest(unittest.TestCase):
     def test_a_record_at_midnight_is_the_first_row_of_the_day_it_starts(self):
         with tempfile.TemporaryDirectory() as tmp:

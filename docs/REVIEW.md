@@ -44,11 +44,14 @@ is no authentication: keep it on your LAN or behind your own proxy.
   it and `?sort=last|rssi|frames` orders it (longest unheard, weakest,
   busiest); the links at the top of the page set both. `/api/devices`
   takes the same parameters.
-- **/device/<addr>** or **/device/<name>**: one device's history across
-  every day, as episodes, merged over every address it has used (a
+- **/device/<addr>** or **/device/<name>**: one device's history over the
+  last 90 days, as episodes, merged over every address it has used (a
   rotating device is several addresses with one story), with a card per
   address: last heard, signal level against its usual, frames. Part of a
   name works; a text that matches several names offers the choice.
+  Retention is a year, so anything older is still on its day page; the
+  page says where it stopped and `/api/device/` reports the window as
+  `episode_days`.
 - **/status**: the daemon's status file in prose (alive, last frame,
   channel and port, this run's frames, partition and
   which device leads it (linked, once its RLOC16 has been matched),
@@ -75,8 +78,8 @@ is no authentication: keep it on your LAN or behind your own proxy.
   rotating device is described by the address it is using now), `addresses`
   (every address the name has had),
   `addresses_seen` (a last-seen row per address), `name`, `live` (`role`,
-  `rloc16`, `rloc16_ts`, `router_id`, `leader`, `parent`, `parent_addr`)
-  and `episodes`. An address or name that resolves to nothing is a 404 with an
+  `rloc16`, `rloc16_ts`, `router_id`, `leader`, `parent`, `parent_addr`),
+  `episode_days` (how far back `episodes` goes) and `episodes`. An address or name that resolves to nothing is a 404 with an
   `error` field, as is an ambiguous name.
 
 ## Episodes, not records

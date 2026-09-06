@@ -12,6 +12,7 @@ and the CLI both render from here.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -460,14 +461,42 @@ def episode_blind_s(ep: dict, segments: list[dict], now: Optional[float] = None)
     return sum(max(0.0, min(b, s["end"]) - max(a, s["start"])) for s in segments if s["state"] == "blind")
 
 
+# Counts per day file, keyed by (mtime, size) as events.read_day is. The
+# index is every day on disk - a year by default - which is far more files
+# than the parsed-record cache can hold, and a sequential scan evicts
+# exactly what the next scan wants, so that cache never warmed. A row is
+# four integers, so all of retention fits here several times over and only
+# today's file is ever re-counted.
+DAY_COUNTS_MAX = 2048
+_day_counts: dict[Path, tuple[tuple, dict]] = {}
+_day_counts_lock = threading.Lock()
+
+
 def day_index(events_dir: Path) -> list[dict]:
     """One row per day with an event file: counts by severity, newest first."""
     rows = []
-    for day, recs in iter_days(events_dir):
+    for day in list_days(events_dir):
+        path = events_dir / f"{day}.jsonl"
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        stamp = (st.st_mtime_ns, st.st_size)
+        with _day_counts_lock:
+            hit = _day_counts.get(path)
+        if hit is not None and hit[0] == stamp:
+            rows.append(dict(hit[1]))
+            continue
         counts = {"info": 0, "notice": 0, "warning": 0, "critical": 0}
+        recs = read_day(events_dir, day)
         for r in recs:
             counts[r.get("severity", "info")] = counts.get(r.get("severity", "info"), 0) + 1
-        rows.append({"day": day, "total": len(recs), **counts})
+        row = {"day": day, "total": len(recs), **counts}
+        with _day_counts_lock:
+            if len(_day_counts) >= DAY_COUNTS_MAX:
+                _day_counts.pop(next(iter(_day_counts)), None)
+            _day_counts[path] = (stamp, row)
+        rows.append(dict(row))
     rows.reverse()
     return rows
 
@@ -627,25 +656,43 @@ def live_address(addrs: list[str], table: dict[str, dict]) -> str:
     return max(addrs, key=lambda a: ((table.get(a) or {}).get("last_seen") or 0, -addrs.index(a)))
 
 
-def device_history(events_dir: Path, addr: str, now: Optional[float] = None) -> list[dict]:
-    """Every episode involving one device, across all days, newest first."""
-    addr = addr.lower()
-    records = []
-    for _day, recs in iter_days(events_dir):
+# How far back a device page reads. Retention is a year by default, and
+# walking all of it on every request made the pages slower every month
+# with no plateau: a day file is small, but 365 of them per request, on
+# the Pi this runs on, is not. Days before this are still on disk and
+# still on the day pages; the device page says where it stopped.
+DEVICE_HISTORY_DAYS = 90
+
+
+def devices_history(events_dir: Path, addrs: list[str], now: Optional[float] = None,
+                    days: int = DEVICE_HISTORY_DAYS) -> list[dict]:
+    """Every episode involving one device over the last ``days``, newest
+    first. A rotating device is several addresses with one story, so they
+    are read in one pass over the day files rather than one pass each,
+    and grouped per address (an episode belongs to the address it names).
+    Records from EPISODE_WINDOW_DAYS before the window are read too, so an
+    episode that began earlier and is still open keeps its real start."""
+    now = now or time.time()
+    wanted = list(dict.fromkeys(a.lower() for a in addrs))
+    cutoff = now - days * 86400
+    first = day_of(cutoff - EPISODE_WINDOW_DAYS * 86400)
+    per: dict[str, list[dict]] = {a: [] for a in wanted}
+    for _day, recs in iter_days(events_dir, first):
         for r in recs:
-            a = (_addr(r) or "").lower()
-            if a == addr:
-                records.append(r)
-    return list(reversed(group_episodes(records, now)))
-
-
-def devices_history(events_dir: Path, addrs: list[str], now: Optional[float] = None) -> list[dict]:
-    """device_history over every address of one device (a rotating device
-    is several addresses with one story), newest first."""
+            bucket = per.get((_addr(r) or "").lower())
+            if bucket is not None:
+                bucket.append(r)
     episodes = []
-    for addr in dict.fromkeys(a.lower() for a in addrs):
-        episodes.extend(device_history(events_dir, addr, now))
+    for addr in wanted:
+        episodes.extend(ep for ep in group_episodes(per[addr], now)
+                        if (ep["end"] if ep["end"] is not None else now) >= cutoff)
     return sorted(episodes, key=lambda e: e["start"], reverse=True)
+
+
+def device_history(events_dir: Path, addr: str, now: Optional[float] = None,
+                   days: int = DEVICE_HISTORY_DAYS) -> list[dict]:
+    """devices_history for a single address."""
+    return devices_history(events_dir, [addr], now, days)
 
 
 def _dir_size(path: Path) -> int:

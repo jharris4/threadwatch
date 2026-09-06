@@ -19,7 +19,8 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from .events import DAY_RE, day_bounds, day_of, next_day, prev_day
 from .names import AmbiguousName, DeviceNames, LastSeen, load_names
-from .review import (DEVICE_FILTERS, DEVICE_SORTS, capture_for_day, coverage, coverage_since, day_episodes, day_index,
+from .review import (DEVICE_FILTERS, DEVICE_HISTORY_DAYS, DEVICE_SORTS, capture_for_day, coverage, coverage_since,
+                     day_episodes, day_index,
                      episode_blind_s,
                      days_available, device_rows, devices_history, dominant_pan,
                      fmt_bytes, fmt_duration, incidents, live_address, now_card, select_devices, storage, today)
@@ -539,8 +540,9 @@ class Site:
                        f'<td>{esc(ep["title"])}{span}</td><td class="detail muted">{esc(ep["detail"])}</td></tr>')
         table = (f'<table><tr><th>when</th><th></th><th>what</th><th class="detail">detail</th></tr>{"".join(trs)}</table>'
                  if trs else '<p class="empty">no events for this device</p>')
+        window = f'<p class="muted">the last {DEVICE_HISTORY_DAYS} days; anything earlier is on its day page</p>'
         title = name if name != addrs[0] else "unknown device"
-        return self.page(title, f'<h1>{esc(title)}</h1>{card}<h2>history</h2>{table}'
+        return self.page(title, f'<h1>{esc(title)}</h1>{card}<h2>history</h2>{table}{window}'
                                 f'<p><a class="muted" href="/api/device/{esc(primary)}">JSON</a></p>')
 
     def status_page(self) -> str:
@@ -696,7 +698,8 @@ class Site:
                                                       "leader", "parent", "parent_addr", "border_router",
                                                       "rotated_to")},
                     "last_seen": table.get(primary),
-                    "addresses_seen": {a: table.get(a) for a in addrs}, "episodes": eps}
+                    "addresses_seen": {a: table.get(a) for a in addrs},
+                    "episode_days": DEVICE_HISTORY_DAYS, "episodes": eps}
         if path == "/api/days":
             return {"days": day_index(self.cfg.events_dir)}
         return None

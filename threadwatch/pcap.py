@@ -224,6 +224,11 @@ class PcapScan:
     good: int              # bytes up to the last whole record; 0 with no usable global header
     skipped_bytes: int     # bytes inside that no reader takes for a record
     gaps: int              # runs of them
+    # The global header a writer appending to the file would be appending
+    # under, so it can refuse a file whose records mean something else.
+    # None with no usable header.
+    dlt: int | None = None
+    endian: str | None = None
 
 
 def scan_file(path) -> PcapScan:
@@ -242,11 +247,11 @@ def scan_file(path) -> PcapScan:
         opened = _open_header(fh.read(24))
         if opened is None:
             return PcapScan(0, 0, 0)
-        endian, snaplen, _dlt = opened
+        endian, snaplen, dlt = opened
         records = _Records(fh, endian, snaplen, seekable=True)
         for _ in records:
             pass
-        return PcapScan(records.good, records.skipped_bytes, records.gaps)
+        return PcapScan(records.good, records.skipped_bytes, records.gaps, dlt, endian)
 
 
 def complete_length(path) -> int:

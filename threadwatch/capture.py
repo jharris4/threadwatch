@@ -102,8 +102,24 @@ class RingWriter:
         # A bad record in the middle of the file (a flipped byte on a
         # wearing card) is another matter: the readers step over it, and
         # cutting the file there would delete every record after it.
+        # Resuming appends bare records under the existing global header,
+        # so that header has to be the one this writer would have written.
+        # A file whose header says another link type (an older firmware's
+        # DLT, a foreign pcap dropped in under the hour's name) would take
+        # our records and hand every later reader the wrong parse: a TAP
+        # TLV header read as the MAC PSDU, and the RSSI and channel a
+        # detector works from read out of frame bytes. A big-endian file
+        # is the same problem in the record headers. Neither is written
+        # into; the hour starts over, and says so.
         scan = scan_file(self.current_path) if self.current_path.exists() else None
         good = scan.good if scan else 0
+        mismatch = good and (scan.dlt != self.dlt or scan.endian != "<")
+        if mismatch:
+            order = "big-endian" if scan.endian == ">" else "little-endian"
+            print(f"[threadwatch] {self.current_path.name}: a {order} pcap of link type "
+                  f"{scan.dlt}, not the {self.dlt} being recorded; starting the hour's file "
+                  "over rather than appending frames it would misread", flush=True)
+            good = 0
         if good:
             size = self.current_path.stat().st_size
             if scan.skipped_bytes:
@@ -124,8 +140,9 @@ class RingWriter:
                 # Not a pcap this recorder can read (no usable global
                 # header): nothing in it is a frame to anyone, but it is
                 # not replaced in silence.
-                print(f"[threadwatch] {self.current_path.name}: {self.current_path.stat().st_size} bytes "
-                      "with no usable pcap header; starting the hour's file over", flush=True)
+                if not mismatch:
+                    print(f"[threadwatch] {self.current_path.name}: {self.current_path.stat().st_size} bytes "
+                          "with no usable pcap header; starting the hour's file over", flush=True)
             self.fh = open(self.current_path, "wb")
             self.writer = PcapWriter(self.fh, self.dlt)
         self.fh.flush()                     # the header, so an early freeze copies a readable pcap

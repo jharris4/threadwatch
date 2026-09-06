@@ -1,5 +1,6 @@
 """The ring survives a capture killed mid-write."""
 
+import contextlib
 import io
 import struct
 import sys
@@ -97,7 +98,7 @@ class RingSizeCapTest(_ut.TestCase):
             ring = RingWriter(Path(d), keep_files=3, dlt=0)
             ring._prune()
             self.assertEqual(sorted(p.name[-7:-5] for p in Path(d).glob("*.pcap")), ["03", "04", "05"])
-from threadwatch.pcap import DLT_NOFCS, Frame, PcapStreamReader, PcapWriter, complete_length  # noqa: E402
+from threadwatch.pcap import DLT_NOFCS, DLT_TAP, Frame, PcapStreamReader, PcapWriter, complete_length  # noqa: E402
 
 
 def frame(ts):
@@ -161,6 +162,53 @@ class TruncatedRingTest(unittest.TestCase):
                 seen = [round(f.ts) for f in PcapStreamReader(fh)]
             self.assertEqual(seen, [1_700_000_000, 1_700_000_002])
             self.assertEqual(complete_length(path), path.stat().st_size)
+
+
+class ResumeHeaderMatchTest(unittest.TestCase):
+    """Resuming an hour file appends bare records under whatever global
+    header is already there. A file written under another link type, or
+    a big-endian one, would take those records and hand every later
+    reader the wrong parse of them, silently: the worst outcome for a
+    flight recorder, since the frames still read back."""
+
+    def _rewritten(self, d, existing_dlt=None, endian="<"):
+        ring = RingWriter(Path(d), keep_files=5, dlt=DLT_TAP)
+        ring.write(frame(1_700_000_000.0))
+        ring.close()
+        path = ring.current_path
+        data = bytearray(path.read_bytes())
+        if existing_dlt is not None:
+            data[20:24] = struct.pack("<L", existing_dlt)
+        if endian == ">":
+            data[:4] = struct.pack(">L", 0xA1B2C3D4)
+        path.write_bytes(bytes(data))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ring2 = RingWriter(Path(d), keep_files=5, dlt=DLT_TAP)
+            ring2.write(frame(1_700_000_002.0))
+            ring2.close()
+        return path, out.getvalue()
+
+    def test_a_file_of_another_link_type_is_started_over_not_appended_to(self):
+        with tempfile.TemporaryDirectory() as d:
+            path, said = self._rewritten(d, existing_dlt=DLT_NOFCS)
+            self.assertEqual(struct.unpack("<L", path.read_bytes()[20:24])[0], DLT_TAP)
+            self.assertEqual([round(f.ts) for f in PcapStreamReader(io.BytesIO(path.read_bytes()))],
+                             [1_700_000_002])
+            self.assertIn("link type 230", said)
+
+    def test_a_big_endian_file_is_started_over_too(self):
+        with tempfile.TemporaryDirectory() as d:
+            path, said = self._rewritten(d, endian=">")
+            self.assertEqual(path.read_bytes()[:4], struct.pack("<L", 0xA1B2C3D4))
+            self.assertIn("big-endian", said)
+
+    def test_a_matching_header_still_resumes(self):
+        with tempfile.TemporaryDirectory() as d:
+            path, said = self._rewritten(d)
+            self.assertEqual([round(f.ts) for f in PcapStreamReader(io.BytesIO(path.read_bytes()))],
+                             [1_700_000_000, 1_700_000_002])
+            self.assertEqual(said, "")
 
 
 class CorruptRecordMidFileTest(unittest.TestCase):

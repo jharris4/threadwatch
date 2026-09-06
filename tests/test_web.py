@@ -74,7 +74,7 @@ class RequestTimeoutTest(unittest.TestCase):
         self.assertIsNotNone(self.httpd.RequestHandlerClass.timeout)
 
     def test_a_connection_that_never_sends_a_request_is_dropped_not_parked(self):
-        self.httpd.RequestHandlerClass.timeout = 0.2      # the shipped 30 s, sped up
+        self.httpd.RequestHandlerClass.timeout = 0.5      # the shipped 30 s, sped up
         # Threads that were here already, by identity rather than by count:
         # an unrelated daemon finishing elsewhere must not read as a pass
         # or a fail. What is leaking is a thread that was not here before.
@@ -88,6 +88,13 @@ class RequestTimeoutTest(unittest.TestCase):
             for _ in range(5):
                 s = socket.create_connection(("127.0.0.1", self.httpd.server_port), timeout=5)
                 socks.append(s)
+            # connect() returns once the kernel has completed the handshake
+            # into the listen backlog, which is before the server thread has
+            # accepted anything: wait for the handler threads instead of
+            # reading "not spawned yet" as "never spawned".
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not leftover():
+                time.sleep(0.01)
             self.assertTrue(leftover())                   # a thread per connection, as designed
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline and leftover():

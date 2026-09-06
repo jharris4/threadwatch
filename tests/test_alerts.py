@@ -733,10 +733,6 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(beats[0].method, "GET")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class FlakySink(alerts.Sink):
     """A sink that refuses the first ``fail`` sends, then takes the rest."""
 
@@ -1327,3 +1323,7 @@ class CooldownDefaultsTest(unittest.TestCase):
         self.assertFalse(legacy.wants(REC, now + 299))
         self.assertEqual(legacy.next_digest_at(), now + 300)
         self.assertTrue(legacy.wants(REC, now + 300))
+
+
+if __name__ == "__main__":
+    unittest.main()

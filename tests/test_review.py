@@ -621,10 +621,6 @@ class DayViewTest(unittest.TestCase):
             httpd.server_close()
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class WebServerTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -1047,3 +1043,7 @@ class EveryEventKindTest(unittest.TestCase):
             self.assertEqual(len(eps), 1, ev)
             self.assertTrue(eps[0]["title"], ev)
             self.assertEqual(eps[0]["events"], [r], ev)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -477,10 +477,6 @@ class DispatchTest(CliCase):
         self.assertIn("FAIL credentials", out)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ReportSuggestTest(CliCase):
     """The recorder files the hostnames it harvests in observed-names.json;
     `threadwatch report --suggest` turns them into inventory entries."""
@@ -723,3 +719,7 @@ class ConfigValidationTest(unittest.TestCase):
         from threadwatch.config import Config
         levels = {name: lvl for lvl, name, _ in doctor.check_config(Config())}
         self.assertEqual(levels["config"], "warn")
+
+
+if __name__ == "__main__":
+    unittest.main()

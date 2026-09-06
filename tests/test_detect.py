@@ -124,10 +124,6 @@ class StormLatchTest(unittest.TestCase):
         self.assertEqual(det.window_count, 1)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class DegeneratePeriodOnsetsTest(unittest.TestCase):
     def test_period_onsets_below_two_does_not_divide_by_zero(self):
         for n in (0, 1):
@@ -334,3 +330,7 @@ class StormOverTest(unittest.TestCase):
         self.assertFalse(active[920])                       # window 910 closed: 550 s, over
         self.assertFalse(det.storm_active)
         self.assertEqual(det.alerts_sent, 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -700,11 +700,6 @@ class CallManyTest(unittest.TestCase):
         self.assertEqual(ha.call("d"), "four")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
-
 class DatasetTlvTest(unittest.TestCase):
     def test_truncated_tlv_yields_no_field_instead_of_raising(self):
         for bad in ("0003", "004b", "00ff01"):
@@ -867,3 +862,7 @@ class HandshakeTest(unittest.TestCase):
             client.connect()
         self.assertEqual(str(cm.exception), "unexpected first message from Home Assistant: event")
         self.assertIsNone(client._sock)
+
+
+if __name__ == "__main__":
+    unittest.main()

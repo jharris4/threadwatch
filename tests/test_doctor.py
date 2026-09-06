@@ -328,10 +328,6 @@ class DoctorTest(unittest.TestCase):
             self.assertFalse(doctor._in_container())
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class HaEnvModeTest(unittest.TestCase):
     """credentials.toml and alerts.env both warn when they are readable by
     others. config/ha.env holds the Home Assistant long-lived access token
@@ -526,3 +522,7 @@ class CheckBorderRoutersTest(unittest.TestCase):
         self.assertEqual(len(routers), 1)
         self.assertEqual(routers[0][0], "warn")
         self.assertIn("none found over mDNS", routers[0][2])
+
+
+if __name__ == "__main__":
+    unittest.main()

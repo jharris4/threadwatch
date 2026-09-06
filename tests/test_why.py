@@ -40,10 +40,6 @@ class SelectRecentTest(unittest.TestCase):
         self.assertEqual(select_recent(ring("20260901-10"), 1, NOW), [])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class EventHistoryTest(unittest.TestCase):
     def test_merges_every_address_of_a_device_newest_first(self):
         import tempfile
@@ -642,3 +638,7 @@ class WhyNetworkContextTest(unittest.TestCase):
         self.assertEqual(row[2:4], ["1", "1"])                   # one frame, and it is a poll
         # The advertisement itself stays the other device's frame.
         self.assertNotIn("Advertisement", text)
+
+
+if __name__ == "__main__":
+    unittest.main()

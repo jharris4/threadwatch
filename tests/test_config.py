@@ -221,10 +221,6 @@ class ReadOnlyStateDirTest(unittest.TestCase):
                 os.chmod(data, stat.S_IRWXU)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ExampleConfigTest(unittest.TestCase):
     """config/config.example.toml is the documentation: what users copy to
     config.toml. A key renamed in config.load and not here hands the first
@@ -359,3 +355,7 @@ class ExampleConfigTest(unittest.TestCase):
             self.assertEqual([(b.name, b.interval_s) for b in beats], [("gatus", 60.0)])
             self.assertIn("success=false", beats[0].failure_url)
             self.assertEqual(beats[0].headers["Authorization"], "Bearer tk_gatus")
+
+
+if __name__ == "__main__":
+    unittest.main()

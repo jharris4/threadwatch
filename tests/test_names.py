@@ -275,11 +275,6 @@ class AdoptTest(unittest.TestCase):
             self.assertFalse(inv.exists())
 
 
-
-if __name__ == "__main__":
-    unittest.main()
-
-
 class Rloc16RoleTest(unittest.TestCase):
     def test_router_and_child_from_the_short_address(self):
         from threadwatch.names import rloc16_role
@@ -527,3 +522,7 @@ class TouchExtendedOnlyTest(unittest.TestCase):
                 pipe.ingest(Frame(ts=1_756_800_000.0 + i, raw=b"", psdu=b"", rssi=-60.0, channel=None, lqi=None,
                                   ftype=1, seq=i, dst_pan=0x4e21, dst="0000", src_pan=0x4e21, src="3c1a"))
             self.assertEqual(pipe.seen.table, {})
+
+
+if __name__ == "__main__":
+    unittest.main()

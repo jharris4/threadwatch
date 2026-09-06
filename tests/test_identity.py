@@ -355,10 +355,6 @@ class ResolveShortTest(unittest.TestCase):
             self.assertEqual(pipe.seen.table, {})
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 def secured_ext_frame(src_ext: str, counter: int, payload: bytes, sequence: int = 0,
                       dst_short: str = "0000") -> bytes:
     """The same Thread security, from an extended source address: how a device
@@ -817,3 +813,7 @@ class IphcAddressMatrixTest(unittest.TestCase):
                                       payload=PAYLOAD)
                     r = Decryptor.udp_ports(pkt, mac_src_ext=SED)
                     self.assertEqual(r, (sport, dport, PAYLOAD, src_ip, dst_ip))
+
+
+if __name__ == "__main__":
+    unittest.main()

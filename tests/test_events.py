@@ -225,10 +225,6 @@ class ReadCacheTest(unittest.TestCase):
             self.assertNotIn(d / "1999-01-01.jsonl", events_mod._read_cache)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 @unittest.skipUnless(hasattr(time, "tzset"), "needs time.tzset to switch zones")
 class DayArithmeticTest(unittest.TestCase):
     """next_day and prev_day step whole local calendar days, and a local
@@ -264,3 +260,7 @@ class DayArithmeticTest(unittest.TestCase):
             else:
                 os.environ["TZ"] = saved
             time.tzset()
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -255,10 +255,6 @@ class StatusConsumersTest(unittest.TestCase):
                          json.loads((self.cfg.state_dir / "status.json").read_text()))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class StallWatchdogTest(unittest.TestCase):
     """The watchdog is the only thing that notices a dead dongle, a host
     sleep/wake or a sniffer child that stopped delivering: the main thread
@@ -671,3 +667,7 @@ class RunCaptureTest(unittest.TestCase):
                 else:
                     self.assertEqual([c for _n, c in self.exits], [0])
                     self.assertEqual(self._exit_note()["reason"], "stopped")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1195,10 +1195,6 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual(events, ["device_first_seen", "device_quiet", "device_returned", "device_quiet"])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 def poll(ts, src, seq, dst="0000", counter=None):
     """A secured data request from ``src``: the command id is authenticated
     and unreadable, as a Thread poll's is (cmd None; is_poll takes it)."""
@@ -3101,3 +3097,7 @@ class DeviceRssiEwmaTest(unittest.TestCase):
             self.assertEqual(stats.as_dict()["rssi_ewma"], -61.8)
             self.assertEqual((stats.rssi_min, stats.rssi_max), (-95.0, -60.0))
             self.assertEqual(pipe.seen.table[ROUTER]["rssi"], -61.8)      # the table's average agrees
+
+
+if __name__ == "__main__":
+    unittest.main()

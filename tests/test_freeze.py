@@ -360,10 +360,6 @@ class FreezeTest(unittest.TestCase):
                          sorted([dest.name, freeze.STAGING_DIR]))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class IncidentRetentionTest(unittest.TestCase):
     """Automatic snapshots are the only ones nobody remembers to delete."""
 
@@ -403,3 +399,7 @@ class IncidentRetentionTest(unittest.TestCase):
                          ["20260901T000000_auto-storm", "20260902T000000_auto-storm"])
         self.assertEqual(self._names(), [])
         self.assertEqual(freeze.prune_auto_incidents(self.cfg.incidents_dir / "gone", 1), [])
+
+
+if __name__ == "__main__":
+    unittest.main()

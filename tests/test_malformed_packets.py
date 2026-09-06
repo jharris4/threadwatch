@@ -5,10 +5,13 @@ import json
 import math
 import struct
 import tempfile
+import sys
 import unittest
 from pathlib import Path
 
-from threadwatch.config import Config
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from threadwatch.config import Config  # noqa: E402
 from threadwatch.crypto import Decryptor
 from threadwatch.events import NullEventLog
 from threadwatch.mdns import TYPE_PTR, TYPE_TXT, encode_name, parse_message, read_name
@@ -97,3 +100,7 @@ class PcapAllocationTest(unittest.TestCase):
                     from unittest.mock import patch
                     with patch('builtins.open', return_value=BoundedStream(data)):
                         self.assertEqual(complete_length(p), 24)
+
+
+if __name__ == "__main__":
+    unittest.main()

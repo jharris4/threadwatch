@@ -365,10 +365,6 @@ class TapHeaderTest(_ut.TestCase):
         self.assertEqual(f.psdu, b"\xab" * 6)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class FcsTest(_ut.TestCase):
     """A capture that keeps the FCS (DLT 195, or TAP declaring one) is read
     as its on-air bytes: the MIC on a secured frame and the MLE MIC in an
@@ -508,3 +504,7 @@ class FormatRejectionTest(unittest.TestCase):
             self.assertEqual(out.getvalue(), "")
             with open(path, "rb") as fh:
                 self.assertEqual([round(f.ts) for f in PcapStreamReader(fh)], [1_700_000_003])
+
+
+if __name__ == "__main__":
+    unittest.main()

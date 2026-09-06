@@ -48,7 +48,11 @@ trap 'rm -f "$EXCLUDES"' EXIT
 UNCOMMITTED_CODE="$(printf '%s\n' "$UNTRACKED_UNIGNORED" | grep -Ev '^config/' | grep -E '\.py$|^bin/' || true)"
 if [ -n "$UNCOMMITTED_CODE" ]; then
   echo "warning: these are untracked, so they are NOT being deployed:" >&2
-  printf '  %s\n' $UNCOMMITTED_CODE >&2
+  # Indented with sed, not printf '  %s\n' $VAR: unquoted, a filename with
+  # a space printed as two lines and one holding *, ? or [...] was
+  # glob-expanded against the working directory, so the list of what is
+  # NOT being deployed named files that do not exist.
+  printf '%s\n' "$UNCOMMITTED_CODE" | sed 's/^/  /' >&2
   echo "  commit them if they belong on the host." >&2
 fi
 
@@ -78,7 +82,7 @@ config_would_send() {
 REVERTS="$(comm -23 <(config_would_send) <(config_would_send --update))"
 if [ -n "$REVERTS" ]; then
   echo "warning: the host has a NEWER copy of these, and this push replaces them:" >&2
-  printf '  %s\n' $REVERTS >&2
+  printf '%s\n' "$REVERTS" | sed 's/^/  /' >&2
   echo "  copy them back here first if the host's version is the one you want." >&2
 fi
 
@@ -101,7 +105,7 @@ echo "pushed to $TARGET:$DEST_DIR"
 # import later comes from the new file: one process, two versions.
 if [ "$MODE" = "--push-only" ] && [ -n "$CHANGED" ]; then
   echo "RESTART REQUIRED: this push changed $(printf '%s\n' "$CHANGED" | wc -l | tr -d ' ') module(s):" >&2
-  printf '  %s\n' $CHANGED >&2
+  printf '%s\n' "$CHANGED" | sed 's/^/  /' >&2
   echo "  the running units are on the old code until:" >&2
   echo "    ssh $TARGET 'sudo systemctl restart threadwatch threadwatch-web'" >&2
 fi

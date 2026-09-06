@@ -5,6 +5,9 @@ installing things natively is awkward: a NAS, Unraid, a Proxmox LXC, a
 box you'd rather not put Python packages on. Same code, same commands,
 same `config/` and `data/` layout; only the process supervisor changes.
 
+Same layout, but not the same file ownership: read "Layout" below before
+switching a host between the two.
+
 Not the better choice on a Raspberry Pi or any box you control fully:
 native puts nothing between the daemon and the USB device or the disk,
 and `journalctl` is the log. Nothing else in threadwatch depends on
@@ -17,6 +20,7 @@ device, which Docker Desktop on macOS and Windows cannot do.
 
 ```bash
 git clone https://github.com/jharris4/threadwatch.git && cd threadwatch
+mkdir -p data && chown -R 1000:1000 config data     # the uid the container runs as ("Layout")
 cp config/config.example.toml config/config.toml    # set your channel
 printf '[credentials]\nnetwork_key = "%s"\n' "<32 hex digits>" > config/credentials.toml
 chmod 600 config/credentials.toml                   # the Thread network key: docs/CREDENTIALS.md
@@ -83,6 +87,22 @@ or widen the mapping once something in front of it authenticates.
   group 20 (`group_add`), which is `dialout` on Debian and Raspberry Pi
   OS. Check yours with `stat -c %g /dev/ttyACM0`; a wrong group is
   `permission denied` opening the serial port.
+- **Ownership is the one thing that is not the same as native.** The
+  native install runs as you and chowns `config/` to you; the container
+  runs as whatever uid you gave it, and Docker creates a missing bind
+  mount as `root`. Before the first `up`, make the directories yourself
+  so they belong to the right user:
+
+  ```bash
+  mkdir -p data && chown -R 1000:1000 config data    # or your uid:gid
+  ls -ln config data                                  # who owns them now
+  ```
+
+  This matters in three places. `adopt` and `import` run outside the
+  container write `devices.json` as you, and fail on one the container
+  owns. Backing up `data/` needs the same user or `sudo`. And a host
+  moving from Docker to the native install meets `doctor`'s `writable`
+  FAIL, whose fix is `sudo chown -R <user> data config`.
 - `config/alerts.env` is loaded as the container's environment when
   present, the equivalent of the systemd unit's `EnvironmentFile`. Compose
   reads it when it *creates* the container, and a restart keeps the

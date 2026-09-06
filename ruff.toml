@@ -1,0 +1,38 @@
+# Ruff is a development tool, not a runtime one. It is deliberately absent
+# from requirements.txt: that file is what the Pi installs, and it stays
+# down to pyserial and cryptography. The pinned version lives in
+# requirements-dev.txt, because a ruff release can add rules and turn a
+# green main red without a commit of its own.
+
+target-version = "py311"        # Debian bookworm, the stated Pi target
+
+# The tail of the codebase, not the body. Line lengths run p50=52, p90=92,
+# p99=115: 120 catches the outliers that get written without wrapping and
+# leaves ordinary code alone. Tighten it later if the tail stays short.
+line-length = 120
+
+# vendor/ is Nordic's sniffer, carried as-is so it can be diffed against
+# upstream. The rest are build and flashing scratch dirs.
+extend-exclude = ["vendor", ".venv-flash", ".nrfutil-bin"]
+
+[lint]
+# Narrow on purpose. These are the rules that find mistakes, not the ones
+# that have opinions about how already-working code should look. Widening
+# is a later commit and a deliberate one; see the notes below for what was
+# considered and left off.
+select = [
+    "F",        # pyflakes: unused imports and names, broken f-strings
+    "E9",       # syntax and IO errors
+    "E501",     # line too long
+    "B",        # bugbear: loop-variable closures, re-raise without from
+    "SIM115",   # files opened without a context manager
+]
+
+# Considered and rejected, so the next person does not re-litigate them:
+#   I001    import sorting, 97 hits, pure churn
+#   UP045   Optional[X] -> X | None, 184 hits, same
+#   E702    grouped statements on one line, a deliberate idiom in the
+#           test helpers where several .clear() calls belong together
+#   E741    `l` for a line inside a comprehension, also deliberate
+#   RUF012  wants ClassVar on read-only class constants; typing ceremony
+#           in a codebase that carries no other typing discipline

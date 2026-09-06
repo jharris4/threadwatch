@@ -1,0 +1,7 @@
+# Development only. The Pi installs requirements.txt and never this file.
+#
+# Pinned exactly, not floored: ruff adds rules in minor releases, so an
+# unpinned install means a ruff release can break CI with no change to
+# this repository. Bump it deliberately and fix what the new rules find
+# in the same commit. CI installs this same file, so local and CI agree.
+ruff==0.16.6

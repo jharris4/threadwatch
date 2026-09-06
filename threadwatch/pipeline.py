@@ -192,6 +192,7 @@ class Pipeline:
         self.freezer = self._freeze_in_background
         self._summary_day: Optional[str] = None      # local day whose summary is settled
         self._pruned_day: Optional[str] = None       # local day the event log was last pruned on
+        self._capped_at: Optional[float] = None      # when rows were last dropped to stay under TRACK_MAX
         self._resolve_after: dict[str, float] = {}   # short addr -> next attempt ts
         self._verify_after: dict[str, float] = {}    # short addr -> next re-check of its mapping
         self._foreign_after: dict[tuple, float] = {}  # (short addr, other PAN) -> next MIC check against it
@@ -609,6 +610,57 @@ class Pipeline:
                                  "follow it. If it is a neighbour's network, set [network] pan_id in "
                                  "config.toml and restart."))
 
+    # ---------------------------------------------------------- tracking
+
+    # An extended source address is 64 bits the sender asserts, and every
+    # new one used to become a row in the last-seen table and a DeviceStats
+    # for ever: a transmitter in range sending from a fresh address per
+    # frame (a broken address generator, or someone doing it on purpose)
+    # grew both without bound, at a couple of KB of RAM and a rewrite of
+    # last-seen.json per address, until the Pi ran out of memory. A mesh
+    # has tens of devices, a busy street of neighbours a few hundred; at
+    # this many rows the least-heard unnamed ones make room.
+    TRACK_MAX = 2000
+    CAP_NOTE_S = 3600.0        # one warning per hour while addresses keep coming
+
+    def _admit(self, addr: str, ts: float) -> bool:
+        """Room for a row for ``addr``, dropping the addresses least worth
+        keeping when the table is full: not in the inventory or bound to a
+        border router, not holding a short address (a MIC has vouched for
+        those), not a hub's retired address; the fewest frames and the
+        oldest sighting first, half of them at a time so the sort is paid
+        once per thousand new addresses, not once per frame."""
+        if len(self.seen.table) < self.TRACK_MAX:
+            return True
+        vouched = set(self.decryptor.short_to_ext.values())
+        evictable = sorted((row.get("frames") or 0, row.get("last_seen") or 0.0, a)
+                           for a, row in self.seen.table.items()
+                           if a not in vouched and a not in self.names.by_addr and not row.get("rotated_to"))
+        if not evictable:
+            return False
+        dropped = evictable[:max(1, len(evictable) // 2)]
+        for _frames, _last, a in dropped:
+            self._forget(a)
+        if self._capped_at is None or ts - self._capped_at >= self.CAP_NOTE_S:
+            self.events.emit("address_flood", "warning", ts, dropped=len(dropped), kept=len(self.seen.table),
+                             note=(f"{len(dropped)} addresses heard once or twice were dropped from the "
+                                   f"device table to keep it at {self.TRACK_MAX} rows: something in range "
+                                   "is transmitting from ever-new extended addresses. Named devices and "
+                                   "devices holding a short address are kept; new addresses are not "
+                                   "announced one by one while this goes on."))
+        self._capped_at = ts
+        return True
+
+    def _forget(self, addr: str) -> None:
+        del self.seen.table[addr]
+        self.seen._dirty = True
+        self.devices.pop(addr, None)
+        self.quiet_reported.discard(addr)
+        self._pending_routers.pop(addr, None)
+
+    def _flooded(self, ts: float) -> bool:
+        return self._capped_at is not None and ts - self._capped_at < self.CAP_NOTE_S
+
     # ---------------------------------------------------------- identity
 
     RESOLVE_RETRY_S = 30.0
@@ -705,6 +757,8 @@ class Pipeline:
                     self._poll_answered(self._last_who or prev.src, stats, ts)
         self._last_who = who
 
+        if who and who not in self.seen.table and not self._admit(who, ts):
+            who = None          # every row is one worth keeping: this frame goes uncounted
         if who:
             stats = self.devices.setdefault(who, DeviceStats())
             if f.ftype in (1, 3) and f.dst not in (None, "ffff"):
@@ -748,7 +802,7 @@ class Pipeline:
                 # (a rebooted hub, seen by the browse first): now that it is,
                 # bind it, so the first_seen below already carries its name.
                 self._apply_border_routers([pending], ts)
-            if was_new:
+            if was_new and not self._flooded(ts):
                 self.events.emit("device_first_seen", "info", ts, addr=who,
                                  name=self.names.name(who))
             if who in self.quiet_reported:
@@ -766,7 +820,7 @@ class Pipeline:
         # someone scanning to join. Thread itself discovers over MLE, so
         # these are Zigbee or factory-reset devices sweeping the channel.
         if f.ftype == 0 or (f.ftype == 3 and f.cmd == 7):
-            if f.src:
+            if f.src and (f.src in self.devices or len(self.devices) < self.TRACK_MAX):
                 self.devices.setdefault(f.src, DeviceStats()).beacons += 1
             self.beacon_times.append(ts)
             recent = [t for t in self.beacon_times if ts - t <= 60]

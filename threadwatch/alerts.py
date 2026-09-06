@@ -74,6 +74,7 @@ KNOWN_EVENTS = frozenset((
     "retransmission_elevation", "partition_or_leader_change", "credentials_stale", "clock_step",
     "border_router_address_changed", "border_router_unlisted", "phase_locked_storm",
     "incident_frozen", "incident_freeze_failed", "daily_summary", "alert_test", "recorder_started",
+    "address_flood",
 ))
 
 TEMPLATE_FIELDS = {

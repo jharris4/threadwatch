@@ -56,6 +56,7 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `device_first_seen` | info | `addr`, `name` |
 | `device_returned` | notice | `addr`, `name` |
 | `join_scan_activity` | notice | `count_60s`, `src` |
+| `address_flood` | warning | `dropped`, `kept`, `note` (something in range is transmitting from ever-new extended addresses; the least-heard unnamed rows were dropped from the device table to keep it bounded, and `device_first_seen` is not emitted while it goes on; once an hour) |
 | `possible_foreign_pan` | notice | `pan`, `src`, `dominant_pan`, `note` |
 | `dominant_pan_changed` | notice when first guessed, warning when the guess changes | `pan`, `previous`, `frames`, `note` |
 | `configured_pan_silent` | warning | `pan`, `heard_frames`, `window_s`, `busiest_pan`, `note` |

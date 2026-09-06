@@ -33,6 +33,80 @@ def frame(ts, src, pan=OWN_PAN, rssi=-60.0):
                  ftype=1, seq=int(ts) & 0xFF, dst_pan=pan, dst="0000", src_pan=pan, src=src)
 
 
+class AddressFloodTest(unittest.TestCase):
+    """An extended source address is whatever the sender says it is, and
+    every new one became a row in last-seen and a DeviceStats for ever:
+    a transmitter sending from a fresh address per frame grew both until
+    the Pi ran out of memory, and rewrote a growing last-seen.json every
+    30 s on the way."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        (d / "devices.json").write_text(json.dumps([
+            {"name": "Living Room AQ", "extendedAddress": SENSOR, "threadRole": "sleepy-end-device"},
+        ]))
+        self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_the_table_stays_bounded_and_keeps_the_devices_worth_keeping(self):
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        cap = Pipeline.TRACK_MAX
+        t0 = 1_700_000_000.0
+        # A named device, an unnamed neighbour heard 50 times, and a device
+        # vouched for by a MIC-checked short address: none of them may go.
+        for i in range(3):
+            pipe.ingest(frame(t0 + i, SENSOR))
+        for i in range(50):
+            pipe.ingest(frame(t0 + 10 + i, STRANGER))
+        pipe.ingest(frame(t0 + 70, ROUTER))
+        pipe.decryptor.short_to_ext["0401"] = ROUTER
+        forged = [f"{0x3000000000000000 + n:016x}" for n in range(3 * cap)]
+        for n, addr in enumerate(forged):
+            pipe.ingest(frame(t0 + 100 + n * 0.01, addr))
+        self.assertLessEqual(len(pipe.seen.table), cap)
+        self.assertLessEqual(len(pipe.devices), cap + 1)
+        for keep in (SENSOR, STRANGER, ROUTER):
+            self.assertIn(keep, pipe.seen.table)
+            self.assertIn(keep, pipe.devices)
+        self.assertEqual(pipe.seen.table[STRANGER]["frames"], 50)
+        # The last forged addresses are the ones still there: the least
+        # heard and longest ago went first.
+        self.assertIn(forged[-1], pipe.seen.table)
+        self.assertNotIn(forged[0], pipe.seen.table)
+        floods = [r for r in pipe.events.records if r["event"] == "address_flood"]
+        self.assertEqual(len(floods), 1)                       # once an hour, not once per eviction
+        self.assertEqual(floods[0]["severity"], "warning")
+        self.assertGreater(floods[0]["dropped"], 0)
+        self.assertIn("ever-new extended addresses", floods[0]["note"])
+        # Sightings are not announced one by one while it goes on.
+        first = [r["addr"] for r in pipe.events.records if r["event"] == "device_first_seen"]
+        self.assertEqual(len(first), cap)                      # the ones before the table filled
+        self.assertNotIn(forged[-1], first)
+        # An hour on, a new address is news again, and the warning repeats
+        # once if the flood is still running.
+        pipe.ingest(frame(t0 + 4000, "3fffffffffffffff"))
+        self.assertIn("3fffffffffffffff", [r.get("addr") for r in pipe.events.records])
+        for n in range(cap):
+            pipe.ingest(frame(t0 + 4001 + n * 0.01, f"{0x4000000000000000 + n:016x}"))
+        self.assertEqual(len([r for r in pipe.events.records if r["event"] == "address_flood"]), 2)
+        self.assertLessEqual(len(pipe.seen.table), cap)
+        # Nothing evicted lingers in the per-device state a quiet check walks.
+        self.assertEqual(set(pipe.devices) - set(pipe.seen.table), set())
+        self.assertEqual(pipe.quiet_reported, set())
+
+    def test_beacons_from_ever_new_sources_do_not_grow_the_stats_either(self):
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t0 = 1_700_000_000.0
+        for n in range(Pipeline.TRACK_MAX + 50):
+            f = frame(t0 + n * 0.01, f"{n:04x}")
+            f.ftype, f.cmd = 3, 7
+            pipe.ingest(f)
+        self.assertLessEqual(len(pipe.devices), Pipeline.TRACK_MAX)
+
+
 class QuietPolicyTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

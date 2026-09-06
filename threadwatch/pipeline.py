@@ -941,6 +941,13 @@ class Pipeline:
 
     RESOLVE_RETRY_S = 30.0
     RESOLVE_RETRY_MAX_S = 1800.0      # the backoff on a short address nobody in the table sent from
+    # Failures counted per short address, and so the largest doubling the
+    # backoff ever computes. The cap above is applied to the result, but
+    # the exponential was worked out first and the count grew without
+    # limit: a device permanently unresolvable reached 2**1024 after about
+    # three weeks of half-hourly retries, and converting that to a float
+    # raised OverflowError out of ingest and took the recorder down.
+    RESOLVE_FAILS_MAX = 16
     # The nonce search is the one thing in the capture loop whose cost the
     # sender chooses: every unmappable short source costs a MIC check per
     # candidate, up to sixteen AES-CCM operations each, and there are
@@ -1041,12 +1048,15 @@ class Pipeline:
         if not self._resolve_budget(f.ts):
             return None          # the budget is spent: this one waits, the ring does not
         fails = self._resolve_fails.get(src, 0)
-        self._resolve_after[src] = f.ts + min(self.RESOLVE_RETRY_S * 2 ** fails, self.RESOLVE_RETRY_MAX_S)
+        self._resolve_after[src] = f.ts + min(self.RESOLVE_RETRY_S * 2 ** min(fails, self.RESOLVE_FAILS_MAX),
+                                              self.RESOLVE_RETRY_MAX_S)
         tried = self.decryptor.stats["short_candidates_tried"]
         ext = self.decryptor.resolve_short(f.psdu, src, self._resolve_candidates(f.ts))
         self._resolve_tokens -= self.decryptor.stats["short_candidates_tried"] - tried
         if ext is None:
-            self._resolve_fails[src] = fails + 1
+            # Counted no further than the cap: past it the backoff is the
+            # maximum either way, and the number is only ever an exponent.
+            self._resolve_fails[src] = min(fails + 1, self.RESOLVE_FAILS_MAX)
         else:
             self._resolve_fails.pop(src, None)
         return ext

@@ -309,6 +309,31 @@ class ResolveShortTest(unittest.TestCase):
             pipe.ingest(parse_frame(t0 + 5000, secured_frame(OTHER, "abcd", 1, pan=0x58bc, key=foreign), 195))
             self.assertEqual(dec.stats["short_candidates_tried"], before)
 
+    def test_a_long_unresolvable_address_does_not_overflow_the_backoff(self):
+        # The backoff capped the result of 30 * 2 ** fails, but worked the
+        # exponential out first and let the failure count grow without
+        # limit. A device on air whose extended address the table never
+        # learns reaches four figures of failures after a few weeks of
+        # half-hourly retries, and converting 2 ** 1024 to a float raised
+        # OverflowError out of ingest, taking the recorder down.
+        with tempfile.TemporaryDirectory() as tmp:
+            dd = Path(tmp)
+            (dd / "devices.json").write_text("[]")
+            cfg = Config(data_dir=dd / "data", devices_path=dd / "devices.json")
+            pipe = Pipeline(cfg, NullEventLog(), Decryptor(network_key=KEY))
+            t0 = 1_700_000_000.0
+            foreign = bytes(range(16, 32))
+            pipe._resolve_fails["c829"] = 1024                  # weeks of failures, seeded
+            pipe._resolve_tokens = Pipeline.RESOLVE_TRIALS_BURST
+            self.assertIsNone(pipe.ingest(parse_frame(t0, secured_frame(OTHER, "c829", 1, key=foreign), 195)))
+            self.assertEqual(pipe._resolve_after["c829"], t0 + Pipeline.RESOLVE_RETRY_MAX_S)
+            self.assertLessEqual(pipe._resolve_fails["c829"], Pipeline.RESOLVE_FAILS_MAX)
+            # And it still resolves when the device is finally identified.
+            pipe._resolve_tokens = Pipeline.RESOLVE_TRIALS_BURST
+            pipe.extra_candidates = [SED]
+            self.assertEqual(pipe.ingest(parse_frame(t0 + 3600, secured_frame(SED, "c829", 2), 195)), SED)
+            self.assertNotIn("c829", pipe._resolve_fails)
+
     def test_a_malformed_address_in_last_seen_does_not_crash_the_record_loop(self):
         # The inventory's addresses are checked before they reach the
         # nonce search; the table's keys were not, and bytes.fromhex on a

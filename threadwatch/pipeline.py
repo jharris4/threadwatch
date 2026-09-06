@@ -206,9 +206,13 @@ class Pipeline:
         self.observed_names = {}
         if not ephemeral and self.mle_names_path.exists():
             try:
-                self.observed_names = json.loads(self.mle_names_path.read_text())
+                loaded = json.loads(self.mle_names_path.read_text())
             except (json.JSONDecodeError, OSError):
-                pass
+                loaded = {}
+            # Owners map to {name: count}; any other shape would raise at
+            # the first name observed, in the capture loop.
+            self.observed_names = {k: v for k, v in loaded.items() if isinstance(v, dict)} \
+                if isinstance(loaded, dict) else {}
         # Silences that crossed their threshold while the recorder was down
         # (or while it sat in the no-frames watchdog restart loop, where
         # periodic() never runs) are announced now, once: the row carries a
@@ -449,10 +453,19 @@ class Pipeline:
         stamps = []
         try:
             st = json.loads((self.cfg.state_dir / "status.json").read_text())
+            if not isinstance(st, dict):
+                raise ValueError(f"expected an object, got {type(st).__name__}")
             if st.get("last_frame_ts") is not None:
                 stamps.append(float(st["last_frame_ts"]))
-        except (OSError, ValueError, TypeError):
-            pass
+        except OSError:
+            pass                        # no run has written one yet
+        except (ValueError, TypeError) as exc:
+            # Valid JSON of the wrong shape parsed fine and raised
+            # AttributeError at the .get, which nothing caught: the
+            # recorder could not start, and the traceback did not say
+            # which file. Named here, and the table stands in for it.
+            print(f"[threadwatch] status.json is unreadable ({exc}): when the last run last heard a "
+                  "frame is taken from last-seen.json instead", flush=True)
         stamps.extend(row["last_seen"] for row in self.seen.table.values() if row.get("last_seen") is not None)
         return max(stamps) if stamps else None
 

@@ -454,6 +454,8 @@ def last_frame_on_record(state_dir: Path) -> Optional[float]:
     previous run recorded it; None when no run has heard one."""
     try:
         st = json.loads((state_dir / "status.json").read_text())
+        if not isinstance(st, dict):
+            return None             # valid JSON of another shape: a list has no .get
         return float(st["last_frame_ts"]) if st.get("last_frame_ts") is not None else None
     except (OSError, ValueError, KeyError, TypeError):
         return None

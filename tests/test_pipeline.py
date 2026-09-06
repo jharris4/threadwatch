@@ -33,6 +33,63 @@ def frame(ts, src, pan=OWN_PAN, rssi=-60.0):
                  ftype=1, seq=int(ts) & 0xFF, dst_pan=pan, dst="0000", src_pan=pan, src=src)
 
 
+class StateFileShapeTest(unittest.TestCase):
+    """A state file that is valid JSON of the wrong shape (a list, a
+    string, a number, null; a table whose rows are strings) parsed fine
+    and raised AttributeError at the first .get, which no reader caught:
+    the recorder could not start, and the traceback did not name the
+    file. Every shape must degrade the way invalid JSON already does."""
+
+    BODIES = ("[]", "[1, 2]", '"text"', "42", "null", "true")
+
+    def _cfg(self, d):
+        (d / "devices.json").write_text("[]")
+        return Config(data_dir=d / "data", devices_path=d / "devices.json")
+
+    def test_status_json_of_any_shape_never_stops_a_start(self):
+        import contextlib, io
+        from threadwatch.capture import last_frame_on_record
+        for body in self.BODIES:
+            with self.subTest(body=body), tempfile.TemporaryDirectory() as tmp:
+                cfg = self._cfg(Path(tmp))
+                cfg.state_dir.mkdir(parents=True, exist_ok=True)
+                (cfg.state_dir / "status.json").write_text(body)
+                self.assertIsNone(last_frame_on_record(cfg.state_dir))
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    pipe = Pipeline(cfg, NullEventLog(), stub_decryptor())
+                    pipe.ingest(frame(1_700_000_000.0, ROUTER))
+                    pipe.periodic(1_700_000_030.0)
+                self.assertIn("status.json is unreadable (expected an object, got", out.getvalue())
+
+    def test_rows_that_are_not_objects_are_dropped_from_the_tables(self):
+        import contextlib, io
+        from threadwatch.names import DeviceNames, LastSeen, load_border_routers
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._cfg(Path(tmp))
+            cfg.state_dir.mkdir(parents=True, exist_ok=True)
+            t0 = 1_700_000_000.0
+            (cfg.state_dir / "last-seen.json").write_text(json.dumps({
+                ROUTER: {"first_seen": t0, "last_seen": t0, "frames": 5, "types": {}},
+                SENSOR: "a string where a row should be", STRANGER: None, "0000000000000001": 7}))
+            (cfg.state_dir / "border-routers.json").write_text(json.dumps({
+                "hub.local": {"addr": SENSOR, "name": "Hub"}, "other.local": "text", "third.local": []}))
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                seen = LastSeen(cfg.state_dir / "last-seen.json")
+                self.assertEqual(list(seen.table), [ROUTER])
+                self.assertEqual(list(load_border_routers(cfg.state_dir / "border-routers.json")), ["hub.local"])
+                names = DeviceNames(cfg.devices_path, cfg.state_dir / "border-routers.json")
+                self.assertEqual(list(names.border_routers), [SENSOR])
+                pipe = Pipeline(cfg, NullEventLog(), stub_decryptor())
+                pipe.ingest(frame(t0 + 10, ROUTER))
+                pipe.periodic(t0 + 40)
+                pipe.seen.save()
+            self.assertIn("last-seen.json: dropping 3 row(s) that are not objects", out.getvalue())
+            saved = json.loads((cfg.state_dir / "last-seen.json").read_text())
+            self.assertEqual(list(saved), [ROUTER])              # the bad rows are gone from disk too
+
+
 class AddressFloodTest(unittest.TestCase):
     """An extended source address is whatever the sender says it is, and
     every new one became a row in last-seen and a DeviceStats for ever:

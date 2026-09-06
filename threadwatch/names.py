@@ -222,7 +222,14 @@ class LastSeen:
                 table = json.loads(state_path.read_text())
                 if not isinstance(table, dict):
                     raise ValueError(f"expected an object, got {type(table).__name__}")
-                self.table = table
+                # A row that is not an object has no .get, and every row is
+                # read that way at start-up: one would have stopped the
+                # recorder from starting. Such rows are dropped and said.
+                rows = {a: r for a, r in table.items() if isinstance(r, dict)}
+                if len(rows) < len(table):
+                    print(f"[threadwatch] {state_path.name}: dropping {len(table) - len(rows)} row(s) that are "
+                          "not objects", flush=True)
+                self.table = rows
             except (ValueError, OSError) as exc:
                 self.unreadable = exc
                 if state_path not in _warned_unreadable:
@@ -338,7 +345,12 @@ def load_border_routers(path: Optional[Path]) -> dict[str, dict]:
         data = json.loads(path.read_text())
     except (OSError, ValueError):
         return {}
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    # A row that is not an object (a hand-edit, a half-restored backup)
+    # has no .get, and every reader of a row asks it: the recorder could
+    # not start on one. Rows are dropped, never the file.
+    return {host: rec for host, rec in data.items() if isinstance(rec, dict)}
 
 
 def load_names(cfg) -> DeviceNames:
@@ -381,7 +393,12 @@ def load_observed_names(state_dir: Path) -> dict[str, dict[str, int]]:
         data = json.loads(path.read_text())
     except (OSError, ValueError):
         return {}
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    # A row that is not an object (a hand-edit, a half-restored backup)
+    # has no .get, and every reader of a row asks it: the recorder could
+    # not start on one. Rows are dropped, never the file.
+    return {host: rec for host, rec in data.items() if isinstance(rec, dict)}
 
 
 ROTATION_WINDOW_S = 15 * 60

@@ -271,8 +271,11 @@ it up if you care about the history; nothing else holds it.
       state/
         status.json          the daemon's status, rewritten every 30 s (below)
         last-seen.json       one row per extended address: first and last heard, frame count,
-                             PAN, average RSSI, the RLOC16 it last used, and whether its silence
-                             or its poll starvation has been announced. A backward clock step
+                             PAN, average RSSI, the RLOC16 it last used, whether its silence
+                             or its poll starvation has been announced, and the highest frame
+                             counter accepted under each of the last two key generations, so a
+                             restart takes neither a replay for a sighting nor a key rotation
+                             for silence. A backward clock step
                              (clock_step with a negative step_s) moves every timestamp in this
                              file back with the clock: it is the one thing that rewrites history
                              here rather than adding to it

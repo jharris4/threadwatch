@@ -63,6 +63,10 @@ class MleInfo:
     # The MLE frame counter of a secured message: the pipeline keeps the
     # highest accepted per sender, so a replayed message is not a sighting.
     counter: int | None = None
+    # The key sequence that counter belongs to. Counters restart at zero
+    # when the network rotates its key, so one is only comparable with
+    # another under the same generation.
+    key_sequence: int | None = None
 
 
 @dataclass
@@ -120,11 +124,15 @@ class Decryptor:
         return self.decrypt_frame_counter(psdu, src_ext_hex, src_short_hex)[0]
 
     def decrypt_frame_counter(self, psdu: bytes, src_ext_hex: str | None,
-                              src_short_hex: str | None) -> tuple[bytes | None, int | None]:
+                              src_short_hex: str | None) -> tuple[bytes | None, int | None, int | None]:
         """decrypt_frame, plus the MAC frame counter of a secured frame that
-        passed its MIC: the proof that the sender holds the key and used
-        this extended address as its nonce. None for an unsecured frame
-        (anyone's bytes) and for one that failed."""
+        passed its MIC and the key sequence it was authenticated under: the
+        proof that the sender holds the key and used this extended address
+        as its nonce, and which generation of that key it used. A counter
+        only means anything within its own generation - the network rotates
+        its key and every device restarts its counters at zero - so the two
+        travel together. Both None for an unsecured frame (anyone's bytes)
+        and for one that failed."""
         sec = self._secured_parts(psdu)
         if sec is None:
             # Secured, but not the Thread way (a security level other than
@@ -134,22 +142,22 @@ class Decryptor:
             # and could not read, and a stale-credentials check judging
             # failures against successes is not fed these.
             self.stats["mac_unsupported"] += 1
-            return None, None
+            return None, None, None
         if sec is False:
             self.stats["plaintext"] += 1
-            return psdu[self._mac_header_len(psdu):], None
+            return psdu[self._mac_header_len(psdu):], None, None
         ext_hex = src_ext_hex or (self.short_to_ext.get(src_short_hex or "") if src_short_hex else None)
         if not ext_hex:
             self.stats["mac_no_ext_addr"] += 1
-            return None, None
-        plain = self._decrypt_with_ext(sec, ext_hex)
+            return None, None, None
+        plain, sequence = self._decrypt_with_ext(sec, ext_hex)
         self.stats["mac_decrypted" if plain is not None else "mac_failed"] += 1
-        return plain, (sec[1] if plain is not None else None)
+        return plain, (sec[1] if plain is not None else None), sequence
 
     def verify_short(self, psdu: bytes, ext_hex: str) -> bool:
         """Does this secured frame really come from ext_hex (MIC check)?"""
         sec = self._secured_parts(psdu)
-        return bool(sec) and self._decrypt_with_ext(sec, ext_hex) is not None
+        return bool(sec) and self._decrypt_with_ext(sec, ext_hex)[0] is not None
 
     def resolve_short(self, psdu: bytes, short_hex: str, candidates) -> str | None:
         """Learn which extended address a short-source secured frame came from.
@@ -165,7 +173,7 @@ class Decryptor:
             return None
         for ext_hex in candidates:
             self.stats["short_candidates_tried"] += 1
-            if self._decrypt_with_ext(sec, ext_hex) is not None:
+            if self._decrypt_with_ext(sec, ext_hex)[0] is not None:
                 self.short_to_ext[short_hex] = ext_hex
                 self.stats["short_resolved"] += 1
                 return ext_hex
@@ -209,7 +217,10 @@ class Decryptor:
         """True when the frame is secured the Thread way and worth a nonce search."""
         return bool(self._secured_parts(psdu))
 
-    def _decrypt_with_ext(self, sec, ext_hex: str) -> bytes | None:
+    def _decrypt_with_ext(self, sec, ext_hex: str) -> tuple[bytes | None, int | None]:
+        """The decrypted payload and the key sequence whose MAC key read it,
+        or (None, None). The sequence is what makes the frame counter mean
+        something: counters restart at zero in each generation."""
         key_index, counter, sec_level, open_part, secret = sec
         # A candidate that is not an extended address (a stray form in a
         # state file the loaders did not catch) is nobody, not a crash in
@@ -217,9 +228,9 @@ class Decryptor:
         try:
             addr = bytes.fromhex(ext_hex)
         except (ValueError, TypeError):
-            return None
+            return None, None
         if len(addr) != 8:
-            return None
+            return None, None
         nonce = addr + struct.pack(">L", counter) + bytes([sec_level])
         # The vendored sniffer strips the FCS (DLT 230, IEEE802_15_4_NOFCS),
         # so a frame this recorder captured decrypts untrimmed: that pass
@@ -237,8 +248,8 @@ class Decryptor:
                 except InvalidTag:
                     continue
                 self.note_key_sequence(seq)
-                return plain
-        return None
+                return plain, seq
+        return None, None
 
     @staticmethod
     def _mac_header_len(p: bytes) -> int | None:
@@ -408,7 +419,7 @@ class Decryptor:
             nonce = bytes.fromhex(src_ext_hex) + struct.pack(">L", counter) + bytes([sec_level])
             aad = src_ip + dst_ip + udp_payload[1:1 + aux]
             secret = udp_payload[1 + aux:]
-            body = None
+            body, used_sequence = None, None
             if key_mode == 2:
                 # Thread MLE: the 4-byte key source IS the key sequence.
                 sequence = struct.unpack(">L", udp_payload[6:10])[0]
@@ -423,8 +434,10 @@ class Decryptor:
                     body = AESCCM(mle_key, tag_length=4).decrypt(nonce, secret, aad)
                 except InvalidTag:
                     continue
-                # Authenticated under this sequence: the MAC search follows it.
+                # Authenticated under this sequence: the MAC search follows
+                # it, and the caller judges the counter within it.
                 self.note_key_sequence(seq)
+                used_sequence = seq
                 break
             if body is None:
                 self.stats["mle_failed"] += 1
@@ -434,7 +447,8 @@ class Decryptor:
         if not body:
             return None
         self.stats["mle_decrypted"] += 1
-        info = MleInfo(command=body[0], command_name=MLE_COMMANDS.get(body[0], f"cmd{body[0]}"), counter=counter)
+        info = MleInfo(command=body[0], command_name=MLE_COMMANDS.get(body[0], f"cmd{body[0]}"), counter=counter,
+                       key_sequence=used_sequence)
         off = 1
         while off + 2 <= len(body):
             t, l = body[off], body[off + 1]

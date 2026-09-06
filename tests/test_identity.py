@@ -648,6 +648,87 @@ class SightingAuthenticityTest(unittest.TestCase):
             again.ingest(parse_frame(t0 + 101, secured_ext_frame(SED, 8, b"\x7f\x33"), 195))
             self.assertEqual((again.seen.table[SED]["frames"], again.seen.table[SED]["counter"]), (4, 8))
 
+    def test_a_key_rotation_restarts_the_counters_without_losing_the_device(self):
+        # The network rotates its key and every device restarts its MAC
+        # counter at zero. Judged against the previous generation's
+        # high-water mark, a healthy device went silent until its new
+        # counter climbed past the old one - days, for a device that had
+        # been on air a while. Counters are compared within their own
+        # generation; a replay inside one is still refused, and a
+        # generation older than any heard is not a sighting at all.
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as tmp:
+            pipe, cfg = self._pipe(tmp)
+            t0 = 1_700_000_000.0
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                pipe.ingest(parse_frame(t0, secured_ext_frame(SED, 1000, b"\x7f\x33", sequence=0), 195))
+                for i, counter in enumerate((1, 2)):                   # rotated: counters start again
+                    pipe.ingest(parse_frame(t0 + 1 + i, secured_ext_frame(SED, counter, b"\x7f\x33",
+                                                                         sequence=1), 195))
+            self.assertEqual((pipe.seen.table[SED]["frames"], pipe.replayed), (3, 0))
+            self.assertEqual(pipe.seen.table[SED]["last_seen"], t0 + 2)
+            self.assertEqual(pipe.seen.table[SED]["counter_seq"], 1)
+            self.assertNotIn("not counted as a sighting", out.getvalue())
+            with contextlib.redirect_stdout(out):
+                # A replay inside the new generation is still refused.
+                pipe.ingest(parse_frame(t0 + 60, secured_ext_frame(SED, 2, b"\x7f\x33", sequence=1), 195))
+                self.assertEqual((pipe.seen.table[SED]["frames"], pipe.replayed), (3, 1))
+                # It rotates once more, and only then is the recording from
+                # the first generation played back: older than either
+                # generation now kept, so not a sighting whatever it counts.
+                pipe.ingest(parse_frame(t0 + 61, secured_ext_frame(SED, 1, b"\x7f\x33", sequence=2), 195))
+                pipe.ingest(parse_frame(t0 + 4000, secured_ext_frame(SED, 1001, b"\x7f\x33", sequence=0), 195))
+            self.assertEqual((pipe.seen.table[SED]["frames"], pipe.replayed), (4, 2))
+            self.assertEqual(pipe.seen.table[SED]["last_seen"], t0 + 61)
+            self.assertIn("older than any this device has been heard under", out.getvalue())
+
+    def test_a_device_still_on_the_old_key_is_judged_within_its_own_generation(self):
+        # Both generations survive a restart: a device that has not rotated
+        # yet is heard, and a replay of what it sent under that old key is
+        # still refused.
+        with tempfile.TemporaryDirectory() as tmp:
+            pipe, cfg = self._pipe(tmp)
+            t0 = 1_700_000_000.0
+            pipe.ingest(parse_frame(t0, secured_ext_frame(SED, 1000, b"\x7f\x33", sequence=0), 195))
+            pipe.ingest(parse_frame(t0 + 1, secured_ext_frame(SED, 2, b"\x7f\x33", sequence=1), 195))
+            pipe.seen.save()
+            row = pipe.seen.table[SED]
+            self.assertEqual((row["counter"], row["counter_seq"]), (2, 1))
+            self.assertEqual(row["counter_prev"], [1000, t0, 0])
+            again = Pipeline(cfg, NullEventLog(), Decryptor(network_key=KEY))
+            again.ingest(parse_frame(t0 + 100, secured_ext_frame(SED, 1001, b"\x7f\x33", sequence=0), 195))
+            self.assertEqual((again.seen.table[SED]["last_seen"], again.replayed), (t0 + 100, 0))
+            import contextlib
+            import io
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                again.ingest(parse_frame(t0 + 200, secured_ext_frame(SED, 999, b"\x7f\x33", sequence=0), 195))
+            self.assertEqual((again.seen.table[SED]["last_seen"], again.replayed), (t0 + 100, 1))
+            self.assertIn("under key generation 0", out.getvalue())
+
+    def test_a_rotation_restarts_the_mle_counter_too(self):
+        # The MLE counter resets with the same rotation, and a router's
+        # advertisements are all that vouch for it.
+        with tempfile.TemporaryDirectory() as tmp:
+            pipe, _cfg = self._pipe(tmp)
+            t0 = 1_700_000_000.0
+            body = b"\x04" + b"\x00\x02" + bytes.fromhex("c829")
+            src_ip = LINK_LOCAL + Decryptor._iid_from_ext(OTHER)
+            fcf = 1 | 0x0040 | (2 << 10) | (1 << 12) | (3 << 14)
+
+            def advert(counter, sequence, seq_no):
+                msg = mle_message(OTHER, sequence, counter, src_ip, ALL_NODES, body)
+                return (struct.pack("<HBH", fcf, seq_no & 0xFF, PAN) + b"\xff\xff"
+                        + bytes.fromhex(OTHER)[::-1] + lowpan_udp(19788, 19788, msg))
+            pipe.ingest(parse_frame(t0, advert(500, 0, 1), 230))
+            pipe.ingest(parse_frame(t0 + 1, advert(1, 1, 2), 230))       # rotated, counter restarted
+            self.assertEqual((pipe.seen.table[OTHER]["frames"], pipe.replayed), (2, 0))
+            self.assertEqual(pipe.seen.table[OTHER]["mle_counter_seq"], 1)
+            pipe.ingest(parse_frame(t0 + 60, advert(1, 1, 3), 230))      # the same message again
+            self.assertEqual((pipe.seen.table[OTHER]["frames"], pipe.replayed), (2, 1))
+
     def test_a_secured_mle_message_vouches_for_an_unsecured_frame(self):
         # Routers advertise in MAC-unsecured frames secured at the MLE
         # layer: those are sightings, on the MLE MIC and MLE counter.

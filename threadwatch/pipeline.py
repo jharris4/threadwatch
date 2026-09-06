@@ -47,6 +47,17 @@ STARVED_POLLS = 10
 STARVED_MIN_S = 60.0
 
 
+def _whole(value) -> int | None:
+    """A whole number from a state file, or None for anything else (a bool,
+    a string, a missing key). Rows are JSON somebody can edit."""
+    return None if isinstance(value, bool) or not isinstance(value, int) else value
+
+
+def _seconds(value) -> float:
+    """A timestamp from a state file, or 0.0 when it is not a number."""
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
+
+
 class DeviceStats:
     """Rolling per-device health from cleartext headers only."""
 
@@ -224,14 +235,24 @@ class Pipeline:
         self._pruned_day: str | None = None       # local day the event log was last pruned on
         self._capped_at: float | None = None      # when rows were last dropped to stay under TRACK_MAX
         # The highest frame counter accepted from each device, MAC and MLE,
-        # with when (see _verify); seeded from the rows so a restart does
-        # not take a replay of yesterday's frames for the device.
-        self._mac_counter: dict[str, tuple[int, float]] = {}
-        self._mle_counter: dict[str, tuple[int, float]] = {}
+        # with when, per key generation (see _verify and _counter_advances);
+        # seeded from the rows so a restart does not take a replay of
+        # yesterday's frames for the device. A row written before generations
+        # were recorded seeds the None generation, which the first frame
+        # after the restart is judged against and which then gives way.
+        self._mac_counter: dict[str, dict[int | None, tuple[int, float]]] = {}
+        self._mle_counter: dict[str, dict[int | None, tuple[int, float]]] = {}
         for addr, row in self.seen.table.items():
             for key, table in (("counter", self._mac_counter), ("mle_counter", self._mle_counter)):
+                gens = {}
                 if isinstance(row.get(key), int) and not isinstance(row.get(key), bool):
-                    table[addr] = (row[key], float(row.get(key + "_ts") or 0.0))
+                    gens[_whole(row.get(key + "_seq"))] = (row[key], _seconds(row.get(key + "_ts")))
+                prev = row.get(key + "_prev")
+                if isinstance(prev, list) and len(prev) == 3 and isinstance(prev[0], int) \
+                        and not isinstance(prev[0], bool) and _whole(prev[2]) is not None:
+                    gens.setdefault(_whole(prev[2]), (prev[0], _seconds(prev[1])))
+                if gens:
+                    table[addr] = gens
         self.replayed = 0                            # frames refused as replays this run
         self._replay_said: dict[str, float] = {}     # addr -> when its replays were last mentioned
         self._resolve_after: dict[str, float] = {}   # short addr -> next attempt ts
@@ -839,25 +860,69 @@ class Pipeline:
         inside one may (ingest asks _deep_inspect)."""
         if not who or not f.psdu:
             return None, False
-        plain, counter = self.decryptor.decrypt_frame_counter(f.psdu, who, None)
+        plain, counter, sequence = self.decryptor.decrypt_frame_counter(f.psdu, who, None)
         if counter is None:
             return plain, False
-        return plain, self._counter_advances(self._mac_counter, who, counter, f.ts, "frame")
+        return plain, self._counter_advances(self._mac_counter, who, counter, f.ts, "frame", sequence)
 
-    def _counter_advances(self, table: dict, who: str, counter: int, ts: float, what: str) -> bool:
-        last = table.get(who)
-        if last is None or counter > last[0]:
-            table[who] = (counter, ts)
-            return True
+    # A frame counter only means anything within the key generation it was
+    # authenticated under: the network rotates its key and every device
+    # restarts both its MAC and its MLE counter at zero (OpenThread's
+    # SetCurrentKeySequence does exactly that). Comparing across the
+    # rotation refused every frame a healthy device sent under the new key
+    # until its counter climbed past the old one's, which on a device with
+    # a long-lived counter is days of silence that never happened. Two
+    # generations are kept per device: the newest heard, and the one before
+    # it, which a device that has not rotated yet is still sending under.
+    KEEP_GENERATIONS = 2
+
+    def _counter_advances(self, table: dict, who: str, counter: int, ts: float, what: str,
+                          sequence: int | None) -> bool:
+        gens = table.setdefault(who, {})
+        if sequence is None:
+            # Nothing said which generation authenticated this one. Judge it
+            # against the newest known rather than opening a bucket that
+            # sorts against none of them.
+            sequence = max((g for g in gens if g is not None), default=None)
+        last = gens.get(sequence)
+        if last is None:
+            # A counter seeded from a state file written before generations
+            # were recorded. It judges the first frame after that restart,
+            # and then gives way whichever way that frame goes: a device
+            # whose key rotated while the recorder was down must not stay
+            # refused for ever on the strength of a counter nothing can
+            # place.
+            last = gens.pop(None, None)
+        if last is None:
+            if gens and sequence is not None and sequence < min(g for g in gens if g is not None):
+                self._say_replay(who, ts, f"a secured {what} under key generation {sequence}, older than any "
+                                          f"this device has been heard under ({min(gens)}), is not counted as "
+                                          "a sighting: a recording from before the network rotated its key")
+                return False
+            return self._accept_counter(gens, sequence, counter, ts)
+        if counter > last[0]:
+            return self._accept_counter(gens, sequence, counter, ts)
         if counter == last[0] and 0.0 <= ts - last[1] < self.RETRY_WINDOW_S:
             return True                          # a MAC retry of the copy just accepted
+        self._say_replay(who, ts, f"a secured {what} with counter {counter} at or below the last accepted "
+                                  f"({last[0]}) under key generation {sequence} is not counted as a sighting: "
+                                  "a replay of an earlier frame, or the device's counter went backwards")
+        return False
+
+    def _accept_counter(self, gens: dict, sequence: int | None, counter: int, ts: float) -> bool:
+        """Record the counter as the highest accepted in its generation, and
+        forget every generation but the newest KEEP_GENERATIONS."""
+        gens[sequence] = (counter, ts)
+        for old in sorted(g for g in gens if g is not None)[:-self.KEEP_GENERATIONS]:
+            del gens[old]
+        return True
+
+    def _say_replay(self, who: str, ts: float, note: str) -> None:
+        """Count a refused frame and say why, once an hour per device."""
         self.replayed += 1
         if ts - self._replay_said.get(who, -1e12) >= 3600.0:
             self._replay_said[who] = ts
-            print(f"[threadwatch] {self.names.name(who) or who}: a secured {what} with counter {counter} at or "
-                  f"below the last accepted ({last[0]}) is not counted as a sighting: a replay of an earlier "
-                  "frame, or the device's counter went backwards (said once an hour)", flush=True)
-        return False
+            print(f"[threadwatch] {self.names.name(who) or who}: {note} (said once an hour)", flush=True)
 
     # ---------------------------------------------------------- identity
 
@@ -1013,7 +1078,8 @@ class Pipeline:
         plain, live = self._verify(f, who)
         info = self._deep_inspect(f, plain) if f.ftype == 1 and plain is not None else None
         if who and not live and info is not None and info.secured and info.counter is not None:
-            live = self._counter_advances(self._mle_counter, who, info.counter, ts, "MLE message")
+            live = self._counter_advances(self._mle_counter, who, info.counter, ts, "MLE message",
+                                          info.key_sequence)
         if who and live and who not in self.seen.table and not self._admit(who, ts):
             live = False        # every row is one worth keeping: this frame goes uncounted
         if who and live:
@@ -1040,9 +1106,25 @@ class Pipeline:
             self.seen.touch(who, ts, f.ftype, pan=pan, rssi=f.rssi)
             row = self.seen.table[who]
             for key, table in (("counter", self._mac_counter), ("mle_counter", self._mle_counter)):
-                last = table.get(who)
-                if last is not None and row.get(key) != last[0]:
-                    row[key], row[key + "_ts"] = last
+                gens = table.get(who)
+                if not gens:
+                    continue
+                # The newest generation is the one a restart has to judge
+                # the next frame against; its key sequence travels with it,
+                # so a rotation while the recorder was down is not read as
+                # a replay.
+                newest, *older = sorted(gens, key=lambda s: (s is not None, s or 0), reverse=True)
+                counter, counter_ts = gens[newest]
+                if row.get(key) != counter or row.get(key + "_seq") != newest:
+                    row[key], row[key + "_ts"], row[key + "_seq"] = counter, counter_ts, newest
+                # The generation before it goes too, so a device still
+                # sending under the old key after a rotation is judged
+                # within that generation across a restart rather than
+                # refused as older than anything on record.
+                if older and older[0] is not None:
+                    row[key + "_prev"] = [*gens[older[0]], older[0]]
+                else:
+                    row.pop(key + "_prev", None)
             if is_poll(f):
                 # Polls by name for the review pages: the row's count of
                 # type-3 frames takes in every MAC command, beacon requests

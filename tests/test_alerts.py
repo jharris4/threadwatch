@@ -921,33 +921,41 @@ class RetryTest(unittest.TestCase):
 
 
     def test_a_digest_parked_at_close_is_spooled_and_not_lost(self):
-        # Building a digest takes its records out of the sink, so while the
-        # send runs the digest exists nowhere else. A close that reaches its
-        # deadline spooled the queue and the record in flight; the digest
-        # was in neither, and the recorder's os._exit took it with it.
+        # Building a digest takes the held-back records out of the sink, so
+        # while its send runs the digest exists nowhere else. close()
+        # spooled the queue and the record it tracked as in flight; the
+        # digest was in neither, and the recorder's os._exit took it.
         with tempfile.TemporaryDirectory() as tmp:
             spool = Path(tmp) / "alert-spool.jsonl"
             gate = threading.Event()
 
-            class Parked(alerts.Sink):
-                def send(self, record):
-                    gate.wait(5)
+            class ParksOnTheDigest(alerts.Sink):
+                """Takes the first page at once and parks on everything
+                after it - the digest, at close, is what parks."""
 
-            sink = Parked(name="parked", timeout_s=5, cooldown_s=3600)
+                def __init__(self, **kw):
+                    super().__init__(**kw)
+                    self.sent = []
+
+                def send(self, record):
+                    if self.sent:
+                        gate.wait(5)
+                    self.sent.append(record)
+
+            sink = ParksOnTheDigest(name="parked", timeout_s=5, cooldown_s=3600)
             d = alerts.Dispatcher([sink], lambda m: None, spool=spool)
             now = time.time()
-            d.offer({**REC, "ts": now, "name": "first"})               # sent: the send parks on the gate
-            self.assertTrue(wait_for(lambda: d.stats()["queued"] == 1))
+            d.offer({**REC, "ts": now, "name": "first"})               # paged at once
+            self.assertTrue(wait_for(lambda: sink.sent))
             d.offer({**REC, "ts": now, "name": "held"})                # inside the cooldown: held back
             self.assertTrue(wait_for(lambda: sink.next_digest_at(now) is not None))
-            d.close(timeout=0.2)
+            d.close(timeout=0.3)                                       # closing sends every held window now
+            self.assertTrue(d._thread.is_alive())                      # still parked in the digest's send
             lines = [json.loads(l) for l in spool.read_text().splitlines()]
-            self.assertEqual([l["sinks"] for l in lines], [["parked"], ["parked"]])
-            names = [l["record"].get("name") for l in lines]
-            self.assertIn("first", names)                              # the send that was parked
-            self.assertEqual(len(names), 2)                            # and the digest behind it
-            digest = next(l["record"] for l in lines if l["record"].get("name") != "first")
+            self.assertEqual([l["sinks"] for l in lines], [["parked"]])
+            digest = lines[0]["record"]
             self.assertEqual((digest["digest"], digest["count"]), (True, 1))
+            self.assertEqual(digest["event"], REC["event"])
             gate.set()
             d._thread.join(2)                                          # let it finish before the directory goes
 

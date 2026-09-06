@@ -754,7 +754,7 @@ class QuietPolicyTest(unittest.TestCase):
         # clock; the appended record cannot move, so the pointer must not
         # either, or the next start finds no record, discards the flag and
         # pages the same unbroken silence twice.
-        from threadwatch.events import EventLog, day_of, read_day
+        from threadwatch.events import EventLog, read_all
         T = time.time()
         pipe = Pipeline(self.cfg, EventLog(self.cfg.state_dir / "events"), stub_decryptor())
         clock = {"wall": T, "mono": 0.0}
@@ -768,8 +768,7 @@ class QuietPolicyTest(unittest.TestCase):
         events = self.cfg.state_dir / "events"
 
         def logged(event):
-            days = sorted({day_of(T), day_of(clock["wall"])})
-            return [r for day in days for r in read_day(events, day) if r["event"] == event]
+            return [r for r in read_all(events) if r["event"] == event]
 
         self.assertEqual([r["step_s"] for r in logged("clock_step")], [-1800])
         self.assertEqual(pipe.seen.table[ROUTER]["quiet_reported_ts"], reported)

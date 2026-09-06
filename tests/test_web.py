@@ -69,16 +69,24 @@ class RequestTimeoutTest(unittest.TestCase):
 
     def test_a_connection_that_never_sends_a_request_is_dropped_not_parked(self):
         self.httpd.RequestHandlerClass.timeout = 0.2      # the shipped 30 s, sped up
-        before = threading.active_count()
+        # Threads that were here already, by identity rather than by count:
+        # an unrelated daemon finishing elsewhere must not read as a pass
+        # or a fail. What is leaking is a thread that was not here before.
+        before = {t.ident for t in threading.enumerate()}
+
+        def leftover():
+            return [t.name for t in threading.enumerate() if t.ident not in before and t.is_alive()]
+
         socks = []
         try:
             for _ in range(5):
                 s = socket.create_connection(("127.0.0.1", self.httpd.server_port), timeout=5)
                 socks.append(s)
+            self.assertTrue(leftover())                   # a thread per connection, as designed
             deadline = time.monotonic() + 5
-            while time.monotonic() < deadline and threading.active_count() > before:
+            while time.monotonic() < deadline and leftover():
                 time.sleep(0.05)
-            self.assertEqual(threading.active_count(), before)
+            self.assertEqual(leftover(), [])              # ...and none of them outlives its timeout
             for s in socks:
                 self.assertEqual(s.recv(1), b"")          # the server closed its end
         finally:

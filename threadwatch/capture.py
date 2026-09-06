@@ -261,9 +261,19 @@ def capture_healthy(last_frame_mono: Optional[float], now: float,
     return now - last_frame_mono < timeout
 
 
+# Set on the way out of run_capture. The watchdog then stops ticking
+# rather than writing status.json or taking an exit decision while the
+# main thread is saving state and closing files. One capture process per
+# host (docs/OPERATIONS.md), so one flag serves; run_capture clears it at
+# the start of each run. It is also how a test ends the thread, which used
+# to mean throwing SystemExit at it from a faked sleep.
+watchdog_stop = threading.Event()
+
+
 def run_capture(cfg: Config) -> None:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "vendor"))
     from nrf802154_sniffer import Nrf802154Sniffer
+    watchdog_stop.clear()
 
     def _log(msg: str) -> None:
         print(f"[threadwatch] {msg}", flush=True)
@@ -346,6 +356,8 @@ def run_capture(cfg: Config) -> None:
         # Also keeps status.json fresh when the channel is merely quiet.
         while True:
             time.sleep(30)
+            if watchdog_stop.is_set():
+                return          # shutting down: the main thread owns the state now
             age = status_tick(cfg, port, beat, started, started_mono, pipe, decryptor, prior_frame, _log)
             verdict = watchdog_verdict(age, ring_open=beat["ring"] is not None,
                                        sniffer_alive=sniffer.thread.is_alive())
@@ -371,7 +383,7 @@ def run_capture(cfg: Config) -> None:
                         pass
                 os._exit(EXIT_STALLED)
 
-    threading.Thread(target=_watchdog, daemon=True).start()
+    threading.Thread(target=_watchdog, daemon=True, name="watchdog").start()
 
     # Liveness heartbeats: "healthy" means frames are still flowing, and
     # unknown (nothing sent) until this run has heard its first frame, so a
@@ -422,6 +434,7 @@ def run_capture(cfg: Config) -> None:
             sniffer._stop()
         except Exception:
             pass
+        watchdog_stop.set()
         try:
             pipe.seen.save()
         except Exception as exc:

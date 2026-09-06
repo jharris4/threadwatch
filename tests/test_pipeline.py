@@ -2138,7 +2138,14 @@ class BorderRouterTest(unittest.TestCase):
         # mdns global, and dies there with a traceback belonging to nobody
         # (tests/no_lan).
         import threading
-        leaked = [t.name for t in threading.enumerate() if t.name == "mdns-browse" and t.is_alive()]
+
+        def browsing():
+            return [t.name for t in threading.enumerate() if t.name == "mdns-browse" and t.is_alive()]
+
+        deadline = time.monotonic() + 2      # a stubbed browse returns at once; this is not a wait
+        while time.monotonic() < deadline and browsing():
+            time.sleep(0.02)
+        leaked = browsing()
         self.tmp.cleanup()
         self.assertEqual(leaked, [])
 

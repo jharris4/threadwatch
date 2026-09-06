@@ -398,6 +398,22 @@ class RunCaptureTest(unittest.TestCase):
         capture.time = types.SimpleNamespace(time=time.time, monotonic=time.monotonic, strftime=time.strftime,
                                              localtime=time.localtime, sleep=self._sleep)
         self._handlers = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGINT)}
+        # The watchdog is the thread that ends the process for a dead
+        # sniffer or a stall, and the fake os._exit above unwinds it with
+        # SystemExit, because a test cannot really exit. That is the
+        # behaviour under test, not a crash, so it is not reported as an
+        # unhandled thread exception. Anything else, from any thread,
+        # still is: this must not become the place real crashes hide.
+        import threading
+        expected = threading.excepthook
+        self.addCleanup(setattr, threading, "excepthook", expected)
+
+        def excepthook(args):
+            if args.exc_type is SystemExit and getattr(args.thread, "name", None) == "watchdog":
+                return
+            expected(args)
+
+        threading.excepthook = excepthook
 
     def tearDown(self):
         import signal
@@ -415,13 +431,17 @@ class RunCaptureTest(unittest.TestCase):
         raise SystemExit(code)
 
     def _sleep(self, _seconds):
-        """The watchdog's 30 s: one tick per test.tick.set(), and the thread
-        leaves when the test is over."""
+        """The watchdog's 30 s: one tick per test.tick.set(). Once the test
+        is over, the watchdog's own stop flag ends it on its next check.
+        Throwing SystemExit at the thread instead, as this used to, left an
+        unhandled-thread-exception warning on every run - noise that would
+        hide a real one."""
+        from threadwatch import capture
         while not self.finished.is_set():
             if self.tick.wait(0.02):
                 self.tick.clear()
                 return
-        raise SystemExit(0)
+        capture.watchdog_stop.set()
 
     def _run(self):
         import contextlib
@@ -455,6 +475,11 @@ class RunCaptureTest(unittest.TestCase):
         self.assertFalse((self.cfg.state_dir / "capture.fifo").exists())
         self.assertEqual((self._exit_note()["code"], self._exit_note()["reason"]), (3, "stream_ended"))
         self.assertIn("stopped after 3 frames", out)
+        # The watchdog is told to stop before any of that ladder runs, so
+        # it cannot write status.json or take an exit decision while the
+        # main thread is saving state and closing files.
+        from threadwatch import capture
+        self.assertTrue(capture.watchdog_stop.is_set())
         self.assertTrue((self.cfg.state_dir / "status.json").exists() or True)   # written by ticks only
 
     def test_a_sniffer_that_will_not_stop_does_not_keep_the_note_or_the_log_from_closing(self):

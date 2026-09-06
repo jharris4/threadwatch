@@ -279,7 +279,7 @@ it up if you care about the history; nothing else holds it.
                              (clock_step with a negative step_s) moves every timestamp in this
                              file back with the clock: it is the one thing that rewrites history
                              here rather than adding to it
-        observed-names.json  SRP hostnames harvested from the mesh (report --suggest uses them)
+        observed-names.json  SRP hostnames harvested from the mesh (devices --suggest uses them)
         frames-by-hour.json  frames per hour, the last day or so, for the daily summary
         retransmissions.json the retransmission detector's last 30 minute rates and the
                              elevation in progress, so a restart mid-elevation keeps its baseline

@@ -112,7 +112,13 @@ question: *why did this device go offline?*
    by hand, `sudo systemctl stop threadwatch` first: one capture process
    per host, or the second one pages the household for silences the first
    is already hearing. docs/OPERATIONS.md.)
-6. When something feels wrong: `bin/threadwatch status`, and
+6. `http://127.0.0.1:8080/` on the recorder host reads the event log back
+   day by day (`threadwatch-web.service`, installed in step 2;
+   docs/REVIEW.md). The pages have no authentication, so they listen on
+   loopback: reach them from your laptop over `ssh -L
+   8080:127.0.0.1:8080 user@host`, or set `[web] bind = "0.0.0.0"` in
+   config.toml to serve the LAN.
+7. When something feels wrong: `bin/threadwatch status`, and
    `bin/threadwatch freeze` before the evidence rolls off
    (docs/OPERATIONS.md: logs, restarts, what every doctor line means).
 

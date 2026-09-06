@@ -196,4 +196,10 @@ Done. Useful commands:
     $REPO/bin/threadwatch status
     $REPO/bin/threadwatch events
 $(command -v systemctl >/dev/null && echo "    journalctl -u threadwatch -f")
+
+The review pages read the event log back day by day, at
+http://127.0.0.1:8080/ on this host ([web] in config/config.toml). They
+have no authentication, so they listen on loopback: read them from
+another machine over ssh -L 8080:127.0.0.1:8080 $RUN_USER@$(hostname),
+or set [web] bind = "0.0.0.0" to serve the LAN (docs/REVIEW.md).
 DONE

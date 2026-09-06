@@ -22,6 +22,17 @@ services:
       # Left side: the dongle on the host. /dev/serial/by-id/usb-Nordic_Semiconductor_*
       # survives re-enumeration; a plain /dev/ttyACM0 works while there is one dongle.
       - /dev/ttyACM0:/dev/ttyACM0
+    # The image runs as uid 1000, not root, so what it writes into the two
+    # bind mounts below stays readable and writable by an ordinary host user
+    # (docs/DOCKER.md). Where the host's owner is someone else, uncomment
+    # and set it to that user, and chown ./config and ./data to match.
+    # user: "1000:1000"
+    #
+    # The dongle is usually root:dialout mode 660, so a non-root container
+    # needs the dialout group. 20 is dialout on Debian and Raspberry Pi OS;
+    # check yours with `stat -c %g /dev/ttyACM0` and change it if it differs.
+    group_add:
+      - "20"
     volumes:
       - ./config:/app/config
       - ./data:/app/data

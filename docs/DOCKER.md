@@ -67,6 +67,17 @@ The review pages are on port 8080 (`ports:` in `compose.yaml` to change).
 - `./config` is mounted read-write into `capture` (so `adopt` can write
   `devices.json`) and read-only into `web`.
 - `./data` holds the ring, state and incidents, exactly as native.
+- The container runs as uid 1000, not root, so the ring files, state,
+  incidents and any `devices.json` it writes belong to an ordinary user
+  and a native install can read and write the same `data/` afterwards.
+  1000 is the first ordinary user on Raspberry Pi OS, Debian and most NAS
+  images. If yours is someone else, set `user:` in `compose.yaml` to their
+  uid and gid and `chown` the two directories to match, or the recorder
+  cannot write and exits. `ls -ln config data` shows who owns them now.
+- The dongle is usually `root:dialout` mode 660, so `compose.yaml` adds
+  group 20 (`group_add`), which is `dialout` on Debian and Raspberry Pi
+  OS. Check yours with `stat -c %g /dev/ttyACM0`; a wrong group is
+  `permission denied` opening the serial port.
 - `config/alerts.env` is loaded as the container's environment when
   present, the equivalent of the systemd unit's `EnvironmentFile`. Compose
   reads it when it *creates* the container, and a restart keeps the

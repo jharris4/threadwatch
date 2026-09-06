@@ -15,6 +15,16 @@ RUN pip install --no-cache-dir -r requirements.txt
 # volumes, never part of the image; so is whatever else the working tree
 # holds. A new directory the container needs is added there.
 COPY . .
+# Not root. Everything the container writes goes into the bind-mounted
+# config/ and data/ on the host, and as uid 0 those become a data/ the
+# native recorder - an unprivileged user, systemd/threadwatch.service -
+# cannot write to afterwards. 1000 is the first ordinary user on
+# Raspberry Pi OS, Debian and most NAS images; where the host's owner is
+# someone else, set compose's `user:` and chown the two directories to
+# match (docs/DOCKER.md). Reading the dongle needs its group, which
+# compose's `group_add` supplies.
+RUN useradd --uid 1000 --user-group --no-create-home --shell /usr/sbin/nologin threadwatch
+USER threadwatch
 VOLUME ["/app/config", "/app/data"]
 EXPOSE 8080
 ENTRYPOINT ["/app/bin/threadwatch"]

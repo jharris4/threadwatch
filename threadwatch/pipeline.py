@@ -108,7 +108,15 @@ class Pipeline:
         self.cfg = cfg
         self.events = events
         self.ephemeral = ephemeral
-        self.names = DeviceNames(cfg.devices_path, None if ephemeral else cfg.state_dir / "border-routers.json")
+        # The learned identities are read even offline, and from the
+        # snapshot's own copy when --snapshot redirected the state dir:
+        # a hub that rotated its address is named by border-routers.json
+        # and by nothing else, so replaying without it loses the name of
+        # the device most worth reading, and leaves its address out of the
+        # candidates a short-source frame is identified from. DeviceNames
+        # only reads; nothing here writes the file back (_save_border_routers
+        # returns on ephemeral, and no browse runs offline).
+        self.names = DeviceNames(cfg.devices_path, cfg.state_dir / "border-routers.json")
         self.seen = LastSeen(None if ephemeral else cfg.state_dir / "last-seen.json")
         self.detector = Detector(cfg.detector)
         # How often a storm that rumbles on is escalated to the event log,

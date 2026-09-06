@@ -333,6 +333,38 @@ class LearnedBorderRoutersTest(unittest.TestCase):
 
 
 
+class OfflineLearnedNamesTest(unittest.TestCase):
+    """An offline pass (replay, device) builds an ephemeral pipeline, which
+    used to be given no learned-identity file at all: a hub that had
+    rotated its address lost its name in exactly the pass that reads the
+    day it rebooted, and the address was left out of the candidates a
+    short-source frame is identified from. Reading it is not writing it."""
+
+    def test_an_ephemeral_pipeline_reads_the_learned_border_routers(self):
+        from threadwatch.config import Config
+        from threadwatch.crypto import Decryptor
+        from threadwatch.events import NullEventLog
+        from threadwatch.pipeline import Pipeline
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            inv = d / "devices.json"
+            inv.write_text(json.dumps([{"name": "Living Room Apple TV", "extendedAddress": TV1.upper()}]))
+            cfg = Config(data_dir=d / "data", devices_path=inv)
+            cfg.state_dir.mkdir(parents=True, exist_ok=True)
+            (cfg.state_dir / "border-routers.json").write_text(json.dumps({
+                "appletv-living-room.local": {"addr": TV2, "name": "Living Room Apple TV",
+                                              "instance": "AppleTV Living Room"}}))
+            pipe = Pipeline(cfg, NullEventLog(), Decryptor(network_key=bytes(16)), ephemeral=True)
+            self.assertEqual(pipe.names.name(TV2), "Living Room Apple TV")
+            self.assertIn(TV2, pipe._resolve_candidates(1_756_800_000.0))
+            # Read, not written: the live state is still the recorder's.
+            pipe.periodic(1_756_800_030.0)
+            pipe.seen.save()
+            self.assertEqual(sorted(p.name for p in cfg.state_dir.iterdir()), ["border-routers.json"])
+            self.assertEqual(json.loads((cfg.state_dir / "border-routers.json").read_text())
+                             ["appletv-living-room.local"]["addr"], TV2)
+
+
 class UnreadableStateTest(unittest.TestCase):
     """A last-seen.json that does not parse is a week of history: say so
     and keep it, rather than silently starting over."""

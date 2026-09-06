@@ -269,14 +269,11 @@ class ResolveShortTest(unittest.TestCase):
             dec = Decryptor(network_key=KEY)
             pipe = Pipeline(cfg, NullEventLog(), dec)
             t0 = 1_700_000_000.0
-            fcf = 1 | 0x0040 | (2 << 10) | (1 << 12) | (3 << 14)      # unsecured data, ext source
             for n in range(1000):                                      # a thousand addresses heard once
                 addr = f"{0x3000000000000000 + n:016x}"
-                psdu = struct.pack("<HBH", fcf, 1, PAN) + bytes.fromhex("00cc")[::-1] + bytes.fromhex(addr)[::-1]
-                pipe.ingest(parse_frame(t0 + n * 0.001, psdu, 230))
+                pipe.ingest(parse_frame(t0 + n * 0.001, secured_ext_frame(addr, 1, b"\x7f\x33"), 195))
             for i in range(5):                                         # and the real device, five times
-                psdu = struct.pack("<HBH", fcf, 1, PAN) + bytes.fromhex("00cc")[::-1] + bytes.fromhex(SED)[::-1]
-                pipe.ingest(parse_frame(t0 + 2 + i, psdu, 230))
+                pipe.ingest(parse_frame(t0 + 2 + i, secured_ext_frame(SED, 1 + i, b"\x7f\x33"), 195))
             self.assertEqual(len(pipe.seen.table), 1001)
             # One unmappable short source: the inventory and the most-heard
             # rows are tried, the device is found, and the thousand
@@ -586,7 +583,100 @@ class UnsecuredMleTest(unittest.TestCase):
             events = [r["event"] for r in pipe.events.records]
             self.assertNotIn("partition_or_leader_change", events)
             self.assertNotIn("mle_rejoin_attempt", events)
-            self.assertEqual(pipe.seen.table[OTHER].get("rloc16"), None)
+            self.assertNotIn(OTHER, pipe.seen.table)          # nor a sighting: anyone can send one
+
+
+@unittest.skipIf(AESCCM is None, "cryptography not installed")
+class SightingAuthenticityTest(unittest.TestCase):
+    """An extended source address is 64 bits the sender asserts. Liveness
+    came from it verbatim, so a forged unsecured frame, or a recording of
+    the device played back after it died, kept it "heard" and device_quiet
+    never fired. A frame is a sighting only when its MIC vouches for the
+    sender and its counter is above the last accepted."""
+
+    def _pipe(self, tmp):
+        dd = Path(tmp)
+        (dd / "devices.json").write_text(json.dumps([{"name": "Bedroom Sensor", "extendedAddress": SED}]))
+        cfg = Config(data_dir=dd / "data", devices_path=dd / "devices.json", quiet_s=1800)
+        return Pipeline(cfg, NullEventLog(), Decryptor(network_key=KEY)), cfg
+
+    @staticmethod
+    def _quiet(pipe):
+        return [r["addr"] for r in pipe.events.records if r["event"] == "device_quiet"]
+
+    def test_forged_and_replayed_frames_do_not_keep_a_dead_device_heard(self):
+        import contextlib, io
+        with tempfile.TemporaryDirectory() as tmp:
+            pipe, _cfg = self._pipe(tmp)
+            t0 = 1_700_000_000.0
+            real = [secured_ext_frame(SED, c, b"\x7f\x33") for c in range(1, 4)]
+            for i, psdu in enumerate(real):
+                self.assertEqual(pipe.ingest(parse_frame(t0 + i, psdu, 195)), SED)
+            self.assertEqual(pipe.seen.table[SED]["last_seen"], t0 + 2)
+            self.assertEqual((pipe.seen.table[SED]["counter"], pipe.seen.table[SED]["frames"]), (3, 3))
+            # The device dies. Someone else puts its address on the air,
+            # unsecured, every minute for four hours; and plays back its
+            # own three frames. Neither is a sighting.
+            fcf = 1 | 0x0040 | (2 << 10) | (1 << 12) | (3 << 14)
+            forged = struct.pack("<HBH", fcf, 9, PAN) + bytes.fromhex("0000")[::-1] + bytes.fromhex(SED)[::-1] + b"\x7f\x33"
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                for m in range(240):
+                    t = t0 + 60 + m * 60
+                    pipe.ingest(parse_frame(t, forged, 230))
+                    pipe.ingest(parse_frame(t + 1, real[m % 3], 195))
+                    pipe.periodic(t + 2)
+            self.assertEqual(pipe.seen.table[SED]["last_seen"], t0 + 2)
+            self.assertEqual(pipe.seen.table[SED]["frames"], 3)
+            self.assertEqual(self._quiet(pipe), [SED])
+            self.assertEqual(pipe.replayed, 240)
+            said = [l for l in out.getvalue().splitlines() if "not counted as a sighting" in l]
+            self.assertEqual(len(said), 4)                        # once an hour, not per frame
+            self.assertIn("Bedroom Sensor: a secured frame with counter 1 at or below the last accepted (3)", said[0])
+            # Back for real, with a counter past the last accepted: heard again.
+            pipe.ingest(parse_frame(t0 + 20000, secured_ext_frame(SED, 4, b"\x7f\x33"), 195))
+            self.assertEqual(pipe.seen.table[SED]["last_seen"], t0 + 20000)
+            self.assertIn("device_returned", [r["event"] for r in pipe.events.records])
+
+    def test_a_mac_retry_counts_and_the_counter_survives_a_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pipe, cfg = self._pipe(tmp)
+            t0 = 1_700_000_000.0
+            psdu = secured_ext_frame(SED, 7, b"\x7f\x33")
+            pipe.ingest(parse_frame(t0, psdu, 195))
+            pipe.ingest(parse_frame(t0 + 0.02, psdu, 195))         # retried before its ACK: the same frame
+            pipe.ingest(parse_frame(t0 + 0.05, psdu, 195))
+            self.assertEqual((pipe.seen.table[SED]["frames"], pipe.devices[SED].tx, pipe.replayed), (3, 3, 0))
+            pipe.ingest(parse_frame(t0 + 10, psdu, 195))           # ten seconds on: a replay
+            self.assertEqual((pipe.seen.table[SED]["frames"], pipe.replayed), (3, 1))
+            pipe.seen.save()
+            again = Pipeline(cfg, NullEventLog(), Decryptor(network_key=KEY))
+            again.ingest(parse_frame(t0 + 100, secured_ext_frame(SED, 5, b"\x7f\x33"), 195))   # below 7
+            self.assertEqual((again.seen.table[SED]["frames"], again.replayed), (3, 1))
+            again.ingest(parse_frame(t0 + 101, secured_ext_frame(SED, 8, b"\x7f\x33"), 195))
+            self.assertEqual((again.seen.table[SED]["frames"], again.seen.table[SED]["counter"]), (4, 8))
+
+    def test_a_secured_mle_message_vouches_for_an_unsecured_frame(self):
+        # Routers advertise in MAC-unsecured frames secured at the MLE
+        # layer: those are sightings, on the MLE MIC and MLE counter.
+        with tempfile.TemporaryDirectory() as tmp:
+            pipe, _cfg = self._pipe(tmp)
+            t0 = 1_700_000_000.0
+            body = b"\x04" + b"\x00\x02" + bytes.fromhex("c829")           # Advertisement, Source Address
+            src_ip = LINK_LOCAL + Decryptor._iid_from_ext(OTHER)
+            fcf = 1 | 0x0040 | (2 << 10) | (1 << 12) | (3 << 14)             # MAC-unsecured, ext source
+
+            def advert(counter):
+                msg = mle_message(OTHER, 0, counter, src_ip, ALL_NODES, body)
+                return (struct.pack("<HBH", fcf, counter & 0xFF, PAN) + b"\xff\xff" + bytes.fromhex(OTHER)[::-1]
+                        + lowpan_udp(19788, 19788, msg))
+            for counter in (1, 2):
+                pipe.ingest(parse_frame(t0 + counter, advert(counter), 230))
+            self.assertEqual((pipe.seen.table[OTHER]["frames"], pipe.seen.table[OTHER]["mle_counter"]), (2, 2))
+            pipe.ingest(parse_frame(t0 + 60, advert(2), 230))                # the same message, a minute later
+            self.assertEqual((pipe.seen.table[OTHER]["frames"], pipe.replayed), (2, 1))
+            pipe.ingest(parse_frame(t0 + 61, unsecured_mle_frame(OTHER, body, 3), 230))   # suite 255: anyone's
+            self.assertEqual(pipe.seen.table[OTHER]["frames"], 2)
 
 
 def iphc_packet(*, sac=False, sam=3, src=b"", m=True, dac=False, dam=3, dst=b"",

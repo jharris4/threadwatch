@@ -814,9 +814,11 @@ class AlertChainTest(unittest.TestCase):
         from threadwatch.pcap import Frame
         from threadwatch.pipeline import Pipeline
 
+        from tests.frames import psdu_for
+
         def frame(ts, src, rssi):
-            return Frame(ts=ts, raw=b"", psdu=b"", rssi=rssi, channel=None, lqi=None, ftype=1,
-                         seq=int(ts) & 0xFF, dst_pan=0x4e21, dst="0000", src_pan=0x4e21, src=src)
+            return Frame(ts=ts, raw=b"", psdu=psdu_for(src, seq=int(ts) & 0xFF), rssi=rssi, channel=None,
+                         lqi=None, ftype=1, seq=int(ts) & 0xFF, dst_pan=0x4e21, dst="0000", src_pan=0x4e21, src=src)
 
         srv = _Server()
         self.addCleanup(srv.close)

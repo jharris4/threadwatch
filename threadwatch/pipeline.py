@@ -193,6 +193,17 @@ class Pipeline:
         self._summary_day: Optional[str] = None      # local day whose summary is settled
         self._pruned_day: Optional[str] = None       # local day the event log was last pruned on
         self._capped_at: Optional[float] = None      # when rows were last dropped to stay under TRACK_MAX
+        # The highest frame counter accepted from each device, MAC and MLE,
+        # with when (see _verify); seeded from the rows so a restart does
+        # not take a replay of yesterday's frames for the device.
+        self._mac_counter: dict[str, tuple[int, float]] = {}
+        self._mle_counter: dict[str, tuple[int, float]] = {}
+        for addr, row in self.seen.table.items():
+            for key, table in (("counter", self._mac_counter), ("mle_counter", self._mle_counter)):
+                if isinstance(row.get(key), int) and not isinstance(row.get(key), bool):
+                    table[addr] = (row[key], float(row.get(key + "_ts") or 0.0))
+        self.replayed = 0                            # frames refused as replays this run
+        self._replay_said: dict[str, float] = {}     # addr -> when its replays were last mentioned
         self._resolve_after: dict[str, float] = {}   # short addr -> next attempt ts
         self._resolve_fails: dict[str, int] = {}     # short addr -> searches that found nobody, in a row
         self._resolve_tokens = float(self.RESOLVE_TRIALS_BURST)   # candidate trials in hand (see identity)
@@ -679,6 +690,46 @@ class Pipeline:
     def _flooded(self, ts: float) -> bool:
         return self._capped_at is not None and ts - self._capped_at < self.CAP_NOTE_S
 
+    # ------------------------------------------------------- authenticity
+
+    # A MAC retry carries the frame unchanged, counter and all, within
+    # milliseconds of the first copy; the same counter this long after the
+    # first accepted copy is a replay.
+    RETRY_WINDOW_S = 2.0
+
+    def _verify(self, f: Frame, who: Optional[str]) -> tuple[Optional[bytes], bool]:
+        """Does this frame vouch for its sender? An extended address is
+        64 bits the sender asserts, so a frame counts as a sighting of
+        the device only when the MIC says the sender holds the network
+        key and used that address as its nonce, and the frame counter is
+        above the last accepted, so a recording of the device played back
+        after it died does not keep it "heard". Returns the MAC payload
+        (decrypted, or the plaintext of an unsecured frame) for the
+        credentialed layer, and whether the MAC layer vouched. An
+        unsecured frame vouches for nothing here; a secured MLE message
+        inside one may (ingest asks _deep_inspect)."""
+        if not who or not f.psdu:
+            return None, False
+        plain, counter = self.decryptor.decrypt_frame_counter(f.psdu, who, None)
+        if counter is None:
+            return plain, False
+        return plain, self._counter_advances(self._mac_counter, who, counter, f.ts, "frame")
+
+    def _counter_advances(self, table: dict, who: str, counter: int, ts: float, what: str) -> bool:
+        last = table.get(who)
+        if last is None or counter > last[0]:
+            table[who] = (counter, ts)
+            return True
+        if counter == last[0] and 0.0 <= ts - last[1] < self.RETRY_WINDOW_S:
+            return True                          # a MAC retry of the copy just accepted
+        self.replayed += 1
+        if ts - self._replay_said.get(who, -1e12) >= 3600.0:
+            self._replay_said[who] = ts
+            print(f"[threadwatch] {self.names.name(who) or who}: a secured {what} with counter {counter} at or "
+                  f"below the last accepted ({last[0]}) is not counted as a sighting: a replay of an earlier "
+                  "frame, or the device's counter went backwards (said once an hour)", flush=True)
+        return False
+
     # ---------------------------------------------------------- identity
 
     RESOLVE_RETRY_S = 30.0
@@ -827,9 +878,16 @@ class Pipeline:
                     self._poll_answered(self._last_who or prev.src, stats, ts)
         self._last_who = who
 
-        if who and who not in self.seen.table and not self._admit(who, ts):
-            who = None          # every row is one worth keeping: this frame goes uncounted
-        if who:
+        # Only a frame that vouches for its sender (_verify) feeds the row
+        # and the stats below: the sender's liveness, signal and polls are
+        # its own, not those of whatever put its address on the air.
+        plain, live = self._verify(f, who)
+        info = self._deep_inspect(f, plain) if f.ftype == 1 and plain is not None else None
+        if who and not live and info is not None and info.secured and info.counter is not None:
+            live = self._counter_advances(self._mle_counter, who, info.counter, ts, "MLE message")
+        if who and live and who not in self.seen.table and not self._admit(who, ts):
+            live = False        # every row is one worth keeping: this frame goes uncounted
+        if who and live:
             stats = self.devices.setdefault(who, DeviceStats())
             if f.ftype in (1, 3) and f.dst not in (None, "ffff"):
                 # Broadcasts (MLE advertisements every few seconds) are
@@ -851,6 +909,11 @@ class Pipeline:
                 self._poll_sent(who, stats, f.seq, ts, f.dst)
             was_new = who not in self.seen.table
             self.seen.touch(who, ts, f.ftype, pan=pan, rssi=f.rssi)
+            row = self.seen.table[who]
+            for key, table in (("counter", self._mac_counter), ("mle_counter", self._mle_counter)):
+                last = table.get(who)
+                if last is not None and row.get(key) != last[0]:
+                    row[key], row[key + "_ts"] = last
             if is_poll(f):
                 # Polls by name for the review pages: the row's count of
                 # type-3 frames takes in every MAC command, beacon requests
@@ -980,10 +1043,6 @@ class Pipeline:
                 # that got to it first left the incident without the storm
                 # record that explains it.
                 self.freezer(label)
-
-        # Credentialed visibility.
-        if f.ftype == 1:
-            self._deep_inspect(f)
 
         self.last_frame = f
         return who
@@ -1333,21 +1392,22 @@ class Pipeline:
 
     # ------------------------------------------------- credentialed layer
 
-    def _deep_inspect(self, f: Frame) -> None:
+    def _deep_inspect(self, f: Frame, plain: bytes):
+        """The credentialed layer: what the MAC payload (decrypted by
+        _verify, or the plaintext of an unsecured frame) says about the
+        mesh. Returns the MLE message found, if any, so ingest can take a
+        secured one as vouching for an unsecured frame's sender."""
         from .crypto import Decryptor, MLE_UDP_PORT
         ext = f.src if f.src and len(f.src) == 16 else None
         short = f.src if f.src and len(f.src) == 4 else None
         dext = f.dst if f.dst and len(f.dst) == 16 else None
         dshort = f.dst if f.dst and len(f.dst) == 4 else None
-        plain = self.decryptor.decrypt_frame(f.psdu, ext, short)
-        if plain is None:
-            return
         # Unsecured frames are unauthenticated bytes from anyone on the
         # channel; a parse failure there must not take the capture down.
         try:
             r = Decryptor.udp_ports(plain, mac_src_ext=ext, mac_dst_ext=dext, mac_dst_short=dshort)
             if not r:
-                return
+                return None
             sport, dport, payload, sip, dip = r
             info = None
             if MLE_UDP_PORT in (sport, dport):
@@ -1355,14 +1415,14 @@ class Pipeline:
                 info = self.decryptor.parse_mle(payload, src_for_mle, sip, dip)
         except (struct.error, IndexError, ValueError):
             self.decryptor.stats["parse_failed"] += 1
-            return
+            return None
         if MLE_UDP_PORT in (sport, dport):
             # Only a message that passed its MIC says anything about the
             # mesh: an unsecured one is bytes from anyone on the channel,
             # and acting on it would let a stranger page for a partition
             # change, invent a rejoin, or claim another device's address.
             if not info or not info.secured:
-                return
+                return info
             if info.source_addr16 is not None and src_for_mle:
                 self._note_rloc16(src_for_mle, f"{info.source_addr16:04x}", f.ts)
             if info.command_name in MLE_REJOIN_COMMANDS:
@@ -1386,6 +1446,7 @@ class Pipeline:
                                           f"partition {cur[0]} leader {after}: the mesh split, merged "
                                           "or elected a new leader")
                 self.partition = cur
+            return info
         else:
             # Keyed by the extended address: a short address is reassigned
             # when a parent restarts, so a name filed under one would follow
@@ -1395,6 +1456,7 @@ class Pipeline:
                 for n in Decryptor.harvest_names(payload):
                     if len(n) > 8 and not n.startswith("_"):
                         self._note_observed_name(owner, n)
+        return None
 
     # The name scraper is a regex over decrypted UDP payloads, most of
     # which are ciphertext: it fires on random bytes now and then, and an

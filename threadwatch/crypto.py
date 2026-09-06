@@ -61,6 +61,9 @@ class MleInfo:
     # came from anything on the channel and proves nothing. Only the
     # command is reported for it; its TLVs are never read.
     secured: bool = True
+    # The MLE frame counter of a secured message: the pipeline keeps the
+    # highest accepted per sender, so a replayed message is not a sighting.
+    counter: Optional[int] = None
 
 
 @dataclass
@@ -115,6 +118,14 @@ class Decryptor:
         """Return the decrypted MAC payload of a secured data frame, or the
         plaintext payload for unsecured frames, or None when undecryptable.
         The returned bytes start at the MAC payload (after aux header)."""
+        return self.decrypt_frame_counter(psdu, src_ext_hex, src_short_hex)[0]
+
+    def decrypt_frame_counter(self, psdu: bytes, src_ext_hex: Optional[str],
+                              src_short_hex: Optional[str]) -> tuple[Optional[bytes], Optional[int]]:
+        """decrypt_frame, plus the MAC frame counter of a secured frame that
+        passed its MIC: the proof that the sender holds the key and used
+        this extended address as its nonce. None for an unsecured frame
+        (anyone's bytes) and for one that failed."""
         sec = self._secured_parts(psdu)
         if sec is None:
             # Secured, but not the Thread way (a security level other than
@@ -124,17 +135,17 @@ class Decryptor:
             # and could not read, and a stale-credentials check judging
             # failures against successes is not fed these.
             self.stats["mac_unsupported"] += 1
-            return None
+            return None, None
         if sec is False:
             self.stats["plaintext"] += 1
-            return psdu[self._mac_header_len(psdu):]
+            return psdu[self._mac_header_len(psdu):], None
         ext_hex = src_ext_hex or (self.short_to_ext.get(src_short_hex or "") if src_short_hex else None)
         if not ext_hex:
             self.stats["mac_no_ext_addr"] += 1
-            return None
+            return None, None
         plain = self._decrypt_with_ext(sec, ext_hex)
         self.stats["mac_decrypted" if plain is not None else "mac_failed"] += 1
-        return plain
+        return plain, (sec[1] if plain is not None else None)
 
     def verify_short(self, psdu: bytes, ext_hex: str) -> bool:
         """Does this secured frame really come from ext_hex (MIC check)?"""
@@ -424,7 +435,7 @@ class Decryptor:
         if not body:
             return None
         self.stats["mle_decrypted"] += 1
-        info = MleInfo(command=body[0], command_name=MLE_COMMANDS.get(body[0], f"cmd{body[0]}"))
+        info = MleInfo(command=body[0], command_name=MLE_COMMANDS.get(body[0], f"cmd{body[0]}"), counter=counter)
         off = 1
         while off + 2 <= len(body):
             t, l = body[off], body[off + 1]

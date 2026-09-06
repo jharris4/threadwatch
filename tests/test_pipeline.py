@@ -15,6 +15,7 @@ from threadwatch.pcap import Frame  # noqa: E402
 from threadwatch.pipeline import Pipeline  # noqa: E402
 from threadwatch.crypto import Decryptor  # noqa: E402
 from tests.no_lan import setUpModule, tearDownModule  # noqa: E402, F401  (no mDNS from the suite)
+from tests.frames import psdu_for  # noqa: E402
 
 
 def stub_decryptor():
@@ -28,9 +29,13 @@ STRANGER = "72d035122fdf06f6"
 OWN_PAN, OTHER_PAN = 0x4e21, 0x58bc
 
 
-def frame(ts, src, pan=OWN_PAN, rssi=-60.0):
-    return Frame(ts=ts, raw=b"", psdu=b"", rssi=rssi, channel=None, lqi=None,
-                 ftype=1, seq=int(ts) & 0xFF, dst_pan=pan, dst="0000", src_pan=pan, src=src)
+def frame(ts, src, pan=OWN_PAN, rssi=-60.0, seq=None, dst="0000", counter=None):
+    """A secured data frame from ``src`` (a MIC under the test key and a
+    fresh counter, so the pipeline takes it as a sighting: tests/frames.py)."""
+    seq = int(ts) & 0xFF if seq is None else seq
+    return Frame(ts=ts, raw=b"", psdu=psdu_for(src, seq=seq, pan=pan, dst=dst, counter=counter),
+                 rssi=rssi, channel=None, lqi=None,
+                 ftype=1, seq=seq, dst_pan=pan, dst=dst, src_pan=pan, src=src)
 
 
 class StateFileShapeTest(unittest.TestCase):
@@ -256,8 +261,7 @@ class QuietPolicyTest(unittest.TestCase):
         pipe = self._pipe()
         t = 1_700_000_000.0
         def send(src, dst, seq, ts):
-            pipe.ingest(Frame(ts=ts, raw=b"", psdu=b"", rssi=-60.0, channel=None, lqi=None,
-                              ftype=1, seq=seq, dst_pan=OWN_PAN, dst=dst, src_pan=OWN_PAN, src=src))
+            pipe.ingest(frame(ts, src, seq=seq, dst=dst))
         # Ten quiet minutes to establish a baseline of no retransmissions.
         for m in range(10):
             for i in range(120):
@@ -281,8 +285,7 @@ class QuietPolicyTest(unittest.TestCase):
         pipe = self._pipe()
         t = 1_700_000_000.0
         def send(src, dst, seq, ts):
-            pipe.ingest(Frame(ts=ts, raw=b"", psdu=b"", rssi=-60.0, channel=None, lqi=None,
-                              ftype=1, seq=seq, dst_pan=OWN_PAN, dst=dst, src_pan=OWN_PAN, src=src))
+            pipe.ingest(frame(ts, src, seq=seq, dst=dst))
         for m in range(10):
             for i in range(120):
                 send(STRANGER, "0000", i, t + m * 60 + i * 0.4)
@@ -310,9 +313,7 @@ class QuietPolicyTest(unittest.TestCase):
         t = 1_700_000_000.0
 
         def send(ts, seq):
-            pipe.ingest(Frame(ts=ts, raw=b"", psdu=b"", rssi=-60.0, channel=None, lqi=None,
-                              ftype=1, seq=seq, dst_pan=OWN_PAN, dst="0000",
-                              src_pan=OWN_PAN, src=STRANGER))
+            pipe.ingest(frame(ts, STRANGER, seq=seq))
 
         def window(w, dup_frac):
             """One minute of 200 frames, dup_frac of them repeats of the frame
@@ -968,9 +969,12 @@ if __name__ == "__main__":
     unittest.main()
 
 
-def poll(ts, src, seq):
-    return Frame(ts=ts, raw=b"", psdu=b"", rssi=-60.0, channel=None, lqi=None,
-                 ftype=3, cmd=4, seq=seq, dst_pan=OWN_PAN, dst="0000", src_pan=OWN_PAN, src=src)
+def poll(ts, src, seq, dst="0000", counter=None):
+    """A secured data request from ``src``: the command id is authenticated
+    and unreadable, as a Thread poll's is (cmd None; is_poll takes it)."""
+    return Frame(ts=ts, raw=b"", psdu=psdu_for(src, ftype=3, seq=seq, dst=dst, counter=counter),
+                 rssi=-60.0, channel=None, lqi=None,
+                 ftype=3, cmd=None, seq=seq, dst_pan=OWN_PAN, dst=dst, src_pan=OWN_PAN, src=src)
 
 
 def ack(ts, seq):
@@ -1107,9 +1111,7 @@ class PollStarvationTest(unittest.TestCase):
         pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
         t = self._answered_polls(pipe, 1_700_000_000.0, 5)
         pipe.ingest(poll(t, SENSOR, 100))                  # unicast poll, still pending
-        pipe.ingest(Frame(ts=t + 0.01, raw=b"", psdu=b"", rssi=-55.0, channel=None, lqi=None,
-                          ftype=1, seq=100, dst_pan=OWN_PAN, dst="ffff",
-                          src_pan=OWN_PAN, src=ROUTER))    # a router's advertisement, same seq
+        pipe.ingest(frame(t + 0.01, ROUTER, rssi=-55.0, seq=100, dst="ffff"))   # a router's advertisement, same seq
         pipe.ingest(ack(t + 0.02, 100))                    # the ACK the sniffer hears next
         self.assertEqual((pipe.devices[ROUTER].tx, pipe.devices[ROUTER].acked), (0, 0))
         self.assertEqual(pipe.devices[SENSOR].acked, 5)    # nothing new was credited to anyone
@@ -1445,12 +1447,9 @@ class RetransmissionConfirmTest(unittest.TestCase):
             at = base + j * gap
             src = senders[j % len(senders)]
             dst = "ffff" if len(senders) > 1 else "0000"
-            pipe.ingest(Frame(ts=at, raw=b"", psdu=b"", rssi=-60.0, channel=None, lqi=None,
-                              ftype=1, seq=j & 0xFF, dst_pan=OWN_PAN, dst=dst, src_pan=OWN_PAN, src=src))
+            pipe.ingest(frame(at, src, seq=j & 0xFF, dst=dst))
             for r in range((dups * (j + 1)) // uniq - (dups * j) // uniq):
-                pipe.ingest(Frame(ts=at + 0.1 * (r + 1), raw=b"", psdu=b"", rssi=-60.0, channel=None,
-                                  lqi=None, ftype=1, seq=j & 0xFF, dst_pan=OWN_PAN, dst=dst,
-                                  src_pan=OWN_PAN, src=src))
+                pipe.ingest(frame(at + 0.1 * (r + 1), src, seq=j & 0xFF, dst=dst))
 
     def run_minutes(self, pipe, fracs, start=0, **kw):
         """Windows start..start+len(fracs); the last one is closed by the
@@ -2480,20 +2479,19 @@ class PollCountTest(unittest.TestCase):
             cfg = Config(data_dir=Path(d) / "data", devices_path=Path(d) / "devices.json")
             pipe = Pipeline(cfg, NullEventLog(), stub_decryptor())
             t0 = 1_700_000_000.0
-            cmd = lambda ts, c, dst="0000": Frame(ts=ts, raw=b"", psdu=b"", rssi=-60.0, channel=None, lqi=None,
-                                                  ftype=3, seq=int(ts - t0), dst_pan=OWN_PAN, dst=dst, src_pan=OWN_PAN,
-                                                  src=SENSOR, cmd=c)
-            pipe.ingest(cmd(t0, 4))                 # a poll
-            pipe.ingest(cmd(t0 + 1, None))          # secured: no readable id, a poll
-            pipe.ingest(cmd(t0 + 2, 7, "ffff"))     # a beacon request
+            pipe.ingest(poll(t0, SENSOR, 0))                       # a poll
+            pipe.ingest(poll(t0 + 1, SENSOR, 1))                   # another: secured, no readable id
+            pipe.ingest(Frame(ts=t0 + 2, raw=b"", psdu=b"", rssi=-60.0, channel=None, lqi=None,
+                              ftype=3, seq=2, dst_pan=OWN_PAN, dst="ffff", src_pan=OWN_PAN,
+                              src=SENSOR, cmd=7))                  # a beacon request: unsecured, nobody's sighting
             row = pipe.seen.table[SENSOR]
-            self.assertEqual((row["polls"], row["types"]["3"], pipe.devices[SENSOR].polls), (2, 3, 2))
+            self.assertEqual((row["polls"], row["types"]["3"], pipe.devices[SENSOR].polls), (2, 2, 2))
             rows = device_rows(pipe.seen, pipe.names, cfg.quiet_min_rssi_dbm, now=t0 + 10)
             self.assertEqual([r["polls"] for r in rows if r["addr"] == SENSOR], [2])
             # A row saved before polls were counted by name shows what it always did.
             del row["polls"]
             rows = device_rows(pipe.seen, pipe.names, cfg.quiet_min_rssi_dbm, now=t0 + 10)
-            self.assertEqual([r["polls"] for r in rows if r["addr"] == SENSOR], [3])
+            self.assertEqual([r["polls"] for r in rows if r["addr"] == SENSOR], [2])
 
 
 class FramesByHourLoadTest(unittest.TestCase):

@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from threadwatch.cli import main  # noqa: E402
 from tests.no_lan import setUpModule, tearDownModule  # noqa: E402, F401  (no mDNS from the suite)
+from tests.frames import psdu_for, secured_psdu  # noqa: E402
 
 
 class CliCase(unittest.TestCase):
@@ -295,8 +296,8 @@ class ReportSuggestTest(CliCase):
         def run(ephemeral):
             pipe = Pipeline(cfg, NullEventLog(), Decryptor(network_key=bytes(16)), ephemeral=ephemeral)
             for i in range(5):
-                pipe.ingest(Frame(ts=t + i, raw=b"", psdu=b"", rssi=-60.0, channel=None, lqi=None, ftype=1,
-                                  seq=i, dst_pan=0x4e21, dst="0000", src_pan=0x4e21, src=self.DEV))
+                pipe.ingest(Frame(ts=t + i, raw=b"", psdu=psdu_for(self.DEV, seq=i), rssi=-60.0, channel=None,
+                                  lqi=None, ftype=1, seq=i, dst_pan=0x4e21, dst="0000", src_pan=0x4e21, src=self.DEV))
             for _ in range(3):
                 pipe._note_observed_name(self.DEV, "office-aq-1a2b.local")
             pipe._note_observed_name(self.DEV, "junk-once.x[L(")
@@ -335,9 +336,11 @@ class ReplayTest(CliCase):
     DEV, OTHER = "26976e7f7d20964a", "b62c32bf669272db"
     T = 1_756_800_000.0
 
-    def _psdu(self, addr, seq):
-        fcf = 1 | 0x0040 | (2 << 10) | (1 << 12) | (3 << 14)      # data, pan compressed, short dst, ext src
-        return struct.pack("<HBH", fcf, seq, 0x4e21) + b"\x00\x00" + bytes.fromhex(addr)[::-1] + b"\x7f\x33"
+    def _psdu(self, addr, seq, counter=None):
+        # Secured under the credentials the replay loads, with a counter
+        # that climbs: what the pipeline takes for a sighting of the device.
+        return secured_psdu(addr, seq + 1 if counter is None else counter, seq=seq,
+                            key=bytes.fromhex("00112233445566778899aabbccddeeff"))
 
     def _pcap(self):
         from threadwatch.pcap import DLT_NOFCS, Frame, PcapWriter
@@ -359,7 +362,7 @@ class ReplayTest(CliCase):
         self.assertEqual((run["file"], run["files"], run["frames"], run["duration_s"], run["partition"]),
                          (str(self.d / "storm.pcap"), [str(self.d / "storm.pcap")], 6, 5.0, None))
         self.assertEqual(run["detector"]["storm_active"], False)
-        self.assertIsNone(run["crypto"]["key_sequence"])            # nothing in the file is secured
+        self.assertEqual(run["crypto"]["key_sequence"], 0)          # the frames decrypted under sequence 0
         self.assertIn("mac_decrypted", run["crypto"])
         self.assertEqual([(e["event"], e["addr"]) for e in run["events"] if e["event"] == "device_first_seen"],
                          [("device_first_seen", self.OTHER), ("device_first_seen", self.DEV)])
@@ -453,7 +456,7 @@ class ReplayTest(CliCase):
         (self.d / "credentials.toml").write_text('[credentials]\nnetwork_key = "00112233445566778899aabbccddeeff"\n')
 
         def tap(rssi, seq):
-            return struct.pack("<HHHHf", 0, 12, 1, 4, rssi) + self._psdu(self.DEV, seq & 0xff)
+            return struct.pack("<HHHHf", 0, 12, 1, 4, rssi) + self._psdu(self.DEV, seq & 0xff, counter=seq + 1)
 
         levels = [-50.0] * 300 + [-70.0] * 150 + [-50.0] * 120       # settle, sink, come back
         frames = [(self.T + i, tap(level, i)) for i, level in enumerate(levels)]

@@ -167,12 +167,39 @@ class DoctorTest(unittest.TestCase):
         finally:
             os.environ.pop("DOCTOR_TEST_TOKEN", None)
         self.assertEqual(doctor.check_writable(self.cfg)[0][0], "ok")
+        # Every verdict, not just the subject names: "each level is one of
+        # the three level constants" is true by construction, so a
+        # regression flipping every check to warn, or losing FAIL
+        # altogether, used to pass here.
+        import contextlib
+        import io
         checks = doctor.run_doctor(self.cfg, find_port=lambda: "/dev/x", now=time.time())
-        subjects = [c[1] for c in checks]
-        for s in ("config", "inventory", "credentials", "dongle", "capture", "ring", "last-seen", "disk",
-                  "writable", "clock", "alerts", "heartbeats", "web"):
-            self.assertIn(s, subjects)
-        self.assertTrue(all(c[0] in ("ok", "warn", "FAIL") for c in checks))
+        self.assertEqual(self.levels(checks), [
+            ("ok", "config"),               # channel and data dir
+            ("warn", "config"),             # no config.toml in this fixture
+            ("warn", "inventory"),          # no devices.json
+            ("FAIL", "credentials"),        # no network key: the recorder would not start
+            ("warn", "border routers"),     # no_lan answers with an empty LAN
+            ("ok", "dongle"),               # the stub finder above
+            ("warn", "capture"),            # never run here
+            ("warn", "ring"),               # no ring files
+            ("ok", "last-seen"),
+            ("ok", "disk"),
+            ("ok", "writable"),
+            ("ok", "clock"),
+            ("ok", "services"),
+            ("ok", "alerts.env"),           # the secret the sink above needs, loaded
+            ("ok", "alerts"),               # ...so the sink builds
+            ("warn", "heartbeats"),
+            ("warn", "web"),
+        ])
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(doctor.print_report(checks), 1)         # any FAIL is exit 1
+        self.assertIn("1 failing, 7 warning(s)", out.getvalue())
+        ok_only = [c for c in checks if c[0] == "ok"]
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(doctor.print_report(ok_only), 0)
+        self.assertIn("all good", out.getvalue())
 
     def test_a_sink_the_daemon_would_refuse_fails_the_check_and_the_exit_code(self):
         import contextlib

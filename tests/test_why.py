@@ -60,6 +60,43 @@ class EventHistoryTest(unittest.TestCase):
         self.assertEqual([e["kind"] for e in eps], ["rejoin", "quiet"])
         self.assertEqual(eps[1]["title"], "TV quiet for 60m")
 
+    def test_the_day_count_is_local_days_not_utc_ones(self):
+        # Every other day computation here goes through events.day_of,
+        # which is local. Bucketing by // 86400 is the UTC calendar day, so
+        # two evening episodes on one local day west of Greenwich reported
+        # as two days.
+        import contextlib
+        import io
+        import os
+        import tempfile
+        from threadwatch.events import EventLog, day_of
+        from threadwatch.why import print_history
+        addr = "b62c32bf669272db"
+        old_tz = os.environ.get("TZ")
+        os.environ["TZ"] = "America/New_York"
+        time.tzset()
+        try:
+            # 19:00 and 21:00 local on the same day, either side of UTC midnight.
+            evening = 1_757_026_800.0                 # 2025-09-04 19:00 EDT, 23:00 UTC
+            later = evening + 2 * 3600
+            self.assertEqual(day_of(evening), day_of(later))
+            self.assertNotEqual(int(evening // 86400), int(later // 86400))
+            with tempfile.TemporaryDirectory() as d:
+                log = EventLog(Path(d) / "events")
+                for at in (evening, later):
+                    log.emit("device_quiet", "warning", at, addr=addr, name="TV", silent_for_s=1800)
+                    log.emit("device_returned", "notice", at + 900, addr=addr, name="TV")
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    print_history(log.dir, [addr], later + 3600)
+            self.assertIn("2 episode(s) across 1 day(s)", out.getvalue())
+        finally:
+            if old_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old_tz
+            time.tzset()
+
     def test_empty_without_an_event_log(self):
         from threadwatch.why import event_history
         self.assertEqual(event_history(Path("/nonexistent/events"), ["b62c32bf669272db"], NOW), [])

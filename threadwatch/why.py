@@ -94,7 +94,11 @@ def print_history(events_dir: Path, addrs: list[str], now: float | None = None) 
         print("\nevent log: nothing recorded for this device.")
         return
     shown = episodes[:HISTORY_ROWS]
-    days = len({e["start"] // 86400 for e in episodes})
+    # Local days, as every other day count here is: // 86400 buckets by the
+    # UTC calendar, so two evening episodes on one local day west of
+    # Greenwich report as two.
+    from .events import day_of
+    days = len({day_of(e["start"]) for e in episodes})
     print(f"\nevent log ({len(episodes)} episode(s) across {days} day(s), newest first"
           + (f", latest {len(shown)}" if len(shown) < len(episodes) else "") + "):")
     for ep in shown:

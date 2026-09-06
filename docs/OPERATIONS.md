@@ -248,7 +248,10 @@ it up if you care about the history; nothing else holds it.
         status.json          the daemon's status, rewritten every 30 s (below)
         last-seen.json       one row per extended address: first and last heard, frame count,
                              PAN, average RSSI, the RLOC16 it last used, and whether its silence
-                             or its poll starvation has been announced
+                             or its poll starvation has been announced. A backward clock step
+                             (clock_step with a negative step_s) moves every timestamp in this
+                             file back with the clock: it is the one thing that rewrites history
+                             here rather than adding to it
         observed-names.json  SRP hostnames harvested from the mesh (report --suggest uses them)
         frames-by-hour.json  frames per hour, the last day or so, for the daily summary
         retransmissions.json the retransmission detector's last 30 minute rates and the

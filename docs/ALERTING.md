@@ -77,7 +77,7 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `retransmission_elevation` | notice for the first elevated minute, warning once the rate has stayed up for `[retransmissions] confirm_s` (`confirmed`); notice regardless when one sender-target pair is `top_share` >= 0.5 of the retries (a chronic bad link, not a storm precursor) | `rate`, `baseline`, `addr`, `name`, `top_sender`, `top_target`, `top_share`, `confirmed`, `sustained_s`, `note` |
 | `partition_or_leader_change` | warning | `previous`, `current`, each with `partition`, `leader_router` and `leader` (the router id with the device's name once the MLE layer has matched it) |
 | `credentials_stale` | warning | `failed`, `note` |
-| `clock_step` | info | `step_s`, `note` (the host clock jumped forward, NTP after a boot without an RTC; silences spanning it are not counted) |
+| `clock_step` | info | `step_s` (signed), `note`. The host clock jumped, NTP correcting a boot without an RTC. Forward: silences spanning the jump are not counted against any device. Backward: every timestamp the recorder holds, `last-seen.json` included, is moved back with it |
 | `recorder_started` | info after a requested stop or on the first start ever, notice when the last run ended any other way | `cause` (`stopped`, `stalled`, `sniffer_died`, `stream_ended`, `crashed`, `unknown` for a run that left no note: a power cut or a kill, `first_start`), `gap_s` (since the last frame any run heard), `last_frame_ts`, `stopped_ts` (when the last run ended, if it left the note), `exit_code`, `note` |
 | `border_router_address_changed` | notice | `addr`, `name`, `previous`, `hostname`, `note` |
 | `border_router_unlisted` | notice | `addr`, `hostname`, `note` |

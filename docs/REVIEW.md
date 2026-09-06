@@ -127,9 +127,9 @@ apart after the fact unless it kept track of itself, so every start logs
 a `recorder_started` event saying when the last frame before it was
 heard, and how and when the run before it ended (from the note each exit
 path leaves in `data/state/last-exit.json`; a power cut or a kill leaves
-none, and the start says so). A forward step of the host clock logs
-`clock_step`, and a half hour of frames from other PANs only logs
-`configured_pan_silent`.
+none, and the start says so). A step of the host clock in either direction logs
+`clock_step` (`step_s` is signed), and a half hour of frames from other
+PANs only logs `configured_pan_silent`.
 
 The day page draws these as a bar across the day: green while the
 recorder was listening, red where it was not (**blind**: not running, or

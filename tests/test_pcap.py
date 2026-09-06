@@ -16,7 +16,6 @@ from threadwatch.pcap import DLT_NOFCS, DLT_TAP, Frame, PcapStreamReader, PcapWr
 
 class RingSizeCapTest(unittest.TestCase):
     def test_oldest_go_until_under_the_byte_cap_but_never_the_current_file(self):
-        import tempfile
         with tempfile.TemporaryDirectory() as d:
             ring = RingWriter(Path(d), keep_files=10, dlt=0, keep_bytes=2500)
             for h in ("00", "01", "02", "03"):
@@ -34,7 +33,6 @@ class RingSizeCapTest(unittest.TestCase):
     def test_the_byte_cap_holds_while_the_hour_grows_not_only_at_the_rotation(self):
         # Pruned only at rotation, the ring sat over the cap for the whole
         # hour, by as much as the hour brought.
-        import tempfile
         import time
 
         with tempfile.TemporaryDirectory() as d:
@@ -56,7 +54,6 @@ class RingSizeCapTest(unittest.TestCase):
             ring.close()
 
     def test_current_file_survives_a_clock_step_back(self):
-        import tempfile
         import time
 
         with tempfile.TemporaryDirectory() as d:
@@ -69,7 +66,6 @@ class RingSizeCapTest(unittest.TestCase):
             self.assertEqual(len(list(Path(d).glob("*.pcap"))), 4)
 
     def test_keep_files_zero_does_not_delete_the_file_being_written(self):
-        import tempfile
         import time
 
         with tempfile.TemporaryDirectory() as d:
@@ -79,7 +75,6 @@ class RingSizeCapTest(unittest.TestCase):
             self.assertTrue(ring.current_path.exists())
 
     def test_byte_cap_counts_only_what_the_file_cap_keeps(self):
-        import tempfile
         with tempfile.TemporaryDirectory() as d:
             ring = RingWriter(Path(d), keep_files=2, dlt=0, keep_bytes=2500)
             for h in ("00", "01", "02", "03"):
@@ -89,7 +84,6 @@ class RingSizeCapTest(unittest.TestCase):
             self.assertEqual(sorted(p.name[-7:-5] for p in Path(d).glob("*.pcap")), ["02", "03"])
 
     def test_the_count_cap_prunes_the_oldest_with_no_byte_cap_set(self):
-        import tempfile
         # keep_bytes unset is the default; nothing else bounds the ring, so
         # the count cap alone has to prune or the card fills.
         with tempfile.TemporaryDirectory() as d:
@@ -259,7 +253,6 @@ class CorruptRecordMidFileTest(unittest.TestCase):
         self.assertEqual(scan_file_of(head[:24] + junk + tail).good, len(head[:24] + junk + tail))
 
     def test_the_resuming_writer_leaves_the_file_whole_and_says_so(self):
-        import contextlib
         data = self._file()
         with tempfile.TemporaryDirectory() as d:
             ring = RingWriter(Path(d), keep_files=5, dlt=DLT_NOFCS)
@@ -307,7 +300,7 @@ class TapHeaderTest(unittest.TestCase):
     must not take the parser with it."""
 
     def _tap(self, body: bytes):
-        from threadwatch.pcap import DLT_TAP, parse_frame
+        from threadwatch.pcap import parse_frame
         return parse_frame(0.0, body, DLT_TAP)
 
     def test_tlv_cut_short_does_not_raise(self):
@@ -326,9 +319,7 @@ class TapHeaderTest(unittest.TestCase):
         data/ring/threadwatch-20260902-02.pcap - a 28-byte TAP header of
         RSSI, channel and LQI TLVs (each padded to four bytes) in front of a
         20-byte secured MAC command frame."""
-        import io
 
-        from threadwatch.pcap import DLT_TAP, PcapStreamReader, PcapWriter
         raw = bytes.fromhex("00001c0001000400000094c203000300190000000a000100"
                             "4c0000006b98f28473003c1a3c0d5a3901005504cb7ef338")
         buf = io.BytesIO()
@@ -341,7 +332,7 @@ class TapHeaderTest(unittest.TestCase):
         self.assertEqual((f.ftype, f.seq, f.src, f.dst), (3, 242, "3c1a", "3c00"))
 
     def test_an_address_cut_short_is_no_address_not_a_short_one(self):
-        from threadwatch.pcap import DLT_NOFCS, parse_frame
+        from threadwatch.pcap import parse_frame
         # Data frame, PAN compression, extended destination and source.
         head = struct.pack("<H", 0x0001 | 0x0040 | (3 << 10) | (3 << 14)) + b"\x07" + struct.pack("<H", 0x4e21)
         dst, src = bytes(range(0x50, 0x58)), bytes(range(0xa0, 0xa8))
@@ -354,7 +345,6 @@ class TapHeaderTest(unittest.TestCase):
         self.assertEqual((f.dst_pan, f.dst, f.src), (0x4e21, None, None))
 
     def test_well_formed_tap_header_still_parses(self):
-        import struct
         body = (struct.pack("<HH", 0, 20)                       # version/reserved, tap_len
                 + struct.pack("<HH", 1, 4) + struct.pack("<f", -61.0)      # RSSI
                 + struct.pack("<HH", 3, 2) + struct.pack("<H", 25) + b"\x00\x00"   # channel
@@ -374,7 +364,7 @@ class FcsTest(unittest.TestCase):
     MAC = struct.pack("<HBH", 1 | (3 << 14), 7, 0x4e21) + bytes(range(8)) + b"\x7f\x33"
 
     def test_dlt_195_ends_in_an_fcs_and_tap_only_when_it_says_so(self):
-        from threadwatch.pcap import DLT_TAP, DLT_WITHFCS, parse_frame
+        from threadwatch.pcap import DLT_WITHFCS, parse_frame
         with_fcs = self.MAC + b"\xab\xcd"
         self.assertEqual(parse_frame(1, with_fcs, DLT_WITHFCS).psdu, self.MAC)
         self.assertEqual(parse_frame(1, with_fcs, DLT_NOFCS).psdu, with_fcs)        # the ring: nothing to strip
@@ -421,7 +411,7 @@ class PanCompressionTest(unittest.TestCase):
     SRC = bytes(range(0xa0, 0xa8))
 
     def _frame(self, fcf, body):
-        from threadwatch.pcap import DLT_NOFCS, parse_frame
+        from threadwatch.pcap import parse_frame
         return parse_frame(0.0, struct.pack("<H", fcf) + b"\x07" + body, DLT_NOFCS)
 
     def test_compression_without_a_destination_leaves_the_source_pan_on_the_wire(self):
@@ -482,7 +472,6 @@ class FormatRejectionTest(unittest.TestCase):
         self.assertEqual(complete_length_of(data[:-4]), len(data) - 16 - len(raw))   # the cut record is not good data
 
     def test_the_ring_says_so_when_it_starts_an_unreadable_hour_file_over(self):
-        import contextlib
         with tempfile.TemporaryDirectory() as d:
             ring = RingWriter(Path(d), keep_files=5, dlt=DLT_NOFCS)
             ring.write(frame(1_700_000_000.0)); ring.close()

@@ -25,6 +25,18 @@ TARGET="${1:?usage: push-to-host.sh user@host [--push-only]}"
 MODE="${2:-}"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 DEST_DIR="${DEST_DIR:-threadwatch}"   # path on the host, relative to $HOME
+# Checked before anything runs. It goes verbatim into an rsync --delete
+# destination, into an unquoted position in a remote chmod, and into the
+# remote setup-host.sh path: DEST_DIR=. or DEST_DIR=/ turns this push into
+# an rsync --delete over the host's home directory or its root. Nothing
+# untrusted reaches it; this is a foot-gun on a script whose whole job is
+# --delete.
+case "$DEST_DIR" in
+  "" | "." | ".." | ../* | */../* | */.. | /* | */ | *[!A-Za-z0-9._/-]*)
+    echo "push-to-host.sh: DEST_DIR must be a plain relative path under the host's home" >&2
+    echo "  (letters, digits, . _ - and /, no leading or trailing slash), not '$DEST_DIR'; nothing pushed" >&2
+    exit 1 ;;
+esac
 
 # The exclude list comes from git, so git has to be answering: with it
 # failing (not installed, or $REPO is an exported tree rather than a clone)

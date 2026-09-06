@@ -126,17 +126,19 @@ class BrowseTest(unittest.TestCase):
     """browse() over fake sockets: what arrives from the LAN is whatever the
     LAN sends, and one bad datagram must not end the browse."""
 
-    def _browse(self, inbox, group_bind_fails=False, timeout=0.3):
-        made = []
+    def _browse(self, inbox, group_bind_fails=False, timeout=0.3, query_setup_fails=False, made=None):
+        made = [] if made is None else made
 
         class FakeSock:
             def __init__(self, *_a):
                 self.inbox = inbox if not made else []          # the query socket is made first
                 self.sent, self.closed = [], False
+                self.first = not made
                 made.append(self)
 
             def setsockopt(self, *_a):
-                pass
+                if query_setup_fails and self.first:
+                    raise OSError(errno.EMFILE, "Too many open files")
 
             def bind(self, addr):
                 if group_bind_fails and addr[1] == mdns.MDNS_PORT:
@@ -237,6 +239,18 @@ class BrowseTest(unittest.TestCase):
         self.assertIn("unicast replies only", log[0])
         self.assertEqual(len(made), 2)
         self.assertTrue(all(s.closed for s in made))   # the group socket too: a browse every 10 min must not leak one
+
+    def test_a_query_socket_that_cannot_be_configured_is_still_closed(self):
+        # query_sock used to be created, configured and bound before it was
+        # appended to the list the finally closes, so a raise from
+        # setsockopt or bind leaked the descriptor. Realistically only fd
+        # exhaustion gets there, which is exactly when leaking one more
+        # matters, and the recorder browses for the life of the process.
+        made = []
+        with self.assertRaises(OSError):
+            self._browse([], query_setup_fails=True, made=made)
+        self.assertEqual(len(made), 1)
+        self.assertTrue(made[0].closed)
 
     def test_nothing_answering_is_an_empty_list_after_the_timeout(self):
         t0 = time.monotonic()

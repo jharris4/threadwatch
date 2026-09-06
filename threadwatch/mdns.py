@@ -202,29 +202,34 @@ def browse(service: str = SERVICE, timeout: float = 4.0, log=lambda m: None) -> 
     ext_pan_id, vendor, model, addresses."""
     socks: list[socket.socket] = []
     query_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    query_sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 255)
-    query_sock.bind(("", 0))
+    # Registered before it is configured: socks is what the finally below
+    # closes, and a raise from setsockopt or bind in between would leak the
+    # descriptor. Only fd exhaustion really gets there, which is when
+    # leaking one more matters most, and the recorder browses every
+    # browse_s for the life of the process.
     socks.append(query_sock)
-    # Responders that recently multicast the same records may answer on the
-    # group instead of unicast: listen there too, sharing 5353 with any
-    # local mDNS daemon.
-    group_sock = None
-    try:
-        group_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        group_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        if hasattr(socket, "SO_REUSEPORT"):
-            group_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-        group_sock.bind(("", MDNS_PORT))
-        mreq = socket.inet_aton(MDNS_GROUP) + socket.inet_aton("0.0.0.0")
-        group_sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-        socks.append(group_sock)
-    except OSError as exc:
-        if group_sock is not None:
-            group_sock.close()      # the recorder browses every few minutes: never leak one
-        log(f"mdns: not listening on the multicast group ({exc}); unicast replies only")
     records: list[tuple[str, int, object]] = []
     asked_detail: set[str] = set()
     try:
+        query_sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 255)
+        query_sock.bind(("", 0))
+        # Responders that recently multicast the same records may answer on
+        # the group instead of unicast: listen there too, sharing 5353 with
+        # any local mDNS daemon.
+        group_sock = None
+        try:
+            group_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            group_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if hasattr(socket, "SO_REUSEPORT"):
+                group_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            group_sock.bind(("", MDNS_PORT))
+            mreq = socket.inet_aton(MDNS_GROUP) + socket.inet_aton("0.0.0.0")
+            group_sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+            socks.append(group_sock)
+        except OSError as exc:
+            if group_sock is not None:
+                group_sock.close()      # the recorder browses every few minutes: never leak one
+            log(f"mdns: not listening on the multicast group ({exc}); unicast replies only")
         # Two queries: one asking for a unicast reply straight to this
         # socket (works on the routers' own subnet), one for the ordinary
         # multicast reply, which is what an mDNS reflector between VLANs can

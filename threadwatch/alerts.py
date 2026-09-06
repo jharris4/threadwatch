@@ -629,7 +629,12 @@ class Dispatcher:
         self._max_delay = max(retry_cap_s, *retry_delays) if retry_delays else retry_cap_s
         self._queue: list[dict] = []          # {record, sinks, attempt, due}
         self._undelivered: list[dict] = []    # for the spool: {record, sinks: [names], attempt}
-        self._inflight: dict | None = None
+        # The sends this pass has begun and not settled, one per sink, as
+        # spoolable work: a digest is removed from its sink's held records
+        # when it is built, so if it is only a local variable while the
+        # send runs, a close that reaches its deadline mid-send takes it
+        # with the process.
+        self._inflight: list[dict] = []
         self._cv = threading.Condition()
         self._closing = False
         self._thread: threading.Thread | None = None
@@ -658,10 +663,10 @@ class Dispatcher:
             # Parked in a send: whatever is still queued, and the record
             # in flight, would leave with the process.
             with self._cv:
-                items = ([self._inflight] if self._inflight else []) + self._queue
+                items = list(self._inflight) + self._queue
                 self._undelivered.extend(self._spool_item(it) for it in items)
                 self._queue.clear()
-                self._inflight = None
+                self._inflight = []
             self._write_spool()
         self._drop_inflight_spool()
 
@@ -694,9 +699,9 @@ class Dispatcher:
     def stats(self) -> dict:
         """For status.json: what this run has delivered, holds, and gave up."""
         with self._cv:
-            queued = len(self._queue) + (1 if self._inflight else 0)
+            queued = len(self._queue) + len(self._inflight)
             retrying = (sum(1 for it in self._queue if it["attempt"])
-                        + (1 if self._inflight and self._inflight["attempt"] else 0))
+                        + sum(1 for it in self._inflight if it["attempt"]))
         return {"delivered": self.delivered, "queued": queued, "retrying": retrying,
                 "given_up": self.given_up, "resumed": self.resumed}
 
@@ -727,19 +732,30 @@ class Dispatcher:
                     if self._closing or self._due(it, now):
                         item = self._queue.pop(i)
                         break
-                self._inflight = item
                 last = self._closing and not self._queue
                 digests = [(s, rec) for s in self.sinks for rec in s.due_digests(now, all_pending=last)]
-            sends = [(s, item["record"], item) for s in item["sinks"]] if item else []
-            sends += [(s, rec, None) for s, rec in digests]
-            for s, record, it in sends:
+                # One entry per delivery still owed, held where close() can
+                # find it. The digests are already out of their sinks'
+                # held records by now: this is the only place they exist.
+                sends = [{"record": item["record"], "sinks": [s], "attempt": item["attempt"]}
+                         for s in item["sinks"]] if item else []
+                sends += [{"record": rec, "sinks": [s], "attempt": 0} for s, rec in digests]
+                self._inflight = list(sends)
+            for it in sends:
+                s = it["sinks"][0]
                 try:
-                    _bounded(s, partial(s.send, record), s.timeout_s, "send")
+                    _bounded(s, partial(s.send, it["record"]), s.timeout_s, "send")
                     self.delivered += 1
                 except Exception as exc:
-                    self._failed(s, record, it, exc)
+                    self._failed(s, it["record"], it, exc)
+                finally:
+                    # Settled either way: delivered, spooled by _failed, or
+                    # queued again for a retry. It is no longer in flight.
+                    with self._cv:
+                        if it in self._inflight:
+                            self._inflight.remove(it)
             with self._cv:
-                self._inflight = None
+                self._inflight = []
                 drained = not self._queue and self._inflight_spool is not None
             if last:
                 self._write_spool()

@@ -920,6 +920,38 @@ class RetryTest(unittest.TestCase):
             d._thread.join(2)                                          # let it finish before the directory goes
 
 
+    def test_a_digest_parked_at_close_is_spooled_and_not_lost(self):
+        # Building a digest takes its records out of the sink, so while the
+        # send runs the digest exists nowhere else. A close that reaches its
+        # deadline spooled the queue and the record in flight; the digest
+        # was in neither, and the recorder's os._exit took it with it.
+        with tempfile.TemporaryDirectory() as tmp:
+            spool = Path(tmp) / "alert-spool.jsonl"
+            gate = threading.Event()
+
+            class Parked(alerts.Sink):
+                def send(self, record):
+                    gate.wait(5)
+
+            sink = Parked(name="parked", timeout_s=5, cooldown_s=3600)
+            d = alerts.Dispatcher([sink], lambda m: None, spool=spool)
+            now = time.time()
+            d.offer({**REC, "ts": now, "name": "first"})               # sent: the send parks on the gate
+            self.assertTrue(wait_for(lambda: d.stats()["queued"] == 1))
+            d.offer({**REC, "ts": now, "name": "held"})                # inside the cooldown: held back
+            self.assertTrue(wait_for(lambda: sink.next_digest_at(now) is not None))
+            d.close(timeout=0.2)
+            lines = [json.loads(l) for l in spool.read_text().splitlines()]
+            self.assertEqual([l["sinks"] for l in lines], [["parked"], ["parked"]])
+            names = [l["record"].get("name") for l in lines]
+            self.assertIn("first", names)                              # the send that was parked
+            self.assertEqual(len(names), 2)                            # and the digest behind it
+            digest = next(l["record"] for l in lines if l["record"].get("name") != "first")
+            self.assertEqual((digest["digest"], digest["count"]), (True, 1))
+            gate.set()
+            d._thread.join(2)                                          # let it finish before the directory goes
+
+
 class AlertChainTest(unittest.TestCase):
     """config.toml -> config.load -> build_sinks -> EventLog -> Pipeline ->
     the HTTP body a sink receives. Every link has its own tests; this is

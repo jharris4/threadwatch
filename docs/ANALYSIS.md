@@ -98,9 +98,10 @@ the first per half hour.
 ## Frozen incidents
 
 `threadwatch freeze <label>` copies the ring before it rolls over, and so
-does the recorder itself when `[capture] freeze_on_critical` is set and a
-`phase_locked_storm` fires (at most once per six hours, counted from the
-newest automatic incident on disk). Automatic incidents are capped by
+does the recorder itself when `[capture] freeze_on_critical` is set and
+any event of `critical` severity fires — `phase_locked_storm` is the only
+one today (at most once per six hours, counted from the newest automatic
+incident on disk). Automatic incidents are capped by
 `[capture] incidents_keep` (4 by default): the oldest `auto-*` ones go
 before each new snapshot is taken. Incidents you froze by hand are never
 pruned, so delete them yourself with `threadwatch incidents --delete`. A
@@ -132,7 +133,9 @@ The name is the freeze time (local, `YYYYMMDDTHHMMSS`) and the label
 reduced to filename-safe characters: letters, digits, `.`, `_` and `-`,
 with any run of anything else replaced by `-` (`storm at noon` becomes
 `storm-at-noon`; an empty label becomes `incident`). Automatic ones are
-labelled `auto-storm`. The ring file being written is copied as it is, so
+labelled `auto-` and the event that called for the freeze
+(`auto-phase_locked_storm`), and the manifest's `trigger` names that event
+too. The ring file being written is copied as it is, so
 its last record can be cut short; readers stop cleanly there.
 A copy still running is built under `data/incidents/.staging/` and
 renamed into place once whole; one cut short by a restart stays there,

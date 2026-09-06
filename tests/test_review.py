@@ -1039,7 +1039,10 @@ class EveryEventKindTest(unittest.TestCase):
     def test_everything_the_pipeline_emits_has_a_row(self):
         import re
         source = (Path(__file__).resolve().parent.parent / "threadwatch" / "pipeline.py").read_text()
-        emitted = sorted(set(re.findall(r'events\.emit\(\s*"([a-z_]+)"', source)))
+        # Both spellings: the pipeline raises its events through _emit (which
+        # freezes the ring on a critical one) and the freeze path itself, and
+        # the daily summary, straight through events.emit.
+        emitted = sorted(set(re.findall(r'(?:events\.emit|self\._emit)\(\s*"([a-z_]+)"', source)))
         self.assertGreaterEqual(len(emitted), 20, emitted)
         for ev in emitted:
             # The fields every record carries, plus the one number a title

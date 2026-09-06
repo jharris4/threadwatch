@@ -202,6 +202,8 @@ class Pipeline:
             # so the storm still running gets its snapshot.
             from .freeze import discard_partials
             for label in discard_partials(cfg.incidents_dir):
+                # events.emit, not _emit: this is the freeze path reporting
+                # on itself, and self.freezer is not set until below.
                 self.events.emit("incident_freeze_failed", "warning", time.time(), label=label,
                                  note=(f"the freeze for {label} was cut short when the recorder last stopped; "
                                        "the half copy was discarded, and the next storm event tries again"))
@@ -317,8 +319,8 @@ class Pipeline:
                         # Heard again after its announced silence, but the
                         # recorder died before saying so: close the silence
                         # at the moment it was actually heard.
-                        self.events.emit("device_returned", "notice", row["last_seen"],
-                                         addr=addr, name=self.names.name(addr))
+                        self._emit("device_returned", "notice", row["last_seen"],
+                                   addr=addr, name=self.names.name(addr))
                         announced += 1
                     continue
                 if row.get("quiet_reported"):
@@ -413,8 +415,8 @@ class Pipeline:
                 note = (f"not listening for {round(gap / 60)} min since the last frame at "
                         f"{time.strftime('%H:%M', time.localtime(last_alive))}{off}; {ended_how}")
         severity = "info" if cause in ("stopped", "first_start") else "notice"
-        self.events.emit("recorder_started", severity, now, cause=cause, gap_s=None if gap is None else round(gap),
-                         last_frame_ts=last_alive, stopped_ts=stopped, exit_code=ended.get("code"), note=note)
+        self._emit("recorder_started", severity, now, cause=cause, gap_s=None if gap is None else round(gap),
+                   last_frame_ts=last_alive, stopped_ts=stopped, exit_code=ended.get("code"), note=note)
 
     def _load_blind(self) -> list[tuple[float, float]]:
         try:
@@ -609,15 +611,15 @@ class Pipeline:
         if step > 0:
             self._blind.append((wall - step, step))
             self._save_blind()
-            self.events.emit("clock_step", "info", now, step_s=round(step),
-                             note=(f"the host clock jumped forward {round(step / 60)} min (NTP after boot?); "
-                                   "silences that span the jump are not counted against any device"))
+            self._emit("clock_step", "info", now, step_s=round(step),
+                       note=(f"the host clock jumped forward {round(step / 60)} min (NTP after boot?); "
+                             "silences that span the jump are not counted against any device"))
             return
         self._rewind(wall, -step, since_check)
-        self.events.emit("clock_step", "info", now, step_s=round(step),
-                         note=(f"the host clock jumped back {round(-step / 60)} min (NTP correcting a clock that "
-                               "ran ahead?); every stamp taken before the jump was moved back with it, so "
-                               "silences are counted as heard"))
+        self._emit("clock_step", "info", now, step_s=round(step),
+                   note=(f"the host clock jumped back {round(-step / 60)} min (NTP correcting a clock that "
+                         "ran ahead?); every stamp taken before the jump was moved back with it, so "
+                         "silences are counted as heard"))
 
     # The stamps a last-seen row carries on the wall clock. quiet_reported_ts
     # is deliberately not one of them: it is not a measurement but a pointer
@@ -731,14 +733,14 @@ class Pipeline:
             return
         self._pan_silent_evt = now
         busiest = max(self.own_pans, key=self.own_pans.get) if self.own_pans else None
-        self.events.emit("configured_pan_silent", "warning", now, pan=f"0x{self.cfg.pan_id:04x}",
-                         heard_frames=others, window_s=self.PAN_SILENT_WINDOW_S,
-                         busiest_pan=None if busiest is None else f"0x{busiest:04x}",
-                         note=(f"no frame on PAN 0x{self.cfg.pan_id:04x} ([network] pan_id) in the last "
-                               f"{self.PAN_SILENT_WINDOW_S // 60} min while {others} were heard on other PANs. "
-                               "If the network was re-commissioned or migrated, every device now counts as "
-                               "foreign and none is judged: threadwatch import prints the dataset's PAN; "
-                               "update pan_id and restart."))
+        self._emit("configured_pan_silent", "warning", now, pan=f"0x{self.cfg.pan_id:04x}",
+                   heard_frames=others, window_s=self.PAN_SILENT_WINDOW_S,
+                   busiest_pan=None if busiest is None else f"0x{busiest:04x}",
+                   note=(f"no frame on PAN 0x{self.cfg.pan_id:04x} ([network] pan_id) in the last "
+                         f"{self.PAN_SILENT_WINDOW_S // 60} min while {others} were heard on other PANs. "
+                         "If the network was re-commissioned or migrated, every device now counts as "
+                         "foreign and none is judged: threadwatch import prints the dataset's PAN; "
+                         "update pan_id and restart."))
 
     def _update_dominant(self, ts: Optional[float]) -> None:
         """Adopt or replace the guessed PAN from the frame tally. ``ts`` is
@@ -758,14 +760,14 @@ class Pipeline:
             print(f"[threadwatch] PAN 0x{leader:04x} taken for ours ({n} frames on record); "
                   "set [network] pan_id in config.toml if that is wrong", flush=True)
             return
-        self.events.emit("dominant_pan_changed", "notice" if prev is None else "warning", ts,
-                         pan=f"0x{leader:04x}", previous=None if prev is None else f"0x{prev:04x}",
-                         frames=n,
-                         note=(f"PAN 0x{leader:04x} is now taken for this network's"
-                               + ("" if prev is None else f", instead of 0x{prev:04x}")
-                               + f": it has sent the most frames ({n}). Quiet checks and foreign-PAN notices "
-                                 "follow it. If it is a neighbour's network, set [network] pan_id in "
-                                 "config.toml and restart."))
+        self._emit("dominant_pan_changed", "notice" if prev is None else "warning", ts,
+                   pan=f"0x{leader:04x}", previous=None if prev is None else f"0x{prev:04x}",
+                   frames=n,
+                   note=(f"PAN 0x{leader:04x} is now taken for this network's"
+                         + ("" if prev is None else f", instead of 0x{prev:04x}")
+                         + f": it has sent the most frames ({n}). Quiet checks and foreign-PAN notices "
+                           "follow it. If it is a neighbour's network, set [network] pan_id in "
+                           "config.toml and restart."))
 
     # ---------------------------------------------------------- tracking
 
@@ -799,12 +801,12 @@ class Pipeline:
         for _frames, _last, a in dropped:
             self._forget(a)
         if self._capped_at is None or ts - self._capped_at >= self.CAP_NOTE_S:
-            self.events.emit("address_flood", "warning", ts, dropped=len(dropped), kept=len(self.seen.table),
-                             note=(f"{len(dropped)} addresses heard once or twice were dropped from the "
-                                   f"device table to keep it at {self.TRACK_MAX} rows: something in range "
-                                   "is transmitting from ever-new extended addresses. Named devices and "
-                                   "devices holding a short address are kept; new addresses are not "
-                                   "announced one by one while this goes on."))
+            self._emit("address_flood", "warning", ts, dropped=len(dropped), kept=len(self.seen.table),
+                       note=(f"{len(dropped)} addresses heard once or twice were dropped from the "
+                             f"device table to keep it at {self.TRACK_MAX} rows: something in range "
+                             "is transmitting from ever-new extended addresses. Named devices and "
+                             "devices holding a short address are kept; new addresses are not "
+                             "announced one by one while this goes on."))
         self._capped_at = ts
         return True
 
@@ -1064,14 +1066,14 @@ class Pipeline:
                 # bind it, so the first_seen below already carries its name.
                 self._apply_border_routers([pending], ts)
             if was_new and not self._flooded(ts):
-                self.events.emit("device_first_seen", "info", ts, addr=who,
-                                 name=self.names.name(who))
+                self._emit("device_first_seen", "info", ts, addr=who,
+                           name=self.names.name(who))
             if who in self.quiet_reported:
                 self.quiet_reported.discard(who)
                 self.seen.table[who].pop("quiet_reported", None)
                 self.seen.table[who].pop("quiet_reported_ts", None)
-                self.events.emit("device_returned", "notice", ts, addr=who,
-                                 name=self.names.name(who))
+                self._emit("device_returned", "notice", ts, addr=who,
+                           name=self.names.name(who))
                 # Persist at once: a crash before the next 30 s save would
                 # leave the row flagged and a restart would announce this
                 # return a second time. Returns are rare, saves are cheap.
@@ -1087,9 +1089,9 @@ class Pipeline:
             recent = [t for t in self.beacon_times if ts - t <= 60]
             if len(recent) >= 5 and ts - self._join_scan_evt > 300:
                 self._join_scan_evt = ts
-                self.events.emit("join_scan_activity", "notice", ts,
-                                 count_60s=len(recent), src=f.src,
-                                 note=f"{len(recent)} beacons in 60 s: something is scanning to join a network")
+                self._emit("join_scan_activity", "notice", ts,
+                           count_60s=len(recent), src=f.src,
+                           note=f"{len(recent)} beacons in 60 s: something is scanning to join a network")
 
         # Foreign PAN: a source PAN that is not the dominant one, sighted
         # repeatedly (single hits are usually dissection edge cases - verify
@@ -1113,10 +1115,10 @@ class Pipeline:
                 for other, n in self.own_pans.items():       # not `pan`: the frame's own PAN is read below
                     if other != dominant and 3 <= n < lead and other not in self._foreign_reported:
                         self._foreign_reported.add(other)
-                        self.events.emit("possible_foreign_pan", "notice", ts,
-                                         pan=f"0x{other:04x}", src=self._last_src_by_pan.get(other),
-                                         dominant_pan=f"0x{dominant:04x}",
-                                         note="repeated foreign-PAN sightings; verify in Wireshark")
+                        self._emit("possible_foreign_pan", "notice", ts,
+                                   pan=f"0x{other:04x}", src=self._last_src_by_pan.get(other),
+                                   dominant_pan=f"0x{dominant:04x}",
+                                   note="repeated foreign-PAN sightings; verify in Wireshark")
 
         # Retransmission-rate window (duplicate src+seq within 2 s). Frames
         # from another PAN are left out, as every other judgement leaves
@@ -1170,25 +1172,16 @@ class Pipeline:
             details = self.detector.storm_details
             period = details.get("period")
             onsets = details.get("onsets") or []
-            # Docs say a "critical event" freezes the ring; the storm is the
-            # only critical event today, so this is the only call. A new
-            # critical event needs its own call here.
-            label = self._auto_freeze(ts, "storm")
-            keep = (f"the ring is being frozen as {label}" if label
-                    else "run 'threadwatch freeze' to keep the packets")
-            self.events.emit("phase_locked_storm", "critical", ts,
-                             period_s=round(period, 1) if period else None, onsets=len(onsets),
-                             onset_times=onsets, auto_freeze=label,
-                             note=(f"traffic floods recurring every {period:.0f} s ({len(onsets)} onsets): "
-                                   f"the broadcast-storm signature; {keep}"
-                                   if period else "phase-locked traffic floods"),
-                             **self.detector.snapshot())
-            if label:
-                # The copy starts only once the event that called for it
-                # is in the log: the snapshot copies the log, and a worker
-                # that got to it first left the incident without the storm
-                # record that explains it.
-                self.freezer(label)
+            # The freeze is _emit's doing, off the "critical" severity: it
+            # adds the auto_freeze field and the sentence about where the
+            # packets went, and starts the copy afterwards.
+            self._emit("phase_locked_storm", "critical", ts,
+                 period_s=round(period, 1) if period else None, onsets=len(onsets),
+                 onset_times=onsets,
+                 note=(f"traffic floods recurring every {period:.0f} s ({len(onsets)} onsets): "
+                       f"the broadcast-storm signature"
+                       if period else "phase-locked traffic floods"),
+                 **self.detector.snapshot())
 
         self.last_frame = f
         return who
@@ -1304,7 +1297,7 @@ class Pipeline:
                     extra["confirmed"] = False
                     note += (f" Logged now; paged if its polls are still unanswered in {hold / 60:.0f} min "
                              "(a starvation that recovers by itself does so within minutes).")
-                self.events.emit(
+                self._emit(
                     "poll_starvation", "notice" if (marginal or flapping or hold > 0) else "warning", ts,
                     addr=who, name=self.names.name(who),
                     unanswered_polls=stats.unanswered_polls, since=stats.unanswered_since,
@@ -1343,7 +1336,7 @@ class Pipeline:
                 "and the device has not noticed; it still looks alive, so no device_quiet will follow, "
                 "and a rejoin attempt should. (If it just moved to a parent the sniffer cannot hear, "
                 "the ACKs are missing here, not on air.)")
-        self.events.emit(
+        self._emit(
             "poll_starvation", "warning", ts, addr=who, name=self.names.name(who),
             unanswered_polls=stats.unanswered_polls, since=since,
             starved_for_s=round(ts - since), acked_polls=stats.acked_polls,
@@ -1376,10 +1369,10 @@ class Pipeline:
                 row["polls_acked"] = True
                 self.seen._dirty = True
         if announced:
-            self.events.emit("poll_answered", "notice", ts, addr=who, name=self.names.name(who),
-                             note="its polls are acknowledged again"
-                             + (" (before the starvation was confirmed: it was logged, not paged)"
-                                if unconfirmed else ""))
+            self._emit("poll_answered", "notice", ts, addr=who, name=self.names.name(who),
+                       note="its polls are acknowledged again"
+                       + (" (before the starvation was confirmed: it was logged, not paged)"
+                          if unconfirmed else ""))
 
     def leader_device(self, router_id: Optional[int] = None) -> dict:
         """Which device holds a router id (the leader's, by default), as far
@@ -1473,17 +1466,17 @@ class Pipeline:
                     attribution["note"] = (attribution.get("note", "elevated retransmissions") +
                                            f". Logged now; paged if the rate is still up in {confirm_s / 60:.0f} min "
                                            "(a minute of interference passes, a storm building does not).")
-                self.events.emit("retransmission_elevation",
-                                 "notice" if (one_link or confirm_s > 0) else "warning", ts,
-                                 rate=round(rate, 3), baseline=round(base, 3), **attribution, **extra)
+                self._emit("retransmission_elevation",
+                           "notice" if (one_link or confirm_s > 0) else "warning", ts,
+                           rate=round(rate, 3), baseline=round(base, 3), **attribution, **extra)
             return
         self._retrans_lull = 0
         if confirm_s <= 0:
             # The old detector: a long elevation is a warning every 15 min.
             if ts - self._retrans_alerted > 900:
                 self._retrans_alerted = ts
-                self.events.emit("retransmission_elevation", "notice" if one_link else "warning", ts,
-                                 rate=round(rate, 3), baseline=round(base, 3), **attribution)
+                self._emit("retransmission_elevation", "notice" if one_link else "warning", ts,
+                           rate=round(rate, 3), baseline=round(base, 3), **attribution)
             return
         if (not self._retrans_confirmed and ts - self._retrans_since >= confirm_s
                 and ts - self._retrans_paged > 900):
@@ -1492,9 +1485,9 @@ class Pipeline:
             sustained = round(ts - self._retrans_since)
             attribution["note"] = (f"retransmissions elevated for {sustained / 60:.0f} min: "
                                    + attribution.get("note", "more than 20% of frames were repeats"))
-            self.events.emit("retransmission_elevation", "notice" if one_link else "warning", ts,
-                             rate=round(rate, 3), baseline=round(base, 3), sustained_s=sustained,
-                             confirmed=True, **attribution)
+            self._emit("retransmission_elevation", "notice" if one_link else "warning", ts,
+                       rate=round(rate, 3), baseline=round(base, 3), sustained_s=sustained,
+                       confirmed=True, **attribution)
 
     def _retrans_resume(self, start: float) -> None:
         """The first window after a restart: the recorder saw nothing
@@ -1593,22 +1586,22 @@ class Pipeline:
                 # addr is the extended address (the review pages key on it);
                 # src is whatever the frame carried, often a short address.
                 name = self.names.name(src_for_mle) if src_for_mle else None
-                self.events.emit("mle_rejoin_attempt", "notice", f.ts,
-                                 command=info.command_name, src=f.src, addr=src_for_mle, name=name,
-                                 note=f"{info.command_name} from {name or src_for_mle or f.src}: "
-                                      "it lost its parent or its network and is trying to get back")
+                self._emit("mle_rejoin_attempt", "notice", f.ts,
+                           command=info.command_name, src=f.src, addr=src_for_mle, name=name,
+                           note=f"{info.command_name} from {name or src_for_mle or f.src}: "
+                                "it lost its parent or its network and is trying to get back")
             if info.partition_id is not None:
                 cur = (info.partition_id, info.leader_router_id)
                 if self.partition is not None and cur != self.partition:
                     before, after = self.leader_label(self.partition[1]), self.leader_label(cur[1])
-                    self.events.emit("partition_or_leader_change", "warning", f.ts,
-                                     previous={"partition": self.partition[0],
-                                               "leader_router": self.partition[1], "leader": before},
-                                     current={"partition": cur[0],
-                                              "leader_router": cur[1], "leader": after},
-                                     note=f"partition {self.partition[0]} leader {before} -> "
-                                          f"partition {cur[0]} leader {after}: the mesh split, merged "
-                                          "or elected a new leader")
+                    self._emit("partition_or_leader_change", "warning", f.ts,
+                               previous={"partition": self.partition[0],
+                                         "leader_router": self.partition[1], "leader": before},
+                               current={"partition": cur[0],
+                                        "leader_router": cur[1], "leader": after},
+                               note=f"partition {self.partition[0]} leader {before} -> "
+                                    f"partition {cur[0]} leader {after}: the mesh split, merged "
+                                    "or elected a new leader")
                 self.partition = cur
             return info
         else:
@@ -1708,7 +1701,7 @@ class Pipeline:
             if verdict == "degraded":
                 drop = round(ref - rssi, 1)
                 since = row.get("rssi_low_since", now)
-                self.events.emit(
+                self._emit(
                     "rssi_degradation", "notice", now, addr=addr, name=name,
                     rssi_dbm=rssi, reference_dbm=ref, drop_db=drop,
                     since=since, low_for_s=round(now - since),
@@ -1721,23 +1714,23 @@ class Pipeline:
                 # closed the drop by adopting the lower level, not that the
                 # signal came back.
                 rebased = row.get("rssi_ref_ts") == now
-                self.events.emit("rssi_recovered", "info", now, addr=addr, name=name,
-                                 rssi_dbm=rssi, reference_dbm=ref,
-                                 note=(f"reference re-based to {ref:g} dBm: the drop held a day "
-                                       "and is the new normal" if rebased else
-                                       f"back to its usual {ref:g} dBm"))
+                self._emit("rssi_recovered", "info", now, addr=addr, name=name,
+                           rssi_dbm=rssi, reference_dbm=ref,
+                           note=(f"reference re-based to {ref:g} dBm: the drop held a day "
+                                 "and is the new normal" if rebased else
+                                 f"back to its usual {ref:g} dBm"))
 
     def _close_degradation(self, addr: str, row: dict, now: float, retired: bool) -> None:
         """End an announced signal drop the device itself can no longer end."""
         for key in ("rssi_degraded", "rssi_low_since"):
             row.pop(key, None)
         self.seen._dirty = True
-        self.events.emit("rssi_recovered", "info", now, addr=addr, name=self.names.name(addr),
-                         rssi_dbm=row.get("rssi"), reference_dbm=row.get("rssi_ref"),
-                         note=("this address was retired when the device rotated: the signal drop it "
-                               "was carrying is closed with it" if retired else
-                               "the device has stopped being heard altogether: the signal drop is "
-                               "closed here, and the silence is the story from now on"))
+        self._emit("rssi_recovered", "info", now, addr=addr, name=self.names.name(addr),
+                   rssi_dbm=row.get("rssi"), reference_dbm=row.get("rssi_ref"),
+                   note=("this address was retired when the device rotated: the signal drop it "
+                         "was carrying is closed with it" if retired else
+                         "the device has stopped being heard altogether: the signal drop is "
+                         "closed here, and the silence is the story from now on"))
 
     def _close_starvation(self, addr: str, row: dict, now: float, retired: bool) -> None:
         """The same for an announced starvation: an unanswered poll is only
@@ -1750,36 +1743,72 @@ class Pipeline:
         stats = self.devices.get(addr)
         if stats is not None:
             stats.starved, stats.confirm_at = False, None
-        self.events.emit("poll_answered", "notice", now, addr=addr, name=self.names.name(addr),
-                         note=("this address was retired when the device rotated: the unanswered polls "
-                               "it was carrying are closed with it" if retired else
-                               "the device has stopped polling altogether: the unanswered polls are "
-                               "closed here, and the silence is the story from now on"))
+        self._emit("poll_answered", "notice", now, addr=addr, name=self.names.name(addr),
+                   note=("this address was retired when the device rotated: the unanswered polls "
+                         "it was carrying are closed with it" if retired else
+                         "the device has stopped polling altogether: the unanswered polls are "
+                         "closed here, and the silence is the story from now on"))
 
     # -------------------------------------------------- freeze on critical
 
     AUTO_FREEZE_COOLDOWN_S = 6 * 3600
-    AUTO_FREEZE_RETRY_S = 30 * 60      # after a failed freeze: the next storm event tries again
+    AUTO_FREEZE_RETRY_S = 30 * 60      # after a failed freeze: the next critical event tries again
 
-    def _auto_freeze(self, ts: float, reason: str) -> Optional[str]:
+    def _emit(self, event: str, severity: str = "info", ts: Optional[float] = None,
+              **fields) -> dict:
+        """Log an event, and freeze the ring when it is a critical one. Every
+        event the pipeline raises goes through here rather than straight to
+        events.emit, so what keeps the packets is the severity and not a
+        call some future handler has to remember to make. The two paths
+        that stay on events.emit say why where they are.
+
+        A critical event carries auto_freeze (the incident label, or None
+        when the freeze is off, replaying, or inside the cooldown) and a
+        closing sentence saying where its packets went."""
+        ts = time.time() if ts is None else ts
+        label = None
+        if severity == "critical":
+            label = self._auto_freeze(ts, event)
+            fields["auto_freeze"] = label
+            keep = (f"the ring is being frozen as {label}" if label
+                    else "run 'threadwatch freeze' to keep the packets")
+            note = fields.get("note")
+            fields["note"] = f"{note}; {keep}" if note else keep
+        record = self.events.emit(event, severity, ts, **fields)
+        if label:
+            # The copy starts only once the event that called for it is in
+            # the log: the snapshot copies the log, and a worker that got
+            # to it first left the incident without the record that
+            # explains it.
+            self.freezer(label, event)
+        return record
+
+    def _auto_freeze(self, ts: float, event: str) -> Optional[str]:
         """Reserve a snapshot of the ring for a critical event, at most once
         per cooldown (one storm is one incident, however long it rumbles).
-        Returns the incident label for the caller to log and then hand to
+        Returns the incident label for _emit to log and then hand to
         self.freezer, or None when off, replaying, or inside the cooldown.
-        The cooldown is armed here, before the copy starts, so the storm
+        The cooldown is armed here, before the copy starts, so the critical
         events that fire while it runs do not start more copies; a copy
-        that fails shortens it to AUTO_FREEZE_RETRY_S (see _freeze_now)."""
+        that fails shortens it to AUTO_FREEZE_RETRY_S (see _freeze_now).
+        The label carries the event that called for it, so an incidents
+        listing says which one without opening the manifest."""
         if not self.cfg.freeze_on_critical or self.ephemeral:
             return None
         if ts - self._last_auto_freeze < self.AUTO_FREEZE_COOLDOWN_S:
             return None
         self._last_auto_freeze = ts
-        return f"auto-{reason}"
+        return f"auto-{event}"
 
-    def _freeze_in_background(self, label: str) -> None:
-        threading.Thread(target=self._freeze_now, args=(label,), daemon=True).start()
+    def _freeze_in_background(self, label: str, trigger: str) -> None:
+        threading.Thread(target=self._freeze_now, args=(label, trigger), daemon=True).start()
 
-    def _freeze_now(self, label: str) -> None:
+    def _freeze_now(self, label: str, trigger: str) -> None:
+        """Take the snapshot _emit reserved. ``trigger`` is the event that
+        called for it, recorded in the incident's manifest. What this path
+        logs goes to events.emit rather than _emit: a freeze reporting on
+        itself must never start another one, least of all from the
+        background thread the last one is running on."""
         from .freeze import freeze_ring, prune_auto_incidents
         # Oldest automatic snapshots go before this one is taken, not
         # after: the room they free is the room this copy needs.
@@ -1792,7 +1821,7 @@ class Pipeline:
         if not self._room_to_freeze(label):
             return
         try:
-            dest, count = freeze_ring(self.cfg, label, trigger="phase_locked_storm")
+            dest, count = freeze_ring(self.cfg, label, trigger=trigger)
         except Exception as exc:
             # Nothing was kept (freeze_ring removes a half copy), so the
             # six-hour cooldown armed for this attempt must not stand: the
@@ -1800,7 +1829,8 @@ class Pipeline:
             self._last_auto_freeze -= self.AUTO_FREEZE_COOLDOWN_S - self.AUTO_FREEZE_RETRY_S
             self.events.emit("incident_freeze_failed", "warning", time.time(), label=label,
                              note=(f"could not freeze the ring for {label}: {exc}; nothing was kept, and "
-                                   f"the next storm event after {self.AUTO_FREEZE_RETRY_S // 60} min tries again"))
+                                   f"the next critical event after {self.AUTO_FREEZE_RETRY_S // 60} min "
+                                   f"tries again"))
             return
         self.events.emit("incident_frozen", "info", time.time(), label=label, path=str(dest),
                          ring_files=count, note=f"{count} ring files kept as {dest.name}")
@@ -1836,6 +1866,10 @@ class Pipeline:
         if day == self._summary_day or time.localtime(now).tm_hour < self.cfg.summary_hour:
             return
         if not any(r.get("event") == "daily_summary" for r in self._records_of(day)):
+            # events.emit, not _emit: [summary] severity is how loudly the
+            # user wants the digest delivered, not a statement that
+            # something critical happened, and a daily digest is no reason
+            # to keep a second copy of the ring.
             self.events.emit("daily_summary", self.cfg.summary_severity, now,
                              **self.summary(now, dominant))
         # Settled only once the record is written: a failed write (disk
@@ -2032,21 +2066,21 @@ class Pipeline:
                         # the device is back under the new one. A retired row
                         # is never judged again, so nothing else could close
                         # the episode, and every day page would carry it open.
-                        self.events.emit("device_returned", "notice", now, addr=prev, name=name,
-                                         note=f"back under a new address, {ext}")
+                        self._emit("device_returned", "notice", now, addr=prev, name=name,
+                                   note=f"back under a new address, {ext}")
                 who = name or r.get("instance") or host
-                self.events.emit("border_router_address_changed", "notice", now, addr=ext, name=name,
-                                 previous=prev, hostname=host,
-                                 note=(f"{who} now answers to {ext}, was {prev}: an Apple hub takes a new Thread "
-                                       "address on every reboot. " + ("Named from its entry; nothing to edit." if name
-                                       else "Not in devices.json: see the devices page.")))
+                self._emit("border_router_address_changed", "notice", now, addr=ext, name=name,
+                           previous=prev, hostname=host,
+                           note=(f"{who} now answers to {ext}, was {prev}: an Apple hub takes a new Thread "
+                                 "address on every reboot. " + ("Named from its entry; nothing to edit." if name
+                                 else "Not in devices.json: see the devices page.")))
             elif entry is None and not new["announced"]:
                 new["announced"] = True
-                self.events.emit("border_router_unlisted", "notice", now, addr=ext, name=None, hostname=host,
-                                 note=(f"border router {r.get('instance') or host} ({r.get('vendor')} {r.get('model')}) "
-                                       f"at {ext} is not in devices.json: name it with "
-                                       f"threadwatch adopt {ext} \"<name>\", or give an entry "
-                                       f"\"borderRouter\": \"{host}\""))
+                self._emit("border_router_unlisted", "notice", now, addr=ext, name=None, hostname=host,
+                           note=(f"border router {r.get('instance') or host} ({r.get('vendor')} {r.get('model')}) "
+                                 f"at {ext} is not in devices.json: name it with "
+                                 f"threadwatch adopt {ext} \"<name>\", or give an entry "
+                                 f"\"borderRouter\": \"{host}\""))
             if new != rec:
                 self.routers[host] = new
                 dirty = True
@@ -2080,12 +2114,12 @@ class Pipeline:
             return
         self._stale_evt = now
         self._crypto_mark = (ok, bad)
-        self.events.emit("credentials_stale", "warning", now, failed=failed,
-                         note=(f"{failed} frames failed to decrypt and none succeeded since decryption last "
-                               "worked: the network key in credentials.toml no longer matches the mesh "
-                               "(re-commissioned?). Capture continues and the ring keeps every frame, but "
-                               "rejoin, starvation, partition and sleepy-device tracking have stopped until "
-                               "the file is updated and the recorder restarted."))
+        self._emit("credentials_stale", "warning", now, failed=failed,
+                   note=(f"{failed} frames failed to decrypt and none succeeded since decryption last "
+                         "worked: the network key in credentials.toml no longer matches the mesh "
+                         "(re-commissioned?). Capture continues and the ring keeps every frame, but "
+                         "rejoin, starvation, partition and sleepy-device tracking have stopped until "
+                         "the file is updated and the recorder restarted."))
 
     def _report_quiet(self, addr: str, row: dict, now: float, persist: bool = True) -> None:
         """Emit device_quiet once and remember, in memory and in the row
@@ -2123,7 +2157,7 @@ class Pipeline:
         if blind >= 60:
             note += (f" (the recorder itself was not listening for {round(blind / 60)} min of the "
                      f"{round(wall / 60)} min: a restart, a stalled dongle or a clock step)")
-        self.events.emit(
+        self._emit(
             "device_quiet", "notice" if marginal else "warning", now, addr=addr,
             name=self.names.name(addr), silent_for_s=round(wall), unheard_s=round(unheard),
             blind_s=round(blind), last_seen=row["last_seen"],

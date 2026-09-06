@@ -65,8 +65,9 @@ question: *why did this device go offline?*
   buffer before it rolls over, with the inventory, the configuration
   (secrets blanked), the state files, the event log and a manifest, so
   the incident reads on its own months later; with `freeze_on_critical`
-  in config.toml the recorder does it by itself when a storm fires (the
-  one critical event today), at most once per six hours. `threadwatch
+  in config.toml the recorder does it by itself whenever an event of
+  `critical` severity fires (the phase-locked storm is the only one
+  today), at most once per six hours. `threadwatch
   incidents` lists and deletes them; `replay --incident` and `why
   --incident` read one whole. What an incident holds and how to analyse
   one is in docs/ANALYSIS.md.

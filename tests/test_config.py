@@ -93,6 +93,50 @@ class PeriodOnsetsTest(unittest.TestCase):
         self.assertIn("at least 2", str(cm.exception))
 
 
+class DetectValuesTest(unittest.TestCase):
+    def _load(self, text):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "config.toml"
+            path.write_text(text)
+            return config_mod.load(path)
+
+    def test_numbers_are_coerced_and_a_quoted_number_is_refused_at_load(self):
+        # A quoted "400" was copied in verbatim and raised TypeError at the
+        # first window close (or, for the period and cooldown keys, at the
+        # first storm): a crash-restart loop that `doctor` called fine.
+        from threadwatch.detect import Detector
+        cfg = self._load("[detect]\nflood_multiplier = 2\nflood_min_frames = 10.0\n"
+                         "period_min_s = 30\nperiod_max_s = 90\nalert_cooldown_s = 60\n")
+        self.assertIs(type(cfg.detector.flood_multiplier), float)
+        self.assertIs(type(cfg.detector.flood_min_frames), int)
+        self.assertEqual((cfg.detector.flood_min_frames, cfg.detector.period_min_s,
+                          cfg.detector.period_max_s, cfg.detector.alert_cooldown_s), (10, 30.0, 90.0, 60.0))
+        det = Detector(cfg.detector)
+        for i in range(200):
+            det.add_frame(1000.0 + i)                          # closes windows: what "400" used to crash
+        for key, unit in (("flood_multiplier", "times the baseline"), ("flood_min_frames", "frames"),
+                          ("period_min_s", "seconds"), ("period_max_s", "seconds"),
+                          ("alert_cooldown_s", "seconds")):
+            for bad in ('"400"', "true", "[1]"):
+                with self.assertRaises(ValueError, msg=f"{key} = {bad}") as cm:
+                    self._load(f"[detect]\n{key} = {bad}\n")
+                self.assertIn(f"{key} must be a number of {unit}, not ", str(cm.exception))
+
+    def test_ranges_are_checked(self):
+        for text, message in (("flood_multiplier = 0", "flood_multiplier must be more than 0"),
+                              ("flood_min_frames = -5", "flood_min_frames must be at least 1"),
+                              ("flood_min_frames = 2.5", "flood_min_frames must be a whole number"),
+                              ("period_min_s = 0", "period_min_s must be more than 0"),
+                              ("period_min_s = 180\nperiod_max_s = 40", "period_max_s must be more than period_min_s (180)"),
+                              ("period_max_s = 40", "period_max_s must be more than period_min_s (40)"),
+                              ("period_min_s = 200", "period_max_s must be more than period_min_s (200)"),
+                              ("alert_cooldown_s = -1", "alert_cooldown_s must be 0 (no cooldown) or more")):
+            with self.assertRaises(ValueError, msg=text) as cm:
+                self._load(f"[detect]\n{text}\n")
+            self.assertIn(message, str(cm.exception))
+        self.assertEqual(self._load("[detect]\nalert_cooldown_s = 0\n").detector.alert_cooldown_s, 0.0)
+
+
 class EventsKeepDaysTest(unittest.TestCase):
     def _load(self, text):
         with tempfile.TemporaryDirectory() as d:

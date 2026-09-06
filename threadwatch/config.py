@@ -173,10 +173,46 @@ def load(path: Optional[Path]) -> Config:
         if raw.get("devices", {}).get("inventory"):
             cfg.devices_path = (Path(path).parent / raw["devices"]["inventory"]).resolve()
         det = raw.get("detect", {})
-        for key in ("flood_multiplier", "flood_min_frames", "period_min_s",
-                    "period_max_s", "period_onsets", "alert_cooldown_s"):
-            if key in det:
-                setattr(cfg.detector, key, det[key])
+        # Every value is a number by the time the detector sees it: a
+        # quoted "400" compares fine against nothing at load time and
+        # raises TypeError at the first window close, or, for the period
+        # and cooldown keys, at the first storm, weeks later.
+        def _number(key: str, unit: str) -> float:
+            value = det[key]
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"[detect] {key} must be a number of {unit}, not {value!r}")
+            return float(value)
+        if "flood_multiplier" in det:
+            cfg.detector.flood_multiplier = _number("flood_multiplier", "times the baseline")
+            if not cfg.detector.flood_multiplier > 0:
+                raise ValueError(f"[detect] flood_multiplier must be more than 0, "
+                                 f"not {cfg.detector.flood_multiplier:g}")
+        if "flood_min_frames" in det:
+            frames = _number("flood_min_frames", "frames")
+            if frames != int(frames):
+                raise ValueError(f"[detect] flood_min_frames must be a whole number of frames, "
+                                 f"not {det['flood_min_frames']!r}")
+            cfg.detector.flood_min_frames = int(frames)
+            if cfg.detector.flood_min_frames < 1:
+                raise ValueError(f"[detect] flood_min_frames must be at least 1, "
+                                 f"not {cfg.detector.flood_min_frames}")
+        if "period_min_s" in det:
+            cfg.detector.period_min_s = _number("period_min_s", "seconds")
+            if not cfg.detector.period_min_s > 0:
+                raise ValueError(f"[detect] period_min_s must be more than 0, "
+                                 f"not {cfg.detector.period_min_s:g}")
+        if "period_max_s" in det:
+            cfg.detector.period_max_s = _number("period_max_s", "seconds")
+        if not cfg.detector.period_min_s < cfg.detector.period_max_s:
+            raise ValueError(f"[detect] period_max_s must be more than period_min_s "
+                             f"({cfg.detector.period_min_s:g}), not {cfg.detector.period_max_s:g}")
+        if "alert_cooldown_s" in det:
+            cfg.detector.alert_cooldown_s = _number("alert_cooldown_s", "seconds")
+            if cfg.detector.alert_cooldown_s < 0:
+                raise ValueError(f"[detect] alert_cooldown_s must be 0 (no cooldown) or more, "
+                                 f"not {cfg.detector.alert_cooldown_s:g}")
+        if "period_onsets" in det:
+            cfg.detector.period_onsets = det["period_onsets"]
         # Kept as the int the detector slices with: a TOML 3.0 passed the
         # check below and crashed _check_periodicity at the first storm.
         onsets = cfg.detector.period_onsets

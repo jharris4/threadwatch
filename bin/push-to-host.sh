@@ -53,12 +53,35 @@ if [ -n "$UNCOMMITTED_CODE" ]; then
 fi
 
 # --delete removes what the workstation lacks; the protect filter exempts
-# config/ on the receiving side, so a file there is only ever overwritten by
-# a newer workstation copy, never removed. Remove one on the host by hand.
+# config/ on the receiving side, so a file there is never removed - remove
+# one on the host by hand. It is still overwritten: the protect filter only
+# holds off --delete, and rsync -a is not -u, so a config/ file the
+# workstation also has is replaced whichever copy is newer. That is the
+# documented design (INSTALL.md, "Updating": the workstation's config/ is
+# authoritative), so a credentials.toml or devices.json written on the host
+# by import or adopt must be copied back here before the next push, or the
+# push reverts it. Do not read this filter as --update.
 # .venv/ is the host's Python runtime (bin/threadwatch prefers it whenever
 # it exists) and is named here on its own: the git-derived exclude list only
 # covers it when this workstation happens to have one, and a push from a
 # checkout without one used to delete the host's.
+# Which config/ files this push would replace with an older copy: what a
+# plain run sends, less what --update would send. config/ is a handful of
+# small files, so the two dry runs cost nothing, and they turn a silent
+# revert of a host-written credentials.toml or devices.json into a line
+# the operator sees before it happens.
+config_would_send() {
+  rsync -a --dry-run --out-format='%n' "$@" \
+    --include '/config/' --include '/config/**' --exclude '*' \
+    "$REPO/" "$TARGET:$DEST_DIR/" 2>/dev/null | grep -v '/$' | sort -u || true
+}
+REVERTS="$(comm -23 <(config_would_send) <(config_would_send --update))"
+if [ -n "$REVERTS" ]; then
+  echo "warning: the host has a NEWER copy of these, and this push replaces them:" >&2
+  printf '  %s\n' $REVERTS >&2
+  echo "  copy them back here first if the host's version is the one you want." >&2
+fi
+
 rsync -a --delete \
   --exclude-from "$EXCLUDES" \
   --exclude 'data/' --exclude '.git/' --exclude '.venv/' \

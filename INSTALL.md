@@ -101,9 +101,10 @@ left in place, never deleted, and so is everything under `data/`. So the
 workstation's `config/` is authoritative for whatever it contains: an
 edit made on the host to a file the workstation also holds is undone by
 the next push, and a workstation holding an old network key replaces the
-host's good one (the recorder then logs `credentials_stale`). Keep one
-place to edit, the workstation, and copy a host-side edit back (`scp`)
-before pushing again. A push from a clone with no secrets removes none
+host's good one (the recorder then logs `credentials_stale`). The push
+warns first, naming every `config/` file the host has a newer copy of.
+Keep one place to edit, the workstation, and copy a host-side edit back
+(`scp`) before pushing again. A push from a clone with no secrets removes none
 from the host. To remove a config file from the host, delete it there.
 
 ## 6. Placement and storage

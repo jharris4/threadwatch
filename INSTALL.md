@@ -106,7 +106,8 @@ knows about that gap and does not count it against any device.
 
 If you develop on a workstation and deploy to the host, `bin/push-to-host.sh
 user@host --push-only` rsyncs what git tracks, plus `config/` with its
-gitignored secrets, then restart as above. An uncommitted edit to a tracked
+gitignored secrets, to `~/threadwatch` on the host (set `DEST_DIR` to
+deploy somewhere else under the home directory), then restart as above. An uncommitted edit to a tracked
 file still ships; a file that was never committed does not, and the script
 warns when one of those is a `.py` or lives in `bin/`. Without `--push-only`
 it also runs setup-host.sh for you.
@@ -229,6 +230,9 @@ place, the two-command version:
 ```bash
 bin/push-to-host.sh pi@threadwatch.local     # rsync + sudo bin/setup-host.sh on the host
 ```
+
+That leaves the checkout at `~/threadwatch` on the Pi, which is where to
+`cd` to run `doctor` or read the config below.
 
 That needs passwordless sudo on the Pi, which current Raspberry Pi OS
 images may not grant. One-time fix, typing the Pi password once:

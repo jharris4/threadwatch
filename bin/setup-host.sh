@@ -175,6 +175,14 @@ CONF
   systemctl --no-pager --lines=3 status threadwatch-web || true
   if [ -n "$BROKEN" ]; then
     echo >&2
+    if [ ! -f "$REPO/config/credentials.toml" ]; then
+      # The ordinary first install: the operator has not reached the
+      # credentials step yet, and this exit 1 is what it looks like.
+      echo "NOT RUNNING:$BROKEN, because there is no config/credentials.toml yet." >&2
+      echo "Create it with the Thread network key (docs/CREDENTIALS.md) and re-run this" >&2
+      echo "script; it clears the failed state and starts the units." >&2
+      exit 1
+    fi
     echo "NOT RUNNING:$BROKEN. See the status above and: journalctl -u threadwatch -n 50" >&2
     echo "After fixing the cause: systemctl reset-failed$BROKEN && systemctl restart$BROKEN" >&2
     exit 1

@@ -29,7 +29,14 @@ missing; credentials and alerts.env locked to 0400 if present; the two
 systemd units installed, enabled and started with your user and clone
 path filled in. Re-run it after any change, including an update.
 
-Then edit `config/config.toml`: at minimum the Thread **channel**, and
+**On a first install this ends with a `systemctl status` dump,
+`NOT RUNNING: threadwatch` and exit 1.** That is expected: there is no
+network key yet, so the recorder exits 2 as soon as it starts, and
+systemd restarts it every 12 s until it gives up and marks the unit
+`failed`. Do the next paragraph, then re-run `sudo bin/setup-host.sh`:
+it clears the failed state and starts the unit for real.
+
+So edit `config/config.toml`: at minimum the Thread **channel**, and
 create `config/credentials.toml` with the Thread **network key**
 (docs/CREDENTIALS.md says where to find it): the recorder does not start
 without it. Log out and in once if the group membership was new.

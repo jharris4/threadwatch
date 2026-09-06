@@ -288,8 +288,13 @@ class Pipeline:
                       file=sys.stderr, flush=True)
                 loaded = {}
             # Owners map to {name: count}; any other shape would raise at
-            # the first name observed, in the capture loop.
-            self.observed_names = {k: v for k, v in loaded.items() if isinstance(v, dict)} \
+            # the first name observed, in the capture loop. Only owners the
+            # device table still holds are kept: names are harvested for a
+            # tracked device, `devices --suggest` reads them for one, and a
+            # file written before the owners were bounded must not carry
+            # the growth back in.
+            self.observed_names = {k: v for k, v in loaded.items()
+                                   if isinstance(v, dict) and k in self.seen.table} \
                 if isinstance(loaded, dict) else {}
         # Silences that crossed their threshold while the recorder was down
         # (or while it sat in the no-frames watchdog restart loop, where
@@ -849,6 +854,10 @@ class Pipeline:
         self.devices.pop(addr, None)
         self.quiet_reported.discard(addr)
         self._pending_routers.pop(addr, None)
+        # The names harvested for it go too: kept, they would outlive the
+        # row in observed-names.json and be suggested for an address the
+        # recorder no longer tracks.
+        self.observed_names.pop(addr, None)
 
     def _flooded(self, ts: float) -> bool:
         return self._capped_at is not None and ts - self._capped_at < self.CAP_NOTE_S
@@ -1103,8 +1112,8 @@ class Pipeline:
         # and the stats below: the sender's liveness, signal and polls are
         # its own, not those of whatever put its address on the air.
         plain, live = self._verify(f, who)
-        info, src_for_mle = (self._deep_inspect(f, plain) if f.ftype == 1 and plain is not None
-                             else (None, None))
+        info, src_for_mle, names = (self._deep_inspect(f, plain) if f.ftype == 1 and plain is not None
+                                    else (None, None, ()))
         # A secured MLE message vouches for the sender of the unsecured
         # frame that carries it, and only while its own counter says it is
         # not a recording. The check runs even when the MAC layer already
@@ -1140,6 +1149,14 @@ class Pipeline:
                 stats.last_poll_ts = ts
                 stats.polls += 1
                 self._poll_sent(who, stats, f.seq, ts, f.dst)
+            # Filed here rather than where they were read: harvesting from
+            # MAC-unsecured plaintext let anything on the channel put an
+            # owner in the table, forged name and all, without ever
+            # reaching the admission that bounds the device table. Now a
+            # name is only kept for a sender this frame vouched for and
+            # that the table has room for.
+            for name in names:
+                self._note_observed_name(who, name)
             was_new = who not in self.seen.table
             self.seen.touch(who, ts, f.ftype, pan=pan, rssi=f.rssi)
             row = self.seen.table[who]
@@ -1673,9 +1690,11 @@ class Pipeline:
         """The credentialed layer: what the MAC payload (decrypted by
         _verify, or the plaintext of an unsecured frame) says about the
         mesh. Reads; it does not act. Returns the MLE message found, if
-        any, and the extended address it came from, so ingest can take a
-        secured one as vouching for an unsecured frame's sender and hand
-        both to _apply_mle once its counter has been checked."""
+        any, the extended address it came from, and the SRP-style names
+        the payload advertises: ingest can take a secured message as
+        vouching for an unsecured frame's sender, hands both to _apply_mle
+        once its counter has been checked, and files the names only under
+        a sender the frame vouched for."""
         from .crypto import MLE_UDP_PORT, Decryptor
         ext = f.src if f.src and len(f.src) == 16 else None
         short = f.src if f.src and len(f.src) == 4 else None
@@ -1686,7 +1705,7 @@ class Pipeline:
         try:
             r = Decryptor.udp_ports(plain, mac_src_ext=ext, mac_dst_ext=dext, mac_dst_short=dshort)
             if not r:
-                return None, None
+                return None, None, ()
             sport, dport, payload, sip, dip = r
             info = src_for_mle = None
             if MLE_UDP_PORT in (sport, dport):
@@ -1696,18 +1715,11 @@ class Pipeline:
                 info = self.decryptor.parse_mle(payload, src_for_mle, sip, dip, bind_short=False)
         except (struct.error, IndexError, ValueError):
             self.decryptor.stats["parse_failed"] += 1
-            return None, None
+            return None, None, ()
         if MLE_UDP_PORT in (sport, dport):
-            return info, src_for_mle
-        # Keyed by the extended address: a short address is reassigned
-        # when a parent restarts, so a name filed under one would follow
-        # the address to whichever device inherits it.
-        owner = ext or self.decryptor.short_to_ext.get(short or "")
-        if owner:
-            for n in Decryptor.harvest_names(payload):
-                if len(n) > 8 and not n.startswith("_"):
-                    self._note_observed_name(owner, n)
-        return None, None
+            return info, src_for_mle, ()
+        return None, None, tuple(n for n in Decryptor.harvest_names(payload)
+                                 if len(n) > 8 and not n.startswith("_"))
 
     def _apply_mle(self, f: Frame, info, src_for_mle: str | None) -> None:
         """What a fresh, authenticated MLE message changes: the sender's

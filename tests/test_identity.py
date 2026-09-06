@@ -446,6 +446,50 @@ class HarvestNamesTest(unittest.TestCase):
         self.assertEqual(Decryptor.harvest_names(bytes(range(0, 32)) * 4), [])
 
 
+class HarvestedNameAdmissionTest(unittest.TestCase):
+    """Names were harvested from MAC-unsecured plaintext, before anything
+    vouched for the sender and outside the admission that bounds the
+    device table: a transmitter in range could grow the owner table past
+    TRACK_MAX, have it rewritten to disk every tick, and file a name of
+    its choosing against an address of its choosing."""
+
+    NAME = b"\x0bdoor-sensor\x05local\x00"
+
+    def _cfg(self, d):
+        (Path(d) / "devices.json").write_text("[]")
+        return Config(data_dir=Path(d) / "data", devices_path=Path(d) / "devices.json")
+
+    @staticmethod
+    def _plaintext(addr, seq, payload):
+        """A MAC-unsecured data frame from an extended source: anyone's."""
+        fcf = 1 | 0x0040 | (2 << 10) | (1 << 12) | (3 << 14)
+        return (struct.pack("<HBH", fcf, seq & 0xFF, PAN) + b"\x00\x00" + bytes.fromhex(addr)[::-1]
+                + lowpan_udp(49154, 53535, payload))
+
+    def test_unsecured_traffic_files_no_names_and_no_owners(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._cfg(tmp)
+            pipe = Pipeline(cfg, NullEventLog(), Decryptor(network_key=KEY))
+            t0 = 1_700_000_000.0
+            for i in range(2100):                              # ever-new addresses, none authenticated
+                pipe.ingest(parse_frame(t0 + i * 0.01, self._plaintext(f"{i:016x}", i, self.NAME), 230))
+            self.assertEqual(pipe.seen.table, {})
+            self.assertEqual(pipe.observed_names, {})
+
+    def test_a_vouched_for_sender_still_gets_its_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._cfg(tmp)
+            pipe = Pipeline(cfg, NullEventLog(), Decryptor(network_key=KEY))
+            t0 = 1_700_000_000.0
+            payload = lowpan_udp(49154, 53535, self.NAME)
+            for i in range(2):
+                pipe.ingest(parse_frame(t0 + i, secured_ext_frame(SED, 100 + i, payload), 195))
+            self.assertEqual(pipe.observed_names, {SED: {"door-sensor.local": 2}})
+            # And the names go when the address is dropped from the table.
+            pipe._forget(SED)
+            self.assertEqual(pipe.observed_names, {})
+
+
 class MleThroughThePipelineTest(unittest.TestCase):
     """Frame -> MAC decryption -> 6LoWPAN -> MLE, as the live pipeline runs
     it: the path that answers "did it try to rejoin?"."""

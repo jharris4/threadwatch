@@ -27,8 +27,10 @@ proxy that authenticates.
   links and a strip of recent days with their event counts. Under the
   headline card, a coverage bar says whether the recorder was there to
   hear the day ("Coverage", below). Whether the
-  packets for that day still exist (ring files last a week; snapshots
-  last forever) is shown at the top. Today's page opens with a
+  packets for that day still exist (ring files last a week; a snapshot
+  you saved by hand lasts until you delete it, and an automatic one until
+  `[record] keep_snapshots` newer ones have been taken) is shown at the
+  top. Today's page opens with a
   *right now* card: devices quiet at this moment (the ones the recorder
   has announced, after `[quiet] silence_s` of silence it was up to hear;
   `threadwatch devices` and the daily summary list the same set), devices

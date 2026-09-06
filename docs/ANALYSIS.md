@@ -156,9 +156,11 @@ where the listing never sees it, and the recorder deletes it at its next
 start. A copy still running when the recorder starts (one taken by hand that
 overlaps a restart) holds a lock on it and is left to finish.
 
-Nothing prunes a snapshot: each one is the size of the ring (about
-1.2 GB for a week at rest) and stays until `threadwatch snapshots --delete
-<name or label>` removes it. `threadwatch snapshots` and the `/snapshots`
+Nothing prunes a snapshot you saved by hand: each one is the size of the
+ring (about 1.2 GB for a week at rest) and stays until
+`threadwatch snapshots --delete <name or label>` removes it. The
+automatic ones are the exception, capped by `[record] keep_snapshots` as
+above. `threadwatch snapshots` and the `/snapshots`
 page list them with the hours their packets cover, and a day page says
 when a snapshot holds that day's packets after the ring has let it go.
 

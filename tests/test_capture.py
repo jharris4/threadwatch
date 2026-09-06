@@ -47,6 +47,31 @@ class StatusFileTest(unittest.TestCase):
         self.assertIsNone(last_frame_on_record(self.cfg.state_dir))
 
 
+class StartupFailureTest(unittest.TestCase):
+    def test_a_start_that_fails_after_the_log_is_built_keeps_the_spool(self):
+        # The likeliest start-up failure, credentials.toml missing or
+        # unreadable, came after the event log had loaded the spool; the
+        # process left without closing it and the spool was already gone.
+        import json as json_mod
+        from threadwatch import alerts
+        from threadwatch.capture import run_capture
+        from threadwatch.pipeline import CredentialsError
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(data_dir=Path(tmp) / "data", config_dir=Path(tmp))
+            cfg.serial_port = "/dev/does-not-matter"
+            cfg.credentials_path = Path(tmp) / "absent.toml"
+            cfg.alerts_raw = {"sinks": [{"name": "cmd", "type": "command", "command": ["false"], "cooldown_s": 0}]}
+            spool = cfg.state_dir / alerts.SPOOL_FILE
+            spool.write_text(json_mod.dumps({"record": {"ts": time.time(), "event": "device_quiet",
+                                                        "severity": "warning", "addr": "a" * 16},
+                                             "sinks": ["cmd"], "attempt": 2}) + "\n")
+            with self.assertRaises(CredentialsError):
+                run_capture(cfg)
+            self.assertFalse((cfg.state_dir / alerts.INFLIGHT_FILE).exists())
+            kept = [json_mod.loads(l) for l in spool.read_text().splitlines()]
+            self.assertEqual([(k["record"]["event"], k["sinks"]) for k in kept], [("device_quiet", ["cmd"])])
+
+
 class ExitNoteTest(unittest.TestCase):
     """The note a run leaves about how it ended, for the next start's
     recorder_started record and the review's coverage."""

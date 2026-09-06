@@ -742,6 +742,43 @@ class RetryTest(unittest.TestCase):
             alerts.Dispatcher([], print, spool=spool)
             self.assertTrue(spool.exists())
 
+    def test_the_spool_stays_on_disk_until_its_records_are_delivered(self):
+        # The spool was read, queued in memory and unlinked before a single
+        # record was sent: a start-up failure after the log was built, an
+        # OOM kill or a power cut then destroyed every alert the last run
+        # had promised to send again.
+        with tempfile.TemporaryDirectory() as tmp:
+            spool = Path(tmp) / "alert-spool.jsonl"
+            inflight = Path(tmp) / "alert-spool.jsonl.inflight"
+            recs = [{**REC, "ts": time.time(), "note": f"record {i}"} for i in range(2)]
+            spool.write_text("".join(json.dumps({"record": r, "sinks": ["flaky"], "attempt": 1}) + "\n"
+                                     for r in recs))
+            sink = FlakySink(fail=99)
+            msgs = []
+            d = self._dispatcher([sink], spool=spool, msgs=msgs)
+            self.assertTrue(wait_for(lambda: any("retrying" in m for m in msgs)))
+            # Loaded, refused, and still on disk under its in-flight name.
+            self.assertFalse(spool.exists())
+            self.assertEqual([json.loads(l)["record"]["note"] for l in inflight.read_text().splitlines()],
+                             ["record 0", "record 1"])
+            d.close(2.0)
+            # Closed with them still refused: spooled again, the in-flight copy gone.
+            self.assertTrue(spool.exists())
+            self.assertFalse(inflight.exists())
+            self.assertEqual(len(spool.read_text().splitlines()), 2)
+            # A run that died mid-delivery leaves the in-flight file: the
+            # next start loads it beside the spool, sends everything, and
+            # removes both once the queue has drained.
+            spool.replace(inflight)
+            spool.write_text(json.dumps({"record": {**REC, "ts": time.time(), "note": "record 2"},
+                                         "sinks": ["flaky"], "attempt": 0}) + "\n")
+            good = FlakySink(fail=0)
+            d2 = self._dispatcher([good], spool=spool)
+            self.assertTrue(wait_for(lambda: len(good.sent) == 3))
+            self.assertTrue(wait_for(lambda: not inflight.exists() and not spool.exists()))
+            self.assertEqual(sorted(r["note"] for r in good.sent), ["record 0", "record 1", "record 2"])
+            self.assertEqual(d2.stats()["resumed"], 3)
+
     def test_a_sink_still_parked_at_close_leaves_its_record_in_the_spool(self):
         with tempfile.TemporaryDirectory() as tmp:
             spool = Path(tmp) / "alert-spool.jsonl"

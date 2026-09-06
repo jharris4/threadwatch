@@ -556,6 +556,12 @@ RETRY_DELAYS_S = (30.0, 120.0, 480.0)
 RETRY_CAP_S = 600.0
 STALE_S = 6 * 3600.0
 SPOOL_FILE = "alert-spool.jsonl"
+# The spool is renamed to this at load and removed only once every record
+# in it has been delivered, given up or spooled again: a run that dies
+# before then (a start-up failure right after the log is built, an OOM
+# kill, a power cut) leaves the file for the next start, which loads it
+# again. Used to be unlinked at load, with the records on the heap.
+INFLIGHT_FILE = SPOOL_FILE + ".inflight"
 
 
 class Dispatcher:
@@ -590,6 +596,7 @@ class Dispatcher:
         self.delivered = 0
         self.given_up = 0
         self.resumed = 0
+        self._inflight_spool: Optional[Path] = None   # the loaded spool, kept until the queue drains
         if sinks:
             self._load_spool()
             self._thread = threading.Thread(target=self._run, daemon=True,
@@ -616,6 +623,7 @@ class Dispatcher:
                 self._queue.clear()
                 self._inflight = None
             self._write_spool()
+        self._drop_inflight_spool()
 
     def offer(self, record: dict) -> None:
         if not self.sinks:
@@ -688,9 +696,13 @@ class Dispatcher:
                     self._failed(s, record, it, exc)
             with self._cv:
                 self._inflight = None
+                drained = not self._queue and self._inflight_spool is not None
             if last:
                 self._write_spool()
+                self._drop_inflight_spool()
                 return
+            if drained:
+                self._drop_inflight_spool()
 
     def _failed(self, sink: Sink, record: dict, item: Optional[dict], exc: Exception) -> None:
         """A send that raised: try again later, spool it when the process
@@ -733,24 +745,57 @@ class Dispatcher:
             tmp.replace(self.spool)
         except OSError as exc:
             self.log(f"alert spool not written: {exc}")
+            self._inflight_spool = None     # keep the loaded file: it is the only copy left
             return
         self.log(f"alert spool: {len(items)} undelivered record(s) kept in {self.spool.name} for the next start")
+
+    def _drop_inflight_spool(self) -> None:
+        """The loaded spool has served: every record in it was delivered,
+        given up, or written to a new spool."""
+        path, self._inflight_spool = self._inflight_spool, None
+        if path is not None:
+            try:
+                path.unlink()
+            except OSError:
+                pass
 
     def _load_spool(self) -> None:
         """What the last run could not deliver, offered again to the sinks
         it was for (by name: a sink since removed takes nothing), less
-        what has gone stale meanwhile. The file is removed: what fails
-        again this run is spooled again at this run's end."""
-        if self.spool is None or not self.spool.exists():
+        what has gone stale meanwhile. The file is renamed, not removed,
+        and stays until the queue drains (see INFLIGHT_FILE); what fails
+        again this run is spooled again at this run's end. A leftover
+        in-flight file from a run that died mid-delivery is loaded too."""
+        if self.spool is None:
             return
-        by_name = {s.name: s for s in self.sinks}
-        now = time.time()
-        stale = skipped = 0
+        inflight = self.spool.with_name(INFLIGHT_FILE)
+        lines: list[str] = []
+        for path in (inflight, self.spool):
+            if not path.exists():
+                continue
+            try:
+                lines.extend(path.read_text().splitlines())
+            except OSError as exc:
+                self.log(f"alert spool not read: {exc}")
+                return
+        if not lines:
+            return
         try:
-            lines = self.spool.read_text().splitlines()
+            if self.spool.exists():
+                if inflight.exists():
+                    tmp = self.spool.with_suffix(".tmp")
+                    tmp.write_text("".join(line + "\n" for line in lines))
+                    tmp.replace(inflight)
+                    self.spool.unlink()
+                else:
+                    self.spool.replace(inflight)
         except OSError as exc:
             self.log(f"alert spool not read: {exc}")
             return
+        self._inflight_spool = inflight
+        by_name = {s.name: s for s in self.sinks}
+        now = time.time()
+        stale = skipped = 0
         for line in lines:
             try:
                 it = json.loads(line)
@@ -767,10 +812,8 @@ class Dispatcher:
                 continue
             self._queue.append({"record": record, "sinks": targets, "attempt": attempt, "due": now})
             self.resumed += 1
-        try:
-            self.spool.unlink()
-        except OSError:
-            pass
+        if not self._queue:
+            self._drop_inflight_spool()     # nothing to send: stale or unreadable throughout
         if self.resumed or stale or skipped:
             self.log(f"alert spool: {self.resumed} record(s) the last run could not deliver, sending now"
                      + (f"; {stale} too old, dropped" if stale else "")

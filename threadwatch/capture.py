@@ -279,20 +279,29 @@ def run_capture(cfg: Config) -> None:
         _log(f"alert sink {s.describe()} (min {['info', 'notice', 'warning', 'critical'][s.min_severity]})")
     if not sinks:
         _log("no alert sinks configured (events go to the event log only; see docs/ALERTING.md)")
-    decryptor = load_decryptor(cfg)      # raises CredentialsError: no key, no recorder
-    _log("credentials: loaded")
-    pipe = Pipeline(cfg, events, decryptor)
-    heartbeats = build_heartbeats(cfg.heartbeats_raw, _log)
-    for b in heartbeats:
-        _log(f"heartbeat {b.describe()}")
+    # The log's dispatcher has taken the last run's undelivered alerts
+    # from the spool by now; a failure anywhere below (credentials.toml
+    # unreadable, the FIFO's directory gone, the port busy) leaves before
+    # the finally that closes it, so it is closed here, and the records go
+    # back to the spool rather than out with the heap.
+    try:
+        decryptor = load_decryptor(cfg)      # raises CredentialsError: no key, no recorder
+        _log("credentials: loaded")
+        pipe = Pipeline(cfg, events, decryptor)
+        heartbeats = build_heartbeats(cfg.heartbeats_raw, _log)
+        for b in heartbeats:
+            _log(f"heartbeat {b.describe()}")
 
-    fifo_path = cfg.state_dir / "capture.fifo"
-    fifo_path.unlink(missing_ok=True)
-    os.mkfifo(fifo_path)
+        fifo_path = cfg.state_dir / "capture.fifo"
+        fifo_path.unlink(missing_ok=True)
+        os.mkfifo(fifo_path)
 
-    sniffer = Nrf802154Sniffer()
-    sniffer.start_threaded(str(fifo_path), port, cfg.channel, metadata="ieee802154-tap")
-    _log(f"capturing channel {cfg.channel} from {port}")
+        sniffer = Nrf802154Sniffer()
+        sniffer.start_threaded(str(fifo_path), port, cfg.channel, metadata="ieee802154-tap")
+        _log(f"capturing channel {cfg.channel} from {port}")
+    except BaseException:
+        events.close()
+        raise
 
     # Raising from the handler interrupts the blocking FIFO read, so
     # `systemctl stop` works even when the channel is silent. The finally

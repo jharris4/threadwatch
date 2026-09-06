@@ -174,6 +174,11 @@ is fixed. One address may belong to one entry: `adopt` refuses to move an
 address already listed under another name, which is an edit for you to
 make. The daemon reads the file at start, so restart it after editing.
 
+`config/devices.json.lock` appears beside it. It is an empty file
+`adopt` and `import` hold with flock so two edits queue instead of one
+overwriting the other. It is not a crash artefact, and it stays there
+between runs.
+
 ## Developing
 
 ```bash

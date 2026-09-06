@@ -292,6 +292,9 @@ it up if you care about the history; nothing else holds it.
                              addresses it retired (how a rebooted Apple hub keeps its name)
         capture.fifo         the pipe the sniffer writes into; recreated at every start
         events/YYYY-MM-DD.jsonl   the event log (docs/REVIEW.md, "Storage")
+        events.jsonl.migrated     a pre-day-rolling events.jsonl, kept after it was split into
+                                  day files. Never pruned, and safe to delete: every record in
+                                  it is in the day files
 
 Every state file is written whole and renamed into place, so a power cut
 leaves the previous version, never half of one. The daemon owns them:

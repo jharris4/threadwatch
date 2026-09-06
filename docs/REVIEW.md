@@ -167,4 +167,7 @@ default; 0 keeps them for ever) and pruned by the capture daemon at start
 and once a day. `threadwatch freeze` copies the whole directory into the
 incident. A single `events.jsonl` from before
 day rolling is split into day files automatically the first time the
-capture daemon (or `threadwatch events`) runs; the web process only reads.
+capture daemon (or `threadwatch events`) runs; the web process only
+reads. The original is kept beside them as `events.jsonl.migrated` (a
+second one becomes `.migrated-2`) and never pruned. It is a safe
+permanent leftover: every record in it is already in the day files.

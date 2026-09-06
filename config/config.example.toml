@@ -7,8 +7,6 @@
 # Thread channel (802.15.4 channel 11-26). Find yours via your border router
 # (e.g. OTBR REST /node/dataset/active, or Home Assistant Thread panel).
 channel = 25
-# Optional, informational:
-# network_name = "MyHome"
 # Your network's PAN id (threadwatch import prints it). Set it when another
 # 802.15.4 network shares the channel: it decides whose silences are judged
 # and which PANs are foreign. Unset, the recorder guesses from which PAN it

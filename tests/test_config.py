@@ -324,7 +324,10 @@ class ExampleConfigTest(unittest.TestCase):
     }
     # Read verbatim into alerts_raw / heartbeats_raw and built by alerts.py.
     RAW = {("alerts", "webhook_url"), ("alerts", "sinks"), ("heartbeats",)}
-    IGNORED = {("network", "network_name")}      # informational, by its own comment
+    # Keys the example may carry that config.load does not read. Empty:
+    # network_name was the only one, and it was removed rather than
+    # documented, since setting it did nothing at all.
+    IGNORED = set()
 
     @staticmethod
     def _uncommented(text):

@@ -1,0 +1,15 @@
+# sha256 of Nordic's nrfutil launcher, one line per target triple:
+#
+#     <sha256>  <triple>
+#
+# Nordic serves .../nrfutil/executables/<triple>/nrfutil without a version
+# in the path, so what that URL returns changes with each release. A line
+# here pins it: bin/flash-dongle.sh refuses a download that does not match
+# and will not make it executable. A triple with no line is downloaded
+# unverified, and the script prints the hash it got so it can be added.
+#
+# To add one, run bin/flash-dongle.sh on that host, check the release you
+# meant to get at
+# https://docs.nordicsemi.com/bundle/nrfutil/page/README.html, and paste
+# the line the script prints. Verify on a machine you trust; a hash taken
+# from a compromised download pins the compromise.

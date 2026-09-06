@@ -25,6 +25,14 @@ if [ ! -f "$PKG" ]; then
   echo "missing $PKG" >&2; exit 1
 fi
 
+_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | cut -d" " -f1
+  else
+    shasum -a 256 "$1" | cut -d" " -f1      # macOS
+  fi
+}
+
 # Nordic's own target triples. There is no build for 32-bit ARM or Windows;
 # those hosts use the Programmer app instead.
 target_triple() {
@@ -58,7 +66,33 @@ EOM
   fi
   echo "==> Fetching nrfutil for $TRIPLE (one-time, into .nrfutil-bin/)..."
   mkdir -p "$CACHE"
-  curl -sSfL --retry 2 -o "$CACHE/nrfutil.part" "$BASE/$TRIPLE/nrfutil"
+  # --proto/--proto-redir: -L follows redirects, and without these a
+  # redirect off the vendor's TLS host to plain http would be followed.
+  curl -sSfL --proto '=https' --proto-redir '=https' --retry 2 \
+    -o "$CACHE/nrfutil.part" "$BASE/$TRIPLE/nrfutil"
+  # Nordic serves this path without a version in it, so what arrives is
+  # whatever they publish today. firmware/nrfutil.sha256 is what pins it:
+  # a recorded hash for this triple is checked here, and the binary is
+  # never made executable before it matches. With no line for the triple
+  # the download is unverified and says so, with the hash to record.
+  GOT="$(_sha256 "$CACHE/nrfutil.part")"
+  WANT="$(awk -v tri="$TRIPLE" '$2 == tri {print $1}' "$REPO/firmware/nrfutil.sha256" 2>/dev/null || true)"
+  if [ -n "$WANT" ] && [ "$GOT" != "$WANT" ]; then
+    rm -f "$CACHE/nrfutil.part"
+    echo "ERROR: the nrfutil Nordic served does not match firmware/nrfutil.sha256" >&2
+    echo "  expected $WANT" >&2
+    echo "  got      $GOT" >&2
+    echo "  Nordic publishes this path without a version, so a new release changes it." >&2
+    echo "  Check the release, then update the line for $TRIPLE if the new one is what you want." >&2
+    exit 1
+  fi
+  if [ -z "$WANT" ]; then
+    echo "  WARNING: nothing recorded for $TRIPLE in firmware/nrfutil.sha256, so this" >&2
+    echo "           binary is unverified. To pin what you just downloaded, add:" >&2
+    echo "             $GOT  $TRIPLE" >&2
+  else
+    echo "  sha256 matches firmware/nrfutil.sha256"
+  fi
   chmod +x "$CACHE/nrfutil.part"
   mv "$CACHE/nrfutil.part" "$CACHE/nrfutil"
   NRFUTIL="$CACHE/nrfutil"

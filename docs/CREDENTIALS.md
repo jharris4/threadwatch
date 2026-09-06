@@ -65,7 +65,7 @@ file = "credentials.toml"     # relative to the config directory
 ```
 
 `threadwatch record`, `replay` and `device` print `credentials: loaded` when
-the file is good (`replay` and `why` on stderr, so their output stays
+the file is good (`replay` and `device` on stderr, so their output stays
 usable), and stop with the reason when it is missing or malformed.
 
 ## If the key rotates
@@ -90,7 +90,7 @@ the recorder restarted.
 log and state files carry names, addresses and MLE facts. What the
 recorder prints is safe to paste into a bug report: sink and heartbeat
 URLs appear in the journal as scheme, host and port only, a command sink
-as its program name, and `import`, `doctor`, `status` and `report` never
+as its program name, and `import`, `doctor`, `status` and `devices` never
 print a key or a token. The three things worth checking before pasting
 are a `config.toml` with a webhook URL in it, a shell transcript that
 `cat`ted one of the files above, and a pcap you share together with the

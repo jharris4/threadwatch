@@ -65,7 +65,7 @@ class RingSizeCapTest(unittest.TestCase):
             self.assertTrue(ring.current_path.exists())
             self.assertEqual(len(list(Path(d).glob("*.pcap"))), 4)
 
-    def test_keep_files_zero_does_not_delete_the_file_being_written(self):
+    def test_keep_hours_zero_does_not_delete_the_file_being_written(self):
         import time
 
         with tempfile.TemporaryDirectory() as d:
@@ -395,7 +395,7 @@ class RingHourNamingTest(unittest.TestCase):
             names = sorted(p.name for p in Path(d).glob("*.pcap"))
             self.assertEqual(names, ["threadwatch-20260904-08.pcap", "threadwatch-20260904-09.pcap"])
             for name in names:
-                time.strptime(name, RING_NAME)       # the name `why` has to parse
+                time.strptime(name, RING_NAME)       # the name `device` has to parse
             now = time.mktime(time.strptime("2026-09-04 09:40:00", "%Y-%m-%d %H:%M:%S"))
             recent = select_recent(sorted(Path(d).glob("*.pcap")), 0.5, now)
             self.assertEqual([p.name for p in recent], ["threadwatch-20260904-09.pcap"])

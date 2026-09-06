@@ -552,7 +552,7 @@ def read_inventory(inventory_path: Path) -> list[dict]:
 @contextlib.contextmanager
 def inventory_lock(inventory_path: Path) -> Iterator[None]:
     """Hold the inventory's lock across a read-modify-write of the file.
-    `adopt` and `import` both take it, so two edits at once queue instead
+    `name` and `import` both take it, so two edits at once queue instead
     of the later one replacing the file with a copy that never saw the
     earlier one's change (the atomic replace protects readers from a half
     written file, not writers from each other). The lock is a file beside

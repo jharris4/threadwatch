@@ -128,7 +128,7 @@ class SnapshotTest(unittest.TestCase):
     def test_a_snapshot_short_of_what_was_copied_is_a_failure_not_a_snapshot(self):
         # The last line of defence for the bundle's one promise: that it
         # holds every ring file it says it does. If it stopped firing, a
-        # truncated incident would be written, manifested and reported as
+        # truncated snapshot would be written, manifested and reported as
         # whole, and nothing else would notice.
         real = shutil.copy2
 
@@ -164,7 +164,7 @@ class SnapshotTest(unittest.TestCase):
             snapshot.shutil.copy2 = real
         self.assertEqual(cm.exception.errno, 28)
         names = [p.name for p in self.cfg.snapshots_dir.iterdir()]
-        self.assertEqual(names, [snapshot.STAGING_DIR])        # nothing that reads as an incident
+        self.assertEqual(names, [snapshot.STAGING_DIR])        # nothing that reads as a snapshot
         self.assertEqual(list((self.cfg.snapshots_dir / snapshot.STAGING_DIR).iterdir()), [])
         self.assertEqual(len(list(self.cfg.ring_dir.glob("*.pcap"))), 3)     # the ring itself untouched
 
@@ -320,7 +320,7 @@ class SnapshotTest(unittest.TestCase):
         (staging / (left.name + snapshot.LOCK_SUFFIX)).write_bytes(b"")       # its own lock, nobody holds it
         self.assertEqual(snapshot.discard_partials(self.cfg.snapshots_dir), ["debug.lock"])
         self.assertEqual(list(staging.iterdir()), [])
-        # And a finished freeze with that label is a whole incident.
+        # And a finished copy with that label is a whole snapshot.
         dest, count = snapshot.save_snapshot(self.cfg, "debug.lock", now=1_700_000_000)
         self.assertEqual(count, 3)
         self.assertEqual(snapshot.discard_partials(self.cfg.snapshots_dir), [])
@@ -328,7 +328,7 @@ class SnapshotTest(unittest.TestCase):
 
     def test_a_label_ending_in_partial_is_a_whole_snapshot_like_any_other(self):
         # BUG-01: safe_label keeps periods, so "test.partial" used to name a
-        # finished incident the way a half copy was named; the listing hid
+        # finished snapshot the way a half copy was named; the listing hid
         # it and the next start deleted it.
         from threadwatch.review import snapshots
         dest, count = snapshot.save_snapshot(self.cfg, "test.partial", now=1_700_000_000)
@@ -344,7 +344,7 @@ class SnapshotTest(unittest.TestCase):
         now = 1_756_900_000.0
         dest, _count = snapshot.save_snapshot(self.cfg, "storm", now=now)
         before = sorted(p.name for p in dest.iterdir())
-        (dest / "threadwatch-20260903-00.pcap").write_bytes(b"kept")       # the incident as the operator left it
+        (dest / "threadwatch-20260903-00.pcap").write_bytes(b"kept")       # the snapshot as the operator left it
         with self.assertRaises(FileExistsError) as cm:
             snapshot.save_snapshot(self.cfg, "storm", now=now)                 # the same label, the same second
         self.assertIn(dest.name, str(cm.exception))
@@ -374,7 +374,7 @@ class SnapshotRetentionTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _incident(self, name: str) -> Path:
+    def _snapshot(self, name: str) -> Path:
         d = self.cfg.snapshots_dir / name
         d.mkdir()
         (d / "threadwatch-20260903-00.pcap").write_bytes(b"x" * 100)
@@ -385,9 +385,9 @@ class SnapshotRetentionTest(unittest.TestCase):
 
     def test_the_oldest_automatic_snapshots_go_and_the_named_ones_stay(self):
         for stamp in ("20260901T000000", "20260902T000000", "20260903T000000"):
-            self._incident(f"{stamp}_auto-storm")
-        self._incident("20260831T000000_the-night-it-broke")   # frozen by hand, older than all of them
-        self._incident(f"{snapshot.STAGING_DIR}")                # a copy in progress is not an incident
+            self._snapshot(f"{stamp}_auto-storm")
+        self._snapshot("20260831T000000_the-night-it-broke")   # saved by hand, older than all of them
+        self._snapshot(f"{snapshot.STAGING_DIR}")                # a copy in progress is not a snapshot
         removed = snapshot.prune_auto_snapshots(self.cfg.snapshots_dir, 2)
         self.assertEqual(removed, ["20260901T000000_auto-storm"])
         self.assertEqual(self._names(), [snapshot.STAGING_DIR, "20260831T000000_the-night-it-broke",
@@ -395,7 +395,7 @@ class SnapshotRetentionTest(unittest.TestCase):
 
     def test_keep_zero_prunes_them_all_and_a_negative_keep_is_no_cap(self):
         for stamp in ("20260901T000000", "20260902T000000"):
-            self._incident(f"{stamp}_auto-storm")
+            self._snapshot(f"{stamp}_auto-storm")
         self.assertEqual(snapshot.prune_auto_snapshots(self.cfg.snapshots_dir, -1), [])
         self.assertEqual(len(self._names()), 2)
         self.assertEqual(snapshot.prune_auto_snapshots(self.cfg.snapshots_dir, 0),

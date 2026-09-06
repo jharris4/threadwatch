@@ -17,7 +17,7 @@ journalctl -u threadwatch --since -1h # or since a time
 journalctl -u threadwatch-web -n 50   # the review pages' own log
 ```
 
-Under Docker it is `docker compose logs -f capture` (and `web`); without a
+Under Docker it is `docker compose logs -f recorder` (and `web`); without a
 supervisor it is the terminal you started `bin/threadwatch record` in. The
 start-up lines say what was loaded (sinks, heartbeats, `credentials:
 loaded`, `capturing channel N from /dev/...`), and every exit says why it
@@ -30,8 +30,8 @@ pages read those back.
 ```bash
 sudo systemctl restart threadwatch                 # the recorder
 sudo systemctl restart threadwatch threadwatch-web # both, after a config or code change
-docker compose restart capture                     # the Docker equivalent
-docker compose up -d --force-recreate capture      # Docker, after editing config/alerts.env: a restart
+docker compose restart recorder                    # the Docker equivalent
+docker compose up -d --force-recreate recorder     # Docker, after editing config/alerts.env: a restart
                                                    # keeps the environment the container was created with
 ```
 
@@ -50,7 +50,7 @@ sudo systemctl reset-failed threadwatch && sudo systemctl restart threadwatch
 `sudo bin/setup-host.sh` does the reset and the restart itself and reports
 either unit that is not running afterwards.
 
-## One capture process per host
+## One recorder per host
 
 Exactly one `threadwatch record` may run against a dongle and a data
 directory. Nothing stops a second one, and it does damage before it
@@ -60,7 +60,7 @@ last-seen table as if it were the recorder and sends `device_quiet` and
 `device_returned` events through the real sinks, so the household is
 paged for nothing; then its sniffer thread cannot open the port the
 service holds and it exits 4, saving the table on the way out. So before
-running capture by hand, stop the service, and start it again after:
+running the recorder by hand, stop the service, and start it again after:
 
 ```bash
 sudo systemctl stop threadwatch
@@ -68,11 +68,11 @@ bin/threadwatch record         # Ctrl-C when done
 sudo systemctl start threadwatch
 ```
 
-(Docker: `docker compose stop capture`.) Everything else is safe beside
-a running recorder: `doctor`, `status`, `report`, `why`, `replay`,
+(Docker: `docker compose stop recorder`.) Everything else is safe beside
+a running recorder: `doctor`, `status`, `devices`, `device`, `replay`,
 `events`, `snapshots`, `snapshot`, `border-routers`, `alert-test`, `serve`,
 and `name` and `import`, which write `config/` files the recorder reads
-only at its next start. `replay` and `why` run the pipeline in a mode that
+only at its next start. `replay` and `device` run the pipeline in a mode that
 writes nothing to `data/state` and sends nothing to any sink.
 
 ## Exit codes and restarts
@@ -113,7 +113,7 @@ frames of the stall itself and nothing on disk.
 
 ### The other commands
 
-The table above is `capture`'s. It is not the only command whose exit
+The table above is `record`'s. It is not the only command whose exit
 status means something: `bin/threadwatch <command> || notify` works for
 each of these too.
 
@@ -125,9 +125,9 @@ each of these too.
 | `border-routers` | none answered over mDNS | |
 | `import` | Home Assistant refused, or `devices.json` will not parse | |
 | `name` | the address is already listed under another name | |
-| `why` | some of the pcap files could not be read (the report covers the rest) | no network key, or one that cannot be read |
+| `device` | some of the pcap files could not be read (the report covers the rest) | no network key, or one that cannot be read |
 | `replay` | | the same |
-| `capture` | | the same, or a config value out of range |
+| `record` | | the same, or a config value out of range |
 | `replay`, `device`, `snapshots --delete` | `--snapshot NAME` matches no snapshot, or more than one | |
 
 
@@ -155,11 +155,11 @@ non-`ok` line means and what to do about it:
 | `dongle` configured port does not exist | `serial_port` in config.toml names a port that is gone | `ls /dev/serial/by-id/ /dev/ttyACM*`; fix or unset `serial_port` |
 | `dongle` pyserial is not installed | as for `cryptography` above | same fix |
 | `dongle` No nRF 802.15.4 sniffer found | nothing with the sniffer firmware is enumerated | `lsusb` should list Nordic Semiconductor; replug on a direct port; reflash if it is not an "nRF 802154 Sniffer" (SETUP.md) |
-| `capture` no status.json | the daemon has never run on this data directory | start it (`sudo systemctl start threadwatch`, or `bin/setup-host.sh`) |
-| `capture` daemon not running: status last written N min ago | the daemon is down | `systemctl status threadwatch`; the journal says why it left (exit codes above) |
-| `capture` daemon alive but no frames for N s | the dongle is up but hears nothing: wrong channel, or a silent mesh | check `[network] channel` against your border router's dataset (`threadwatch import` prints it); the watchdog restarts the daemon after 180 s regardless |
-| `ring` no ring files yet | nothing captured yet | as for `capture` |
-| `ring` the ring stopped growing | no new hourly file in two hours | the `capture` line says whether the daemon is down or deaf |
+| `recorder` no status.json | the recorder has never run on this data directory | start it (`sudo systemctl start threadwatch`, or `bin/setup-host.sh`) |
+| `recorder` not running: status last written N min ago | the recorder is down | `systemctl status threadwatch`; the journal says why it left (exit codes above) |
+| `recorder` alive but no frames for N s | the dongle is up but hears nothing: wrong channel, or a silent mesh | check `[network] channel` against your border router's dataset (`threadwatch import` prints it); the watchdog restarts the recorder after 180 s regardless |
+| `ring` no ring files yet | nothing captured yet | as for `recorder` |
+| `ring` the ring stopped growing | no new hourly file in two hours | the `recorder` line says whether it is down or deaf |
 | `last-seen` is unreadable | the last-seen table is damaged: no device has a history and none can go quiet | "What lives under data/" below |
 | `last-seen` kept aside as last-seen.json.corrupt | an earlier table was moved aside after failing to parse | repair and put it back, or delete it (same section) |
 | `blind-spans` is unreadable | the recorder does not know when it was last off, so a silence that spans one of its own outages is charged to the device in full | delete the file: the next outage rebuilds it, at the price of one round of `device_quiet` for anything quiet since before it |
@@ -186,7 +186,7 @@ The daemon's own diagnostics, with what to do when one keeps appearing:
 - **`sniffer thread died before delivering any data (serial port busy or
   gone?)`**, then exit 4: the dongle's port could not be opened. Usually a
   second recorder holds it (`ps ax | grep 'threadwatch record'`; see
-  "One capture process per host" above), or the dongle left between
+  "One recorder per host" above), or the dongle left between
   enumeration and open. Stop the extra process, or replug the dongle.
 - **`no frames for Ns - capture stalled (host slept? dongle gone?)`**, then
   exit 2: three minutes without a frame. systemd restarts the daemon after

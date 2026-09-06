@@ -214,9 +214,9 @@ def main(argv=None) -> int:
             parser.error("--pcap and --snapshot each say what to read; give one")
         if args.hours is not None and args.hours <= 0:
             parser.error("--hours must be positive")
-        incident = _find_snapshot(cfg, args.snapshot, parser, "device") if args.snapshot else None
+        snap = _find_snapshot(cfg, args.snapshot, parser, "device") if args.snapshot else None
         try:
-            return run_device(cfg, args.device, args.pcap, hours=args.hours, snapshot_dir=incident)
+            return run_device(cfg, args.device, args.pcap, hours=args.hours, snapshot_dir=snap)
         except CredentialsError as exc:
             parser.exit(2, f"threadwatch device: {exc}\n")
 

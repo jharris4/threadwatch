@@ -195,7 +195,7 @@ def run_import(cfg, inventory_path: Path, *, write: bool = False, url: str | Non
     related that stops the import; mDNS finding nothing is reported, not
     fatal, because the recorder host may simply be on another VLAN. The
     inventory is read and written under its lock (names.inventory_lock),
-    held for the whole run, so an `adopt` meanwhile waits its turn rather
+    held for the whole run, so a `name` meanwhile waits its turn rather
     than losing its edit to the write here."""
     kw = dict(write=write, url=url, env_file=env_file, dataset_id=dataset_id, use_ha=use_ha,
               use_mdns=use_mdns, mdns_seconds=mdns_seconds, devices=devices, credentials=credentials, out=out)

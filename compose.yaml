@@ -2,7 +2,7 @@
 # Before the first start: cp config/config.example.toml config/config.toml and
 # set your channel; see docs/DOCKER.md for the dongle device path.
 services:
-  capture:
+  recorder:
     build: .
     image: threadwatch
     command: record
@@ -60,7 +60,7 @@ services:
     # What keeps the pages off the LAN here is the loopback publish.
     command: ["serve", "--bind", "0.0.0.0"]
     restart: unless-stopped
-    depends_on: [capture]
+    depends_on: [recorder]
     # Published on loopback only: the pages have no authentication, and on
     # a Linux host a plain "8080:8080" installs DNAT rules in the DOCKER
     # chain, which is traversed before ufw's INPUT rules - so a host
@@ -82,7 +82,7 @@ services:
     # the old inode, so the pages would keep the names the container
     # started with. If your host's config/ or data/ is not world-readable
     # (some NAS images default to umask 077), the pages fail to load: set
-    # this to the same uid:gid as capture, and the mount below is again
+    # this to the same uid:gid as recorder, and the mount below is again
     # what limits what web can read.
     user: "65534:65534"
     volumes:

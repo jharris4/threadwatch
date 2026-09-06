@@ -449,7 +449,7 @@ class DayViewTest(unittest.TestCase):
         (inc / "threadwatch-20260902-14.pcap").write_bytes(b"x" * 1024)
         (inc / "events").mkdir()
         (self.cfg.snapshots_dir / "20260901T080000_older").mkdir()
-        (self.cfg.snapshots_dir / "notes.txt").write_text("not an incident")
+        (self.cfg.snapshots_dir / "notes.txt").write_text("not a snapshot")
         items = snapshots(self.cfg.snapshots_dir)
         self.assertEqual([i["label"] for i in items], ["storm", "older"])
         self.assertEqual((items[0]["pcaps"], items[0]["span"], items[0]["bytes"], items[0]["events"], items[0]["day"]),
@@ -461,7 +461,7 @@ class DayViewTest(unittest.TestCase):
         sto = storage(self.cfg)
         self.assertEqual((sto["ring_files"], sto["ring_span"], sto["ring_bytes"], sto["bytes_per_hour"]),
                          (2, ("20260903-08", "20260903-09"), 8192, 4096))
-        self.assertEqual(sto["snapshots_bytes"], 3072 + 15)   # notes.txt is disk usage too
+        self.assertEqual(sto["snapshots_bytes"], 3072 + 14)   # notes.txt is disk usage too
         self.assertGreater(sto["disk_free"], 0)
         self.assertEqual((sto["ring_bound_bytes"], sto["ring_needs_bytes"]),
                          (self.cfg.keep_hours * 4096, self.cfg.keep_hours * 4096 - 8192))
@@ -474,7 +474,7 @@ class DayViewTest(unittest.TestCase):
 
     def test_snapshots_are_filed_by_the_days_their_packets_cover(self):
         from threadwatch.review import recording_for_day
-        late = self.cfg.snapshots_dir / "20260904T000500_auto-storm"      # frozen just after midnight...
+        late = self.cfg.snapshots_dir / "20260904T000500_auto-storm"      # saved just after midnight...
         late.mkdir(parents=True)
         for h in ("20260830-22", "20260830-23", "20260831-00"):           # ...holding the storm's evening
             (late / f"threadwatch-{h}.pcap").write_bytes(b"x")

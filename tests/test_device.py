@@ -153,7 +153,7 @@ class HourTableTest(unittest.TestCase):
 
 
 class RunDeviceTest(unittest.TestCase):
-    """`why` tells one device's story. Everything it counts - frames, polls,
+    """`device` tells one device's story. Everything it counts - frames, polls,
     transmissions, ACKs - has to be that device's; the whole mesh's traffic
     attributed to one device answers the question confidently and wrongly."""
 
@@ -179,7 +179,7 @@ class RunDeviceTest(unittest.TestCase):
         return struct.pack("<HB", 2, seq)
 
     def _run(self, frames, target=None, quiet_s=None):
-        """Write the frames to a pcap, run `why` over it, return its output."""
+        """Write the frames to a pcap, run `device` over it, return its output."""
         import contextlib
         import io
         import tempfile
@@ -291,7 +291,7 @@ class RunDeviceTest(unittest.TestCase):
 
 
 class RunDeviceRingTest(unittest.TestCase):
-    """`why` without --pcap reads the ring: the files of the last --hours
+    """`device` without --pcap reads the ring: the files of the last --hours
     (or all of them), says which, and carries on past one it cannot read
     while saying that too. This is the form an operator runs during an
     outage; the tests above only ever handed it one file."""
@@ -346,9 +346,9 @@ class RunDeviceRingTest(unittest.TestCase):
         return sum(int(row[2]) for row in RunDeviceTest._rows(None, text))
 
     def test_a_snapshot_is_read_with_its_own_names_and_history(self):
-        # An incident frozen months ago, read on a box whose inventory has
+        # A snapshot saved months ago, read on a box whose inventory has
         # moved on: the names, the event log and the recorder's coverage
-        # are the incident's own. The silence between its two files was
+        # are the snapshot's own. The silence between its two files was
         # one the recorder slept through for an hour, and the story says so.
         import contextlib
         import io
@@ -377,9 +377,9 @@ class RunDeviceRingTest(unittest.TestCase):
         self.assertIn(f"analyzed snapshot {inc.name}: 2 ring file(s)", text)
         self.assertIn(f"=== Frozen AQ ({self.DEV}) ===", text)
         self.assertIn("(recorder not listening for 60m of it)", text)
-        self.assertIn("Frozen AQ quiet for", text)                     # the incident's log, not the live one
+        self.assertIn("Frozen AQ quiet for", text)                     # the snapshot's log, not the live one
         self.assertFalse((self.cfg.data_dir / "state").exists())       # nothing written to the live state
-        # --hours counts back from the incident's newest file, not from now.
+        # --hours counts back from the snapshot's newest file, not from now.
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit) as cm:
                 run_device(self.cfg, self.DEV, None, hours=0.5, snapshot_dir=inc / "nothing-here")
@@ -578,7 +578,7 @@ class DeviceSnapshotWindowTest(unittest.TestCase):
 
     def test_the_window_counts_back_from_the_snapshot_not_from_now(self):
         # These files are days old by the time anyone reads the bundle, so
-        # counting back from now would select nothing from any incident.
+        # counting back from now would select nothing from any snapshot.
         code, text = self._run(hours=48)
         self.assertEqual(code, 0)
         self.assertIn("analyzed snapshot 20260903T100000_storm: last 48 h: 2 ring file(s)", text)
@@ -595,7 +595,7 @@ class DeviceSnapshotWindowTest(unittest.TestCase):
 
 
 class DeviceNetworkContextTest(unittest.TestCase):
-    """BUG-04: `why` used to identify frames without ingesting them, so an
+    """BUG-04: `device` used to identify frames without ingesting them, so an
     MLE advertisement from another device (the one thing that carries a
     key sequence past the decryptor's initial search) was skipped as not
     ours, and the target's polls under that sequence resolved to nobody."""

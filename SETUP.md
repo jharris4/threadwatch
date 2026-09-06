@@ -80,7 +80,7 @@ bin/threadwatch record    # prints: capturing channel N from /dev/...; Ctrl-C af
 sudo systemctl start threadwatch
 ```
 
-`capture` needs the Python packages and the Thread network key
+`record` needs the Python packages and the Thread network key
 (`INSTALL.md`, `docs/CREDENTIALS.md`) and exits before it touches the
 dongle without them; that is not a failed flash. `doctor` is read-only
 and names each missing piece.

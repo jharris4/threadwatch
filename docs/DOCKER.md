@@ -43,7 +43,7 @@ ls /dev/serial/by-id/                                # find the dongle
 
 The recorder does not start without the network key (the container would
 restart forever, `credentials.toml is missing` and exit code 2 in
-`docker compose logs capture`; the same code with `capture stalled` is
+`docker compose logs recorder`; the same code with `capture stalled` is
 the watchdog, not the key: docs/OPERATIONS.md, "Exit codes");
 `docs/CREDENTIALS.md` says where to find it, and `threadwatch import
 --write` (run as a one-off container, below, with `config/ha.env` holding
@@ -58,8 +58,8 @@ only works while it is the sole such device. Then:
 
 ```bash
 docker compose up -d --build
-docker compose run --rm --no-deps capture doctor    # all ok
-docker compose logs -f capture
+docker compose run --rm --no-deps recorder doctor   # all ok
+docker compose logs -f recorder
 ```
 
 Doctor knows it is in a container and says so on two checks it cannot
@@ -70,7 +70,7 @@ run in their own container (not checked from in here)`, because doctor
 cannot tell that container from one that is down. Anything else that is
 not `ok` is real.
 
-The `capture` service runs on the host's network (`network_mode: host`
+The `recorder` service runs on the host's network (`network_mode: host`
 in `compose.yaml`) because the recorder finds border routers over mDNS,
 which is link-local multicast that the default bridge network never
 carries to the LAN; without it `border routers` warns `none found over
@@ -95,14 +95,14 @@ reach the pages.
 
 ## Layout
 
-- `./config` is mounted read-write into `capture` (so `name` can write
+- `./config` is mounted read-write into `recorder` (so `name` can write
   `devices.json`) and read-only into `web`. `web` also runs as uid 65534
   (`nobody`), not 1000: it is the only published process and nothing in
   front of it authenticates, and `credentials.toml`, `alerts.env` and
   `ha.env` are 0400 owner-only, so that user cannot open them. Everything
   `web` does read is world-readable. If your host writes with umask 077,
   the pages fail to load: set `web`'s `user:` to the same uid:gid as
-  `capture`.
+  `recorder`.
 - `./data` holds the ring, state and snapshots, exactly as native.
 - The container runs as uid 1000, not root, so the ring files, state,
   snapshots and any `devices.json` it writes belong to an ordinary user
@@ -126,7 +126,7 @@ reach the pages.
   ls -ln config data                                  # who owns them now
   ```
 
-  This matters in three places. `adopt` and `import` run outside the
+  This matters in three places. `name` and `import` run outside the
   container write `devices.json` as you, and fail on one the container
   owns. Backing up `data/` needs the same user or `sudo`. And a host
   moving from Docker to the native install meets `doctor`'s `writable`
@@ -136,12 +136,12 @@ reach the pages.
   reads it when it *creates* the container, and a restart keeps the
   environment the container was created with: after editing or rotating
   a value in `alerts.env`, recreate it with `docker compose up -d
-  --force-recreate capture`. A plain restart leaves the old token in use
+  --force-recreate recorder`. A plain restart leaves the old token in use
   and a newly added variable absent, and the sink that references it
   is reported disabled.
 - The files in `config/` are read when a container starts: after editing
   `config.toml`, `credentials.toml` or `devices.json`, `docker compose
-  restart capture` (and `web` for `[web]`).
+  restart recorder` (and `web` for `[web]`).
 - The image holds the code and nothing else: `.dockerignore` is an
   allowlist, so config, secrets, `data/` and anything else in the
   working tree stay out without being named.
@@ -152,10 +152,10 @@ The image's entrypoint is `bin/threadwatch`, so any CLI command works as
 a one-off container over the same volumes:
 
 ```bash
-docker compose run --rm --no-deps capture status
-docker compose run --rm --no-deps capture devices --suggest
-docker compose run --rm --no-deps capture device "Office AQ" --hours 6
-docker compose run --rm --no-deps capture snapshot mylabel
+docker compose run --rm --no-deps recorder status
+docker compose run --rm --no-deps recorder devices --suggest
+docker compose run --rm --no-deps recorder device "Office AQ" --hours 6
+docker compose run --rm --no-deps recorder snapshot mylabel
 ```
 
 ## Update

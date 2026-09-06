@@ -281,17 +281,32 @@ def main(argv=None) -> int:
                 print(f"no events {what + ' ' if what else ''}on {args.day}")
                 return 0
         else:
+            if args.episodes:
+                # Episodes are not records. Reading only as far back as -n
+                # raw records could load a recovery whose opening record is
+                # on the day before, which rebuilds the episode from its
+                # close: a different kind, a shorter duration, and a notice
+                # where the warning was, so a real overnight outage was
+                # missing from --severity warning altogether. Days are read
+                # newest first until n episodes pass the severity and
+                # device filters, and then a further EPISODE_WINDOW_DAYS,
+                # which is the window the day page groups over.
+                from .review import EPISODE_WINDOW_DAYS, group_episodes
+                episodes, records, enough_at = [], [], None
+                for i, day in enumerate(reversed(days)):
+                    records = [r for r in read_day(cfg.events_dir, day) if wanted(r)] + records
+                    episodes = [ep for ep in group_episodes(records)
+                                if mine(ep) and SEVERITY_RANK.get(ep["severity"], 0) >= floor]
+                    if enough_at is None and len(episodes) >= args.n:
+                        enough_at = i
+                    if enough_at is not None and i - enough_at >= EPISODE_WINDOW_DAYS:
+                        break
+                return _print_episodes(episodes[-args.n:], floor, SEVERITY_RANK, what)
             records = []
             for day in reversed(days):
                 records = [r for r in read_day(cfg.events_dir, day) if wanted(r)] + records
                 if len(records) >= args.n:
                     break
-            if args.episodes:
-                # Over every day read, not the newest -n records of them:
-                # truncating first cut episodes off at their opening record.
-                from .review import group_episodes
-                episodes = [ep for ep in group_episodes(records) if mine(ep)]
-                return _print_episodes(episodes[-args.n:], floor, SEVERITY_RANK, what)
             records = records[-args.n:]
             if not records:
                 print(f"no events {what}")

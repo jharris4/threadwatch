@@ -317,6 +317,47 @@ class EventsFilterTest(CliCase):
         self.assertNotIn("was quiet before", out)
 
 
+    def test_a_warning_that_opened_yesterday_is_found_without_a_day(self):
+        # The overnight outage: the warning is written before midnight and
+        # the recovery just after it. Reading only as far back as -n raw
+        # records loaded the recovery alone, which rebuilt the episode from
+        # its closing notice, and `events --episodes --severity warning`
+        # answered "no episodes" the morning after a real outage.
+        from threadwatch.config import load
+        from threadwatch.events import EventLog, day_of
+        cfg = load(Path(self.cfg))
+        log = EventLog(cfg.events_dir)
+        # Just after midnight today, and an hour before it yesterday.
+        midnight = time.mktime(time.strptime(day_of(time.time()), "%Y-%m-%d"))
+        log.emit("device_quiet", "warning", midnight - 3600, addr="26976e7f7d20964a", name="Office AQ",
+                 silent_for_s=1800)
+        log.emit("device_returned", "notice", midnight + 60, addr="26976e7f7d20964a", name="Office AQ")
+        code, out, err = self.run_cli("events", "--episodes", "--severity", "warning", "-n", "1",
+                                      "--device", "Office")
+        self.assertEqual(code, 0, err)
+        self.assertIn("[warning", out)
+        self.assertIn("Office AQ quiet for", out)
+        self.assertNotIn("no episodes", out)
+
+    def test_newer_quiet_episodes_do_not_crowd_out_the_ones_asked_for(self):
+        # The slice used to be taken before the severity floor: newer
+        # episodes below the floor filled it, and the query answered "no
+        # episodes" with matching ones sitting just behind them.
+        from threadwatch.config import load
+        from threadwatch.events import EventLog
+        cfg = load(Path(self.cfg))
+        log = EventLog(cfg.events_dir)
+        t = 1_756_800_000.0 + 3 * 86400                        # newer than anything the fixture wrote
+        log.emit("device_quiet", "notice", t, addr="72d035122fdf06f6", name="Spare", silent_for_s=1800)
+        log.emit("device_returned", "notice", t + 600, addr="72d035122fdf06f6", name="Spare")
+        code, out, err = self.run_cli("events", "--episodes", "--severity", "warning", "-n", "1")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("no episodes", out)
+        self.assertNotIn("Spare", out)                         # the notice episode is not one of them
+        self.assertEqual(len(out.splitlines()), 1, out)        # exactly the one asked for
+        self.assertIn("[critical", out)                        # the newest at warning or above
+
+
 class DispatchTest(CliCase):
     """main()'s subcommand wiring: the exit codes scripts and the systemd
     unit key on, the argument conflicts, and the containment check that

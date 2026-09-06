@@ -2,4 +2,8 @@ pyserial>=3.5
 # Required: the recorder will not start without a network key it can use.
 # load_decryptor raises without this, doctor's credentials check is a hard
 # FAIL, and setup-host.sh aborts on the same import.
-cryptography>=41
+# The floor is what Debian bookworm ships, the stated Pi target: crypto.py
+# uses only AESCCM and InvalidTag, both years older than that. setup-host.sh
+# reads the floor from this line and checks the installed version against
+# it, because the distro packages it installs are often behind pip's.
+cryptography>=38

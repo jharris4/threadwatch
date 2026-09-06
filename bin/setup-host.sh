@@ -77,7 +77,28 @@ if ! "$PY" -c 'import serial, cryptography' 2>/dev/null; then
   echo "    ERROR: $PY cannot import pyserial and cryptography after the install above; the recorder would not start" >&2
   exit 1
 fi
-echo "    $PY imports pyserial and cryptography"
+# Importable is not the same as new enough, and the distro branches above
+# install whatever the release ships: bookworm's python3-cryptography is
+# older than pip's. The floor comes from requirements.txt so there is one
+# copy of it.
+FLOOR=$(sed -n 's/^cryptography>=\([0-9.]*\).*/\1/p' "$REPO/requirements.txt")
+HAVE=$("$PY" -c 'from importlib.metadata import version; print(version("cryptography"))' 2>/dev/null || echo "")
+if [ -n "$FLOOR" ] && ! "$PY" - "$FLOOR" "$HAVE" <<'PYEOF'
+import sys
+
+
+def parts(v):
+    return tuple(int(x) for x in v.split(".") if x.isdigit())
+
+
+sys.exit(0 if parts(sys.argv[2]) >= parts(sys.argv[1]) else 1)
+PYEOF
+then
+  echo "    ERROR: $PY has cryptography ${HAVE:-unknown}, below the ${FLOOR} requirements.txt asks for;" >&2
+  echo "           install it with pip into a venv instead of the distro package" >&2
+  exit 1
+fi
+echo "    $PY imports pyserial and cryptography ${HAVE:-?}"
 
 echo "==> Serial port access for $RUN_USER"
 SERIAL_GROUP=""

@@ -136,7 +136,7 @@ non-`ok` line means and what to do about it:
 | `dongle` pyserial is not installed | as for `cryptography` above | same fix |
 | `dongle` No nRF 802.15.4 sniffer found | nothing with the sniffer firmware is enumerated | `lsusb` should list Nordic Semiconductor; replug on a direct port; reflash if it is not an "nRF 802154 Sniffer" (SETUP.md) |
 | `capture` no status.json | the daemon has never run on this data directory | start it (`sudo systemctl start threadwatch`, or `bin/setup-host.sh`) |
-| `capture` daemon not running: status last written N min ago | the daemon is down | `systemctl status threadwatch`; the journal says why it left (exit codes below) |
+| `capture` daemon not running: status last written N min ago | the daemon is down | `systemctl status threadwatch`; the journal says why it left (exit codes above) |
 | `capture` daemon alive but no frames for N s | the dongle is up but hears nothing: wrong channel, or a silent mesh | check `[network] channel` against your border router's dataset (`threadwatch import` prints it); the watchdog restarts the daemon after 180 s regardless |
 | `ring` no ring files yet | nothing captured yet | as for `capture` |
 | `ring` the ring stopped growing | no new hourly file in two hours | the `capture` line says whether the daemon is down or deaf |
@@ -166,7 +166,7 @@ The daemon's own diagnostics, with what to do when one keeps appearing:
 - **`sniffer thread died before delivering any data (serial port busy or
   gone?)`**, then exit 4: the dongle's port could not be opened. Usually a
   second capture process holds it (`ps ax | grep 'threadwatch capture'`; see
-  "One capture process per host" below), or the dongle left between
+  "One capture process per host" above), or the dongle left between
   enumeration and open. Stop the extra process, or replug the dongle.
 - **`no frames for Ns - capture stalled (host slept? dongle gone?)`**, then
   exit 2: three minutes without a frame. systemd restarts the daemon after

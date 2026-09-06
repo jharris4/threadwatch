@@ -54,7 +54,20 @@ class Detector:
             # window would ever close again. Start the window clock over at
             # this frame; the frames counted so far in a window that spans
             # a discontinuity are not worth judging.
+            #
+            # The storm state goes with it. The only way out of a storm is
+            # window_start - last_flood > 3 * period_max_s, which stays
+            # negative for the whole length of the step while last_flood
+            # sits on the pre-step clock: the storm could never end, and
+            # _close_window stopped feeding calm, so the flood baseline
+            # froze too. The onsets and the alert stamp are on the old
+            # clock as well, and none of that history is comparable with
+            # what follows.
             self.window_start, self.window_count = ts, 0
+            self.last_flood, self.in_flood, self.storm_active = 0.0, False, False
+            self.storm_details = {}
+            self.onsets.clear()
+            self.last_alert = None
         if ts - self.window_start >= w:
             self._close_window()                  # the window that had the frames
             self.window_start += w

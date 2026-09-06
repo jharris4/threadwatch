@@ -92,6 +92,29 @@ class StormLatchTest(unittest.TestCase):
         det.add_frame(t0 + 71 - 0.5)                                # a little out of order: no reset
         self.assertEqual((det.window_start, det.window_count), (t0 + 70.5, 6))
 
+    def test_a_backward_clock_step_ends_the_storm_it_left_behind(self):
+        # An RTC-less Pi corrected by NTP after boot: the clock steps back
+        # an hour in the middle of a storm. The only exit from a storm is
+        # window_start - last_flood > 3 * period_max_s, so with last_flood
+        # left on the pre-step clock that difference stays negative for
+        # the whole hour and the storm can never end. status.json, the web
+        # header, the day page and the daily summary all go on claiming a
+        # storm is running, and _close_window stops feeding calm, so the
+        # flood baseline freezes with it.
+        det, _ = self._run([200, 280, 360], until=380)
+        self.assertTrue(det.storm_active)
+        base = det._baseline()
+
+        stepped = 380 - 3600.0                                # NTP steps the clock back an hour
+        for w in range(0, 2000, 10):                          # 33 min of calm on the new clock
+            for i in range(250):
+                det.add_frame(stepped + w + i / 250)
+        self.assertFalse(det.storm_active)
+        self.assertEqual(list(det.onsets), [])
+        self.assertIsNone(det.last_alert)
+        self.assertGreater(det._baseline(), 0.0)              # calm is being fed again
+        self.assertAlmostEqual(det._baseline(), base, delta=base)
+
     def test_a_short_gap_still_closes_every_window(self):
         det = Detector(DetectorConfig(alert_cooldown_s=0))
         det.add_frame(1000.0)

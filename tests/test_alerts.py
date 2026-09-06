@@ -609,6 +609,21 @@ class DeliveryTests(unittest.TestCase):
             with self.assertRaises(Exception) as cm:
                 failing.send(REC)
             self.assertIn("boom", alerts._describe_error(cm.exception))
+            # A curl sink whose URL carries the secret (an ntfy topic, a
+            # webhook id, a token in the query) echoes it on failure, and
+            # the journal is an output nobody thinks of as one.
+            leaky = alerts.CommandSink(name="l", command=[
+                "sh", "-c", "echo 'curl: (7) failed: https://ntfy.example/t-9f3a?auth=hunter2' >&2; exit 7"])
+            with self.assertRaises(Exception) as cm:
+                leaky.send(REC)
+            said = alerts._describe_error(cm.exception)
+            self.assertIn("exit 7", said)
+            self.assertIn("curl: (7) failed: https://ntfy.example/...", said)
+            for secret in ("t-9f3a", "hunter2"):
+                self.assertNotIn(secret, said)
+            # A user:password before the host goes too, wherever it turns up.
+            self.assertEqual(alerts._redact_text("at https://u:pw@hc.example/ping/abc now"),
+                             "at https://hc.example/... now")
 
     def test_heartbeat_uses_failure_url_when_unhealthy(self):
         hb = alerts.Heartbeat(name="g", url=self.srv.url + "/ok?success=true",

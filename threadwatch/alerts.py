@@ -937,13 +937,27 @@ def _maybe_delivered(exc: BaseException) -> bool:
     return isinstance(exc, TimeoutError)
 
 
+# A URL anywhere in free text, for _redact_text.
+_URL_IN_TEXT = re.compile(r"\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s'\"<>|]+")
+
+
+def _redact_text(text: str) -> str:
+    """Every URL in a line reduced to scheme and host, as describe() does
+    for a configured one. A command sink's stderr is written by a program
+    the operator chose - curl echoing the address it could not reach is
+    the ordinary case - and for ntfy, Discord, Healthchecks, Uptime Kuma
+    and Home Assistant the secret is the path. The journal is not where
+    that belongs, and it is the one output nobody thinks of as one."""
+    return _URL_IN_TEXT.sub(lambda m: _redact_url(m.group(0)), text)
+
+
 def _describe_error(exc: Exception) -> str:
     if isinstance(exc, subprocess.CalledProcessError):
-        err = (exc.stderr or b"").decode(errors="replace").strip()
+        err = _redact_text((exc.stderr or b"").decode(errors="replace").strip())
         return f"exit {exc.returncode}" + (f": {err}" if err else "")
     if isinstance(exc, urllib.error.HTTPError):
         return f"HTTP {exc.code}"
-    return f"{type(exc).__name__}: {exc}"
+    return _redact_text(f"{type(exc).__name__}: {exc}")
 
 
 # -------------------------------------------------------------- heartbeats

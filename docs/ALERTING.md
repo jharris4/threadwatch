@@ -366,8 +366,11 @@ command = ["/usr/local/bin/thread-alert.sh"]   # or a string; shlex-split
 ```
 
 The record is on stdin as JSON. `THREADWATCH_EVENT`, `THREADWATCH_SEVERITY`
-and `THREADWATCH_SUMMARY` are in the environment. Non-zero exit is logged
-with the command's stderr.
+and `THREADWATCH_SUMMARY` are in the environment, along with everything
+from `alerts.env`. Non-zero exit is logged with the command's stderr, with
+any URL in it cut back to scheme and host: `curl` echoing an address it
+could not reach would otherwise put the topic or webhook id in the journal.
+Anything else your command prints to stderr is logged as written.
 
 ### Legacy shorthand
 

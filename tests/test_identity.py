@@ -313,6 +313,36 @@ class ResolveShortTest(unittest.TestCase):
             pipe.ingest(parse_frame(t0 + 5000, secured_frame(OTHER, "abcd", 1, pan=0x58bc, key=foreign), 195))
             self.assertEqual(dec.stats["short_candidates_tried"], before)
 
+    def test_a_malformed_address_in_last_seen_does_not_crash_the_capture_loop(self):
+        # The inventory's addresses are checked before they reach the
+        # nonce search; the table's keys were not, and bytes.fromhex on a
+        # "0x" prefix raised in ingest, outside every except, on the next
+        # secured short-source frame: a crash loop, since the key was on
+        # disk. Colons and case are forgiven, the rest is dropped and said.
+        import contextlib, io
+        with tempfile.TemporaryDirectory() as tmp:
+            dd = Path(tmp)
+            cfg = Config(data_dir=dd / "data")
+            cfg.state_dir.mkdir(parents=True, exist_ok=True)
+            t0 = 1_700_000_000.0
+            row = lambda: {"first_seen": t0, "last_seen": t0, "frames": 3, "types": {}}
+            (cfg.state_dir / "last-seen.json").write_text(json.dumps({
+                "0x" + OTHER: row(), "02:9a:47:56:6a:00:b5:43": row(), "d20bfcd1-a12f-625d": row(),
+                "not an address": row(), OTHER.upper(): row(), "": row()}))
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                dec = Decryptor(network_key=KEY)
+                pipe = Pipeline(cfg, NullEventLog(), dec)
+            self.assertEqual(sorted(pipe.seen.table), sorted([SED, OTHER]))
+            for bad in ("'0x" + OTHER + "'", "'d20bfcd1-a12f-625d'", "'not an address'", "''"):
+                self.assertIn(f"last-seen.json: dropping row {bad}: not 16 hex digits", out.getvalue())
+            # The kept rows are candidates; a secured poll from the colon-form
+            # device resolves, and nothing raised on the way.
+            self.assertEqual(pipe.ingest(parse_frame(t0 + 10, secured_frame(SED, "c829", 1, ftype=3), 195)), SED)
+            # And the decryptor itself shrugs at a bad candidate, should one reach it.
+            self.assertIsNone(dec.resolve_short(secured_frame(SED, "c82a", 2), "c82a", ["0x" + SED, "abc", SED[:14]]))
+            self.assertEqual(dec.resolve_short(secured_frame(SED, "c82a", 3), "c82a", ["zz", SED]), SED)
+
     def test_unresolvable_short_is_retried_only_after_backoff(self):
         with tempfile.TemporaryDirectory() as tmp:
             dd = Path(tmp)

@@ -229,7 +229,21 @@ class LastSeen:
                 if len(rows) < len(table):
                     print(f"[threadwatch] {state_path.name}: dropping {len(table) - len(rows)} row(s) that are "
                           "not objects", flush=True)
-                self.table = rows
+                # Every key is fed to the decryptor's nonce search as raw
+                # hex, as the inventory's addresses are (DeviceNames checks
+                # those for the same reason): a 0x prefix, a dash or a
+                # colon form from a hand-edit or a file merged from another
+                # host raised there, in the capture loop, on the next
+                # short-source frame, every run. Colons and case are
+                # forgiven; anything else is dropped and named.
+                self.table = {}
+                for a, r in rows.items():
+                    n = _norm(str(a))
+                    if not _EXT_ADDR.match(n):
+                        print(f"[threadwatch] {state_path.name}: dropping row {a!r}: not 16 hex digits",
+                              flush=True)
+                    elif n not in self.table:
+                        self.table[n] = r
             except (ValueError, OSError) as exc:
                 self.unreadable = exc
                 if state_path not in _warned_unreadable:

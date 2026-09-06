@@ -201,7 +201,16 @@ class Decryptor:
 
     def _decrypt_with_ext(self, sec, ext_hex: str) -> Optional[bytes]:
         key_index, counter, sec_level, open_part, secret = sec
-        nonce = bytes.fromhex(ext_hex) + struct.pack(">L", counter) + bytes([sec_level])
+        # A candidate that is not an extended address (a stray form in a
+        # state file the loaders did not catch) is nobody, not a crash in
+        # the capture loop.
+        try:
+            addr = bytes.fromhex(ext_hex)
+        except (ValueError, TypeError):
+            return None
+        if len(addr) != 8:
+            return None
+        nonce = addr + struct.pack(">L", counter) + bytes([sec_level])
         # The vendored sniffer strips the FCS (DLT 230, IEEE802_15_4_NOFCS),
         # so a frame this recorder captured decrypts untrimmed: that pass
         # goes first. An imported capture may still carry the 2-byte FCS

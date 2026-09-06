@@ -80,11 +80,13 @@ git pull
 sudo systemctl restart threadwatch threadwatch-web   # or: sudo bin/setup-host.sh
 ```
 
-The old code keeps running until you restart both units; `bin/threadwatch
-doctor` afterwards is the check that the deploy landed. State (last-seen
-table, event log, ring) lives under `data/`, so a restart loses nothing
-but the few seconds the daemon is down; the quiet detector knows about
-that gap and does not count it against any device.
+The running units keep the code they have already loaded until you restart
+both, so restart promptly: a module a unit has not imported yet is read
+from the new file, and the process is then running two versions at once.
+`bin/push-to-host.sh --push-only` says so, naming the modules it changed.
+State (last-seen table, event log, ring) lives under `data/`, so a restart
+loses nothing but the few seconds the daemon is down; the quiet detector
+knows about that gap and does not count it against any device.
 
 If you develop on a workstation and deploy to the host, `bin/push-to-host.sh
 user@host --push-only` rsyncs what git tracks, plus `config/` with its

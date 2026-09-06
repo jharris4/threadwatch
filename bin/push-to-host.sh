@@ -82,6 +82,12 @@ if [ -n "$REVERTS" ]; then
   echo "  copy them back here first if the host's version is the one you want." >&2
 fi
 
+CHANGED="$(rsync -a --delete --dry-run --out-format='%n' \
+  --exclude-from "$EXCLUDES" \
+  --exclude 'data/' --exclude '.git/' --exclude '.venv/' \
+  --filter 'P /config/***' --filter 'P /.venv/***' \
+  "$REPO/" "$TARGET:$DEST_DIR/" 2>/dev/null | grep -E '^threadwatch/.*\.py$' || true)"
+
 rsync -a --delete \
   --exclude-from "$EXCLUDES" \
   --exclude 'data/' --exclude '.git/' --exclude '.venv/' \
@@ -89,6 +95,16 @@ rsync -a --delete \
   "$REPO/" "$TARGET:$DEST_DIR/"
 ssh "$TARGET" "chmod 400 $DEST_DIR/config/credentials.toml $DEST_DIR/config/alerts.env $DEST_DIR/config/ha.env 2>/dev/null || true"
 echo "pushed to $TARGET:$DEST_DIR"
+
+# rsync renames each changed file into place, so the running units keep the
+# old code only for the modules they have already imported. Anything they
+# import later comes from the new file: one process, two versions.
+if [ "$MODE" = "--push-only" ] && [ -n "$CHANGED" ]; then
+  echo "RESTART REQUIRED: this push changed $(printf '%s\n' "$CHANGED" | wc -l | tr -d ' ') module(s):" >&2
+  printf '  %s\n' $CHANGED >&2
+  echo "  the running units are on the old code until:" >&2
+  echo "    ssh $TARGET 'sudo systemctl restart threadwatch threadwatch-web'" >&2
+fi
 
 if [ "$MODE" != "--push-only" ]; then
   echo "running remote setup (needs passwordless sudo on the host)..."

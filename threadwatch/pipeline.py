@@ -187,6 +187,16 @@ class Pipeline:
                                  note=(f"the freeze for {label} was cut short when the recorder last stopped; "
                                        "the half copy was discarded, and the next storm event tries again"))
         self._last_auto_freeze = 0.0 if ephemeral else self._last_auto_freeze_on_disk()
+        if not ephemeral and cfg.border_router_browse_s > 0:
+            # Imported here rather than at the first browse, minutes in. A
+            # deploy rsyncs each changed file into place, giving the path a
+            # new inode while this process keeps the old one only for what
+            # it has already loaded, so a module first imported after a
+            # push-to-host --push-only is the new code loading into an old
+            # process. Everything else the pipeline reaches lazily (freeze,
+            # review, crypto) is already loaded by the time a run is up;
+            # this was the one that was not.
+            from . import mdns          # noqa: F401  (warmed, used in _poll_border_routers)
         # How a critical event freezes the ring: in the background, so the
         # copy (gigabytes on a Pi) never stalls capture. Tests swap it.
         self.freezer = self._freeze_in_background

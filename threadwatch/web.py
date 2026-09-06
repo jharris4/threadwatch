@@ -743,6 +743,11 @@ class Site:
 
 
 def make_server(cfg, bind: str, port: int) -> ThreadingHTTPServer:
+    # review.dominant_pan reaches for Pipeline only when status.json has no
+    # dominant_pan to read, which may be hours in. A deploy that rsyncs
+    # pipeline.py into place meanwhile would load the new module into this
+    # old process; loaded here, the server is one version of the code.
+    from .pipeline import Pipeline      # noqa: F401  (warmed, used by review.dominant_pan)
     site = Site(cfg)
 
     class Handler(BaseHTTPRequestHandler):

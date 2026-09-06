@@ -128,7 +128,7 @@ class StatusConsumersTest(unittest.TestCase):
                       self.ring, self.pipe.decryptor, last_frame_age=170.0, last_frame_ts=now - 170)
         st = json.loads((self.cfg.state_dir / "status.json").read_text())
         self.assertEqual(sorted(st), ["alerts", "channel", "crypto", "current_file", "detector", "devices_tracked",
-                                      "frames_total", "last_frame_age_s", "last_frame_ts", "partition",
+                                      "dominant_pan", "frames_total", "last_frame_age_s", "last_frame_ts", "partition",
                                       "port", "updated", "uptime_s"])
         self.assertEqual(st["alerts"], {"delivered": 0, "queued": 0, "retrying": 0, "given_up": 0, "resumed": 0})
         self.assertEqual(sorted(st["crypto"]), sorted([*self.pipe.decryptor.stats, "key_sequence"]))

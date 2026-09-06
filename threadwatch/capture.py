@@ -485,6 +485,10 @@ def _write_status(cfg, port, total, started, pipe: Pipeline, ring, decryptor,
         "uptime_s": round(time.time() - started, 1),
         "current_file": str(ring.current_path),
         "devices_tracked": len(pipe.devices),
+        # The PAN the recorder judges by (configured, or adopted with the
+        # pipeline's floor and hysteresis): the report and the pages read
+        # it here, so "quiet" and "foreign" mean the same thing everywhere.
+        "dominant_pan": pipe.dominant_pan(),
         "partition": pipe.partition_status(),
         "detector": pipe.detector.snapshot(),
         "alerts": pipe.events.dispatcher.stats(),

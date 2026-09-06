@@ -11,6 +11,7 @@ and the CLI both render from here.
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from typing import Optional
@@ -548,26 +549,52 @@ def select_devices(rows: list[dict], dominant: Optional[int], only: str = "", so
     return sorted(rows, key=s[1])
 
 
-def dominant_pan(seen: LastSeen, configured: Optional[int] = None) -> Optional[int]:
-    """This network's PAN: [network] pan_id when set, else the one the
-    tracked addresses send most frames on."""
+def dominant_pan(seen: LastSeen, configured: Optional[int] = None,
+                 state_dir: Optional[Path] = None) -> Optional[int]:
+    """This network's PAN, as the recorder judges it: [network] pan_id
+    when set, else the PAN the recorder adopted (status.json, written
+    every 30 s), else the one the tracked addresses send most frames on.
+
+    The recorder adopts a PAN only once it has DOMINANT_MIN_FRAMES and
+    replaces it only with one holding twice as many, so two networks
+    trading the lead do not swap whose silences count on every tick.
+    Recomputed here from the table alone, the answer disagreed whenever
+    a second PAN overtook the first without doubling it, and the pages
+    denied a quiet the recorder had paged for (or showed as ours half a
+    mesh it was not judging). The recorder's own answer is read first;
+    the count stands in only with no status to read, with the same
+    floor and no memory of which PAN came first."""
     if configured is not None:
         return configured
+    if state_dir is not None:
+        try:
+            status = json.loads((state_dir / "status.json").read_text())
+        except (OSError, ValueError):
+            status = None
+        if isinstance(status, dict) and "dominant_pan" in status:
+            adopted = status["dominant_pan"]
+            if adopted is None or (isinstance(adopted, int) and not isinstance(adopted, bool)):
+                return adopted
+    from .pipeline import Pipeline
     weight: dict = {}
     for row in seen.table.values():
         if row.get("pan") is not None:
-            weight[row["pan"]] = weight.get(row["pan"], 0) + row.get("frames", 0)
-    return max(weight, key=weight.get) if weight else None
+            weight[row["pan"]] = weight.get(row["pan"], 0) + (row.get("frames") or 0)
+    if not weight:
+        return None
+    leader = max(weight, key=weight.get)
+    return leader if weight[leader] >= Pipeline.DOMINANT_MIN_FRAMES else None
 
 
 def now_card(seen: LastSeen, names: DeviceNames, events_dir: Path, min_rssi_dbm: float,
-             day: str, now: Optional[float] = None, pan_id: Optional[int] = None) -> dict:
+             day: str, now: Optional[float] = None, pan_id: Optional[int] = None,
+             state_dir: Optional[Path] = None) -> dict:
     """What matters at this moment, for the top of today's page: devices
     quiet right now (as the recorder announced them), devices whose signal
     is down, unknown addresses still to name, and the day's daily_summary
     record if one has gone out. Devices on a foreign PAN are left out."""
     now = now or time.time()
-    dominant = dominant_pan(seen, pan_id)
+    dominant = dominant_pan(seen, pan_id, state_dir)
     quiet, degraded, unknown = [], [], []
     for addr, row in seen.table.items():
         pan = row.get("pan")

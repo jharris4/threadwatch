@@ -95,6 +95,67 @@ class StateFileShapeTest(unittest.TestCase):
             self.assertEqual(list(saved), [ROUTER])              # the bad rows are gone from disk too
 
 
+class OnePanAnswerTest(unittest.TestCase):
+    """The recorder adopts a PAN at ten frames and replaces it only with
+    one holding twice as many; the report and the pages recomputed the
+    same fact as a bare max over the table, so they named a different
+    PAN whenever a second one overtook the first without doubling it,
+    and denied a quiet the recorder had paged for."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        (d / "devices.json").write_text(json.dumps([{"name": "Living Room AQ", "extendedAddress": SENSOR}]))
+        self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json", quiet_s=1800)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_the_pages_read_the_pan_the_recorder_judges_by(self):
+        from types import SimpleNamespace
+        from threadwatch.capture import _write_status
+        from threadwatch.review import dominant_pan, now_card
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t0 = 1_700_000_000.0
+        for i in range(100):
+            pipe.ingest(frame(t0 + i, SENSOR))                       # ours: 100 frames
+        for i in range(150):
+            pipe.ingest(frame(t0 + 100 + i, STRANGER, pan=OTHER_PAN))  # a neighbour, busier but not twice as busy
+        self.assertEqual(pipe.dominant_pan(), OWN_PAN)
+        pipe.periodic(t0 + 250 + 1800)
+        self.assertEqual([r["addr"] for r in pipe.events.records if r["event"] == "device_quiet"], [SENSOR])
+        pipe.seen.save()
+        # Without the recorder's word, the table's busiest PAN wins: the
+        # old disagreement, and the reason status.json now carries it.
+        self.assertEqual(dominant_pan(pipe.seen, None), OTHER_PAN)
+        ring = SimpleNamespace(current_path=self.cfg.ring_dir / "threadwatch-20260904-10.pcap")
+        _write_status(self.cfg, "/dev/x", 250, t0, pipe, ring, pipe.decryptor)
+        status = json.loads((self.cfg.state_dir / "status.json").read_text())
+        self.assertEqual(status["dominant_pan"], OWN_PAN)
+        self.assertEqual(dominant_pan(pipe.seen, None, self.cfg.state_dir), OWN_PAN)
+        card = now_card(pipe.seen, pipe.names, self.cfg.events_dir, self.cfg.quiet_min_rssi_dbm,
+                        "2023-11-14", now=t0 + 3000, state_dir=self.cfg.state_dir)
+        self.assertEqual([q["addr"] for q in card["quiet"]], [SENSOR])
+        # A configured PAN wins over both, and a status file of the wrong
+        # shape or without the key falls back to the count.
+        self.assertEqual(dominant_pan(pipe.seen, 0x1234, self.cfg.state_dir), 0x1234)
+        (self.cfg.state_dir / "status.json").write_text("[1, 2]")
+        self.assertEqual(dominant_pan(pipe.seen, None, self.cfg.state_dir), OTHER_PAN)
+        (self.cfg.state_dir / "status.json").write_text(json.dumps({"dominant_pan": None}))
+        self.assertIsNone(dominant_pan(pipe.seen, None, self.cfg.state_dir))   # too few frames, said the recorder
+
+    def test_the_fallback_count_has_the_recorders_floor(self):
+        from threadwatch.review import dominant_pan
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t0 = 1_700_000_000.0
+        for i in range(Pipeline.DOMINANT_MIN_FRAMES - 1):
+            pipe.ingest(frame(t0 + i, SENSOR))
+        self.assertIsNone(pipe.dominant_pan())
+        self.assertIsNone(dominant_pan(pipe.seen, None))                # the pages judge everyone too
+        pipe.ingest(frame(t0 + 20, SENSOR))
+        self.assertEqual((pipe.dominant_pan(), dominant_pan(pipe.seen, None)), (OWN_PAN, OWN_PAN))
+
+
 class AddressFloodTest(unittest.TestCase):
     """An extended source address is whatever the sender says it is, and
     every new one became a row in last-seen and a DeviceStats for ever:

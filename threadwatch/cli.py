@@ -352,7 +352,8 @@ def main(argv=None) -> int:
         names = load_names(cfg)
         seen = LastSeen(cfg.state_dir / "last-seen.json")
         report = seen.report(names, quiet_after_s=None if args.quiet_minutes is None else args.quiet_minutes * 60,
-                             min_rssi_dbm=cfg.quiet_min_rssi_dbm, dominant=dominant_pan(seen, cfg.pan_id))
+                             min_rssi_dbm=cfg.quiet_min_rssi_dbm,
+                             dominant=dominant_pan(seen, cfg.pan_id, cfg.state_dir))
         if args.suggest:
             hints = rotation_hints(report["unknown"], seen.table, names)
             entries = suggest_entries(report["unknown"], load_observed_names(cfg.state_dir), hints)

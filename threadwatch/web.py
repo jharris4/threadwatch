@@ -291,7 +291,8 @@ class Site:
         """The headline card: live facts on today's page, the day's summary
         on any day that has one."""
         card = now_card(self.seen(), self.names(), self.cfg.events_dir,
-                        self.cfg.quiet_min_rssi_dbm, day, now, pan_id=self.cfg.pan_id)
+                        self.cfg.quiet_min_rssi_dbm, day, now, pan_id=self.cfg.pan_id,
+                        state_dir=self.cfg.state_dir)
         out = ""
         if day == today():
             parts = []
@@ -425,7 +426,7 @@ class Site:
         names = self.names()
         seen = self.seen()
         every = device_rows(seen, names, self.cfg.quiet_min_rssi_dbm, now, leader_router=self.leader_router())
-        dominant = dominant_pan(seen, self.cfg.pan_id)
+        dominant = dominant_pan(seen, self.cfg.pan_id, self.cfg.state_dir)
         rows = select_devices(every, dominant, only, sort)
         only = only if only in DEVICE_FILTERS else ""
         sort = sort if sort in DEVICE_SORTS else "name"
@@ -669,7 +670,8 @@ class Site:
         if path == "/api/devices":
             seen = self.seen()
             rows = device_rows(seen, self.names(), self.cfg.quiet_min_rssi_dbm, leader_router=self.leader_router())
-            return {"devices": select_devices(rows, dominant_pan(seen, self.cfg.pan_id), query.get("only", ""),
+            return {"devices": select_devices(rows, dominant_pan(seen, self.cfg.pan_id, self.cfg.state_dir),
+                                              query.get("only", ""),
                                               query.get("sort", "name"))}
         if path.startswith("/api/device/"):
             names = self.names()

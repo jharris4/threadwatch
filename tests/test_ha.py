@@ -254,7 +254,8 @@ class ThreadDevicesTest(unittest.TestCase):
         registry = [
             {"id": "d1", "name": "Eve Motion", "name_by_user": "Living Room Motion", "model": "Eve Motion 20EBY9901",
              "manufacturer": "Eve Systems", "identifiers": [["matter", "deviceid_x-1"]]},
-            {"id": "d2", "name": "Wifi Plug", "name_by_user": None, "model": "P100", "identifiers": [["matter", "deviceid_x-2"]]},
+            {"id": "d2", "name": "Wifi Plug", "name_by_user": None, "model": "P100",
+             "identifiers": [["matter", "deviceid_x-2"]]},
             {"id": "d3", "name": "Hue Bridge", "identifiers": [["hue", "abc"]]},
             {"id": "d4", "name": "Odd", "identifiers": [["matter", "deviceid_x-4"]]},
             {"id": "d5", "name": "Broken", "identifiers": [["matter", "deviceid_x-5"]]},
@@ -269,7 +270,8 @@ class ThreadDevicesTest(unittest.TestCase):
                        "matter/node_diagnostics": lambda f: diags[f["device_id"]]})
         notes = []
         found = thread_devices(fake, log=notes.append)
-        self.assertEqual(found, [{"name": "Living Room Motion", "model": "Eve Motion 20EBY9901", "manufacturer": "Eve Systems",
+        self.assertEqual(found,
+                         [{"name": "Living Room Motion", "model": "Eve Motion 20EBY9901", "manufacturer": "Eve Systems",
                                   "addr": "F00D000000000001", "node_id": 1, "available": True}])
         self.assertEqual([t for t, _ in fake.calls].count("matter/node_diagnostics"), 4)   # not for the Hue bridge
         self.assertTrue(any("Odd" in n and "no extended address" in n for n in notes))
@@ -298,7 +300,8 @@ class DatasetTest(unittest.TestCase):
                              "network_name": "MyHome", "network_key": self.KEY.hex()})
 
     def test_select_dataset(self):
-        a, b = {"dataset_id": "A", "preferred": False, "network_name": "a"}, {"dataset_id": "B", "preferred": True, "network_name": "b"}
+        a, b = {"dataset_id": "A", "preferred": False, "network_name": "a"}, {"dataset_id": "B", "preferred": True,
+                                                                              "network_name": "b"}
         self.assertEqual(select_dataset([a, b]), b)
         self.assertEqual(select_dataset([a]), a)
         self.assertEqual(select_dataset([a, b], "A"), a)
@@ -310,11 +313,14 @@ class DatasetTest(unittest.TestCase):
             select_dataset([a], "Z")
 
     def test_thread_dataset_end_to_end(self):
-        fake = FakeHA({"thread/list_datasets": {"datasets": [{"dataset_id": "B", "preferred": True, "network_name": "MyHome"}]},
-                       "thread/get_dataset_tlv": lambda f: {"tlv": self.dataset_hex()} if f["dataset_id"] == "B" else None})
+        fake = FakeHA({"thread/list_datasets":
+                       {"datasets": [{"dataset_id": "B", "preferred": True, "network_name": "MyHome"}]},
+                       "thread/get_dataset_tlv":
+                           lambda f: {"tlv": self.dataset_hex()} if f["dataset_id"] == "B" else None})
         d = thread_dataset(fake)
         self.assertEqual((d["network_key"], d["channel"], d["dataset_id"]), (self.KEY.hex(), 25, "B"))
-        fake = FakeHA({"thread/list_datasets": {"datasets": [{"dataset_id": "B", "preferred": True, "network_name": "x"}]},
+        fake = FakeHA({"thread/list_datasets":
+                       {"datasets": [{"dataset_id": "B", "preferred": True, "network_name": "x"}]},
                        "thread/get_dataset_tlv": {"tlv": tlv(3, b"x").hex()}})
         with self.assertRaises(HAError) as cm:
             thread_dataset(fake)
@@ -364,7 +370,8 @@ class PlanInventoryTest(unittest.TestCase):
         found.append({"name": "Living Room Apple TV", "model": "Apple TV", "addr": "E6C279E8F0C70298"})
         planned, changes = plan_inventory(existing, found)
         self.assertEqual([e["name"] for e in planned],
-                         ["Contact Sensor (1111)", "Living Room Apple TV", "Contact Sensor (2222)", "Contact Sensor (3333)"])
+                         ["Contact Sensor (1111)", "Living Room Apple TV", "Contact Sensor (2222)",
+                          "Contact Sensor (3333)"])
         self.assertEqual([len(_addrs(e)) for e in planned], [1, 2, 1, 1])   # only the TV rotates
         self.assertEqual(planned[0]["note"], "front door")
         self.assertIn("'Contact Sensor' names 3 devices in Home Assistant", changes[0])
@@ -454,7 +461,8 @@ class PlanBorderRoutersTest(unittest.TestCase):
 
     def test_match_by_hostname_address_or_name_else_add(self):
         existing = [
-            {"name": "Living Room Apple TV", "extendedAddresses": ["C0FFEE0000000000", "C0FFEE0000000001"], "note": "hub"},
+            {"name": "Living Room Apple TV", "extendedAddresses": ["C0FFEE0000000000", "C0FFEE0000000001"],
+             "note": "hub"},
             {"name": "HA OTBR", "borderRouter": "homeassistant-otbr.local"},
             {"name": "HomePod Kitchen"},
         ]
@@ -510,7 +518,8 @@ class PlanBorderRoutersTest(unittest.TestCase):
     def test_a_reboot_appends_the_new_address_and_keeps_the_name(self):
         entry = {"name": "Living Room Apple TV", "borderRouter": "appletv-living-room.local",
                  "extendedAddress": "C0FFEE0000000001"}
-        planned, changes = plan_border_routers([entry], [dict(self.R, ext="1234567890abcdef", instance="AppleTV Living Room")])
+        planned, changes = plan_border_routers([entry],
+                                               [dict(self.R, ext="1234567890abcdef", instance="AppleTV Living Room")])
         self.assertEqual(changes, ["Living Room Apple TV: new address 1234567890ABCDEF (now 2 addresses)",
                                    "Living Room Apple TV: model 'Apple BorderRouter'"])
         self.assertEqual(planned[0]["name"], "Living Room Apple TV")
@@ -757,7 +766,8 @@ def _serve(handler):
 def _accept_for(request: bytes) -> str:
     import hashlib
     import base64
-    key = next(l.split(b":", 1)[1].strip() for l in request.split(b"\r\n") if l.lower().startswith(b"sec-websocket-key:"))
+    key = next(l.split(b":", 1)[1].strip() for l in request.split(b"\r\n")
+               if l.lower().startswith(b"sec-websocket-key:"))
     return base64.b64encode(hashlib.sha1(key + ha.WS_GUID.encode()).digest()).decode()
 
 

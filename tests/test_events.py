@@ -170,7 +170,8 @@ class ReadCacheTest(unittest.TestCase):
             days = []
             for i in range(events_mod.READ_CACHE_MAX + 12):
                 day = day_of(TS + i * 86400)
-                (d / f"{day}.jsonl").write_text(json.dumps({"ts": TS + i * 86400, "event": "x", "severity": "info"}) + "\n")
+                (d / f"{day}.jsonl").write_text(json.dumps({"ts": TS + i * 86400, "event": "x",
+                                                            "severity": "info"}) + "\n")
                 days.append(day)
             events_mod._read_cache.clear()
             errors = []

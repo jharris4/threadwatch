@@ -224,7 +224,8 @@ def _import(cfg, inventory_path: Path, *, write: bool, url: Optional[str], env_f
         routers = browse(timeout=mdns_seconds, log=lambda m: out(f"  ! {m}"))
         routers = [r for r in routers if r.get("ext")]
         if routers:
-            out(f"mDNS: {len(routers)} border router(s): " + ", ".join(r.get("instance") or r.get("hostname") for r in routers))
+            out(f"mDNS: {len(routers)} border router(s): "
+                + ", ".join(r.get("instance") or r.get("hostname") for r in routers))
             planned, more = plan_border_routers(planned, routers)
             changes += more
         else:
@@ -264,7 +265,8 @@ def _import(cfg, inventory_path: Path, *, write: bool, url: Optional[str], env_f
                     out(f"  network key: wrote {cred} (mode 0600)")
                     wrote = True
                 else:
-                    out(f"  network key: {'differs from' if cred.exists() else 'not in'} {cred.name}; --write stores it")
+                    out(f"  network key: {'differs from' if cred.exists() else 'not in'} "
+                        f"{cred.name}; --write stores it")
 
     if devices:
         out(f"{inventory_path.name}: {len(existing)} entries" + (":" if changes else ", nothing to change"))

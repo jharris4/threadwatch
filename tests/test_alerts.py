@@ -607,7 +607,8 @@ class DeliveryTests(unittest.TestCase):
     def test_command_sink_gets_record_on_stdin(self):
         with tempfile.TemporaryDirectory() as d:
             out = Path(d) / "out"
-            s = alerts.CommandSink(name="c", command=["sh", "-c", f"cat > {out}; test \"$THREADWATCH_EVENT\" = device_quiet"])
+            s = alerts.CommandSink(name="c",
+                                   command=["sh", "-c", f"cat > {out}; test \"$THREADWATCH_EVENT\" = device_quiet"])
             s.send(REC)
             self.assertEqual(json.loads(out.read_text()), REC)
             failing = alerts.CommandSink(name="f", command=["sh", "-c", "echo boom >&2; exit 3"])
@@ -835,14 +836,17 @@ class RetryTest(unittest.TestCase):
             d.close()
             self.assertFalse(d._thread.is_alive())
             lines = [json.loads(l) for l in spool.read_text().splitlines()]
-            self.assertEqual(sorted((l["record"]["name"], l["sinks"]) for l in lines), [("A", ["flaky"]), ("B", ["flaky"])])
+            self.assertEqual(sorted((l["record"]["name"], l["sinks"]) for l in lines),
+                             [("A", ["flaky"]), ("B", ["flaky"])])
             self.assertTrue(all(l["attempt"] >= 1 for l in lines))
             self.assertIn("2 undelivered record(s) kept in alert-spool.jsonl", msgs[-1])
             # The next start: the sink is back, a record is stale, one is
             # for a sink no longer configured.
             spool.write_text(spool.read_text()
-                             + json.dumps({"record": {**REC, "ts": now - 7 * 3600, "name": "old"}, "sinks": ["flaky"], "attempt": 3}) + "\n"
-                             + json.dumps({"record": {**REC, "ts": now, "name": "gone"}, "sinks": ["removed"], "attempt": 1}) + "\n"
+                             + json.dumps({"record": {**REC, "ts": now - 7 * 3600, "name": "old"},
+                                           "sinks": ["flaky"], "attempt": 3}) + "\n"
+                             + json.dumps({"record": {**REC, "ts": now, "name": "gone"},
+                                           "sinks": ["removed"], "attempt": 1}) + "\n"
                              + "not json\n")
             good = FlakySink(fail=0)
             msgs2 = []
@@ -1202,7 +1206,7 @@ class DigestWindowTest(unittest.TestCase):
         self.assertTrue(sink.wants(REC, 1000))
         self.assertFalse(sink.wants({**REC, "name": "Freezer Outlet"}, 1001))
         self.assertTrue(sink.wants({**REC, "name": "Dining AQ"}, 1300))         # producer first: the next window opens
-        self.assertEqual(sink.next_digest_at(), 1300)                            # the held batch is due now, not at 1600
+        self.assertEqual(sink.next_digest_at(), 1300)                           # the held batch is due now, not at 1600
         digests = sink.due_digests(1300)
         self.assertEqual([(d["event"], d["count"], d["ts"]) for d in digests], [("device_quiet", 1, 1300)])
         self.assertIn("Freezer Outlet", digests[0]["note"])
@@ -1217,7 +1221,8 @@ class DigestWindowTest(unittest.TestCase):
         # A sink with its floor at notice holds back a mixed batch; the one
         # record that stands for them must read as urgent as the worst.
         batch = [{**REC, "severity": s, "name": n, "ts": REC["ts"] + i}
-                 for i, (s, n) in enumerate((("notice", "Porch"), ("critical", "Stove Light"), ("warning", "Dining AQ")))]
+                 for i, (s,
+                         n) in enumerate((("notice", "Porch"), ("critical", "Stove Light"), ("warning", "Dining AQ")))]
         d = alerts.digest_record("device_quiet", batch, 300, REC["ts"] + 300)
         self.assertEqual((d["severity"], d["count"], d["digest"]), ("critical", 3, True))
         self.assertEqual((d["first_ts"], d["last_ts"]), (REC["ts"], REC["ts"] + 2))
@@ -1318,8 +1323,10 @@ class CooldownDefaultsTest(unittest.TestCase):
         legacy = alerts.build_sinks({"webhook_url": "http://x"}, print)[0]
         self.assertEqual(legacy.cooldown_s, 300.0)
         self.assertEqual(alerts.build_sinks({"sinks": [{"url": "http://x"}]}, print)[0].cooldown_s, 300.0)
-        self.assertEqual(alerts.build_sinks({"sinks": [{"type": "command", "command": "true"}]}, print)[0].cooldown_s, 300.0)
-        self.assertEqual(alerts.build_sinks({"sinks": [{"url": "http://x", "cooldown_s": 0}]}, print)[0].cooldown_s, 0.0)
+        self.assertEqual(alerts.build_sinks({"sinks": [{"type": "command", "command": "true"}]}, print)[0].cooldown_s,
+                         300.0)
+        self.assertEqual(alerts.build_sinks({"sinks": [{"url": "http://x", "cooldown_s": 0}]}, print)[0].cooldown_s,
+                         0.0)
 
     def test_the_legacy_sink_holds_a_repeat_for_five_minutes(self):
         legacy = alerts.build_sinks({"webhook_url": "http://x"}, print)[0]

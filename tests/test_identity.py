@@ -607,7 +607,8 @@ class SightingAuthenticityTest(unittest.TestCase):
             # unsecured, every minute for four hours; and plays back its
             # own three frames. Neither is a sighting.
             fcf = 1 | 0x0040 | (2 << 10) | (1 << 12) | (3 << 14)
-            forged = struct.pack("<HBH", fcf, 9, PAN) + bytes.fromhex("0000")[::-1] + bytes.fromhex(SED)[::-1] + b"\x7f\x33"
+            forged = struct.pack("<HBH", fcf, 9,
+                                 PAN) + bytes.fromhex("0000")[::-1] + bytes.fromhex(SED)[::-1] + b"\x7f\x33"
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 for m in range(240):

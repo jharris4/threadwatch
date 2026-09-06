@@ -162,7 +162,8 @@ class FreezeTest(unittest.TestCase):
         finally:
             freeze.shutil.copy2 = real
         self.assertEqual(cm.exception.errno, 28)
-        self.assertEqual([p.name for p in self.cfg.incidents_dir.iterdir()], [freeze.STAGING_DIR])   # nothing that reads as an incident
+        names = [p.name for p in self.cfg.incidents_dir.iterdir()]
+        self.assertEqual(names, [freeze.STAGING_DIR])        # nothing that reads as an incident
         self.assertEqual(list((self.cfg.incidents_dir / freeze.STAGING_DIR).iterdir()), [])
         self.assertEqual(len(list(self.cfg.ring_dir.glob("*.pcap"))), 3)     # the ring itself untouched
 
@@ -236,7 +237,7 @@ class FreezeTest(unittest.TestCase):
             t = threading.Thread(target=worker)
             t.start()
             self.assertTrue(copied.wait(5))
-            self.assertEqual(freeze.discard_partials(cfg.incidents_dir), [])     # the recorder starting: nothing to discard
+            self.assertEqual(freeze.discard_partials(cfg.incidents_dir), [])  # recorder starting: nothing to discard
             staging = cfg.incidents_dir / freeze.STAGING_DIR
             names = sorted(p.name for p in staging.iterdir())
             self.assertEqual(len(names), 2, names)                              # the copy and its held lock

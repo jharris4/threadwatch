@@ -184,7 +184,8 @@ def ws_connect(url: str, path: str = "/api/websocket", timeout: float = 20.0) ->
     try:
         sock = socket.create_connection((host, port), timeout=timeout)
     except OSError as exc:
-        raise HAError(f"cannot reach Home Assistant at {host}:{port} ({exc}); HA_URL wrong, or not on this network?") from exc
+        raise HAError(f"cannot reach Home Assistant at {host}:{port} ({exc}); "
+                      "HA_URL wrong, or not on this network?") from exc
     key = base64.b64encode(os.urandom(16)).decode()
     # Every socket-level failure from here on is a peer problem the caller
     # promised to see as HAError: a TLS refusal, a handshake that stalls

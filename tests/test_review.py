@@ -55,7 +55,7 @@ class DayRollingTest(unittest.TestCase):
             lines = [json.dumps({"ts": T0 + i, "event": "e%d" % i, "severity": "info"}) for i in range(4)]
             (state / "events.jsonl.migrating").write_text("\n".join(lines) + "\n")
             (state / "events").mkdir()
-            (state / "events" / f"{day_of(T0)}.jsonl").write_text("\n".join(lines[:2]) + "\n")   # copied before the kill
+            (state / "events" / f"{day_of(T0)}.jsonl").write_text("\n".join(lines[:2]) + "\n")  # copied before the kill
             self.assertEqual(migrate_legacy(state / "events"), 2)
             self.assertEqual([r["event"] for r in read_day(state / "events", day_of(T0))], ["e0", "e1", "e2", "e3"])
             self.assertTrue((state / "events.jsonl.migrated").exists())
@@ -85,7 +85,8 @@ class EpisodeTest(unittest.TestCase):
     def test_repeated_quiet_before_a_return_is_one_row(self):
         recs = [
             {"ts": T0, "event": "device_quiet", "severity": "warning", "addr": AQ, "name": "AQ", "silent_for_s": 1800},
-            {"ts": T0 + 600, "event": "device_quiet", "severity": "warning", "addr": AQ, "name": "AQ", "silent_for_s": 2400},
+            {"ts": T0 + 600, "event": "device_quiet", "severity": "warning", "addr": AQ, "name": "AQ",
+             "silent_for_s": 2400},
             {"ts": T0 + 1800, "event": "device_returned", "severity": "notice", "addr": AQ, "name": "AQ"},
         ]
         eps = group_episodes(recs, now=T0 + 7200)
@@ -306,15 +307,21 @@ class DayViewTest(unittest.TestCase):
                  silent_for_s=1800)
         log.emit("mle_rejoin_attempt", "notice", T0 + 300, command="Announce", addr=TV2, name="Living Room Apple TV")
         (self.cfg.state_dir / "last-seen.json").write_text(json.dumps({
-            AQ: {"first_seen": T0 - 86400, "last_seen": T0 + 3600, "frames": 1000, "types": {"1": 1000}, "rssi": -87.0, "pan": 0x4e21,
+            AQ: {"first_seen": T0 - 86400, "last_seen": T0 + 3600, "frames": 1000, "types": {"1": 1000}, "rssi": -87.0,
+                 "pan": 0x4e21,
                  "quiet_reported": True, "rloc16": "f000", "rloc16_ts": T0 + 3600},
-            PLUG: {"first_seen": T0 - 86400, "last_seen": T0 + 3600, "frames": 500, "types": {"1": 500}, "rssi": -70.0, "pan": 0x4e21,
+            PLUG: {"first_seen": T0 - 86400, "last_seen": T0 + 3600, "frames": 500, "types": {"1": 500}, "rssi": -70.0,
+                   "pan": 0x4e21,
                    "rssi_degraded": True, "rssi_ref": -58.0, "rloc16": "f00c", "rloc16_ts": T0 + 3000},
-            "72d035122fdf06f6": {"first_seen": T0, "last_seen": T0 + 3600, "frames": 50, "types": {"1": 50}, "rssi": -60.0, "pan": 0x4e21},
-            "1afe3b8423f332de": {"first_seen": T0, "last_seen": T0 + 3600, "frames": 5, "types": {"1": 5}, "pan": 0x58bc},
-            TV1: {"first_seen": T0 - 86400, "last_seen": T0 - 7 * 3600, "frames": 900, "types": {"1": 900}, "rssi": -55.0,
+            "72d035122fdf06f6": {"first_seen": T0, "last_seen": T0 + 3600, "frames": 50, "types": {"1": 50},
+                                 "rssi": -60.0, "pan": 0x4e21},
+            "1afe3b8423f332de": {"first_seen": T0, "last_seen": T0 + 3600, "frames": 5, "types": {"1": 5},
+                                 "pan": 0x58bc},
+            TV1: {"first_seen": T0 - 86400, "last_seen": T0 - 7 * 3600, "frames": 900, "types": {"1": 900},
+                  "rssi": -55.0,
                   "pan": 0x4e21, "quiet_reported": True},
-            TV2: {"first_seen": T0 - 6 * 3600, "last_seen": T0 + 3600, "frames": 400, "types": {"1": 400}, "rssi": -56.0,
+            TV2: {"first_seen": T0 - 6 * 3600, "last_seen": T0 + 3600, "frames": 400, "types": {"1": 400},
+                  "rssi": -56.0,
                   "pan": 0x4e21, "rssi_ref": -57.0},
         }))
         (self.cfg.state_dir / "status.json").write_text(json.dumps({
@@ -395,13 +402,19 @@ class DayViewTest(unittest.TestCase):
         self.assertEqual(pick(only="routers"), ["Basement AQ"])
         self.assertEqual(pick(only="children"), ["Irrigation"])
         by = {r["name"] or r["addr"]: r for r in rows}
-        self.assertEqual((by["Basement AQ"]["role"], by["Basement AQ"]["router_id"], by["Basement AQ"]["leader"]), ("router", 60, False))
-        self.assertEqual((by["Irrigation"]["role"], by["Irrigation"]["parent"], by["Irrigation"]["parent_addr"]), ("child", "Basement AQ", AQ))
+        self.assertEqual((by["Basement AQ"]["role"], by["Basement AQ"]["router_id"], by["Basement AQ"]["leader"]),
+                         ("router", 60, False))
+        self.assertEqual((by["Irrigation"]["role"], by["Irrigation"]["parent"], by["Irrigation"]["parent_addr"]),
+                         ("child", "Basement AQ", AQ))
         self.assertIsNone(by[TV]["role"])
-        led = device_rows(seen, DeviceNames(self.cfg.devices_path), self.cfg.quiet_min_rssi_dbm, T0 + 7200, leader_router=60)
+        led = device_rows(seen, DeviceNames(self.cfg.devices_path), self.cfg.quiet_min_rssi_dbm, T0 + 7200,
+                          leader_router=60)
         self.assertTrue(next(r for r in led if r["addr"] == AQ)["leader"])
-        self.assertEqual(pick(sort="rssi"), ["Basement AQ", "Irrigation", "72d035122fdf06f6", TV, TV, "1afe3b8423f332de"])   # weakest first, unheard last
-        self.assertEqual(pick(sort="frames"), ["Basement AQ", TV, "Irrigation", TV, "72d035122fdf06f6", "1afe3b8423f332de"])
+        # weakest first, unheard last
+        self.assertEqual(pick(sort="rssi"),
+                         ["Basement AQ", "Irrigation", "72d035122fdf06f6", TV, TV, "1afe3b8423f332de"])
+        self.assertEqual(pick(sort="frames"),
+                         ["Basement AQ", TV, "Irrigation", TV, "72d035122fdf06f6", "1afe3b8423f332de"])
         self.assertEqual(pick(only="nonsense", sort="nonsense"), pick())
 
     def test_resolver_and_merged_history(self):
@@ -463,7 +476,8 @@ class DayViewTest(unittest.TestCase):
                   for d in ("2026-08-29", "2026-08-30", "2026-08-31", "2026-09-04")}
         self.assertEqual(by_day, {"2026-08-29": [], "2026-08-30": [late.name], "2026-08-31": [late.name],
                                   "2026-09-04": ["20260904T090000_empty"]})
-        self.assertEqual(capture_for_day(self.cfg.ring_dir, Path(self.tmp.name) / "none", "2026-08-30")["incidents"], [])
+        self.assertEqual(capture_for_day(self.cfg.ring_dir, Path(self.tmp.name) / "none", "2026-08-30")["incidents"],
+                         [])
 
     def test_chooser_links_survive_url_special_characters_in_names(self):
         d = self.cfg.devices_path
@@ -495,7 +509,8 @@ class DayViewTest(unittest.TestCase):
         self.assertEqual(live_address(["0000000000000001", TV1], {}), "0000000000000001")   # nothing heard: the first
         # The recorder has bound the TV's hostname to its live address.
         (self.cfg.state_dir / "border-routers.json").write_text(json.dumps({
-            "appletv-living-room.local": {"addr": TV2, "name": "Living Room Apple TV", "instance": "AppleTV Living Room",
+            "appletv-living-room.local": {"addr": TV2, "name": "Living Room Apple TV",
+                                          "instance": "AppleTV Living Room",
                                           "vendor": "Apple", "model": "BorderRouter"}}))
         httpd = make_server(self.cfg, "127.0.0.1", 0)
         threading.Thread(target=httpd.serve_forever, args=(POLL_S,), daemon=True).start()
@@ -830,7 +845,8 @@ class RecorderEpisodeTest(unittest.TestCase):
         eps = group_episodes([rec("clock_step", "info", T0, step_s=7200, note="fwd"),
                               rec("clock_step", "info", T0 + 60, step_s=-300, note="back")])
         self.assertEqual([(e["kind"], e["title"], e["detail"]) for e in eps],
-                         [("clock", "host clock jumped forward 2h00m", "fwd"), ("clock", "host clock jumped back 5m", "back")])
+                         [("clock", "host clock jumped forward 2h00m", "fwd"),
+                          ("clock", "host clock jumped back 5m", "back")])
 
 
 class CoverageTest(unittest.TestCase):
@@ -864,7 +880,8 @@ class CoverageTest(unittest.TestCase):
 
     def test_a_start_without_a_note_is_blind_from_the_last_frame(self):
         self._put(start(T0 + 600, last=T0, cause="unknown"), start(T0 + 5000, last=T0 + 4000, cause="nonsense"))
-        self.assertEqual(self._cov(), [("blind", T0, T0 + 600, "unknown", 1), ("blind", T0 + 4000, T0 + 5000, "unknown", 1)])
+        self.assertEqual(self._cov(),
+                         [("blind", T0, T0 + 600, "unknown", 1), ("blind", T0 + 4000, T0 + 5000, "unknown", 1)])
         self.assertIn("power cut", coverage(self.log.dir, self.day, self.end)[0]["note"])
 
     def test_the_first_start_ever_covers_nothing_before_it(self):
@@ -1014,7 +1031,8 @@ class EveryEventKindTest(unittest.TestCase):
         eps = group_episodes([
             rec("phase_locked_storm", "critical", T0, period_s=80.5, onsets=3, baseline_frames_per_window=250.0,
                 note="traffic floods recurring every 80 s"),
-            rec("incident_frozen", "info", T0 + 5, label="auto-storm", note="6 ring files kept as 20260902T120005_auto-storm"),
+            rec("incident_frozen", "info", T0 + 5, label="auto-storm",
+                note="6 ring files kept as 20260902T120005_auto-storm"),
             rec("incident_freeze_failed", "warning", T0 + 10, label="auto-storm", note="could not freeze the ring"),
             rec("alert_test", "warning", T0 + 20, name="Test device", note="threadwatch alert-test from pi"),
         ])
@@ -1030,7 +1048,8 @@ class EveryEventKindTest(unittest.TestCase):
                 rec("dominant_pan_changed", "notice", T0 + 2, pan="0x4e21", note="PAN 0x4e21 adopted"),
                 rec("credentials_stale", "warning", T0 + 3, failed=40, note="nothing decrypts"),
                 rec("border_router_address_changed", "notice", T0 + 4, addr=TV2, name="Hall TV", note="rotated"),
-                rec("border_router_unlisted", "notice", T0 + 5, addr=TV1, hostname="hub.local", note="not in devices.json")]
+                rec("border_router_unlisted", "notice", T0 + 5, addr=TV1, hostname="hub.local",
+                    note="not in devices.json")]
         eps = group_episodes(recs)
         self.assertEqual([(e["kind"], e["title"], e["severity"], e["detail"], e["count"]) for e in eps],
                          [(r["event"], r["event"], r["severity"], r["note"], 1) for r in recs])

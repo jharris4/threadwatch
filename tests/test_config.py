@@ -194,7 +194,8 @@ class DetectValuesTest(unittest.TestCase):
                               ("flood_min_frames = -5", "flood_min_frames must be at least 1"),
                               ("flood_min_frames = 2.5", "flood_min_frames must be a whole number"),
                               ("period_min_s = 0", "period_min_s must be more than 0"),
-                              ("period_min_s = 180\nperiod_max_s = 40", "period_max_s must be more than period_min_s (180)"),
+                              ("period_min_s = 180\nperiod_max_s = 40",
+                               "period_max_s must be more than period_min_s (180)"),
                               ("period_max_s = 40", "period_max_s must be more than period_min_s (40)"),
                               ("period_min_s = 200", "period_max_s must be more than period_min_s (200)"),
                               ("alert_cooldown_s = -1", "alert_cooldown_s must be 0 (no cooldown) or more")):

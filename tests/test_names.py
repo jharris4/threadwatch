@@ -88,8 +88,8 @@ class ReportQuietTest(unittest.TestCase):
         seen, now = self._seen()
         rep = seen.report(DeviceNames(None), now=now, dominant=0x4e21)
         self.assertEqual([i["addr"] for i in rep["quiet"]], [AQ])
-        self.assertEqual(rep["active_count"], 2)                            # PLUG and TV2; TV1 retired, the stranger foreign
-        self.assertEqual(len(rep["unknown"]), 5)                            # naming is a separate question
+        self.assertEqual(rep["active_count"], 2)                       # PLUG and TV2; TV1 retired, the stranger foreign
+        self.assertEqual(len(rep["unknown"]), 5)                       # naming is a separate question
 
     def test_an_explicit_window_is_the_wall_clock_and_still_skips_retired_and_foreign(self):
         seen, now = self._seen()
@@ -293,7 +293,8 @@ class LearnedBorderRoutersTest(unittest.TestCase):
                                        {"name": "OTBR", "borderRouter": "otbr.local"}]))
             learned = Path(d) / "border-routers.json"
             learned.write_text(json.dumps({
-                "appletv-living-room.local": {"addr": TV2, "name": "Living Room Apple TV", "instance": "AppleTV Living Room",
+                "appletv-living-room.local": {"addr": TV2, "name": "Living Room Apple TV",
+                                              "instance": "AppleTV Living Room",
                                               "vendor": "Apple", "model": "BorderRouter"},
                 "otbr.local": {"addr": AQ, "name": None, "instance": "OTBR #1"},
                 "junk.local": {"addr": "nope"},

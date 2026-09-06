@@ -111,7 +111,8 @@ def check_credentials(cfg) -> list[Check]:
         import tomllib
         key = tomllib.loads(path.read_text()).get("credentials", {}).get("network_key", "")
         if len(key) != 32 or any(c not in "0123456789abcdefABCDEF" for c in key):
-            out.append((FAIL, "credentials", f"{path.name}: network_key must be 32 hex digits; the recorder will not start"))
+            out.append((FAIL, "credentials",
+                        f"{path.name}: network_key must be 32 hex digits; the recorder will not start"))
         else:
             out.append((OK, "credentials", f"{path.name} loads"))
     except Exception as exc:
@@ -456,7 +457,8 @@ def run_doctor(cfg, find_port: Callable[[], str] | None = None, now: float | Non
     for step in (lambda: check_config(cfg), lambda: check_inventory(cfg), lambda: check_credentials(cfg),
                  lambda: check_border_routers(cfg),
                  lambda: check_dongle(cfg, find_port), lambda: check_daemon(cfg, now), lambda: check_ring(cfg, now),
-                 lambda: check_last_seen(cfg), lambda: check_blind_spans(cfg), lambda: check_disk(cfg), lambda: check_writable(cfg), check_clock,
+                 lambda: check_last_seen(cfg), lambda: check_blind_spans(cfg), lambda: check_disk(cfg),
+                 lambda: check_writable(cfg), check_clock,
                  check_services,
                  lambda: check_alerts(cfg), lambda: check_ha_env(cfg), lambda: check_web(cfg),
                  check_version):

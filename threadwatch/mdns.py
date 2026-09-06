@@ -170,8 +170,9 @@ def collect_routers(records: list[tuple[str, int, object]], service: str = SERVI
     for name, rtype, value in records:
         n = _norm_host(name)
         if rtype == TYPE_PTR and n == service:
-            instances.setdefault(_norm_host(str(value)), {"instance": str(value)[:len(str(value)) - len(service) - 1]
-                                                          if str(value).lower().endswith("." + service) else str(value)})
+            target = str(value)
+            label = target[:len(target) - len(service) - 1] if target.lower().endswith("." + service) else target
+            instances.setdefault(_norm_host(target), {"instance": label})
         elif rtype == TYPE_SRV:
             srv[n] = value  # type: ignore[assignment]
         elif rtype == TYPE_TXT:

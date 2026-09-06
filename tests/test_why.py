@@ -406,7 +406,7 @@ class RunWhyRingTest(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn(f"analyzed 3 ring file(s), {self._hour(5)} to {self._hour(0)}", out)
         self.assertEqual(self._frames_in_table(out), 12)
-        self.assertIn("silences (>30m, the configured [quiet] silence_s):", out)                     # the 5 h file to the 1 h file
+        self.assertIn("silences (>30m, the configured [quiet] silence_s):", out)          # the 5 h file to the 1 h file
 
     def test_a_ring_file_that_cannot_be_read_is_reported_and_the_rest_still_counts(self):
         bad = self._ring_file(1, [])
@@ -415,7 +415,8 @@ class RunWhyRingTest(unittest.TestCase):
         rc, out, err = self._run(hours=2)
         self.assertEqual(rc, 1)
         self.assertIn(f"(skipping {bad}: ", err)
-        self.assertIn("WARNING: 1 of 2 ring file(s) could not be read (see stderr); what follows covers the rest only", out)
+        self.assertIn("WARNING: 1 of 2 ring file(s) could not be read (see stderr); what follows covers the rest only",
+                      out)
         self.assertIn(f"=== {self.DEV} ({self.DEV}) ===", out)
         self.assertEqual(self._frames_in_table(out), 5)
         self.assertNotIn("No frames from this device", out)

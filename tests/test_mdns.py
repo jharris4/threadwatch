@@ -89,7 +89,8 @@ class WireTest(unittest.TestCase):
         full = encode_name("OTB." + SERVICE)                    # no pointer: it would loop in this message
         more = response([rr(full, TYPE_TXT, txt(b"xa=short")),
                          rr(full, TYPE_SRV, struct.pack(">HHH", 0, 0, 1) + encode_name("otbr.local"))])
-        r = collect_routers(parse_message(response([rr(service, TYPE_PTR, inst)])) + parse_message(more))["otb." + SERVICE]
+        r = collect_routers(parse_message(response([rr(service, TYPE_PTR, inst)]))
+                            + parse_message(more))["otb." + SERVICE]
         self.assertEqual((r["hostname"], r["ext"], r["complete"]), ("otbr.local", None, True))
 
     def test_names_and_txt_off_the_network_cannot_write_journal_lines(self):

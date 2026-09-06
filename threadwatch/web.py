@@ -305,13 +305,15 @@ class Site:
                 parts.append(f'<span class="k">quiet now</span><span class="bad">{len(card["quiet"])}</span>: {who}')
             if card["degraded"]:
                 who = ", ".join(f'<a href="/device/{esc(i["addr"])}">{esc(i["name"] or i["addr"])}</a> '
-                                f'<span class="muted">({esc(i["rssi_dbm"])} dBm, usually {esc(i["reference_dbm"])})</span>'
+                                f'<span class="muted">({esc(i["rssi_dbm"])} dBm, '
+                                f'usually {esc(i["reference_dbm"])})</span>'
                                 for i in card["degraded"])
                 parts.append(f'<span class="k">signal down</span>{who}')
             if card["unknown"]:
                 n = len(card["unknown"])
                 parts.append(f'<span class="k">unnamed</span><a href="/devices?only=unknown">'
-                             f'{n} address{"es" if n != 1 else ""}</a> <span class="muted">to add to devices.json</span>')
+                             f'{n} address{"es" if n != 1 else ""}</a> '
+                             '<span class="muted">to add to devices.json</span>')
             if not parts:
                 parts.append('<span class="k">right now</span><span class="ok">nothing quiet, nothing fading, '
                              'every address named</span>')
@@ -348,7 +350,8 @@ class Site:
             what = "not listening" if s["state"] == "blind" else "may not have heard"
             more = f', {s["count"]} starts' if s["cause"] not in ("clock_step", "down") and s["count"] > 1 else ""
             lines.append(f'<li><b>{hm(s["start"])}-{hm(s["end"])}</b> {what} '
-                         f'<span class="muted">({fmt_duration(s["end"] - s["start"])}{more}): {esc(s["note"])}</span></li>')
+                         f'<span class="muted">({fmt_duration(s["end"] - s["start"])}{more}): '
+                         f'{esc(s["note"])}</span></li>')
         out = (f'<div class="cov">{"".join(bar)}</div>'
                f'<div class="covh"><span>00</span><span>06</span><span>12</span><span>18</span><span>24</span></div>')
         if lines:
@@ -374,8 +377,10 @@ class Site:
                f'<b>{esc(day)}</b>' + (f'<a href="/day/{next_day(day)}{q}">{next_day(day)} &rarr;</a>'
                                         if not is_today else '<span class="muted">today</span>') + '</div>')
         sev = '<div class="filters"><span class="k">show</span>' + "".join(
-            f'<a href="/day/{day}{"?min=" + s if s else ""}"{" class=cur" if (s or "") == (min_severity if floor else "") else ""}>'
-            f'{label}</a>' for s, label in (("", "everything"), ("notice", "notice and up"), ("warning", "warning and up")))
+            f'<a href="/day/{day}{"?min=" + s if s else ""}"'
+            f'{" class=cur" if (s or "") == (min_severity if floor else "") else ""}>'
+            f'{label}</a>'
+            for s, label in (("", "everything"), ("notice", "notice and up"), ("warning", "warning and up")))
         sev += (f' <span class="muted">{len(eps)} of {total}</span>' if floor else "") + '</div>'
         if cap["ring_files"]:
             pk = f'<span class="ok">{len(cap["ring_files"])} hourly capture files still in the ring</span>'
@@ -435,8 +440,8 @@ class Site:
         def link(param, value, label, cur):
             q = {"only": only, "sort": sort}
             q[param] = value
-            href = "/devices" + ("?" + "&".join(f"{k}={v}" for k, v in q.items() if v and not (k == "sort" and v == "name")) if any(
-                v and not (k == "sort" and v == "name") for k, v in q.items()) else "")
+            keep = {k: v for k, v in q.items() if v and not (k == "sort" and v == "name")}
+            href = "/devices" + ("?" + "&".join(f"{k}={v}" for k, v in keep.items()) if keep else "")
             return f'<a href="{href}"{" class=cur" if cur else ""}>{label}</a>'
 
         filters = ('<div class="filters"><span class="k">show</span>' + link("only", "", "all", not only)
@@ -452,7 +457,8 @@ class Site:
             else:
                 pan_html = f'<span class="warn">foreign 0x{r["pan"]:04x}</span>'
             rec = r["reception"]
-            rec_html = {"good": '<span class="ok">good</span>', "marginal": '<span class="warn">marginal</span>'}.get(rec, '<span class="muted">?</span>')
+            rec_html = {"good": '<span class="ok">good</span>',
+                        "marginal": '<span class="warn">marginal</span>'}.get(rec, '<span class="muted">?</span>')
             silent = r["silent_for_s"]
             seen_html = f'<span class="{"bad" if silent > 1800 else ""}">{ago(r["last_seen"], now)}</span>'
             nm = esc(r["name"]) if r["name"] else '<span class="warn">unknown</span>'
@@ -508,7 +514,8 @@ class Site:
         if live and live["role"]:
             head.append(self.role_html(live, now))
         if live and live.get("border_router_label"):
-            head.append(f'border router {esc(live["border_router_label"])}, hostname <code>{esc(live["border_router"])}</code>'
+            head.append(f'border router {esc(live["border_router_label"])}, '
+                        f'hostname <code>{esc(live["border_router"])}</code>'
                         ' (its address is learned from mDNS after every reboot)')
         cards = []
         for addr in sorted(addrs, key=lambda a: -(seen.table.get(a) or {}).get("last_seen", 0)):
@@ -538,7 +545,8 @@ class Site:
             trs.append(f'<tr><td class="t"><a href="/day/{day}">{day}</a> {hm(ep["start"])}</td>'
                        f'<td><span class="sev {esc(ep["severity"])}">{esc(ep["severity"])}</span></td>'
                        f'<td>{esc(ep["title"])}{span}</td><td class="detail muted">{esc(ep["detail"])}</td></tr>')
-        table = (f'<table><tr><th>when</th><th></th><th>what</th><th class="detail">detail</th></tr>{"".join(trs)}</table>'
+        table = (f'<table><tr><th>when</th><th></th><th>what</th>'
+                 f'<th class="detail">detail</th></tr>{"".join(trs)}</table>'
                  if trs else '<p class="empty">no events for this device</p>')
         window = f'<p class="muted">the last {DEVICE_HISTORY_DAYS} days; anything earlier is on its day page</p>'
         title = name if name != addrs[0] else "unknown device"
@@ -560,8 +568,9 @@ class Site:
             age = now - st.get("updated", 0)
             alive = age < 90
             row("capture", ('<span class="ok">running</span>' if alive else
-                            '<span class="bad">not running</span>') + f' <span class="muted">(status written '
-                                                                        f'{fmt_duration(age)} ago; every 30 s while alive)</span>')
+                            '<span class="bad">not running</span>')
+                           + f' <span class="muted">(status written {fmt_duration(age)} ago; '
+                             f'every 30 s while alive)</span>')
             fa = st.get("last_frame_age_s", 0)
             row("last frame", (f'<span class="{"warn" if fa > 120 else "ok"}">{fmt_duration(fa)} ago</span>'
                                if alive else f'<span class="muted">{fmt_duration(age + fa)} ago</span>'))
@@ -602,17 +611,21 @@ class Site:
                 row("alerts", ", ".join(parts))
             det = st.get("detector") or {}
             if det:
-                storm = '<span class="bad">STORM ACTIVE</span>' if det.get("storm_active") else '<span class="ok">quiet</span>'
+                storm = ('<span class="bad">STORM ACTIVE</span>' if det.get("storm_active")
+                         else '<span class="ok">quiet</span>')
                 extra = ", ".join(f"{esc(k)} {esc(v)}" for k, v in det.items()
                                   if k != "storm_active" and not isinstance(v, (list, dict)))
                 row("storm detector", f'{storm} <span class="muted">{extra}</span>')
             cr = st.get("crypto")
             if cr:
-                row("crypto", '<span class="muted">' + ", ".join(f"{esc(k)} {esc(v)}" for k, v in cr.items()) + '</span>')
-        span = f' <span class="muted">({sto["ring_span"][0]} to {sto["ring_span"][1]})</span>' if sto["ring_span"] else ""
+                row("crypto", '<span class="muted">'
+                              + ", ".join(f"{esc(k)} {esc(v)}" for k, v in cr.items()) + '</span>')
+        span = (f' <span class="muted">({sto["ring_span"][0]} to {sto["ring_span"][1]})</span>'
+                if sto["ring_span"] else "")
         rate = f', about {fmt_bytes(sto["bytes_per_hour"])}/hour' if sto.get("bytes_per_hour") else ""
         cap = f', capped at {fmt_bytes(sto["keep_bytes"])}' if sto.get("keep_bytes") else ""
-        row("ring", f'{sto["ring_files"]} of {sto["keep_files"]} hourly files, {fmt_bytes(sto["ring_bytes"])}{rate}{cap}{span}')
+        row("ring", f'{sto["ring_files"]} of {sto["keep_files"]} hourly files, '
+                    f'{fmt_bytes(sto["ring_bytes"])}{rate}{cap}{span}')
         row("incidents", f'{fmt_bytes(sto["incidents_bytes"])} &middot; <a href="/incidents">list</a>')
         row("event log", fmt_bytes(sto["events_bytes"]))
         if sto.get("disk_total"):
@@ -620,7 +633,8 @@ class Site:
             need = sto["ring_needs_bytes"]
             cls = "bad" if free < max(need, 512 * 1024 * 1024) else "ok"
             row("disk", f'<span class="{cls}">{fmt_bytes(free)} free</span> of {fmt_bytes(sto["disk_total"])}'
-                        + (f' <span class="muted">(a full ring needs about {fmt_bytes(need)} more)</span>' if need else ""))
+                        + (f' <span class="muted">(a full ring needs about {fmt_bytes(need)} more)</span>'
+                           if need else ""))
         row("state dir", f'<code>{esc(self.cfg.state_dir)}</code>')
         return self.page("status", f'<h1>status</h1><table class="facts">{"".join(dl)}</table>'
                                    f'<p><a class="muted" href="/api/status">JSON</a></p>')
@@ -630,13 +644,16 @@ class Site:
         trs = []
         for i in items:
             span = f'{i["span"][0]} to {i["span"][1]}' if i["span"] else '<span class="muted">no ring files</span>'
-            trs.append(f'<tr id="{esc(i["name"])}"><td class="t"><a href="/day/{i["day"]}">{i["day"]}</a> {hm(i["frozen"])}</td>'
+            trs.append(f'<tr id="{esc(i["name"])}"><td class="t">'
+                       f'<a href="/day/{i["day"]}">{i["day"]}</a> {hm(i["frozen"])}</td>'
                        f'<td><b>{esc(i["label"])}</b></td><td>{i["pcaps"]} pcaps, {span}</td>'
                        f'<td class="n">{fmt_bytes(i["bytes"])}</td>'
                        f'<td class="muted">{"events included" if i["events"] else ""}</td></tr>')
-        table = (f'<table><tr><th>frozen</th><th>label</th><th>packets</th><th>size</th><th></th></tr>{"".join(trs)}</table>'
+        table = (f'<table><tr><th>frozen</th><th>label</th><th>packets</th>'
+                 f'<th>size</th><th></th></tr>{"".join(trs)}</table>'
                  if trs else '<p class="empty">no frozen incidents</p>')
-        intro = (f'<p class="muted">Snapshots of the ring buffer taken with <code>threadwatch freeze &lt;label&gt;</code>, '
+        intro = (f'<p class="muted">Snapshots of the ring buffer taken with '
+                 f'<code>threadwatch freeze &lt;label&gt;</code>, '
                  f'kept forever under <code>{esc(self.cfg.incidents_dir)}</code>. Open them in Wireshark or with '
                  f'<code>threadwatch why --pcap</code> / <code>replay</code>.</p>')
         return self.page("incidents", f'<h1>incidents</h1>{intro}{table}')

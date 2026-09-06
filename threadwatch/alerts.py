@@ -695,7 +695,8 @@ class Dispatcher:
         """For status.json: what this run has delivered, holds, and gave up."""
         with self._cv:
             queued = len(self._queue) + (1 if self._inflight else 0)
-            retrying = sum(1 for it in self._queue if it["attempt"]) + (1 if self._inflight and self._inflight["attempt"] else 0)
+            retrying = (sum(1 for it in self._queue if it["attempt"])
+                        + (1 if self._inflight and self._inflight["attempt"] else 0))
         return {"delivered": self.delivered, "queued": queued, "retrying": retrying,
                 "given_up": self.given_up, "resumed": self.resumed}
 

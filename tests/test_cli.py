@@ -71,7 +71,8 @@ class AlertTestFilterTest(CliCase):
         code, out, _ = self.run_cli("alert-test", "--no-heartbeats", "--event", "phase_locked_storm",
                                     "--severity", "critical")
         self.assertEqual(code, 0, out)
-        self.assertEqual(out.splitlines(), ["sinks (3):", "  ok   all: true", "  ok   phone: true", "  ok   storms: true"])
+        self.assertEqual(out.splitlines(),
+                         ["sinks (3):", "  ok   all: true", "  ok   phone: true", "  ok   storms: true"])
 
     def test_the_floor_is_named_before_the_filter_when_both_would_skip(self):
         code, out, _ = self.run_cli("alert-test", "--no-heartbeats", "--event", "poll_starvation",
@@ -95,8 +96,10 @@ class AlertTestUnbuiltTest(CliCase):
         (self.d / "config.toml").write_text(
             f'[capture]\ndata_dir = "{self.d / "data"}"\n'
             '[[alerts.sinks]]\nname = "all"\ntype = "command"\ncommand = ["true"]\n'
-            '[[alerts.sinks]]\nname = "phone"\ntype = "http"\nurl = "http://127.0.0.1:9/${THREADWATCH_TEST_UNSET_TOKEN}"\n'
-            '[[alerts.sinks]]\nname = "off"\ntype = "http"\nenabled = false\nurl = "http://127.0.0.1:9/${THREADWATCH_TEST_UNSET_TOKEN}"\n'
+            '[[alerts.sinks]]\nname = "phone"\ntype = "http"\n'
+            'url = "http://127.0.0.1:9/${THREADWATCH_TEST_UNSET_TOKEN}"\n'
+            '[[alerts.sinks]]\nname = "off"\ntype = "http"\nenabled = false\n'
+            'url = "http://127.0.0.1:9/${THREADWATCH_TEST_UNSET_TOKEN}"\n'
             '[[heartbeats]]\nname = "gatus"\nurl = "http://127.0.0.1:9/${THREADWATCH_TEST_UNSET_BEAT}"\n')
         code, out, _ = self.run_cli("alert-test", "--no-heartbeats", "--event", "device_quiet")
         self.assertEqual(code, 1, out)
@@ -116,7 +119,8 @@ class AlertTestUnbuiltTest(CliCase):
         (self.d / "config.toml").write_text(
             f'[capture]\ndata_dir = "{self.d / "data"}"\n'
             '[[alerts.sinks]]\nname = "all"\ntype = "command"\ncommand = ["true"]\n'
-            '[[alerts.sinks]]\nname = "off"\ntype = "http"\nenabled = false\nurl = "http://127.0.0.1:9/${THREADWATCH_TEST_UNSET_TOKEN}"\n')
+            '[[alerts.sinks]]\nname = "off"\ntype = "http"\nenabled = false\n'
+            'url = "http://127.0.0.1:9/${THREADWATCH_TEST_UNSET_TOKEN}"\n')
         code, out, _ = self.run_cli("alert-test", "--no-heartbeats", "--event", "device_quiet")
         self.assertEqual((code, out.splitlines()), (0, ["sinks (1):", "  ok   all: true"]))
 
@@ -560,7 +564,8 @@ class ReplayTest(CliCase):
         self.assertEqual(code, 0)
         self.assertIn("[threadwatch] credentials: loaded", err)      # stdout is the JSON alone
         run = json.loads(out)
-        self.assertEqual(sorted(run), ["crypto", "detector", "duration_s", "events", "file", "files", "frames", "partition"])
+        self.assertEqual(sorted(run),
+                         ["crypto", "detector", "duration_s", "events", "file", "files", "frames", "partition"])
         self.assertEqual((run["file"], run["files"], run["frames"], run["duration_s"], run["partition"]),
                          (str(self.d / "storm.pcap"), [str(self.d / "storm.pcap")], 6, 5.0, None))
         self.assertEqual(run["detector"]["storm_active"], False)
@@ -615,8 +620,10 @@ class ReplayTest(CliCase):
         (self.d / "credentials.toml").write_text('[credentials]\nnetwork_key = "00112233445566778899aabbccddeeff"\n')
         ring = self.d / "ring"
         ring.mkdir()
-        first = [(self.T, self._psdu(self.DEV, 0))] + [(self.T + 30 * i, self._psdu(self.OTHER, i)) for i in range(1, 4)]
-        second = [(self.T + 30 * i, self._psdu(self.OTHER, i)) for i in range(4, 7)] + [(self.T + 210, self._psdu(self.DEV, 7))]
+        first = ([(self.T, self._psdu(self.DEV, 0))]
+                 + [(self.T + 30 * i, self._psdu(self.OTHER, i)) for i in range(1, 4)])
+        second = ([(self.T + 30 * i, self._psdu(self.OTHER, i)) for i in range(4, 7)]
+                  + [(self.T + 210, self._psdu(self.DEV, 7))])
         a = self._write_pcap("ring/threadwatch-20260903-08.pcap", first, DLT_NOFCS)
         b = self._write_pcap("ring/threadwatch-20260903-09.pcap", second, DLT_NOFCS)
         code, out, _err = self.run_cli("replay", str(a), str(b))
@@ -626,14 +633,16 @@ class ReplayTest(CliCase):
         events = [(e["event"], e["addr"]) for e in run["events"] if e.get("addr") == self.DEV]
         self.assertEqual(events, [("device_first_seen", self.DEV), ("device_quiet", self.DEV),
                                   ("device_returned", self.DEV)])
-        self.assertEqual(json.loads(self.run_cli("replay", str(ring))[1])["events"], run["events"])   # the directory: the same
+        got = json.loads(self.run_cli("replay", str(ring))[1])["events"]
+        self.assertEqual(got, run["events"])                # the directory: the same
         code, out, _err = self.run_cli("replay", str(self.d))                       # no pcaps in it
         self.assertEqual(code, f"threadwatch replay: no pcap files in {self.d}")
         self.assertEqual(self.run_cli("replay")[0], 2)                               # nothing named: usage error
 
     def test_replay_reads_an_incident_with_the_inventory_frozen_in_it(self):
         from threadwatch.pcap import DLT_NOFCS
-        (self.d / "config.toml").write_text(f'[capture]\ndata_dir = "{self.d / "data"}"\n[devices]\ninventory = "devices.json"\n')
+        (self.d / "config.toml").write_text(f'[capture]\ndata_dir = "{self.d / "data"}"\n'
+                                            '[devices]\ninventory = "devices.json"\n')
         (self.d / "devices.json").write_text(json.dumps([{"name": "Live Name", "extendedAddress": self.DEV}]))
         (self.d / "credentials.toml").write_text('[credentials]\nnetwork_key = "00112233445566778899aabbccddeeff"\n')
         inc = self.d / "data" / "incidents" / "20260903T100000_storm-at-noon"
@@ -649,7 +658,8 @@ class ReplayTest(CliCase):
             self.assertEqual([e["name"] for e in run["events"] if e["event"] == "device_first_seen"], ["Frozen Name"])
         code, _out, _err = self.run_cli("replay", "--incident", "nope")
         self.assertEqual(code, 1)
-        self.assertEqual(sorted(p.name for p in (self.d / "data" / "state").rglob("*")) if (self.d / "data" / "state").exists() else [], [])
+        state = self.d / "data" / "state"
+        self.assertEqual(sorted(p.name for p in state.rglob("*")) if state.exists() else [], [])
 
     def test_replay_finds_a_link_drop_that_holds_and_then_recovers(self):
         from threadwatch.pcap import DLT_TAP

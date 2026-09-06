@@ -136,7 +136,8 @@ def main(argv=None) -> int:
                           help="only records at this severity or above")
 
     p_web = sub.add_parser("web", help="serve the review pages (day-by-day events, devices)")
-    p_web.add_argument("--bind", help="address to listen on (default: [web] bind, else 127.0.0.1; \"0.0.0.0\" serves the LAN, where nothing authenticates)")
+    p_web.add_argument("--bind", help="address to listen on (default: [web] bind, else 127.0.0.1; "
+                                      "\"0.0.0.0\" serves the LAN, where nothing authenticates)")
     p_web.add_argument("--port", type=int, help="port (default: [web] port, else 8080)")
 
     p_inc = sub.add_parser("incidents", help="list frozen incidents, or delete one")
@@ -417,7 +418,8 @@ def main(argv=None) -> int:
             print(f"{r['instance']}  {r.get('vendor') or '?'} {r.get('model') or ''}\n"
                   f"  hostname {r.get('hostname')}  address {r.get('ext') or '?'}"
                   f"  -> {who or 'not in devices.json'}\n"
-                  f"  network {r.get('network_name')}  ext PAN {r.get('ext_pan_id')}  ip {', '.join(r.get('addresses') or [])}")
+                  f"  network {r.get('network_name')}  ext PAN {r.get('ext_pan_id')}  "
+                  f"ip {', '.join(r.get('addresses') or [])}")
         return 0
 
     if args.cmd == "import":

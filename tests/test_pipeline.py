@@ -597,9 +597,10 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual(self._adopted(pipe)[1], ("warning", f"0x{OWN_PAN:04x}", f"0x{OTHER_PAN:04x}"))
         changed = [r for r in pipe.events.records if r["event"] == "dominant_pan_changed"]
         self.assertIn("set [network] pan_id", changed[-1]["note"])
-        self.assertEqual(self._foreign(pipe), [(f"0x{OTHER_PAN:04x}", f"0x{OWN_PAN:04x}", STRANGER),   # theirs while ours led...
-                                               (f"0x{OWN_PAN:04x}", f"0x{OTHER_PAN:04x}", ROUTER)])   # ...then ours, by that guess
-        for i in range(29):                                      # ours back in the lead, 39 to 20, under double: no flap
+        expected = [(f"0x{OTHER_PAN:04x}", f"0x{OWN_PAN:04x}", STRANGER),       # theirs while ours led...
+                    (f"0x{OWN_PAN:04x}", f"0x{OTHER_PAN:04x}", ROUTER)]         # ...then ours, by that guess
+        self.assertEqual(self._foreign(pipe), expected)
+        for i in range(29):                                     # ours back in the lead, 39 to 20, under double: no flap
             pipe.ingest(frame(t0 + 50 + i, ROUTER))
         self.assertEqual(pipe.dominant_pan(), OTHER_PAN)
         self.assertEqual(len(self._adopted(pipe)), 2)
@@ -935,7 +936,8 @@ class QuietPolicyTest(unittest.TestCase):
         pipe3.periodic(now + 60 + 31 * 60)                    # quiet again, announced and logged
         self._status(updated=now + 60 + 31 * 60, last_frame_ts=now + 60 + 31 * 60)
         Pipeline(self.cfg, EventLog(self.cfg.events_dir), stub_decryptor())
-        quiet = [r for r in read_day(self.cfg.events_dir, day_of(now)) + read_day(self.cfg.events_dir, day_of(now + 3600))
+        quiet = [r for r in read_day(self.cfg.events_dir, day_of(now))
+                 + read_day(self.cfg.events_dir, day_of(now + 3600))
                  if r["event"] == "device_quiet"]
         self.assertEqual(len({r["ts"] for r in quiet}), 2)
 
@@ -2108,7 +2110,8 @@ class RecorderStartTest(unittest.TestCase):
         self._status(updated=T + 5, last_frame_ts=T)
         self._note(ts=T + 5, code=0, reason="stopped", last_frame_ts=T)
         _pipe, rec = self._start(T + 60)
-        self.assertEqual((rec["severity"], rec["cause"], rec["gap_s"], rec["stopped_ts"]), ("info", "stopped", 60, T + 5))
+        self.assertEqual((rec["severity"], rec["cause"], rec["gap_s"], rec["stopped_ts"]),
+                         ("info", "stopped", 60, T + 5))
 
     def test_a_note_stamped_outside_the_gap_or_unreadable_is_not_trusted(self):
         T = 1_700_000_000.0
@@ -2257,11 +2260,12 @@ class BorderRouterTest(unittest.TestCase):
 
     def test_rebooted_hub_keeps_its_name_and_the_old_address_retires(self):
         pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
-        t = time.time() - 3600                                  # real-clock times: the restart below judges silences by now
+        t = time.time() - 3600                              # real-clock times: the restart below judges silences by now
         pipe.ingest(frame(t, self.OLD))
         pipe.ingest(frame(t, self.OTBR))
         pipe._apply_border_routers([self.router(self.HOST, self.OLD),
-                                    self.router("homeassistant-otbr.local", self.OTBR, "HA OTBR #AF1B", "Home Assistant")], t)
+                                    self.router("homeassistant-otbr.local", self.OTBR, "HA OTBR #AF1B",
+                                                "Home Assistant")], t)
         self.assertEqual([r["event"] for r in pipe.events.records if r["event"].startswith("border_router")], [])
         self.assertEqual(pipe.routers[self.HOST]["name"], "Living Room Apple TV")          # bound by listed address
         self.assertEqual(pipe.routers["homeassistant-otbr.local"]["name"], "HA OTBR")      # bound by borderRouter
@@ -2277,7 +2281,8 @@ class BorderRouterTest(unittest.TestCase):
         self.assertEqual(pipe._pending_routers, {})
         ev = [r for r in pipe.events.records if r["event"] == "border_router_address_changed"]
         self.assertEqual(len(ev), 1)
-        self.assertEqual((ev[0]["addr"], ev[0]["previous"], ev[0]["name"]), (self.NEW, self.OLD, "Living Room Apple TV"))
+        self.assertEqual((ev[0]["addr"], ev[0]["previous"], ev[0]["name"]),
+                         (self.NEW, self.OLD, "Living Room Apple TV"))
         self.assertIn("nothing to edit", ev[0]["note"])
         self.assertEqual(pipe.names.name(self.NEW), "Living Room Apple TV")
         self.assertEqual(pipe.seen.table[self.OLD]["rotated_to"], self.NEW)
@@ -2345,7 +2350,8 @@ class BorderRouterTest(unittest.TestCase):
         pipe._apply_border_routers([self.router(self.HOST, self.NEW)], t + 40 * 60)
         self.assertEqual(list(pipe._pending_routers), [self.NEW])
         pipe.ingest(frame(t + 41 * 60, self.NEW))
-        self.assertEqual((pipe.routers[self.HOST]["addr"], pipe.names.name(self.NEW)), (self.NEW, "Living Room Apple TV"))
+        self.assertEqual((pipe.routers[self.HOST]["addr"], pipe.names.name(self.NEW)),
+                         (self.NEW, "Living Room Apple TV"))
         self.assertEqual(pipe.seen.table[self.OLD]["rotated_to"], self.NEW)
 
     def test_forged_advertisements_cannot_grow_the_waiting_room_without_bound(self):
@@ -2451,7 +2457,8 @@ class BorderRouterTest(unittest.TestCase):
         self.assertIn("homepod-kitchen.local", ev[0]["note"])
         self.assertIsNone(pipe.names.name("0011223344556677"))
         pipe.ingest(frame(t + 1100, "8899aabbccddeeff"))
-        pipe._apply_border_routers([self.router("homepod-kitchen.local", "8899aabbccddeeff", "HomePod Kitchen")], t + 1200)
+        pipe._apply_border_routers([self.router("homepod-kitchen.local", "8899aabbccddeeff", "HomePod Kitchen")],
+                                   t + 1200)
         ev = [r for r in pipe.events.records if r["event"] == "border_router_address_changed"]
         self.assertEqual((ev[0]["name"], ev[0]["previous"]), (None, "0011223344556677"))
         self.assertIn("Not in devices.json", ev[0]["note"])
@@ -2756,7 +2763,8 @@ class DailySummaryTest(unittest.TestCase):
         self.assertEqual(s["quiet"], [SENSOR, "Hall Router"])
         self.assertEqual(s["unknown"], [SENSOR])
         self.assertEqual(s["marginal"], [SENSOR])
-        self.assertEqual((s["events_24h"]["warning"], s["events_24h"]["notice"]), (1, 3))   # router quiet; PAN adopted, sensor marginal quiet, foreign PAN
+        # router quiet; PAN adopted, sensor marginal quiet, foreign PAN
+        self.assertEqual((s["events_24h"]["warning"], s["events_24h"]["notice"]), (1, 3))
         self.assertIn(f"300 frames from 2 of 2 devices; quiet: {SENSOR}, Hall Router;", s["note"])
         self.assertIn("1 unknown address; 1 heard marginally; events: 1 warning, 3 notice", s["note"])
         pipe.periodic(self.DAY + 9 * 3600)                  # later the same day: no repeat

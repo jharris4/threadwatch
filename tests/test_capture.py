@@ -10,7 +10,8 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch.capture import (EXIT_FILE, EXIT_SNIFFER_DIED, EXIT_STALLED, PERIODIC_S, STALL_TIMEOUT_S, TICK_S,  # noqa: E402
+from threadwatch.capture import (EXIT_FILE, EXIT_SNIFFER_DIED, EXIT_STALLED, PERIODIC_S,  # noqa: E402
+                                 STALL_TIMEOUT_S, TICK_S,
                                  Housekeeping, _write_status, capture_healthy, capture_stalled,
                                  last_frame_on_record, periodic_due, record_exit, status_tick, watchdog_verdict)
 from threadwatch.config import Config  # noqa: E402
@@ -295,11 +296,11 @@ class WatchdogVerdictTest(unittest.TestCase):
     def test_a_dead_sniffer_exits_at_once_and_a_stall_at_the_timeout(self):
         self.assertEqual((EXIT_STALLED, EXIT_SNIFFER_DIED), (2, 4))
         self.assertEqual(watchdog_verdict(30.0, ring_open=False, sniffer_alive=False), EXIT_SNIFFER_DIED)
-        self.assertIsNone(watchdog_verdict(30.0, ring_open=False, sniffer_alive=True))    # still opening the port
-        self.assertIsNone(watchdog_verdict(30.0, ring_open=True, sniffer_alive=False))    # the FIFO closes: main loop's exit
+        self.assertIsNone(watchdog_verdict(30.0, ring_open=False, sniffer_alive=True))  # still opening the port
+        self.assertIsNone(watchdog_verdict(30.0, ring_open=True, sniffer_alive=False))  # FIFO closes: main loop's exit
         self.assertIsNone(watchdog_verdict(30.0, ring_open=True, sniffer_alive=True))
         self.assertEqual(watchdog_verdict(181.0, ring_open=True, sniffer_alive=True), EXIT_STALLED)
-        self.assertEqual(watchdog_verdict(181.0, ring_open=False, sniffer_alive=True), EXIT_STALLED)   # alive, never delivered
+        self.assertEqual(watchdog_verdict(181.0, ring_open=False, sniffer_alive=True), EXIT_STALLED)  # never delivered
         self.assertEqual(watchdog_verdict(181.0, ring_open=False, sniffer_alive=False), EXIT_SNIFFER_DIED)
 
 
@@ -378,7 +379,8 @@ class StatusTickTest(unittest.TestCase):
         self.assertAlmostEqual(age, 170.0, delta=2.0)
         self.assertIsNone(st)
         # Open, nothing heard this run: the earlier run's stamp is carried, and the age says so.
-        age, st = self._tick({"last_frame": None, "last_frame_mono": None, "total": 0, "ring": self.ring}, prior, mono - 170)
+        age, st = self._tick({"last_frame": None, "last_frame_mono": None, "total": 0, "ring": self.ring}, prior,
+                             mono - 170)
         self.assertAlmostEqual(age, 170.0, delta=2.0)
         self.assertEqual((st["last_frame_ts"], st["last_frame_age_s"], st["frames_total"]), (prior, round(age, 1), 0))
         self.assertLess(st["last_frame_ts"], time.time() - 7000)
@@ -389,7 +391,8 @@ class StatusTickTest(unittest.TestCase):
         self.assertAlmostEqual(age, 50.0, delta=2.0)
         self.assertEqual((st["last_frame_ts"], st["frames_total"]), (heard, 12))
         # No run has ever heard one: None, not now.
-        _age, st = self._tick({"last_frame": None, "last_frame_mono": None, "total": 0, "ring": self.ring}, None, mono - 170)
+        _age, st = self._tick({"last_frame": None, "last_frame_mono": None, "total": 0, "ring": self.ring}, None,
+                              mono - 170)
         self.assertIsNone(st["last_frame_ts"])
         self.assertEqual(self.logs, [])
 

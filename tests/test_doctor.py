@@ -142,8 +142,10 @@ class DoctorTest(unittest.TestCase):
         os.chmod(env, 0o600)
         try:
             checks = doctor.load_env(env)
-            self.assertEqual(self.levels(checks), [("warn", "alerts.env"), ("warn", "alerts.env"), ("ok", "alerts.env")])
-            self.assertIn("line 1: 'export DOCTOR_TEST_EXPORTED': the systemd unit ignores this line (drop the 'export' prefix)",
+            self.assertEqual(self.levels(checks),
+                             [("warn", "alerts.env"), ("warn", "alerts.env"), ("ok", "alerts.env")])
+            self.assertIn("line 1: 'export DOCTOR_TEST_EXPORTED': the systemd unit ignores "
+                          "this line (drop the 'export' prefix)",
                           checks[0][2])
             self.assertIn("line 3: 'BAD-NAME'", checks[1][2])
             self.assertEqual(checks[2][2], "1 secret(s) loaded for this check")
@@ -525,7 +527,8 @@ class CheckBorderRoutersTest(unittest.TestCase):
 
     def test_disabled_failed_empty_and_found(self):
         self.cfg.border_router_browse_s = 0
-        self.assertEqual(self._check(), [("ok", "border routers", "mDNS browse disabled ([border_routers] browse_s = 0)")])
+        self.assertEqual(self._check(),
+                         [("ok", "border routers", "mDNS browse disabled ([border_routers] browse_s = 0)")])
         self.cfg.border_router_browse_s = 600
         level, subject, text = self._check(error=OSError("no route to host"))[0]
         self.assertEqual((level, subject), ("warn", "border routers"))

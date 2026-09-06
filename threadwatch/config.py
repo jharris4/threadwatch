@@ -148,6 +148,56 @@ class Config:
         return self.state_dir / "events"
 
 
+# Every section load() understands, and the keys it reads from each.
+# A name that is not here is a typo, or a setting from a different version:
+# either way tomllib parses it happily and load() never looks at it, so the
+# value silently does nothing. On a recorder that means retention, a
+# snapshot or an alert quietly not happening, discovered when the packets
+# are already gone. Unknown names are rejected at load instead.
+# [alerts] and [heartbeats] map to None: alerts.py owns their shape and
+# reports on it when it builds the sinks, where a single unbuildable sink
+# can be logged rather than stop the recorder from starting.
+SECTIONS: dict[str, frozenset[str] | None] = {
+    "network": frozenset(("channel", "pan_id")),
+    "capture": frozenset(("serial_port", "data_dir", "keep_files", "keep_gb",
+                          "freeze_on_critical", "incidents_keep")),
+    "devices": frozenset(("inventory",)),
+    # end_device_s and router_s are the pre-2026-09-04 split, still read below.
+    "quiet": frozenset(("silence_s", "min_rssi_dbm", "end_device_s", "router_s")),
+    "link": frozenset(("drop_db", "hold_s")),
+    "polls": frozenset(("rearm_s", "confirm_s")),
+    "retransmissions": frozenset(("confirm_s",)),
+    "border_routers": frozenset(("browse_s",)),
+    "summary": frozenset(("hour", "severity")),
+    "detect": frozenset(("flood_multiplier", "flood_min_frames", "period_min_s",
+                         "period_max_s", "period_onsets", "alert_cooldown_s")),
+    "events": frozenset(("keep_days",)),
+    "web": frozenset(("bind", "port")),
+    "credentials": frozenset(("file",)),
+    "alerts": None,
+    "heartbeats": None,
+}
+
+
+def check_sections(raw: dict, path: Path) -> None:
+    """Reject sections and keys load() would otherwise ignore in silence."""
+    where = f" in {path}"
+    for section in sorted(raw):
+        if section not in SECTIONS:
+            raise ValueError(f"unknown section [{section}]{where} "
+                             f"(see config/config.example.toml for the sections there are)")
+        keys = SECTIONS[section]
+        if keys is None:
+            continue
+        table = raw[section]
+        if not isinstance(table, dict):
+            raise ValueError(f"[{section}]{where} must be a section of settings, not {table!r}")
+        for key in sorted(table):
+            if key not in keys:
+                raise ValueError(f"unknown key {key!r} in [{section}]{where} "
+                                 f"([{section}] takes: {', '.join(sorted(keys))})")
+
+
 def load(path: Path | None) -> Config:
     cfg = Config()
     if path is None:
@@ -157,6 +207,7 @@ def load(path: Path | None) -> Config:
         cfg.config_dir = Path(path).resolve().parent
         cfg.config_path = Path(path).resolve()
         raw = tomllib.loads(Path(path).read_text())
+        check_sections(raw, Path(path))
         net = raw.get("network", {})
         cfg.channel = int(net.get("channel", cfg.channel))
         if not 11 <= cfg.channel <= 26:

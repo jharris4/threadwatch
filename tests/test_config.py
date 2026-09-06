@@ -420,5 +420,67 @@ class ExampleConfigTest(unittest.TestCase):
             self.assertEqual(beats[0].headers["Authorization"], "Bearer tk_gatus")
 
 
+class UnknownNamesTest(unittest.TestCase):
+    """A name load() does not read is a typo or a setting from another
+    version, and tomllib parses both without complaint. Ignored, the
+    recorder runs on defaults: the ring keeps the wrong number of hours,
+    the snapshot never happens, and nothing says so until the packets are
+    wanted and gone. Rejected at load, the recorder refuses to start and
+    names the file."""
+
+    def _load(self, text):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "config.toml"
+            path.write_text(text)
+            return config_mod.load(path)
+
+    def test_an_unknown_section_is_refused_and_the_file_is_named(self):
+        with self.assertRaises(ValueError) as e:
+            self._load("[recording]\nkeep_files = 100\n")
+        self.assertIn("unknown section [recording]", str(e.exception))
+        self.assertIn("config.toml", str(e.exception))
+
+    def test_a_mistyped_key_is_refused_and_the_section_lists_what_it_takes(self):
+        with self.assertRaises(ValueError) as e:
+            self._load("[capture]\nkeep_file = 100\n")
+        self.assertIn("unknown key 'keep_file' in [capture]", str(e.exception))
+        self.assertIn("keep_files", str(e.exception))
+
+    def test_a_section_written_as_a_bare_value_is_refused_not_crashed_on(self):
+        with self.assertRaises(ValueError) as e:
+            self._load("web = 8080\n")
+        self.assertIn("[web]", str(e.exception))
+
+    def test_alerts_and_heartbeats_keep_their_own_shape(self):
+        # alerts.py validates sinks where an unbuildable one can be logged
+        # instead of stopping the recorder from starting, so config.load
+        # must not second-guess their keys.
+        cfg = self._load('[alerts]\n[[alerts.sinks]]\nname = "s"\ntype = "http"\n'
+                         'url = "http://x"\nwhatever = 1\n\n[[heartbeats]]\n'
+                         'name = "h"\nurl = "http://y"\nanything = 2\n')
+        self.assertEqual(cfg.alerts_raw["sinks"][0]["whatever"], 1)
+        self.assertEqual(cfg.heartbeats_raw[0]["anything"], 2)
+
+    def test_the_legacy_quiet_split_still_loads(self):
+        cfg = self._load("[quiet]\nend_device_s = 900\nrouter_s = 1200\n")
+        self.assertEqual(cfg.quiet_s, 1200)
+
+    def test_config_load_and_the_example_agree_on_what_exists(self):
+        """SECTIONS and ExampleConfigTest.SETTINGS are the same schema written
+        twice. Renaming a key in one and not the other puts the loader and
+        the documentation out of step, which is the failure this whole check
+        exists to prevent."""
+        documented = {(t, k) for t, k in ExampleConfigTest.SETTINGS}
+        documented |= {p for p in ExampleConfigTest.RAW if len(p) == 2}
+        loaded = {(section, key)
+                  for section, keys in config_mod.SECTIONS.items() if keys
+                  for key in keys}
+        # Read from an older file's spelling, deliberately undocumented.
+        legacy = {("quiet", "end_device_s"), ("quiet", "router_s")}
+        self.assertEqual(loaded, documented - {p for p in documented if p[0] == "alerts"} | legacy)
+        opaque = {s for s, keys in config_mod.SECTIONS.items() if keys is None}
+        self.assertEqual(opaque, {"alerts", "heartbeats"})
+
+
 if __name__ == "__main__":
     unittest.main()

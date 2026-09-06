@@ -14,7 +14,6 @@ from threadwatch.events import NullEventLog  # noqa: E402
 from threadwatch.pcap import Frame  # noqa: E402
 from threadwatch.pipeline import Pipeline  # noqa: E402
 from threadwatch.crypto import Decryptor  # noqa: E402
-from tests.no_lan import setUpModule, tearDownModule  # noqa: E402, F401  (no mDNS from the suite)
 from tests.frames import psdu_for  # noqa: E402
 
 
@@ -2135,7 +2134,14 @@ class BorderRouterTest(unittest.TestCase):
         self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json", border_router_browse_s=0)
 
     def tearDown(self):
+        # No browse thread outlives the Pipeline that started it. One that
+        # does is still inside browse() when the next module patches an
+        # mdns global, and dies there with a traceback belonging to nobody
+        # (tests/no_lan).
+        import threading
+        leaked = [t.name for t in threading.enumerate() if t.name == "mdns-browse" and t.is_alive()]
         self.tmp.cleanup()
+        self.assertEqual(leaked, [])
 
     @staticmethod
     def router(host, ext, instance="AppleTV Living Room", vendor="Apple", model="BorderRouter"):

@@ -17,7 +17,11 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: pip install -r requirements.txt
-      - run: python -m unittest discover -s tests -v
+      # -t . so discovery imports tests/__init__.py, which installs the
+      # mDNS guard before any test module (tests/no_lan). Without it the
+      # guard depends on some module happening to import tests.no_lan,
+      # and the run sends real multicast on the CI runner's network.
+      - run: python -m unittest discover -t . -s tests -v
 
   docker:
     runs-on: ubuntu-latest

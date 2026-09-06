@@ -5,30 +5,42 @@ its first periodic tick, on a thread of its own. Most tests build such a
 recorder without meaning to test that, and the suite used to send real
 multicast queries every run and leak browse threads past their tests:
 one still waiting when test_mdns swapped select() for a fake died there
-with a traceback nobody had asked for. Import this module's
-setUpModule / tearDownModule into any test module that builds a
-non-replay Pipeline: the browse answers at once with an empty LAN, so
-the thread logic still runs and nothing leaves the box. A test of the
-browse itself installs its own fake over this one (test_pipeline does)
-or patches mdns.socket (test_mdns, which must not import this).
+with a traceback nobody had asked for.
+
+This used to be opt-in, imported by each module that knew it needed it,
+which protected only the modules that remembered and left the hole open
+for the next one (test_doctor reached a real browse through a check).
+tests/__init__.py now calls install() before any test module is
+imported, so the guard costs nothing to get right: the browse answers at
+once with an empty LAN, the thread logic still runs, and nothing leaves
+the box. A test of the browse itself asks for the real one back with
+real_browse() (test_mdns does), or installs its own fake over this one
+(test_pipeline does).
 """
 
-from unittest import mock
+import contextlib
+from typing import Iterator
 
 from threadwatch import mdns
 
-_patchers: list = []
+_real_browse = mdns.browse
 
 
 def no_browse(timeout: float = 4.0, **_kw) -> list:
     return []
 
 
-def setUpModule() -> None:
-    p = mock.patch.object(mdns, "browse", no_browse)
-    p.start()
-    _patchers.append(p)
+def install() -> None:
+    """Point mdns.browse at the empty LAN, for the whole run."""
+    mdns.browse = no_browse
 
 
-def tearDownModule() -> None:
-    _patchers.pop().stop()
+@contextlib.contextmanager
+def real_browse() -> Iterator[None]:
+    """The real browse, for a test of the browse itself. Whatever it opens
+    must be faked at the socket layer (mdns.socket), not left to the LAN."""
+    mdns.browse = _real_browse
+    try:
+        yield
+    finally:
+        mdns.browse = no_browse

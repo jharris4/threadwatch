@@ -18,7 +18,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from threadwatch import alerts  # noqa: E402
 from threadwatch.events import EventLog, read_all  # noqa: E402
-from tests.no_lan import setUpModule, tearDownModule  # noqa: E402, F401  (no mDNS from the suite)
 
 
 class _Server:

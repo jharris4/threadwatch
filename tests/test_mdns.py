@@ -10,6 +10,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from threadwatch import mdns  # noqa: E402
+from tests import no_lan  # noqa: E402
+from tests.no_lan import real_browse  # noqa: E402  (this module tests the browse itself)
 from threadwatch.mdns import (SERVICE, clean_text, TYPE_A, TYPE_PTR, TYPE_SRV, TYPE_TXT, build_query,  # noqa: E402
                               collect_routers, encode_name, parse_message, read_name)
 
@@ -26,6 +28,17 @@ def rr(name: bytes, rtype: int, rdata: bytes, ttl: int = 120) -> bytes:
 
 def response(records: list[bytes]) -> bytes:
     return struct.pack(">HHHHHH", 0, 0x8400, 0, len(records), 0, 0) + b"".join(records)
+
+
+class GuardTest(unittest.TestCase):
+    def test_the_suite_cannot_browse_the_lan_without_asking(self):
+        # tests/__init__.py installs the guard before any test module, so
+        # a module that never heard of no_lan still cannot send multicast.
+        # Only real_browse() below gets the real one back.
+        self.assertIs(mdns.browse, no_lan.no_browse)
+        with real_browse():
+            self.assertIsNot(mdns.browse, no_lan.no_browse)
+        self.assertIs(mdns.browse, no_lan.no_browse)
 
 
 class WireTest(unittest.TestCase):
@@ -151,7 +164,7 @@ class BrowseTest(unittest.TestCase):
                                                if not k.startswith("__")})
         fake_socket.socket = FakeSock
         log = []
-        with mock.patch.object(mdns, "socket", fake_socket), \
+        with real_browse(), mock.patch.object(mdns, "socket", fake_socket), \
                 mock.patch.object(mdns, "select", types.SimpleNamespace(select=fake_select)):
             found = mdns.browse(timeout=timeout, log=log.append)
         return found, made, log

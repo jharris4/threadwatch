@@ -12,7 +12,6 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from threadwatch.events import day_of, migrate_legacy, prune_days, read_day  # noqa: E402
-from tests.no_lan import setUpModule, tearDownModule  # noqa: E402, F401  (no mDNS from the suite)
 
 TS = 1756944000.0
 

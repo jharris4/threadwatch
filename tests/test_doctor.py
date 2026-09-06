@@ -14,7 +14,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from threadwatch.config import Config  # noqa: E402
 from threadwatch import doctor  # noqa: E402
-from tests.no_lan import setUpModule, tearDownModule  # noqa: E402, F401  (no mDNS from the suite)
 
 
 class DoctorTest(unittest.TestCase):

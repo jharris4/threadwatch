@@ -17,7 +17,6 @@ from threadwatch.config import Config  # noqa: E402
 from threadwatch.crypto import Decryptor  # noqa: E402
 from threadwatch.events import NullEventLog  # noqa: E402
 from threadwatch.pipeline import Pipeline  # noqa: E402
-from tests.no_lan import setUpModule, tearDownModule  # noqa: E402, F401  (no mDNS from the suite)
 from tests.frames import psdu_for  # noqa: E402
 
 

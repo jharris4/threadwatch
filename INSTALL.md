@@ -65,7 +65,8 @@ serial port. Auto-detection finds it by USB id;
 ## 4. Check
 
 ```bash
-bin/threadwatch doctor        # every line ok, including "services"; exits 1 on any FAIL, 0 on warnings
+bin/threadwatch doctor        # no FAIL lines; exits 1 on any FAIL, 0 on warnings. "alerts" and
+                              # "heartbeats" warn until you configure them (docs/ALERTING.md)
 bin/threadwatch status        # frames_total should be climbing (every field: docs/OPERATIONS.md)
 journalctl -u threadwatch -f  # live log incl. storm alerts
 ```

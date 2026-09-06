@@ -18,6 +18,7 @@ from .events import NullEventLog
 from .pcap import PcapStreamReader, is_poll
 from .pipeline import Pipeline, load_decryptor
 from .review import coverage, devices_history, episode_blind_s, fmt_duration, fmt_episode
+from .snapshot import saved_at
 
 HISTORY_ROWS = 20
 
@@ -115,8 +116,16 @@ def run_device(cfg: Config, target: str, pcap_file: Path | None = None,
     snapshot's: its pcaps, and (cfg.for_snapshot) its inventory and event
     log, so the names and the history are the ones current when it was
     saved."""
+    # A snapshot is read on its own terms: months later, "the last 90
+    # days" measured from today holds none of the history saved with it,
+    # and an episode still open when it was saved would stretch its
+    # duration to now. Everything the bundle knows stops at the moment it
+    # was taken, so that is the moment its history is read against; the
+    # last frame analyzed stands in when the manifest cannot be read.
+    reference = None
     if snapshot_dir is not None:
         cfg = cfg.for_snapshot(snapshot_dir)
+        reference = saved_at(snapshot_dir)
     addrs, display = resolve_target(cfg, target)
     addr_set = set(addrs)
     decryptor = load_decryptor(cfg)
@@ -256,7 +265,7 @@ def run_device(cfg: Config, target: str, pcap_file: Path | None = None,
         print("Interpretation: either out of range of the dongle, silent (dead "
               "battery / crashed radio), or transmitting under an unknown "
               "rotated address — check `threadwatch devices` for unknowns.")
-        print_history(cfg.events_dir, addrs)
+        print_history(cfg.events_dir, addrs, reference)
         return 1 if unreadable else 0
     print(f"first seen: {_t.strftime('%Y-%m-%d %H:%M:%S', _t.localtime(first_ts))}")
     print(f"last seen:  {_t.strftime('%Y-%m-%d %H:%M:%S', _t.localtime(last_ts))}"
@@ -304,5 +313,6 @@ def run_device(cfg: Config, target: str, pcap_file: Path | None = None,
             print(f"  {_t.strftime('%m-%d %H:%M:%S', _t.localtime(ts))}  {cmd}")
     else:
         print("\nno rejoin-related MLE seen from this device in the window.")
-    print_history(cfg.events_dir, addrs)
+    print_history(cfg.events_dir, addrs, reference if reference is not None
+                  else (last_ts if snapshot_dir is not None else None))
     return 1 if unreadable else 0

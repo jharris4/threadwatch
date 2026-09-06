@@ -382,6 +382,42 @@ class RunDeviceRingTest(unittest.TestCase):
                 run_device(self.cfg, self.DEV, None, hours=0.5, snapshot_dir=inc / "nothing-here")
         self.assertIn("no pcap files in snapshot", str(cm.exception))
 
+    def test_an_old_snapshot_still_shows_the_history_saved_with_it(self):
+        # The history window is 90 days wide. Measured from today, a
+        # snapshot read six months later held none of the episodes that
+        # were saved with it: the story it was taken to preserve printed
+        # as "nothing recorded for this device". It is read against the
+        # moment it was saved instead.
+        import contextlib
+        import io
+        import json
+
+        from threadwatch.device import run_device
+        from threadwatch.events import EventLog
+        from threadwatch.snapshot import MANIFEST
+        old = self.now - 180 * 86400
+        hours_ago = (self.now - old) / 3600
+        inc = self.cfg.snapshots_dir / (time.strftime("%Y%m%dT%H%M%S", time.localtime(old)) + "_storm")
+        inc.mkdir(parents=True)
+        self._ring_file(hours_ago, self._frames(hours_ago, 5))
+        for f in self.cfg.ring_dir.iterdir():
+            f.rename(inc / f.name)
+        (inc / "devices.json").write_text(json.dumps([{"name": "Saved AQ", "extendedAddress": self.DEV}]))
+        (inc / MANIFEST).write_text(json.dumps({"format": 1, "saved_at": old, "label": "storm"}))
+        log = EventLog(inc / "events")
+        log.emit("device_quiet", "warning", old - 7200, addr=self.DEV, name="Saved AQ",
+                 silent_for_s=1800, last_seen=old - 9000, reception="good")
+        log.emit("device_returned", "notice", old - 3600, addr=self.DEV, name="Saved AQ",
+                 silent_for_s=3600, note="back")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            rc = run_device(self.cfg, "Saved AQ", None, hours=None, snapshot_dir=inc)
+        text = out.getvalue()
+        self.assertEqual(rc, 0)
+        self.assertNotIn("nothing recorded for this device", text)
+        self.assertIn("event log (1 episode(s)", text)
+        self.assertIn("Saved AQ quiet for", text)
+
     def test_no_ring_is_said_plainly(self):
         with self.assertRaises(SystemExit) as cm:
             self._run()

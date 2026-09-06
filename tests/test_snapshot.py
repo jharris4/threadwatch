@@ -3,6 +3,7 @@
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -119,6 +120,24 @@ class BundleTest(unittest.TestCase):
         # saying what the copy is, and why it does not look like their file,
         # takes their place.
         self.assertIn("secret value replaced", out)
+
+    def test_when_the_bundle_says_it_was_saved(self):
+        # What a snapshot is read against: months later, "the last 90 days"
+        # has to mean the 90 days before it was taken.
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            inc = Path(d) / "20260903T100000_storm"
+            inc.mkdir()
+            self.assertEqual(snapshot.saved_at(inc),                     # no manifest: the name says when
+                             time.mktime(time.strptime("20260903T100000", "%Y%m%dT%H%M%S")))
+            (inc / snapshot.MANIFEST).write_text(json.dumps({"saved_at": 1_756_800_000.0}))
+            self.assertEqual(snapshot.saved_at(inc), 1_756_800_000.0)
+            (inc / snapshot.MANIFEST).write_text("{ truncated")          # a copy cut short
+            self.assertEqual(snapshot.saved_at(inc),
+                             time.mktime(time.strptime("20260903T100000", "%Y%m%dT%H%M%S")))
+            unnamed = Path(d) / "no-stamp-here"
+            unnamed.mkdir()
+            self.assertIsNone(snapshot.saved_at(unnamed))
 
     def test_the_bundle_names_everything_it_holds(self):
         import json

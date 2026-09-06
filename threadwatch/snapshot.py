@@ -336,6 +336,25 @@ def save_snapshot(cfg, label: str = "snapshot", now: float | None = None,
     return final, count
 
 
+def saved_at(snapshot_dir: Path) -> float | None:
+    """When the snapshot was saved, from its manifest, falling back to the
+    stamp in its directory name. This is the "now" a snapshot has to be
+    read against: a bundle opened months later still holds the history
+    that was current when it was taken."""
+    saved = None
+    try:
+        manifest = json.loads((snapshot_dir / MANIFEST).read_text())
+        saved = manifest.get("saved_at") if isinstance(manifest, dict) else None
+    except (OSError, ValueError):
+        pass
+    if isinstance(saved, (int, float)) and not isinstance(saved, bool):
+        return float(saved)
+    try:
+        return time.mktime(time.strptime(snapshot_dir.name.partition("_")[0], "%Y%m%dT%H%M%S"))
+    except ValueError:
+        return None
+
+
 def prune_auto_snapshots(snapshots_dir: Path, keep: int) -> list[str]:
     """Remove all but the newest ``keep`` automatic snapshots and return
     their names, oldest first. Only those snapshot_on_critical made

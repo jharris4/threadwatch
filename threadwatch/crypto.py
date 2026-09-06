@@ -380,13 +380,19 @@ class Decryptor:
 
     def parse_mle(self, udp_payload: bytes, src_ext_hex: str | None,
                   src_ip: bytes | None = None,
-                  dst_ip: bytes | None = None) -> MleInfo | None:
+                  dst_ip: bytes | None = None, bind_short: bool = True) -> MleInfo | None:
         """Decrypt and parse an MLE message (UDP port 19788).
 
         MLE's AES-CCM auth data is srcIPv6 || dstIPv6 || security header
         (from the security-control byte through the key identifier), so the
         reconstructed link-local addresses from the 6LoWPAN layer are required
         for secured messages.
+
+        ``bind_short`` learns the sender's short -> extended mapping from
+        the message. The pipeline passes False and binds it itself once the
+        message's frame counter has been checked: a MIC alone does not say
+        the message is not a recording, and a replay must not move an
+        address binding.
         """
         if not udp_payload:
             return None
@@ -463,7 +469,7 @@ class Decryptor:
             off += 2 + l
         # Learn the short->extended mapping from the sender itself, which
         # unlocks MAC decryption of its short-source data frames.
-        if info.source_addr16 is not None and src_ext_hex:
+        if bind_short and info.source_addr16 is not None and src_ext_hex:
             self.short_to_ext[f"{info.source_addr16:04x}"] = src_ext_hex
         return info
 

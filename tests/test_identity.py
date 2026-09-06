@@ -729,6 +729,47 @@ class SightingAuthenticityTest(unittest.TestCase):
             pipe.ingest(parse_frame(t0 + 60, advert(1, 1, 3), 230))      # the same message again
             self.assertEqual((pipe.seen.table[OTHER]["frames"], pipe.replayed), (2, 1))
 
+    def test_a_replayed_mle_message_changes_nothing_it_used_to_change(self):
+        # The MIC on a captured MLE advertisement is still valid when it is
+        # played back, so the topology it describes was applied before the
+        # counter was checked: the partition and the sender's RLOC reverted
+        # to what they were when the recording was made, and a
+        # partition_or_leader_change was paged for a change that never
+        # happened. Nothing an MLE message asserts is acted on until the
+        # message is known to be current.
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as tmp:
+            pipe, _cfg = self._pipe(tmp)
+            t0 = 1_700_000_000.0
+            src_ip = LINK_LOCAL + Decryptor._iid_from_ext(OTHER)
+            fcf = 1 | 0x0040 | (2 << 10) | (1 << 12) | (3 << 14)             # MAC-unsecured, ext source
+
+            def advert(counter, partition, rloc):
+                body = (b"\x04" + b"\x00\x02" + bytes.fromhex(rloc)
+                        + b"\x0b\x08" + struct.pack(">L", partition) + b"\x00\x00\x00\x2a")
+                msg = mle_message(OTHER, 0, counter, src_ip, ALL_NODES, body)
+                return (struct.pack("<HBH", fcf, counter & 0xFF, PAN) + b"\xff\xff"
+                        + bytes.fromhex(OTHER)[::-1] + lowpan_udp(19788, 19788, msg))
+
+            first = advert(1, 111, "c800")
+            pipe.ingest(parse_frame(t0, first, 230))
+            pipe.ingest(parse_frame(t0 + 1, advert(2, 222, "cc00"), 230))
+            self.assertEqual(pipe.partition[0], 222)
+            self.assertEqual(pipe.seen.table[OTHER]["rloc16"], "cc00")
+            changes = [r for r in pipe.events.records if r["event"] == "partition_or_leader_change"]
+            self.assertEqual(len(changes), 1)                                # 111 -> 222, the real one
+            out = io.StringIO()
+            with contextlib.redirect_stderr(out):
+                pipe.ingest(parse_frame(t0 + 60, first, 230))                # the recording, a minute on
+            self.assertEqual(pipe.partition[0], 222)                         # unmoved
+            self.assertEqual(pipe.seen.table[OTHER]["rloc16"], "cc00")
+            self.assertEqual(pipe.seen.table[OTHER]["rloc16_ts"], t0 + 1)    # no binding from a replay
+            self.assertEqual(len([r for r in pipe.events.records
+                                  if r["event"] == "partition_or_leader_change"]), 1)
+            self.assertEqual(pipe.replayed, 1)
+            self.assertIn("not counted as a sighting", out.getvalue())
+
     def test_a_secured_mle_message_vouches_for_an_unsecured_frame(self):
         # Routers advertise in MAC-unsecured frames secured at the MLE
         # layer: those are sightings, on the MLE MIC and MLE counter.

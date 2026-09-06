@@ -1093,10 +1093,21 @@ class Pipeline:
         # and the stats below: the sender's liveness, signal and polls are
         # its own, not those of whatever put its address on the air.
         plain, live = self._verify(f, who)
-        info = self._deep_inspect(f, plain) if f.ftype == 1 and plain is not None else None
-        if who and not live and info is not None and info.secured and info.counter is not None:
-            live = self._counter_advances(self._mle_counter, who, info.counter, ts, "MLE message",
-                                          info.key_sequence)
+        info, src_for_mle = (self._deep_inspect(f, plain) if f.ftype == 1 and plain is not None
+                             else (None, None))
+        # A secured MLE message vouches for the sender of the unsecured
+        # frame that carries it, and only while its own counter says it is
+        # not a recording. The check runs even when the MAC layer already
+        # vouched: what the message asserts about the mesh - the sender's
+        # short address, the partition, a rejoin - is only acted on when
+        # the message itself is fresh.
+        fresh_mle = False
+        if who and info is not None and info.secured and info.counter is not None:
+            fresh_mle = self._counter_advances(self._mle_counter, who, info.counter, ts, "MLE message",
+                                               info.key_sequence)
+            live = live or fresh_mle
+        if info is not None and info.secured and fresh_mle:
+            self._apply_mle(f, info, src_for_mle)
         if who and live and who not in self.seen.table and not self._admit(who, ts):
             live = False        # every row is one worth keeping: this frame goes uncounted
         if who and live:
@@ -1651,8 +1662,10 @@ class Pipeline:
     def _deep_inspect(self, f: Frame, plain: bytes):
         """The credentialed layer: what the MAC payload (decrypted by
         _verify, or the plaintext of an unsecured frame) says about the
-        mesh. Returns the MLE message found, if any, so ingest can take a
-        secured one as vouching for an unsecured frame's sender."""
+        mesh. Reads; it does not act. Returns the MLE message found, if
+        any, and the extended address it came from, so ingest can take a
+        secured one as vouching for an unsecured frame's sender and hand
+        both to _apply_mle once its counter has been checked."""
         from .crypto import MLE_UDP_PORT, Decryptor
         ext = f.src if f.src and len(f.src) == 16 else None
         short = f.src if f.src and len(f.src) == 4 else None
@@ -1663,56 +1676,62 @@ class Pipeline:
         try:
             r = Decryptor.udp_ports(plain, mac_src_ext=ext, mac_dst_ext=dext, mac_dst_short=dshort)
             if not r:
-                return None
+                return None, None
             sport, dport, payload, sip, dip = r
-            info = None
+            info = src_for_mle = None
             if MLE_UDP_PORT in (sport, dport):
                 src_for_mle = ext or self.decryptor.short_to_ext.get(short or "")
-                info = self.decryptor.parse_mle(payload, src_for_mle, sip, dip)
+                # bind_short=False: the mapping this message asserts is
+                # applied in _apply_mle, once its counter has been checked.
+                info = self.decryptor.parse_mle(payload, src_for_mle, sip, dip, bind_short=False)
         except (struct.error, IndexError, ValueError):
             self.decryptor.stats["parse_failed"] += 1
-            return None
+            return None, None
         if MLE_UDP_PORT in (sport, dport):
-            # Only a message that passed its MIC says anything about the
-            # mesh: an unsecured one is bytes from anyone on the channel,
-            # and acting on it would let a stranger page for a partition
-            # change, invent a rejoin, or claim another device's address.
-            if not info or not info.secured:
-                return info
-            if info.source_addr16 is not None and src_for_mle:
-                self._note_rloc16(src_for_mle, f"{info.source_addr16:04x}", f.ts)
-            if info.command_name in MLE_REJOIN_COMMANDS:
-                # addr is the extended address (the review pages key on it);
-                # src is whatever the frame carried, often a short address.
-                name = self.names.name(src_for_mle) if src_for_mle else None
-                self._emit("mle_rejoin_attempt", "notice", f.ts,
-                           command=info.command_name, src=f.src, addr=src_for_mle, name=name,
-                           note=f"{info.command_name} from {name or src_for_mle or f.src}: "
-                                "it lost its parent or its network and is trying to get back")
-            if info.partition_id is not None:
-                cur = (info.partition_id, info.leader_router_id)
-                if self.partition is not None and cur != self.partition:
-                    before, after = self.leader_label(self.partition[1]), self.leader_label(cur[1])
-                    self._emit("partition_or_leader_change", "warning", f.ts,
-                               previous={"partition": self.partition[0],
-                                         "leader_router": self.partition[1], "leader": before},
-                               current={"partition": cur[0],
-                                        "leader_router": cur[1], "leader": after},
-                               note=f"partition {self.partition[0]} leader {before} -> "
-                                    f"partition {cur[0]} leader {after}: the mesh split, merged "
-                                    "or elected a new leader")
-                self.partition = cur
-            return info
-        else:
-            # Keyed by the extended address: a short address is reassigned
-            # when a parent restarts, so a name filed under one would follow
-            # the address to whichever device inherits it.
-            owner = ext or self.decryptor.short_to_ext.get(short or "")
-            if owner:
-                for n in Decryptor.harvest_names(payload):
-                    if len(n) > 8 and not n.startswith("_"):
-                        self._note_observed_name(owner, n)
-        return None
+            return info, src_for_mle
+        # Keyed by the extended address: a short address is reassigned
+        # when a parent restarts, so a name filed under one would follow
+        # the address to whichever device inherits it.
+        owner = ext or self.decryptor.short_to_ext.get(short or "")
+        if owner:
+            for n in Decryptor.harvest_names(payload):
+                if len(n) > 8 and not n.startswith("_"):
+                    self._note_observed_name(owner, n)
+        return None, None
+
+    def _apply_mle(self, f: Frame, info, src_for_mle: str | None) -> None:
+        """What a fresh, authenticated MLE message changes: the sender's
+        short address, the partition it reports, and the rejoin it
+        announces. Kept apart from decoding because a MIC alone does not
+        make a message current - a recording of one carries the same MIC.
+        Applied on a stale message, this reverted the partition and the
+        device's RLOC to what they were when it was captured and paged for
+        a change that never happened."""
+        if info.source_addr16 is not None and src_for_mle:
+            short = f"{info.source_addr16:04x}"
+            self._note_rloc16(src_for_mle, short, f.ts)
+            self.decryptor.short_to_ext[short] = src_for_mle
+        if info.command_name in MLE_REJOIN_COMMANDS:
+            # addr is the extended address (the review pages key on it);
+            # src is whatever the frame carried, often a short address.
+            name = self.names.name(src_for_mle) if src_for_mle else None
+            self._emit("mle_rejoin_attempt", "notice", f.ts,
+                       command=info.command_name, src=f.src, addr=src_for_mle, name=name,
+                       note=f"{info.command_name} from {name or src_for_mle or f.src}: "
+                            "it lost its parent or its network and is trying to get back")
+        if info.partition_id is not None:
+            cur = (info.partition_id, info.leader_router_id)
+            if self.partition is not None and cur != self.partition:
+                before, after = self.leader_label(self.partition[1]), self.leader_label(cur[1])
+                self._emit("partition_or_leader_change", "warning", f.ts,
+                           previous={"partition": self.partition[0],
+                                     "leader_router": self.partition[1], "leader": before},
+                           current={"partition": cur[0],
+                                    "leader_router": cur[1], "leader": after},
+                           note=f"partition {self.partition[0]} leader {before} -> "
+                                f"partition {cur[0]} leader {after}: the mesh split, merged "
+                                "or elected a new leader")
+            self.partition = cur
 
     # The name scraper is a regex over decrypted UDP payloads, most of
     # which are ciphertext: it fires on random bytes now and then, and an

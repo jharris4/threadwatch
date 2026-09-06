@@ -15,7 +15,7 @@ from typing import Optional
 from .alerts import HeartbeatRunner, build_heartbeats, build_sinks
 from .config import Config
 from .events import EventLog, NullEventLog
-from .pcap import PcapFormatError, PcapStreamReader, PcapWriter, Frame, complete_length
+from .pcap import PcapFormatError, PcapStreamReader, PcapWriter, Frame, scan_file
 from .pipeline import Pipeline, load_decryptor
 
 
@@ -98,9 +98,17 @@ class RingWriter:
         # Resuming an hour file after a restart: a previous run killed
         # mid-write leaves a partial record at the tail, and appending after
         # it would make every later frame unreadable. Drop the fragment.
-        good = complete_length(self.current_path) if self.current_path.exists() else 0
+        # A bad record in the middle of the file (a flipped byte on a
+        # wearing card) is another matter: the readers step over it, and
+        # cutting the file there would delete every record after it.
+        scan = scan_file(self.current_path) if self.current_path.exists() else None
+        good = scan.good if scan else 0
         if good:
             size = self.current_path.stat().st_size
+            if scan.skipped_bytes:
+                print(f"[threadwatch] {self.current_path.name}: {scan.skipped_bytes} bytes in "
+                      f"{scan.gaps} place(s) are not readable records; left in place, "
+                      "readers skip them", flush=True)
             if size > good:
                 print(f"[threadwatch] {self.current_path.name}: dropping {size - good} "
                       "trailing bytes of a record cut short by the last run", flush=True)
@@ -516,7 +524,8 @@ def run_replay(cfg: Config, pcap_path: Path | list[Path]) -> None:
     for path in files:
         try:
             with open(path, "rb") as fh:
-                for frame in PcapStreamReader(fh):
+                reader = PcapStreamReader(fh)
+                for frame in reader:
                     if first is None:
                         first = frame.ts
                     last = frame.ts
@@ -529,6 +538,9 @@ def run_replay(cfg: Config, pcap_path: Path | list[Path]) -> None:
                         if periodic_due(last_tick, now):
                             pipe.periodic(now)
                         last_tick = now
+                if reader.skipped_bytes:
+                    print(f"[threadwatch] {path}: skipped {reader.skipped_bytes} bytes in {reader.gaps} "
+                          "place(s) that are not readable records", file=sys.stderr, flush=True)
         except (OSError, PcapFormatError) as exc:
             # A path that does not exist, cannot be read, or is not a pcap:
             # one line and exit 1 (as `why` does), not a traceback and not a

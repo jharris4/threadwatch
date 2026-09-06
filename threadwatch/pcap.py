@@ -75,69 +75,218 @@ def _record_is_plausible(incl: int, snaplen: int) -> bool:
     return 0 < incl <= min(snaplen or MAX_RECORD_BYTES, MAX_RECORD_BYTES)
 
 
-def complete_length(path) -> int:
-    """Bytes of a pcap file up to its last complete record.
+# How far back and forward a record's stamp may sit from the one before
+# it and still be believed. A ring file holds an hour and its stamps are
+# the host clock; a capture given to `why` or `replay` may hold days.
+_STAMP_BACK_S = 86400
+_STAMP_AHEAD_S = 7 * 86400
+
+
+class _Records:
+    """Walk the records of a pcap stream, past whatever a crash or a bad
+    block left in it.
+
+    A record header the writer could not have produced is the end of the
+    data when it is the tail (a run of NULs from a power cut, garbage the
+    file system left) and one bad record when it is not (a flipped byte
+    on a card that is wearing out). The two look the same from the header
+    alone, so both are treated the same way: scan forward for the next
+    header that could be a record, and take it once the header after it
+    agrees. A tail yields nothing more and the walk ends there; a bad
+    record in the middle costs that record and the walk goes on. What was
+    skipped is counted, so no reader answers for a file as if it had read
+    all of it.
+
+    A file's headers are held to more than the snaplen bound: a stamp near
+    the record before, a length within the original length, since a
+    flipped bit that leaves a length within the snaplen would otherwise
+    swallow the records that follow as one frame's payload. A FIFO is not
+    read ahead of the frame in hand, or the recorder would hand frames on
+    late, so the sniffer's stream is taken on the snaplen bound alone, as
+    it always was.
+
+    good is the offset just past the last record read whole: what a writer
+    resuming the file may append at, and what the reader has left out (a
+    record cut short by a crash, a tail of NULs) begins there."""
+
+    def __init__(self, stream: BinaryIO, endian: str, snaplen: int, seekable: bool):
+        self.stream = stream
+        self.endian = endian
+        self.snaplen = snaplen
+        self.seekable = seekable
+        # A file is read ahead by the block; a FIFO by the byte it needs.
+        self._chunk = 4096 if seekable else 0
+        self._buf = b""
+        self.pos = 24              # stream offset of _buf[0]
+        self.good = 24
+        self.skipped_bytes = 0
+        self.gaps = 0
+        self._last_sec: int | None = None
+
+    def _need(self, n: int) -> bool:
+        while len(self._buf) < n:
+            chunk = self.stream.read(max(n - len(self._buf), self._chunk))
+            if not chunk:
+                return False
+            self._buf += chunk
+        return True
+
+    def _take(self, n: int) -> None:
+        self._buf = self._buf[n:]
+        self.pos += n
+
+    def _header(self, at: int, last_sec: int | None, strict: bool) -> tuple | None:
+        """The record header at _buf[at:], if it could be one: (sec, usec,
+        incl). The lax test is the writer's own snaplen bound; the strict
+        one asks the header to agree with the record before it."""
+        sec, usec, incl, orig = struct.unpack_from(self.endian + "LLLL", self._buf, at)
+        if not _record_is_plausible(incl, self.snaplen):
+            return None
+        if strict:
+            if usec >= 1_000_000 or not incl <= orig <= MAX_RECORD_BYTES:
+                return None
+            if last_sec is not None and not last_sec - _STAMP_BACK_S <= sec <= last_sec + _STAMP_AHEAD_S:
+                return None
+        return sec, usec, incl
+
+    def _record(self, at: int, strict: bool, confirm: bool = False) -> tuple | None:
+        """The record at _buf[at:], if it is one that can be taken: its
+        header, its data all here, and, with confirm, the header after it
+        agreeing with it (or the stream ending there)."""
+        if not self._need(at + 16):
+            return None
+        hdr = self._header(at, self._last_sec, strict)
+        if hdr is None:
+            return None
+        sec, _usec, incl = hdr
+        next_at = at + 16 + incl
+        if not confirm:
+            return hdr if self._need(next_at) else None
+        more = self._need(next_at + 16)
+        if len(self._buf) < next_at:
+            return None                                # cut short: the tail
+        if more and self._header(next_at, sec, strict=True) is None:
+            return None
+        return hdr
+
+    def _resync(self) -> tuple | None:
+        """Scan forward from _buf[1:] for a record to take. Returns its
+        header with the buffer at it, the bytes passed over counted as a
+        gap; or None, with nothing counted, when the stream ends first:
+        that is a tail, and it begins at good."""
+        at, passed = 1, 0
+        while self._need(at + 16):
+            if at >= 65536:                # keep the buffer short on a long run of garbage
+                self._take(at)
+                passed, at = passed + at, 0
+            hdr = self._record(at, strict=True, confirm=True)
+            if hdr is not None:
+                self._take(at)
+                self.skipped_bytes += passed + at
+                self.gaps += 1
+                return hdr
+            at += 1
+        return None
+
+    def __iter__(self) -> Iterator[tuple[float, bytes]]:
+        while True:
+            hdr = self._record(0, strict=self.seekable)
+            if hdr is None:
+                if not self._need(16) or not self.seekable:
+                    return                 # EOF, or a record cut short by a crash mid-write
+                hdr = self._resync()
+                if hdr is None:
+                    return                 # a NUL tail from a power cut, or garbage to the end
+            sec, usec, incl = hdr
+            data = self._buf[16:16 + incl]
+            self._take(16 + incl)
+            self.good = self.pos
+            self._last_sec = sec
+            yield sec + usec / 1e6, data
+
+
+def _open_header(header: bytes) -> tuple[str, int, int] | None:
+    """(endian, snaplen, dlt) of a classic pcap global header, or None."""
+    if len(header) < 24:
+        return None
+    if struct.unpack("<L", header[:4])[0] == PCAP_MAGIC_LE_US:
+        endian = "<"
+    elif struct.unpack(">L", header[:4])[0] == PCAP_MAGIC_LE_US:
+        endian = ">"
+    else:
+        return None
+    snaplen, dlt = struct.unpack(endian + "LL", header[16:24])
+    return endian, snaplen, dlt
+
+
+@dataclass
+class PcapScan:
+    good: int              # bytes up to the last whole record; 0 with no usable global header
+    skipped_bytes: int     # bytes inside that no reader takes for a record
+    gaps: int              # runs of them
+
+
+def scan_file(path) -> PcapScan:
+    """Where the good data of a pcap file ends, and what lies inside it that
+    is not a record.
 
     A capture killed mid-write leaves a partial record at the tail, and a
     power cut leaves a run of NULs; a writer that appends after either
     would bury every later frame behind bytes no reader can get past (the
-    NULs read as phantom zero-length frames at 1970). 0 means there is no
-    usable global header."""
+    NULs read as phantom zero-length frames at 1970). Those come after
+    good. A bad record in the middle of the file is inside good, and left
+    there: the readers step over it, and cutting the file at it would
+    throw away every record after it. good is 0 with no usable global
+    header."""
     with open(path, "rb") as fh:
-        header = fh.read(24)
-        if len(header) < 24:
-            return 0
-        magic = struct.unpack("<L", header[:4])[0]
-        if magic == PCAP_MAGIC_LE_US:
-            endian = "<"
-        elif struct.unpack(">L", header[:4])[0] == PCAP_MAGIC_LE_US:
-            endian = ">"
-        else:
-            return 0
-        snaplen = struct.unpack(endian + "L", header[16:20])[0]
-        good = 24
-        while True:
-            rec = fh.read(16)
-            if len(rec) < 16:
-                return good
-            incl = struct.unpack(endian + "LLLL", rec)[2]
-            if not _record_is_plausible(incl, snaplen):
-                return good
-            if len(fh.read(incl)) < incl:
-                return good
-            good += 16 + incl
+        opened = _open_header(fh.read(24))
+        if opened is None:
+            return PcapScan(0, 0, 0)
+        endian, snaplen, _dlt = opened
+        records = _Records(fh, endian, snaplen, seekable=True)
+        for _ in records:
+            pass
+        return PcapScan(records.good, records.skipped_bytes, records.gaps)
+
+
+def complete_length(path) -> int:
+    """Bytes of a pcap file up to its last complete record (see scan_file)."""
+    return scan_file(path).good
 
 
 class PcapStreamReader:
-    """Reads classic pcap records from a blocking stream (file or FIFO)."""
+    """Reads classic pcap records from a blocking stream (file or FIFO).
+
+    skipped_bytes and gaps say what the stream held that was not a record
+    (see _Records); a reader that reports on a file owes them a mention."""
 
     def __init__(self, stream: BinaryIO):
         self.stream = stream
         header = _read_exact(stream, 24)
         if len(header) < 24:
             raise PcapFormatError("no pcap global header")
-        magic = struct.unpack("<L", header[:4])[0]
-        if magic == PCAP_MAGIC_LE_US:
-            self.endian = "<"
-        elif struct.unpack(">L", header[:4])[0] == PCAP_MAGIC_LE_US:
-            self.endian = ">"
-        else:
+        opened = _open_header(header)
+        if opened is None:
+            magic = struct.unpack("<L", header[:4])[0]
             raise PcapFormatError(f"unsupported pcap magic {magic:#x} (pcapng? convert with: tshark -F pcap)")
-        self.snaplen = struct.unpack(self.endian + "L", header[16:20])[0]
-        self.dlt = struct.unpack(self.endian + "L", header[20:24])[0]
+        self.endian, self.snaplen, self.dlt = opened
+        try:
+            seekable = stream.seekable()
+        except (AttributeError, ValueError):
+            seekable = False
+        self._records = _Records(stream, self.endian, self.snaplen, seekable)
+
+    @property
+    def skipped_bytes(self) -> int:
+        return self._records.skipped_bytes
+
+    @property
+    def gaps(self) -> int:
+        return self._records.gaps
 
     def __iter__(self) -> Iterator[Frame]:
-        while True:
-            rec = _read_exact(self.stream, 16)
-            if len(rec) < 16:
-                return   # EOF, or a record cut short by a crash mid-write
-            ts_sec, ts_usec, incl, _orig = struct.unpack(self.endian + "LLLL", rec)
-            if not _record_is_plausible(incl, self.snaplen):
-                return   # a NUL tail from a power cut, or garbage: nothing past it is a frame
-            data = _read_exact(self.stream, incl)
-            if len(data) < incl:
-                return
-            yield parse_frame(ts_sec + ts_usec / 1e6, data, self.dlt)
+        for ts, data in self._records:
+            yield parse_frame(ts, data, self.dlt)
 
 
 class PcapWriter:

@@ -163,6 +163,92 @@ class TruncatedRingTest(unittest.TestCase):
             self.assertEqual(complete_length(path), path.stat().st_size)
 
 
+class CorruptRecordMidFileTest(unittest.TestCase):
+    """One bad caplen byte in the middle of a ring file used to end every
+    read there, silently, and the resuming writer then cut the file at it
+    and deleted every record after it, calling them a record cut short."""
+
+    def _file(self, n=40, bad=20):
+        buf = io.BytesIO()
+        w = PcapWriter(buf, DLT_NOFCS)
+        for i in range(n):
+            w.write(frame(1_700_000_000.0 + i))
+        data = bytearray(buf.getvalue())
+        at = 24 + bad * (16 + 9) + 8            # the caplen field of record `bad`
+        data[at + 1] ^= 0x40                    # one flipped bit: caplen 9 -> 16393, past snaplen
+        return bytes(data)
+
+    def test_the_reader_steps_over_the_bad_record_and_counts_it(self):
+        data = self._file()
+        reader = PcapStreamReader(io.BytesIO(data))
+        seen = [round(f.ts) - 1_700_000_000 for f in reader]
+        self.assertEqual(seen, [i for i in range(40) if i != 20])
+        self.assertEqual((reader.skipped_bytes, reader.gaps), (16 + 9, 1))
+        # Whole and readable to the end: nothing trailing to drop, one gap inside.
+        scan = scan_file_of(data)
+        self.assertEqual((scan.good, scan.skipped_bytes, scan.gaps), (len(data), 25, 1))
+        # A NUL tail is still a tail, not a gap: nothing was skipped inside the data.
+        reader = PcapStreamReader(io.BytesIO(data + b"\x00" * 4096))
+        self.assertEqual(len(list(reader)), 39)
+        self.assertEqual((reader.skipped_bytes, reader.gaps), (25, 1))
+        self.assertEqual(scan_file_of(data + b"\x00" * 4096).good, len(data))
+
+    def test_a_garbage_run_and_a_bad_first_record_are_stepped_over_too(self):
+        buf = io.BytesIO()
+        w = PcapWriter(buf, DLT_NOFCS)
+        w.write(frame(1.0)); w.write(frame(2.0))
+        head = buf.getvalue()
+        buf = io.BytesIO()
+        w = PcapWriter(buf, DLT_NOFCS)
+        w.write(frame(3.0)); w.write(frame(4.0))
+        tail = buf.getvalue()[24:]
+        junk = bytes(range(256)) * 300          # 76800 bytes: longer than the scanner's buffer step
+        data = head + junk + tail
+        reader = PcapStreamReader(io.BytesIO(data))
+        self.assertEqual([f.ts for f in reader], [1.0, 2.0, 3.0, 4.0])
+        self.assertEqual((reader.skipped_bytes, reader.gaps), (len(junk), 1))
+        reader = PcapStreamReader(io.BytesIO(head[:24] + junk + tail))
+        self.assertEqual([f.ts for f in reader], [3.0, 4.0])
+        self.assertEqual(scan_file_of(head[:24] + junk + tail).good, len(head[:24] + junk + tail))
+
+    def test_the_resuming_writer_leaves_the_file_whole_and_says_so(self):
+        import contextlib
+        data = self._file()
+        with tempfile.TemporaryDirectory() as d:
+            ring = RingWriter(Path(d), keep_files=5, dlt=DLT_NOFCS)
+            ring.write(frame(1_700_000_000.0)); ring.close()
+            path = ring.current_path
+            path.write_bytes(data)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                ring2 = RingWriter(Path(d), keep_files=5, dlt=DLT_NOFCS)
+                ring2.write(frame(1_700_000_040.0)); ring2.close()
+            self.assertEqual(out.getvalue(), f"[threadwatch] {path.name}: 25 bytes in 1 place(s) are not "
+                                             "readable records; left in place, readers skip them\n")
+            self.assertEqual(path.stat().st_size, len(data) + 16 + 9)     # nothing deleted
+            with open(path, "rb") as fh:
+                seen = [round(f.ts) - 1_700_000_000 for f in PcapStreamReader(fh)]
+            self.assertEqual(seen, [i for i in range(41) if i != 20])
+            # A partial tail record after the gap is still dropped on resume.
+            with open(path, "r+b") as fh:
+                fh.truncate(path.stat().st_size - 3)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                ring3 = RingWriter(Path(d), keep_files=5, dlt=DLT_NOFCS)
+                ring3.write(frame(1_700_000_041.0)); ring3.close()
+            self.assertIn("dropping 22 trailing bytes of a record cut short", out.getvalue())
+            with open(path, "rb") as fh:
+                seen = [round(f.ts) - 1_700_000_000 for f in PcapStreamReader(fh)]
+            self.assertEqual(seen, [i for i in range(42) if i not in (20, 40)])
+
+
+def scan_file_of(data: bytes):
+    from threadwatch.pcap import scan_file
+    with tempfile.NamedTemporaryFile() as tmp:
+        tmp.write(data); tmp.flush()
+        return scan_file(tmp.name)
+
+
 def complete_length_of(data: bytes) -> int:
     with tempfile.NamedTemporaryFile() as tmp:
         tmp.write(data); tmp.flush()

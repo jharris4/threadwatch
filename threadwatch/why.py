@@ -177,11 +177,13 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
                     mle_events.append((f.ts, info.command_name))
 
     undecodable = 0
+    skipped_bytes = skipped_files = 0
     unreadable: list[tuple[Path, Exception]] = []
     for path in files:
         try:
             with open(path, "rb") as fh:
-                for f in PcapStreamReader(fh):
+                reader = PcapStreamReader(fh)
+                for f in reader:
                     # Every frame goes through the pipeline, ours or not:
                     # another device's MLE advertisement carries the key
                     # sequence the target's short-source frames are
@@ -223,6 +225,10 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
             # script asked, in the middle of the outage it was asked about.
             print(f"(skipping {path}: {exc})", file=sys.stderr, flush=True)
             unreadable.append((path, exc))
+        else:
+            if reader.skipped_bytes:
+                skipped_bytes += reader.skipped_bytes
+                skipped_files += 1
     if unreadable and len(unreadable) == len(files):
         path, exc = unreadable[0]
         raise SystemExit(f"threadwatch why: could not read {path}: {exc}" if len(files) == 1 else
@@ -230,6 +236,8 @@ def run_why(cfg: Config, target: str, pcap_file: Path | None = None,
                          f"(first: {path}: {exc})")
     if undecodable:
         print(f"({undecodable} frames with undecodable payloads skipped)")
+    if skipped_bytes:
+        print(f"({skipped_bytes} bytes in {skipped_files} ring file(s) are not readable records and were skipped)")
 
     print(f"=== {display} ({', '.join(addrs)}) ===")
     if unreadable:

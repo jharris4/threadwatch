@@ -187,7 +187,15 @@ class DoctorTest(unittest.TestCase):
         # altogether, used to pass here.
         import contextlib
         import io
-        checks = doctor.run_doctor(self.cfg, find_port=lambda: "/dev/x", now=time.time())
+        # check_services reads this host's systemd, not the fixture: where
+        # systemctl exists the two units are missing and it warns twice,
+        # where it does not it says so once. Pin that, so the list below is
+        # the same on a laptop and on a CI runner; the branch that does
+        # read systemd is covered by test_services_are_read_from_systemd.
+        which = doctor.shutil.which
+        with mock.patch.object(doctor.shutil, "which",
+                               lambda name: None if name == "systemctl" else which(name)):
+            checks = doctor.run_doctor(self.cfg, find_port=lambda: "/dev/x", now=time.time())
         self.assertEqual(self.levels(checks), [
             ("ok", "config"),               # channel and data dir
             ("warn", "config"),             # no config.toml in this fixture
@@ -215,6 +223,27 @@ class DoctorTest(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(doctor.print_report(ok_only), 0)
         self.assertIn("all good", out.getvalue())
+
+    def test_services_are_read_from_systemd(self):
+        """The units' state is the host's answer, not a config file's, so
+        every branch here is one systemctl said and none of them is what
+        the machine running the suite happens to have installed."""
+        with mock.patch.object(doctor.shutil, "which", return_value=None):
+            self.assertEqual(doctor.check_services(), [("ok", "services", "no systemd here (not checked)")])
+        said = {("is-active", "threadwatch"): "active", ("is-enabled", "threadwatch"): "enabled",
+                ("is-active", "threadwatch-web"): "failed", ("is-enabled", "threadwatch-web"): "enabled"}
+        with mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/systemctl"), \
+             mock.patch.object(doctor, "_run", lambda cmd: said[(cmd[1], cmd[2])]):
+            self.assertEqual(doctor.check_services(),
+                             [("ok", "services", "threadwatch.service active, enabled"),
+                              ("FAIL", "services", "threadwatch-web.service failed (enabled)")])
+        # A host that has never run bin/setup-host.sh: systemd has never
+        # heard of either unit, which is a warning and not a failure.
+        with mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/systemctl"), \
+             mock.patch.object(doctor, "_run", return_value=None):
+            checks = doctor.check_services()
+        self.assertEqual(self.levels(checks), [("warn", "services"), ("warn", "services")])
+        self.assertIn("setup-host.sh", checks[0][2])
 
     def test_a_sink_the_daemon_would_refuse_fails_the_check_and_the_exit_code(self):
         import contextlib

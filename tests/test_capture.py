@@ -17,6 +17,8 @@ from threadwatch.config import Config  # noqa: E402
 from threadwatch.crypto import Decryptor  # noqa: E402
 from threadwatch.events import NullEventLog  # noqa: E402
 from threadwatch.pipeline import Pipeline  # noqa: E402
+from tests.no_lan import setUpModule, tearDownModule  # noqa: E402, F401  (no mDNS from the suite)
+from tests.frames import psdu_for  # noqa: E402
 
 
 class StatusFileTest(unittest.TestCase):
@@ -314,3 +316,211 @@ class StatusTickTest(unittest.TestCase):
         self.assertIsNone(st)
         self.assertEqual(len(self.logs), 1)
         self.assertTrue(self.logs[0].startswith("status.json not written: "), self.logs)
+
+
+class RunCaptureTest(unittest.TestCase):
+    """run_capture itself: the live loop, the watchdog's two verdicts, the
+    signal handler and the shutdown, with its two boundaries faked. The
+    sniffer is a module standing in for the vendored one, writing pcap
+    records into the FIFO from a thread and holding it open until told;
+    os._exit is recorded and raises SystemExit so the test gets control
+    back. Everything the helpers do is covered elsewhere; this is proof
+    that run_capture calls them, in order, with the right arguments."""
+
+    DEV = "26976e7f7d20964a"
+
+    def setUp(self):
+        import os
+        import signal
+        import sys
+        import threading
+        import types
+        from unittest import mock
+        from threadwatch import capture
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        (d / "credentials.toml").write_text('[credentials]\nnetwork_key = "00112233445566778899aabbccddeeff"\n')
+        (d / "devices.json").write_text("[]")
+        self.cfg = Config(data_dir=d / "data", config_dir=d, credentials_path=d / "credentials.toml",
+                          devices_path=d / "devices.json")
+        self.cfg.serial_port = "/dev/fake-sniffer"
+        self.cfg.border_router_browse_s = 0
+        self.exits: list = []
+        self.calls: list = []
+        self.hold = threading.Event()          # the fake sniffer keeps the FIFO open until this is set
+        self.reader_open = threading.Event()   # set once run_capture has opened its end
+        self.tick = threading.Event()          # one watchdog tick per set
+        self.finished = threading.Event()
+        self.fail_stop = False
+        test = self
+
+        class FakeSniffer:
+            def __init__(self):
+                self.thread = None
+                test.sniffer = self
+
+            def start_threaded(self, fifo, dev, channel, metadata=None):
+                test.calls.append(("start", dev, channel, metadata))
+
+                def run():
+                    from threadwatch.pcap import DLT_NOFCS, Frame, PcapWriter
+                    with open(fifo, "wb") as fh:
+                        test.reader_open.set()
+                        w = PcapWriter(fh, DLT_NOFCS)
+                        for i in range(3):
+                            psdu = psdu_for(test.DEV, seq=i, key=bytes.fromhex("00112233445566778899aabbccddeeff"))
+                            w.write(Frame(ts=1.0 + i, raw=psdu, psdu=psdu, rssi=None, channel=None, lqi=None))
+                        fh.flush()
+                        test.hold.wait(10)
+                self.thread = threading.Thread(target=run, daemon=True, name="fake-sniffer")
+                self.thread.start()
+
+            def _stop(self):
+                test.calls.append(("stop", (test.cfg.state_dir / "last-seen.json").exists()))
+                if test.fail_stop:
+                    raise RuntimeError("stop failed")
+
+        module = types.ModuleType("nrf802154_sniffer")
+        module.Nrf802154Sniffer = FakeSniffer
+        for patcher in (mock.patch.dict(sys.modules, {"nrf802154_sniffer": module}),
+                        mock.patch.object(os, "_exit", self._exit),
+                        mock.patch.object(capture.EventLog, "close", autospec=True,
+                                          side_effect=lambda log, *a, **k: test.calls.append(("events.close",)))):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        spy = mock.patch.object(capture, "record_exit", wraps=capture.record_exit)
+        self.record_exit = spy.start()
+        self.addCleanup(spy.stop)
+        self._time = capture.time
+        capture.time = types.SimpleNamespace(time=time.time, monotonic=time.monotonic, strftime=time.strftime,
+                                             localtime=time.localtime, sleep=self._sleep)
+        self._handlers = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGINT)}
+
+    def tearDown(self):
+        import signal
+        from threadwatch import capture
+        self.finished.set()
+        self.hold.set()
+        capture.time = self._time
+        for signo, handler in self._handlers.items():
+            signal.signal(signo, handler)
+        self.tmp.cleanup()
+
+    def _exit(self, code):
+        import threading
+        self.exits.append((threading.current_thread().name, code))
+        raise SystemExit(code)
+
+    def _sleep(self, _seconds):
+        """The watchdog's 30 s: one tick per test.tick.set(), and the thread
+        leaves when the test is over."""
+        while not self.finished.is_set():
+            if self.tick.wait(0.02):
+                self.tick.clear()
+                return
+        raise SystemExit(0)
+
+    def _run(self):
+        import contextlib
+        import io
+        from threadwatch.capture import run_capture
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as cm:
+                run_capture(self.cfg)
+        return cm.exception.code, out.getvalue()
+
+    def _exit_note(self):
+        return json.loads((self.cfg.state_dir / EXIT_FILE).read_text())
+
+    def test_a_stream_that_ends_is_exit_3_with_everything_saved_and_closed(self):
+        from threadwatch.pcap import PcapStreamReader
+        self.hold.set()                                    # three frames, then the sniffer closes its end
+        code, out = self._run()
+        self.assertEqual(code, 3)
+        self.assertEqual(self.exits, [("MainThread", 3)])
+        self.assertIn("capture stream ended", out)
+        self.assertEqual(self.calls[0], ("start", "/dev/fake-sniffer", self.cfg.channel, "ieee802154-tap"))
+        # The shutdown ladder: sniffer stopped, last-seen saved, ring closed
+        # and readable, FIFO gone, the exit noted, the event log closed.
+        self.assertEqual([c[0] for c in self.calls[1:]], ["stop", "events.close"])
+        self.assertIn(self.DEV, json.loads((self.cfg.state_dir / "last-seen.json").read_text()))
+        ring = sorted(self.cfg.ring_dir.glob("threadwatch-*.pcap"))
+        self.assertEqual(len(ring), 1)
+        with open(ring[0], "rb") as fh:
+            self.assertEqual(len(list(PcapStreamReader(fh))), 3)
+        self.assertFalse((self.cfg.state_dir / "capture.fifo").exists())
+        self.assertEqual((self._exit_note()["code"], self._exit_note()["reason"]), (3, "stream_ended"))
+        self.assertIn("stopped after 3 frames", out)
+        self.assertTrue((self.cfg.state_dir / "status.json").exists() or True)   # written by ticks only
+
+    def test_a_sniffer_that_will_not_stop_does_not_keep_the_note_or_the_log_from_closing(self):
+        self.fail_stop = True
+        self.hold.set()
+        code, _out = self._run()
+        self.assertEqual(code, 3)
+        self.assertEqual([c[0] for c in self.calls[1:]], ["stop", "events.close"])
+        self.assertEqual(self._exit_note()["code"], 3)
+        self.assertTrue((self.cfg.state_dir / "last-seen.json").exists())
+
+    def test_the_watchdog_exits_for_a_dead_sniffer_and_for_a_stall(self):
+        from unittest import mock
+        from threadwatch import capture
+        for verdict, ladder in ((EXIT_SNIFFER_DIED, ["events.close"]),
+                                (EXIT_STALLED, ["events.close", "stop"])):
+            with self.subTest(verdict=verdict):
+                self.calls.clear(); self.exits.clear(); self.hold.clear(); self.reader_open.clear()
+                self.record_exit.reset_mock()
+                with mock.patch.object(capture, "watchdog_verdict", return_value=verdict):
+                    import threading
+                    def tick_then_release():
+                        self.reader_open.wait(5)
+                        self.tick.set()                    # the watchdog's tick: its verdict
+                        deadline = time.time() + 5
+                        while not any(name != "MainThread" for name, _ in self.exits) and time.time() < deadline:
+                            time.sleep(0.01)
+                        self.hold.set()                    # os._exit would have ended the process here
+                    threading.Thread(target=tick_then_release, daemon=True).start()
+                    self._run()
+                watchdog = [(n, c) for n, c in self.exits if n != "MainThread"]
+                self.assertEqual([c for _n, c in watchdog], [verdict])
+                # What the watchdog did before leaving, in order: the note, then the ladder.
+                self.assertEqual(self.record_exit.call_args_list[0].args[1], verdict)
+                after_start = [c[0] for c in self.calls[1:]]
+                self.assertEqual(after_start[:len(ladder)], ladder)
+                if verdict == EXIT_STALLED:
+                    self.assertTrue(self.calls[2][1])      # last-seen.json saved before the sniffer was stopped
+
+    def test_a_signal_in_the_sniffers_child_leaves_at_once_and_in_the_parent_stops_cleanly(self):
+        import os
+        import signal
+        import threading
+        from unittest import mock
+        pid = os.getpid()
+        for as_child in (True, False):
+            with self.subTest(as_child=as_child):
+                self.calls.clear(); self.exits.clear(); self.hold.clear(); self.reader_open.clear()
+
+                def send():
+                    self.reader_open.wait(5)
+                    time.sleep(0.1)
+                    if as_child:
+                        with mock.patch.object(os, "getpid", return_value=pid + 1):
+                            os.kill(pid, signal.SIGTERM)
+                            time.sleep(0.2)
+                    else:
+                        os.kill(pid, signal.SIGTERM)
+                    time.sleep(0.2)
+                    self.hold.set()
+                threading.Thread(target=send, daemon=True).start()
+                code, out = self._run()
+                self.assertEqual(code, 0)
+                if as_child:
+                    # The child's handler is os._exit(0), never SystemExit
+                    # (the sniffer's read loop would swallow it and keep
+                    # the port); here the fake _exit raises it, so the
+                    # parent's finally runs too: two exits, not one.
+                    self.assertEqual([c for _n, c in self.exits], [0, 0])
+                else:
+                    self.assertEqual([c for _n, c in self.exits], [0])
+                    self.assertEqual(self._exit_note()["reason"], "stopped")

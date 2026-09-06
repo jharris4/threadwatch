@@ -1710,6 +1710,44 @@ class RetransmissionConfirmTest(unittest.TestCase):
         self.assertEqual(self._events(pipe), [])
         self.assertEqual(max(pipe.retrans_counts), 0.0)
 
+    def test_the_share_that_decides_log_versus_page_is_pinned_at_a_half(self):
+        # top_share >= 0.5 is the switch between "one pair hammering each
+        # other, a chronic bad link at the RF edge: log it" and "retries
+        # spread across the mesh, the storm precursor this detector exists
+        # for: page it". Every neighbouring rule is pinned; this one was
+        # not, and moving it emits a real mesh-wide storm as a notice,
+        # which a sink at min_severity = warning never sees.
+        A, B, C = self.SENDERS[:3]
+
+        def first_minute(dups):
+            self.cfg.retrans_confirm_s = 0        # the old detector: the first elevated minute decides
+            pipe = self._pipe()
+            pipe.retrans_counts.extend([0.0] * 30)
+            pipe._win_dups = sum(dups.values())
+            pipe._win_dup_by = dups
+            pipe._retrans_window(self.T + 60, 0.5)
+            evs = self._events(pipe)
+            self.assertEqual(len(evs), 1, dups)
+            return evs[0]["severity"], round(evs[0]["top_share"], 3)
+
+        self.assertEqual(first_minute({(A, "ffff"): 6, (B, "ffff"): 2, (C, "ffff"): 2}), ("notice", 0.6))
+        self.assertEqual(first_minute({(A, "ffff"): 5, (B, "ffff"): 3, (C, "ffff"): 2}), ("notice", 0.5))
+        self.assertEqual(first_minute({(A, "ffff"): 4, (B, "ffff"): 3, (C, "ffff"): 3}), ("warning", 0.4))
+
+        def confirmed_page(dups):
+            self.cfg.retrans_confirm_s = 300
+            pipe = self._pipe()
+            pipe.retrans_counts.extend([0.0] * 30)
+            pipe._win_dups, pipe._win_dup_by = sum(dups.values()), dups
+            for minute in range(1, 8):            # the first is the notice; the fifth completes confirm_s
+                pipe._retrans_window(self.T + minute * 60, 0.5)
+            evs = self._events(pipe)
+            self.assertEqual([e.get("confirmed") for e in evs], [False, True], dups)
+            return evs[1]["severity"]
+
+        self.assertEqual(confirmed_page({(A, "ffff"): 5, (B, "ffff"): 3, (C, "ffff"): 2}), "notice")
+        self.assertEqual(confirmed_page({(A, "ffff"): 4, (B, "ffff"): 3, (C, "ffff"): 3}), "warning")
+
     def test_calm_low_traffic_minutes_end_an_elevation_rather_than_sustain_it(self):
         # A minute under 100 frames never reached the detector, so it could
         # not close an elevation: a one-minute burst, ten quiet minutes of

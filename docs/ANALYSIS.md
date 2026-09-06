@@ -31,8 +31,15 @@ tshark -r f.pcap -T fields -e frame.time_epoch |
 # top talkers:
 tshark -r f.pcap -T fields -e wpan.src64 | grep -v '^$' | sort | uniq -c | sort -rn | head
 
-# retransmission rate (same src+seq within moments = MAC retry):
-tshark -r f.pcap -T fields -e wpan.src64 -e wpan.seq_no | sort | uniq -c | sort -rn | head
+# retransmission rate: a frame repeated by the same sender with the same
+# sequence number within two seconds is a MAC retry. Sorting src+seq and
+# counting duplicates cannot tell one from a sequence number coming round
+# again hours later, and gives no denominator to be a rate of, so keep the
+# timestamps, keep the order, and count against the frames read. Short and
+# extended sources are both here: a sleepy device sends from its short one.
+tshark -r f.pcap -T fields -e frame.time_epoch -e wpan.src64 -e wpan.src16 -e wpan.seq_no |
+  awk -F'\t' '$4 != "" { k = $2 $3 "/" $4; if (k in t && $1 - t[k] < 2) r++; t[k] = $1; n++ }
+              END { printf "%d retries in %d frames (%.1f%%)\n", r, n, n ? 100*r/n : 0 }'
 ```
 
 ## The storm signature (what the detector automates)

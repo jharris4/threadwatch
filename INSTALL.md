@@ -25,9 +25,10 @@ It does everything after the OS is installed: the two Python packages
 (pyserial, cryptography) from your distro, falling back to a repo-local
 venv where there is no apt/dnf/pacman/zypper; serial-port group
 membership (dialout or uucp); `config/config.toml` from the example if
-missing; credentials and alerts.env locked to 0400 if present; the two
-systemd units installed, enabled and started with your user and clone
-path filled in. Re-run it after any change, including an update.
+missing; `credentials.toml`, `alerts.env` and `ha.env` locked to 0400 if
+present (0400 is why `threadwatch import` cannot rewrite `ha.env` on the
+host afterwards); the two systemd units installed, enabled and started
+with your user and clone path filled in. Re-run it after any change, including an update.
 
 **On a first install this ends with a `systemctl status` dump,
 `NOT RUNNING: threadwatch` and exit 1.** That is expected: there is no

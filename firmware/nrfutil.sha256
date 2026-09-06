@@ -1,15 +1,16 @@
-# sha256 of Nordic's nrfutil launcher, one line per target triple:
+# sha256 of Nordic's nrfutil launcher, one line per architecture:
 #
-#     <sha256>  <triple>
+#     <sha256>  <target triple>
 #
-# Nordic serves .../nrfutil/executables/<triple>/nrfutil without a version
-# in the path, so what that URL returns changes with each release. A line
-# here pins it: bin/flash-dongle.sh refuses a download that does not match
-# and will not make it executable. A triple with no line is downloaded
-# unverified, and the script prints the hash it got so it can be added.
+# These are for the build bin/flash-dongle.sh pins in NRFUTIL_VERSION.
+# The script refuses to run a download that does not match, and refuses
+# to download at all for an architecture with no line here.
 #
-# To add one, run bin/flash-dongle.sh on that host, check the release you
-# meant to get at
-# https://docs.nordicsemi.com/bundle/nrfutil/page/README.html, and paste
-# the line the script prints. Verify on a machine you trust; a hash taken
-# from a compromised download pins the compromise.
+# Recorded 2026-09-06 for nrfutil 1.4.0-5515776, which reports itself as
+# "nrfutil 8.2.0 (c910332 2026-04-21)". At that date it was byte for byte
+# what Nordic's unversioned nrfutil URL served.
+
+4800f8b71feec0caaf3c143d29b0b7fd6f33c6a258da10e660743f0db1890a0b  x86_64-unknown-linux-gnu
+0a1d87ad5eab2292beb847462c69b3b9db37aba3a59bbd56e31de7ce45b12a9a  aarch64-unknown-linux-gnu
+fb7dcf78582d7826b24e694ca5fca33cc29cd2ae5af2c4926a76dae4801fcbd4  aarch64-apple-darwin
+49b33564770c40c5475582eee7b28d513b1fe4604c5c13cde35b48fb94dd4db7  x86_64-apple-darwin

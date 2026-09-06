@@ -20,6 +20,12 @@ script download it into `.nrfutil-bin/` (gitignored) and reuse it. The
 first run needs network — the launcher fetches about 29 MB of device
 commands into `~/.nrfutil` — and nothing after that.
 
+The download is pinned to one Nordic release, and its sha256 is in
+`firmware/nrfutil.sha256`. A download that does not match is thrown away
+rather than run. Updating the pin: `firmware/README.md`. (The 29 MB of
+device commands the launcher fetches afterwards is Nordic's own, and is
+not covered by this.)
+
 Nordic ships no `nrfutil` for 32-bit ARM or Windows. On those, flash
 `firmware/sniffer-dfu.zip` with the Programmer app in nRF Connect for
 Desktop; the physical steps below are the same.

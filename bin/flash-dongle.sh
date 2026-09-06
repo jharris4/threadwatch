@@ -20,6 +20,13 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 PKG="$REPO/firmware/sniffer-dfu.zip"
 CACHE="$REPO/.nrfutil-bin"
 BASE="https://files.nordicsemi.com/artifactory/swtools/external/nrfutil/executables"
+# The nrfutil build this repo is pinned to. Nordic keeps every release
+# beside the unversioned "nrfutil" they overwrite, so this file never
+# changes and never goes away: nobody is left unable to fetch what the
+# recorded hash expects. firmware/nrfutil.sha256 holds one hash per
+# architecture. To move to a newer build, change this and replace all
+# four hashes; firmware/README.md says how.
+NRFUTIL_VERSION="1.4.0-5515776"
 
 if [ ! -f "$PKG" ]; then
   echo "missing $PKG" >&2; exit 1
@@ -64,35 +71,32 @@ below are the same either way.
 EOM
     exit 1
   fi
-  echo "==> Fetching nrfutil for $TRIPLE (one-time, into .nrfutil-bin/)..."
+  WANT="$(awk -v tri="$TRIPLE" '$2 == tri {print $1}' "$REPO/firmware/nrfutil.sha256" 2>/dev/null || true)"
+  if [ -z "$WANT" ]; then
+    echo "ERROR: no sha256 recorded for $TRIPLE in firmware/nrfutil.sha256." >&2
+    echo "  Nothing is downloaded without one. If NRFUTIL_VERSION was just changed," >&2
+    echo "  the hashes have to change with it (firmware/README.md)." >&2
+    exit 1
+  fi
+  echo "==> Fetching nrfutil $NRFUTIL_VERSION for $TRIPLE (one-time, into .nrfutil-bin/)..."
   mkdir -p "$CACHE"
   # --proto/--proto-redir: -L follows redirects, and without these a
   # redirect off the vendor's TLS host to plain http would be followed.
   curl -sSfL --proto '=https' --proto-redir '=https' --retry 2 \
-    -o "$CACHE/nrfutil.part" "$BASE/$TRIPLE/nrfutil"
-  # Nordic serves this path without a version in it, so what arrives is
-  # whatever they publish today. firmware/nrfutil.sha256 is what pins it:
-  # a recorded hash for this triple is checked here, and the binary is
-  # never made executable before it matches. With no line for the triple
-  # the download is unverified and says so, with the hash to record.
+    -o "$CACHE/nrfutil.part" "$BASE/$TRIPLE/nrfutil-$TRIPLE-$NRFUTIL_VERSION"
+  # The version above is an immutable file, so this compares what arrived
+  # against the hash recorded for that exact build. It is checked before
+  # the chmod, so a binary that does not match is never made executable.
   GOT="$(_sha256 "$CACHE/nrfutil.part")"
-  WANT="$(awk -v tri="$TRIPLE" '$2 == tri {print $1}' "$REPO/firmware/nrfutil.sha256" 2>/dev/null || true)"
-  if [ -n "$WANT" ] && [ "$GOT" != "$WANT" ]; then
+  if [ "$GOT" != "$WANT" ]; then
     rm -f "$CACHE/nrfutil.part"
-    echo "ERROR: the nrfutil Nordic served does not match firmware/nrfutil.sha256" >&2
+    echo "ERROR: nrfutil $NRFUTIL_VERSION for $TRIPLE is not the build this repo pins." >&2
     echo "  expected $WANT" >&2
     echo "  got      $GOT" >&2
-    echo "  Nordic publishes this path without a version, so a new release changes it." >&2
-    echo "  Check the release, then update the line for $TRIPLE if the new one is what you want." >&2
+    echo "  A pinned file should never change. Do not use it; report this." >&2
     exit 1
   fi
-  if [ -z "$WANT" ]; then
-    echo "  WARNING: nothing recorded for $TRIPLE in firmware/nrfutil.sha256, so this" >&2
-    echo "           binary is unverified. To pin what you just downloaded, add:" >&2
-    echo "             $GOT  $TRIPLE" >&2
-  else
-    echo "  sha256 matches firmware/nrfutil.sha256"
-  fi
+  echo "    sha256 matches firmware/nrfutil.sha256"
   chmod +x "$CACHE/nrfutil.part"
   mv "$CACHE/nrfutil.part" "$CACHE/nrfutil"
   NRFUTIL="$CACHE/nrfutil"

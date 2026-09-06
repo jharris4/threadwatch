@@ -71,7 +71,7 @@ def safe_label(label: str) -> str:
     """The filename-safe form a label takes in an incident's directory name
     ("storm at noon" -> "storm-at-noon"). `incidents --delete` applies the
     same rule, so the label a user typed at freeze time finds it again."""
-    return _LABEL.sub("-", label.strip()).strip("-") or "incident"
+    return _LABEL.sub("-", label.strip()).strip("-") or "snapshot"
 
 
 def _is_secret(key: str) -> bool:
@@ -169,8 +169,8 @@ def write_manifest(cfg, dest: Path, label: str, now: float, trigger: str | None)
         "format": 1,
         "threadwatch": __version__,
         "commit": _commit(),
-        "frozen_at": now,
-        "frozen_at_local": time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(now)),
+        "saved_at": now,
+        "saved_at_local": time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(now)),
         "label": label,
         "trigger": trigger or "manual",
         "channel": cfg.channel,
@@ -212,7 +212,7 @@ def _take_lock(path: Path, wait: bool) -> int | None:
     raise OSError(f"could not take the lock {path.name}")
 
 
-def freeze_ring(cfg, label: str = "incident", now: float | None = None,
+def freeze_ring(cfg, label: str = "snapshot", now: float | None = None,
                 trigger: str | None = None) -> tuple[Path, int]:
     """Snapshot the ring. Returns (incident dir, ring files copied). The
     label is reduced to filename-safe characters (safe_label); ``trigger``

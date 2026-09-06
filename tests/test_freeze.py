@@ -83,7 +83,7 @@ class BundleTest(unittest.TestCase):
             dest, count = freeze.freeze_ring(cfg, "auto-storm", now=1_756_900_000.0, trigger="phase_locked_storm")
             m = json.loads((dest / "manifest.json").read_text())
             self.assertEqual((m["format"], m["label"], m["trigger"], m["channel"], m["pan_id"], m["ring_files"],
-                              m["span"], m["inventory"], m["config"], m["events_days"], m["frozen_at"]),
+                              m["span"], m["inventory"], m["config"], m["events_days"], m["saved_at"]),
                              (1, "auto-storm", "phase_locked_storm", 15, "0x4e21", 1,
                               ["20260903-01", "20260903-01"], "devices.json", "config.toml", 0, 1_756_900_000.0))
             self.assertEqual(sorted(m["files"]), ["config.toml", "devices.json", "threadwatch-20260903-01.pcap"])

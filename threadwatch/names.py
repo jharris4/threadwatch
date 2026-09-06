@@ -100,7 +100,8 @@ class DeviceNames:
                 raw = json.loads(inventory_path.read_text())
             except ValueError as exc:
                 print(f"[threadwatch] {inventory_path.name} is not valid JSON ({exc}): ignoring the file, "
-                      "so every device is unknown until it is fixed (threadwatch doctor checks it)", file=sys.stderr, flush=True)
+                      "so every device is unknown until it is fixed (threadwatch doctor checks it)",
+                      file=sys.stderr, flush=True)
                 raw = []
             if not isinstance(raw, list):
                 print(f"[threadwatch] {inventory_path.name}: expected a list of devices, got "
@@ -257,7 +258,8 @@ class LastSeen:
                     _warned_unreadable.add(state_path)
                     print(f"[threadwatch] {state_path.name} is unreadable ({exc}): starting from an empty "
                           f"table, so nothing is known about the devices until they are heard again; the "
-                          f"recorder keeps the file as {state_path.name}.corrupt when it next saves", file=sys.stderr, flush=True)
+                          f"recorder keeps the file as {state_path.name}.corrupt when it next saves",
+                          file=sys.stderr, flush=True)
         self._dirty = False
         self._last_save = 0.0
 
@@ -322,7 +324,8 @@ class LastSeen:
         try:
             self.state_path.replace(kept)
         except OSError as exc:
-            print(f"[threadwatch] could not keep {self.state_path.name} aside as {kept.name}: {exc}", file=sys.stderr, flush=True)
+            print(f"[threadwatch] could not keep {self.state_path.name} aside as {kept.name}: {exc}",
+                  file=sys.stderr, flush=True)
             return
         print(f"[threadwatch] unreadable {self.state_path.name} kept as {kept.name}", file=sys.stderr, flush=True)
 

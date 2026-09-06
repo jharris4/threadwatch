@@ -28,8 +28,8 @@ from __future__ import annotations
 
 import json
 import struct
-import threading
 import sys
+import threading
 import time
 from collections import deque
 from pathlib import Path
@@ -944,7 +944,8 @@ class Pipeline:
         self.replayed += 1
         if ts - self._replay_said.get(who, -1e12) >= 3600.0:
             self._replay_said[who] = ts
-            print(f"[threadwatch] {self.names.name(who) or who}: {note} (said once an hour)", file=sys.stderr, flush=True)
+            print(f"[threadwatch] {self.names.name(who) or who}: {note} (said once an hour)",
+                  file=sys.stderr, flush=True)
 
     # ---------------------------------------------------------- identity
 

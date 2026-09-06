@@ -11,7 +11,6 @@ import statistics
 from collections import deque
 from dataclasses import dataclass, field
 
-
 # Flood onsets kept, and so the most that can be asked for: the detector
 # looks at the last period_onsets of them, so a threshold above what it
 # holds could never be reached and the storm detector was silently off.

@@ -60,7 +60,12 @@ mDNS` on every host and Apple hubs' address changes go unnamed
 (`[border_routers]` in config.toml). One-off commands such as `doctor`
 and `import` inherit it. The daemon listens on no port of its own.
 
-The review pages are on port 8080 (`ports:` in `compose.yaml` to change).
+The review pages are published on `127.0.0.1:8080` (`ports:` in
+`compose.yaml`). They have no authentication, and on a Linux host a plain
+`8080:8080` installs DNAT rules in the `DOCKER` chain, which is traversed
+before `ufw`'s `INPUT` rules: a host firewall you believe is closing the
+port would not be. Read them over `ssh -L 8080:127.0.0.1:8080 user@host`,
+or widen the mapping once something in front of it authenticates.
 
 ## Layout
 

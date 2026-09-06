@@ -4,12 +4,22 @@ Alerts are for things that need a look now. Everything else lands in the
 event log, and the review pages are how you read it back later: what
 happened on a day, and what one device has been doing.
 
-    bin/threadwatch web            # http://<host>:8080/, or [web] in config.toml
-    bin/threadwatch web --bind 127.0.0.1 --port 8081   # for one run, over the config
+    bin/threadwatch web            # http://127.0.0.1:8080/, or [web] in config.toml
+    bin/threadwatch web --bind 0.0.0.0 --port 8081     # for one run, over the config
 
 `setup-host.sh` installs it as `threadwatch-web.service`, a separate
-read-only process from capture, so a page bug can never cost frames. There
-is no authentication: keep it on your LAN or behind your own proxy.
+read-only process from capture, so a page bug can never cost frames.
+
+There is no authentication of any kind, and the pages carry every device
+name and address, each device's role and parent, and the whole event
+history, which reads as a per-room, per-hour trace of who was home. So
+the default bind is loopback: only the recorder's own host can read them.
+To read them from your laptop, forward the port over ssh:
+
+    ssh -L 8080:127.0.0.1:8080 pi@host        # then http://localhost:8080/
+
+Or set `[web] bind = "0.0.0.0"` and keep the port on your LAN or behind a
+proxy that authenticates.
 
 ## Pages
 

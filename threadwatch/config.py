@@ -84,7 +84,12 @@ class Config:
     # either side of a day (review.EPISODE_WINDOW_DAYS), so history past
     # that costs disk and the freeze copy only.
     events_keep_days: int = 365
-    web_bind: str = "0.0.0.0"                  # [web] review pages (threadwatch web)
+    # Loopback, not 0.0.0.0: the pages have no authentication of any kind
+    # and publish every device name and EUI-64, each device's role, parent
+    # and last-seen time, and the whole event history - a per-room,
+    # per-hour trace of the home. Reaching them from another machine is an
+    # explicit [web] bind, so nobody gets it by not reading the comment.
+    web_bind: str = "127.0.0.1"                # [web] review pages (threadwatch web)
     web_port: int = 8080
     alerts_raw: dict = field(default_factory=dict)      # [alerts] table, verbatim
     heartbeats_raw: list = field(default_factory=list)  # [[heartbeats]] tables, verbatim

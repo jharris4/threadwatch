@@ -15,6 +15,26 @@ from threadwatch.config import Config  # noqa: E402
 from threadwatch.web import make_server  # noqa: E402
 
 
+class BindDefaultTest(unittest.TestCase):
+    """The pages have no authentication and publish the household's device
+    inventory and a per-room, per-hour occupancy trace, so reaching them
+    from another machine is a deliberate act, not the default."""
+
+    def test_nothing_serves_the_lan_until_the_operator_says_so(self):
+        from threadwatch import web
+        from threadwatch.config import Config, REPO_ROOT
+        import inspect
+        import tomllib
+        self.assertEqual(Config().web_bind, "127.0.0.1")
+        self.assertEqual(inspect.signature(web.serve).parameters["bind"].default, "127.0.0.1")
+        example = tomllib.loads((REPO_ROOT / "config" / "config.example.toml").read_text())
+        self.assertEqual(example["web"]["bind"], "127.0.0.1")
+        published = [line.strip().lstrip("- ").strip('"')
+                     for line in (REPO_ROOT / "compose.yaml").read_text().splitlines()
+                     if line.strip().startswith("- ") and ":8080" in line and not line.strip().startswith("#")]
+        self.assertEqual(published, ["127.0.0.1:8080:8080"])
+
+
 class RequestTimeoutTest(unittest.TestCase):
     """A thread and an fd per connection, and daemon_threads means nothing
     reaps them. Without a timeout a peer that vanishes without FIN/RST is

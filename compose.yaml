@@ -45,8 +45,14 @@ services:
     command: web
     restart: unless-stopped
     depends_on: [capture]
+    # Published on loopback only: the pages have no authentication, and on
+    # a Linux host a plain "8080:8080" installs DNAT rules in the DOCKER
+    # chain, which is traversed before ufw's INPUT rules - so a host
+    # firewall the operator believes is closing the port does not. Reach
+    # them over ssh (ssh -L 8080:127.0.0.1:8080 user@host), or widen this
+    # deliberately once something in front of it authenticates.
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     volumes:
       - ./config:/app/config:ro
       - ./data:/app/data:ro

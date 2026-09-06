@@ -116,8 +116,14 @@ keep_days = 365
 
 [web]
 # Review pages: bin/threadwatch web (systemd/threadwatch-web.service).
-# Read-only, no authentication: keep it on your LAN or behind your proxy.
-bind = "0.0.0.0"
+# Read-only, and no authentication of any kind: whoever reaches the port
+# gets every device name and address, each device's role and parent, and
+# the whole event history, which is a per-room, per-hour trace of who was
+# home. The default is loopback, so only the recorder's own host can read
+# it. To read the pages from your laptop, either forward the port over
+# ssh (ssh -L 8080:127.0.0.1:8080 pi@host) or set bind to "0.0.0.0" below
+# and keep the port on your LAN or behind a proxy that authenticates.
+bind = "127.0.0.1"
 port = 8080
 
 [alerts]

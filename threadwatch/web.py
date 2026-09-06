@@ -780,7 +780,7 @@ def make_server(cfg, bind: str, port: int) -> ThreadingHTTPServer:
     return ThreadingHTTPServer((bind, port), Handler)
 
 
-def serve(cfg, bind: str = "0.0.0.0", port: int = 8080) -> None:
+def serve(cfg, bind: str = "127.0.0.1", port: int = 8080) -> None:
     httpd = make_server(cfg, bind, port)
     state = cfg.state_dir
     print(f"[threadwatch] web: http://{bind}:{httpd.server_port}/ (state {state})"

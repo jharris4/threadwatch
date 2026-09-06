@@ -63,7 +63,10 @@ bin/threadwatch status        # frames_total should be climbing (every field: do
 journalctl -u threadwatch -f  # live log incl. storm alerts
 ```
 
-The review pages are at `http://<host>:8080/` (`[web]` in config.toml).
+The review pages are at `http://127.0.0.1:8080/` on the recorder's own
+host. They have no authentication, so they listen on loopback: read them
+from elsewhere over `ssh -L 8080:127.0.0.1:8080 user@host`, or set
+`[web] bind = "0.0.0.0"` in config.toml to serve the LAN.
 
 A recorder that cannot start at all (no credentials, no dongle, a config
 it refuses) is restarted every 12 s until systemd's start limit (ten
@@ -135,7 +138,7 @@ bin/threadwatch report          # who's gone quiet; unknown addresses to name
 bin/threadwatch adopt <addr> "<name>"   # ...and name one (report --suggest drafts entries)
 bin/threadwatch events --episodes   # what happened lately, grouped
 bin/threadwatch why "<name>" --hours 6  # one device's story from the recent ring files
-# ...or open http://<host>:8080/ for the same thing day by day (docs/REVIEW.md)
+# ...or open http://127.0.0.1:8080/ on the host for the same thing day by day (docs/REVIEW.md)
 bin/threadwatch freeze mylabel  # preserve the ring buffer NOW (incident!)
 bin/threadwatch incidents       # what is frozen and how big; --delete <name or label> when done with one
 bin/threadwatch replay f.pcap   # run detection over any pcap

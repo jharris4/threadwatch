@@ -264,7 +264,7 @@ class ExampleConfigTest(unittest.TestCase):
         ("detect", "alert_cooldown_s"): ("detector.alert_cooldown_s", 1800.0, 60.0),
         ("border_routers", "browse_s"): ("border_router_browse_s", 600, 30),
         ("events", "keep_days"): ("events_keep_days", 365, 7),
-        ("web", "bind"): ("web_bind", "0.0.0.0", "127.0.0.1"),
+        ("web", "bind"): ("web_bind", "127.0.0.1", "0.0.0.0"),
         ("web", "port"): ("web_port", 8080, 9090),
         ("credentials", "file"): ("credentials_path", "credentials.toml", "creds.toml"),
     }

@@ -264,6 +264,25 @@ class BrowseTest(unittest.TestCase):
         self.assertEqual(len(made), 1)
         self.assertTrue(made[0].closed)
 
+    def test_an_unrelated_answer_does_not_stop_the_retries(self):
+        # An mDNS responder is anyone on the LAN. A printer announcing
+        # itself is records with no MeshCoP instance among them, and all()
+        # over none of them is true: the browse took that for a complete
+        # answer and stopped asking, so the retries that carry a lost or
+        # reflected MeshCoP reply never went out and a hub that had just
+        # rotated its address stayed unnamed.
+        printer = response([rr(encode_name("printer.local"), TYPE_A, bytes([192, 0, 2, 5]))])
+        found, made, _log = self._browse([printer], timeout=1.2)
+        self.assertEqual(found, [])
+        self.assertGreaterEqual(len(made[0].sent), 4)          # the initial pair, and at least one retry
+
+    def test_a_router_answering_beside_unrelated_records_is_still_found(self):
+        printer = response([rr(encode_name("printer.local"), TYPE_A, bytes([192, 0, 2, 5]))])
+        ptr_only, details = self._answers()
+        found, made, _log = self._browse([printer, ptr_only, details], timeout=1.2)
+        self.assertEqual([r["ext"] for r in found], [EXT.hex()])
+        self.assertLessEqual(len(made[0].sent), 4)             # and once it is whole, the asking stops
+
     def test_nothing_answering_is_an_empty_list_after_the_timeout(self):
         t0 = time.monotonic()
         found, made, log = self._browse([], timeout=0.2)

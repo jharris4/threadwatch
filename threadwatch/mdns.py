@@ -247,8 +247,13 @@ def browse(service: str = SERVICE, timeout: float = 4.0, log=lambda m: None) -> 
             left = deadline - time.time()
             if left <= 0:
                 break
-            if time.time() >= next_ask and not (records and all(
-                    r["complete"] for r in collect_routers(records, service).values())):
+            # Done asking only when there is a router to be done about:
+            # all() over an empty collection is true, so any unrelated
+            # answer on the group - a printer announcing itself - used to
+            # count as a complete browse and stop the retries the lost or
+            # delayed MeshCoP replies need.
+            found = collect_routers(records, service)
+            if time.time() >= next_ask and not (found and all(r["complete"] for r in found.values())):
                 ask()
                 next_ask = time.time() + 1.0
             ready, _, _ = select.select(socks, [], [], min(left, 0.5))

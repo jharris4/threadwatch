@@ -63,7 +63,8 @@ proxy that authenticates.
   page says where it stopped and `/api/device/` reports the window as
   `episode_days`.
 - **/status**: the daemon's status file in prose (alive, last frame,
-  channel and port, this run's frames, partition and
+  channel and port, this run's frames, the threadwatch version and commit
+  that is recording, partition and
   which device leads it (linked, once its RLOC16 has been matched),
   storm detector, crypto counters) plus storage: ring size and hourly
   rate, incidents and event log size, and free disk against what a full

@@ -19,13 +19,12 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import time
 from pathlib import Path
 from typing import Optional
 
 from . import __version__
-from .config import REPO_ROOT
+from .config import repo_commit
 
 # border-routers.json is the hostname -> address history of every hub that
 # rotates its address: without it an incident cannot name the border
@@ -156,17 +155,8 @@ def _run_state(text: str, depth: int, open_ml: Optional[str]) -> tuple[int, Opti
     return depth, open_ml
 
 
-def _commit() -> Optional[str]:
-    """The checkout's commit, when the incident is frozen from one (a
-    deploy by rsync ships no .git); a reader of the bundle months later
-    should know which code judged it."""
-    if not (REPO_ROOT / ".git").exists():
-        return None
-    try:
-        return subprocess.run(["git", "-C", str(REPO_ROOT), "rev-parse", "--short", "HEAD"],
-                              capture_output=True, text=True, timeout=5).stdout.strip() or None
-    except (OSError, subprocess.SubprocessError):
-        return None
+# A reader of the bundle months later should know which code judged it.
+_commit = repo_commit
 
 
 def write_manifest(cfg, dest: Path, label: str, now: float, trigger: Optional[str]) -> dict:

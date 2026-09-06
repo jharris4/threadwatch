@@ -277,6 +277,23 @@ def check_clock() -> list[Check]:
     return [(WARN, "clock", "no timedatectl: NTP state not checked")]
 
 
+def check_version() -> list[Check]:
+    """Which code is running here, and since when. Every other check says
+    whether the box is fit to record, and answers the same whether the
+    host holds the code you just pushed or a six-month-old checkout: this
+    is the one that discriminates, so "doctor is green" at 3am after a fix
+    can mean the fix is running."""
+    from . import __version__
+    from .config import repo_commit
+    commit = repo_commit()
+    what = f"threadwatch {__version__}" + (f" ({commit})" if commit else " (no .git here: deployed by rsync?)")
+    started = _run(["systemctl", "show", "-p", "ExecMainStartTimestamp", "--value", "threadwatch"]) \
+        if shutil.which("systemctl") else None
+    if started:
+        what += f"; threadwatch.service started {started}"
+    return [(OK, "version", what)]
+
+
 def check_services() -> list[Check]:
     if not shutil.which("systemctl"):
         return [(OK, "services", "no systemd here (not checked)")]
@@ -401,7 +418,7 @@ def run_doctor(cfg, find_port: Callable[[], str] | None = None, now: float | Non
                  lambda: check_dongle(cfg, find_port), lambda: check_daemon(cfg, now), lambda: check_ring(cfg, now),
                  lambda: check_last_seen(cfg), lambda: check_disk(cfg), lambda: check_writable(cfg), check_clock,
                  check_services,
-                 lambda: check_alerts(cfg), lambda: check_web(cfg)):
+                 lambda: check_alerts(cfg), lambda: check_web(cfg), check_version):
         try:
             checks.extend(step())
         except Exception as exc:   # one broken check must not hide the rest

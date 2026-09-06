@@ -13,6 +13,20 @@ from .detect import DetectorConfig
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
+def repo_commit() -> Optional[str]:
+    """The checkout's commit, when this is running from one (a deploy by
+    rsync ships no .git). What tells a host running the code you pushed
+    from one running a six-month-old copy."""
+    import subprocess
+    if not (REPO_ROOT / ".git").exists():
+        return None
+    try:
+        return subprocess.run(["git", "-C", str(REPO_ROOT), "rev-parse", "--short", "HEAD"],
+                              capture_output=True, text=True, timeout=5).stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 @dataclass
 class Config:
     channel: int = 25

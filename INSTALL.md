@@ -94,6 +94,10 @@ The running units keep the code they have already loaded until you restart
 both, so restart promptly: a module a unit has not imported yet is read
 from the new file, and the process is then running two versions at once.
 `bin/push-to-host.sh --push-only` says so, naming the modules it changed.
+`bin/threadwatch doctor`'s `version` line, and the same line on the status
+page, say which commit is recording and when the unit started, which is
+how you tell a restart that happened from one that did not. The rest of
+`doctor` says the box is fit to record and answers the same either way.
 State (last-seen table, event log, ring) lives under `data/`, so a restart
 loses nothing but the few seconds the daemon is down; the quiet detector
 knows about that gap and does not count it against any device.

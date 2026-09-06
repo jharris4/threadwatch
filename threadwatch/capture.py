@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Optional
 
 from .alerts import HeartbeatRunner, build_heartbeats, build_sinks
-from .config import Config
+from . import __version__
+from .config import Config, repo_commit
 from .events import EventLog, NullEventLog
 from .pcap import PcapFormatError, PcapStreamReader, PcapWriter, Frame, scan_file
 from .pipeline import Pipeline, load_decryptor
@@ -477,6 +478,10 @@ def _write_status(cfg, port, total, started, pipe: Pipeline, ring, decryptor,
     # which does not move while nothing is heard.
     status = {
         "updated": time.time(),
+        # Which code is recording: a restart that did not happen, or a
+        # deploy that did not land, is invisible in everything else here.
+        "version": __version__,
+        "commit": repo_commit(),
         "last_frame_age_s": round(last_frame_age, 1),
         "last_frame_ts": last_frame_ts,
         "port": port,

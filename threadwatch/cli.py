@@ -64,6 +64,13 @@ def main(argv=None) -> int:
                     "using an nRF52840 dongle.",
     )
     parser.add_argument("--config", type=Path, help="path to config.toml")
+    # Which code this is, for telling a host running what you just pushed
+    # from one running a six-month-old checkout. Nothing else did.
+    from . import __version__
+    from .config import repo_commit
+    commit = repo_commit()
+    parser.add_argument("--version", action="version",
+                        version=f"threadwatch {__version__}" + (f" ({commit})" if commit else ""))
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("capture", help="run the capture daemon (foreground)")

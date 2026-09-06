@@ -126,9 +126,13 @@ class StatusConsumersTest(unittest.TestCase):
         _write_status(self.cfg, "/dev/tty.usbmodem1", 4210, now - 3600, self.pipe,
                       self.ring, self.pipe.decryptor, last_frame_age=170.0, last_frame_ts=now - 170)
         st = json.loads((self.cfg.state_dir / "status.json").read_text())
-        self.assertEqual(sorted(st), ["alerts", "channel", "crypto", "current_file", "detector", "devices_tracked",
-                                      "dominant_pan", "frames_total", "last_frame_age_s", "last_frame_ts", "partition",
-                                      "port", "updated", "uptime_s"])
+        self.assertEqual(sorted(st), ["alerts", "channel", "commit", "crypto", "current_file", "detector",
+                                      "devices_tracked", "dominant_pan", "frames_total", "last_frame_age_s",
+                                      "last_frame_ts", "partition", "port", "updated", "uptime_s", "version"])
+        # Which code is recording: the one thing that tells a restart that
+        # happened from one that did not.
+        from threadwatch import __version__
+        self.assertEqual(st["version"], __version__)
         self.assertEqual(st["alerts"], {"delivered": 0, "queued": 0, "retrying": 0, "given_up": 0, "resumed": 0})
         self.assertEqual(sorted(st["crypto"]), sorted([*self.pipe.decryptor.stats, "key_sequence"]))
 

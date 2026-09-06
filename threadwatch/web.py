@@ -569,6 +569,11 @@ class Site:
             row("this run", f'{st.get("frames_total", 0):,} frames in {fmt_duration(st.get("uptime_s", 0))}, '
                             f'{st.get("devices_tracked", 0)} devices with stats')
             row("current file", f'<code>{esc(Path(st.get("current_file", "")).name)}</code>')
+            if st.get("version"):
+                # Which code is recording. A deploy that did not land, or a
+                # unit that was never restarted, shows in nothing else here.
+                commit = f' <span class="muted">({esc(st["commit"])})</span>' if st.get("commit") else ""
+                row("version", f'threadwatch {esc(st["version"])}{commit}')
             part = st.get("partition")
             if part:
                 # "router 60" means nothing on its own: name the device that

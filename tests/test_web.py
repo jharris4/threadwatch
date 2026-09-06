@@ -141,6 +141,17 @@ class PageBranchTest(unittest.TestCase):
         self.assertNotIn("retrying", body)
         self.assertNotIn("given up", body)
 
+    def test_the_status_page_says_which_code_is_recording(self):
+        self.status(updated=self.now, last_frame_age_s=3, version="0.9.9", commit="abc1234")
+        _st, body = self.get("/status")
+        self.assertIn("threadwatch 0.9.9", body)
+        self.assertIn("(abc1234)", body)
+        # A deployed copy has no .git, so there is a version and no commit.
+        self.status(updated=self.now, last_frame_age_s=3, version="0.9.9", commit=None)
+        _st, body = self.get("/status")
+        self.assertIn("threadwatch 0.9.9", body)
+        self.assertNotIn("abc1234", body)
+
     def test_the_status_page_names_the_partition_leader_or_says_it_cannot(self):
         self.status(updated=self.now, last_frame_age_s=3,
                     partition={"id": 12345, "leader_router": 60, "leader_rloc16": "f000"})

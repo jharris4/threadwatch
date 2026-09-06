@@ -153,6 +153,7 @@ non-`ok` line means and what to do about it:
 | `alerts` the recorder refuses to start on this table | a sink or heartbeat with no url, an unknown type, or two sharing a name | fix `[alerts]` / `[[heartbeats]]` in config.toml (docs/ALERTING.md) |
 | `alerts` no sinks / `heartbeats` none | nothing pages you, or nothing pages when the recorder dies | optional; docs/ALERTING.md |
 | `web` nothing answers on port N | the review pages are not up | `systemctl status threadwatch-web`; `[web] port` in config.toml |
+| `version` threadwatch X (commit), service started T | which code is on this host and since when | never a failure; it is how you tell a deploy that landed from one that did not, since every other line answers the same either way |
 
 Every hint in the doctor line itself is also the fix.
 

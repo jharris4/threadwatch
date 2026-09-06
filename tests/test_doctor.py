@@ -121,6 +121,21 @@ class DoctorTest(unittest.TestCase):
         self.assertEqual(self.levels(checks), [("ok", "disk"), ("warn", "incidents")])
         self.assertIn("threadwatch incidents --delete", checks[1][2])
 
+    def test_the_version_check_names_the_code_that_answered_the_others(self):
+        # Every other check answers the same whether the host is running
+        # the code you just pushed or a six-month-old checkout.
+        from threadwatch import __version__
+        level, subject, text = doctor.check_version()[0]
+        self.assertEqual((level, subject), ("ok", "version"))
+        self.assertIn(f"threadwatch {__version__}", text)
+        from threadwatch import config as config_mod
+        real = config_mod.repo_commit
+        config_mod.repo_commit = lambda: None
+        try:
+            self.assertIn("no .git here", doctor.check_version()[0][2])
+        finally:
+            config_mod.repo_commit = real
+
     def test_env_lines_systemd_would_ignore_are_warned_about_not_loaded(self):
         env = self.d / "alerts.env"
         env.write_text("export DOCTOR_TEST_EXPORTED=abc\n; a comment\nBAD-NAME=x\nDOCTOR_TEST_PLAIN=ok\n")
@@ -191,6 +206,7 @@ class DoctorTest(unittest.TestCase):
             ("ok", "alerts"),               # ...so the sink builds
             ("warn", "heartbeats"),
             ("warn", "web"),
+            ("ok", "version"),              # which code answered all of the above
         ])
         with contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(doctor.print_report(checks), 1)         # any FAIL is exit 1

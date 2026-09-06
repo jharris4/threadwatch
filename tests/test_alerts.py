@@ -20,6 +20,12 @@ from threadwatch import alerts  # noqa: E402
 from threadwatch.events import EventLog, read_all  # noqa: E402
 
 
+# serve_forever's default poll_interval is 0.5 s, and shutdown() blocks
+# until the loop next polls: every test that builds a server paid half a
+# second of pure waiting on the way out, including the many that never
+# make a request. Thirteen seconds of the suite's runtime sat here.
+POLL_S = 0.005
+
 class _Server:
     """Tiny HTTP server recording every request; status code selectable."""
 
@@ -45,7 +51,7 @@ class _Server:
                 pass
 
         self.httpd = HTTPServer(("127.0.0.1", 0), H)
-        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        threading.Thread(target=self.httpd.serve_forever, args=(POLL_S,), daemon=True).start()
         self.url = f"http://127.0.0.1:{self.httpd.server_port}"
 
     def wait(self, n, timeout=3.0):
@@ -467,7 +473,7 @@ class DeliveryTests(unittest.TestCase):
                 pass
 
         srv = ThreadingHTTPServer(("127.0.0.1", 0), Slow)
-        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        threading.Thread(target=srv.serve_forever, args=(POLL_S,), daemon=True).start()
         self.addCleanup(srv.server_close)
         self.addCleanup(srv.shutdown)
         logs = []
@@ -553,7 +559,7 @@ class DeliveryTests(unittest.TestCase):
                 pass
 
         drip = ThreadingHTTPServer(("127.0.0.1", 0), Drip)
-        threading.Thread(target=drip.serve_forever, daemon=True).start()
+        threading.Thread(target=drip.serve_forever, args=(POLL_S,), daemon=True).start()
         self.addCleanup(drip.server_close)
         self.addCleanup(drip.shutdown)
         drip_url = f"http://127.0.0.1:{drip.server_port}/"
@@ -655,7 +661,7 @@ class DeliveryTests(unittest.TestCase):
 
         self.bounced = []
         bounce = HTTPServer(("127.0.0.1", 0), Bounce)
-        threading.Thread(target=bounce.serve_forever, daemon=True).start()
+        threading.Thread(target=bounce.serve_forever, args=(POLL_S,), daemon=True).start()
         try:
             url = f"http://127.0.0.1:{bounce.server_port}"
             sink = alerts.HttpSink(name="s", url=url + "/hook", headers={"Authorization": "Bearer tk_SECRET"})

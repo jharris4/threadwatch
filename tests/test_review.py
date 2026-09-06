@@ -34,6 +34,12 @@ def rec(event, severity, ts, **f):
     return {"ts": ts, "event": event, "severity": severity, **f}
 
 
+# serve_forever's default poll_interval is 0.5 s, and shutdown() blocks
+# until the loop next polls: every test that builds a server paid half a
+# second of pure waiting on the way out, including the many that never
+# make a request. Thirteen seconds of the suite's runtime sat here.
+POLL_S = 0.005
+
 class DayRollingTest(unittest.TestCase):
     def test_records_land_in_their_local_day_file(self):
         with tempfile.TemporaryDirectory() as d:
@@ -334,7 +340,7 @@ class DayViewTest(unittest.TestCase):
         log.emit("recorder_started", "notice", midnight + 900, cause="unknown", gap_s=840,
                  last_frame_ts=midnight + 60, stopped_ts=None, exit_code=None, note="not listening for 14 min")
         httpd = make_server(self.cfg, "127.0.0.1", 0)
-        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        threading.Thread(target=httpd.serve_forever, args=(POLL_S,), daemon=True).start()
         base = f"http://127.0.0.1:{httpd.server_port}"
         try:
             def get(path):
@@ -466,7 +472,7 @@ class DayViewTest(unittest.TestCase):
                     {"name": "Lamp #2", "extendedAddress": "2222222222222222"}]
         d.write_text(json.dumps(entries))
         httpd = make_server(self.cfg, "127.0.0.1", 0)
-        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        threading.Thread(target=httpd.serve_forever, args=(POLL_S,), daemon=True).start()
         base = f"http://127.0.0.1:{httpd.server_port}"
         try:
             def get(path):
@@ -492,7 +498,7 @@ class DayViewTest(unittest.TestCase):
             "appletv-living-room.local": {"addr": TV2, "name": "Living Room Apple TV", "instance": "AppleTV Living Room",
                                           "vendor": "Apple", "model": "BorderRouter"}}))
         httpd = make_server(self.cfg, "127.0.0.1", 0)
-        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        threading.Thread(target=httpd.serve_forever, args=(POLL_S,), daemon=True).start()
         base = f"http://127.0.0.1:{httpd.server_port}"
         try:
             for path in ("/device/Living%20Room", f"/device/{TV1}", f"/device/{TV2}"):
@@ -515,7 +521,7 @@ class DayViewTest(unittest.TestCase):
 
     def test_pages_and_json_render(self):
         httpd = make_server(self.cfg, "127.0.0.1", 0)
-        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        threading.Thread(target=httpd.serve_forever, args=(POLL_S,), daemon=True).start()
         base = f"http://127.0.0.1:{httpd.server_port}"
         try:
             def get(path):
@@ -646,7 +652,7 @@ class WebServerTest(unittest.TestCase):
             return real(site, path, query_string)
 
         httpd = make_server(self.cfg, "127.0.0.1", 0)
-        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        threading.Thread(target=httpd.serve_forever, args=(POLL_S,), daemon=True).start()
         base = f"http://127.0.0.1:{httpd.server_port}"
         try:
             with mock.patch.object(web.Site, "respond", respond):

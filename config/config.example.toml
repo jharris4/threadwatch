@@ -28,6 +28,9 @@ keep_files = 168                  # hourly ring files to retain (168 = 1 week)
 # newest auto-* incident on disk, so a restart does not reset it). Off by default:
 # an incident is the size of the ring. 'threadwatch incidents' lists them.
 # freeze_on_critical = true
+# incidents_keep = 4              # how many auto-* incidents to keep; the oldest go before each new
+                                  # one is taken. Incidents you froze by hand are never pruned.
+                                  # -1 keeps every automatic one (nothing else deletes them).
 
 [devices]
 # Inventory that maps extended addresses to human names (see names.py docstring).

@@ -244,6 +244,23 @@ def freeze_ring(cfg, label: str = "incident", now: float | None = None,
     return final, count
 
 
+def prune_auto_incidents(incidents_dir: Path, keep: int) -> list[str]:
+    """Remove all but the newest ``keep`` automatic incidents and return
+    their names, oldest first. Only the snapshots freeze_on_critical made
+    (label ``auto-*``) are pruned: an incident somebody froze by hand and
+    named is kept, however old, because nothing else remembers to.
+    ``keep`` of 0 prunes every automatic one; a negative keep is no cap."""
+    if keep < 0 or not incidents_dir.is_dir():
+        return []
+    autos = sorted(d for d in incidents_dir.iterdir()
+                   if d.is_dir() and d.name != STAGING_DIR and d.name.partition("_")[2].startswith("auto-"))
+    removed = []
+    for d in autos[:max(0, len(autos) - keep)]:
+        shutil.rmtree(d, ignore_errors=True)
+        removed.append(d.name)
+    return removed
+
+
 def discard_partials(incidents_dir: Path) -> list[str]:
     """Remove the half copies a previous run left behind (a freeze cut short
     by a restart or the stall watchdog) and return their labels. Nothing in

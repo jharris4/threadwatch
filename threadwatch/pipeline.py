@@ -1594,7 +1594,17 @@ class Pipeline:
         threading.Thread(target=self._freeze_now, args=(label,), daemon=True).start()
 
     def _freeze_now(self, label: str) -> None:
-        from .freeze import freeze_ring
+        from .freeze import freeze_ring, prune_auto_incidents
+        # Oldest automatic snapshots go before this one is taken, not
+        # after: the room they free is the room this copy needs.
+        dropped = prune_auto_incidents(self.cfg.incidents_dir, max(0, self.cfg.incidents_keep - 1))
+        if dropped:
+            self.events.emit("incidents_pruned", "info", time.time(), removed=dropped,
+                             note=(f"{len(dropped)} older automatic incident(s) removed to keep "
+                                   f"[capture] incidents_keep = {self.cfg.incidents_keep}: "
+                                   + ", ".join(dropped)))
+        if not self._room_to_freeze(label):
+            return
         try:
             dest, count = freeze_ring(self.cfg, label, trigger="phase_locked_storm")
         except Exception as exc:
@@ -1608,6 +1618,24 @@ class Pipeline:
             return
         self.events.emit("incident_frozen", "info", time.time(), label=label, path=str(dest),
                          ring_files=count, note=f"{count} ring files kept as {dest.name}")
+
+    def _room_to_freeze(self, label: str) -> bool:
+        """A snapshot is a second copy of the ring. Taking one that leaves
+        the ring less room than it still needs trades a week of recording
+        for one incident, and the recorder exits 1 the moment the card
+        fills. Refuse it and say so; the ring keeps running."""
+        from .review import fmt_bytes, storage
+        sto = storage(self.cfg)
+        free, need = sto.get("disk_free"), sto["ring_needs_bytes"]
+        if free is None or free - sto["ring_bytes"] >= need:
+            return True
+        self._last_auto_freeze -= self.AUTO_FREEZE_COOLDOWN_S - self.AUTO_FREEZE_RETRY_S
+        self.events.emit("incident_freeze_skipped", "warning", time.time(), label=label,
+                         disk_free=free, ring_bytes=sto["ring_bytes"], ring_needs_bytes=need,
+                         note=(f"not freezing {label}: a copy of the ring ({fmt_bytes(sto['ring_bytes'])}) "
+                               f"would leave less than the {fmt_bytes(need)} the ring still needs out of "
+                               f"{fmt_bytes(free)} free; delete incidents or lower keep_files"))
+        return False
 
     # ------------------------------------------------------ daily summary
 

@@ -26,6 +26,7 @@ class Config:
     keep_files: int = 168                      # ring: hourly files, one week
     keep_bytes: Optional[int] = None           # ring: total size cap ([capture] keep_gb), None = files only
     freeze_on_critical: bool = False           # snapshot the ring when a critical event fires
+    incidents_keep: int = 4                    # how many auto-* incidents to keep; -1 = no cap
     devices_path: Optional[Path] = None
     detector: DetectorConfig = field(default_factory=DetectorConfig)
     config_dir: Path = REPO_ROOT / "config"
@@ -170,6 +171,16 @@ def load(path: Optional[Path]) -> Config:
                 raise ValueError(f"[capture] keep_gb must be more than 0 (unset it for no size cap), not {keep_gb:g}")
             cfg.keep_bytes = int(keep_gb * 1024 ** 3)
         cfg.freeze_on_critical = bool(cap.get("freeze_on_critical", cfg.freeze_on_critical))
+        if cap.get("incidents_keep") is not None:
+            # Each automatic snapshot is a whole ring, and nothing else
+            # deletes one: without a cap a mesh that storms repeatedly
+            # fills the card and the recorder stops recording.
+            keep = cap["incidents_keep"]
+            if isinstance(keep, bool) or not isinstance(keep, int):
+                raise ValueError(f"[capture] incidents_keep must be a whole number of incidents, not {keep!r}")
+            if keep < -1:
+                raise ValueError(f"[capture] incidents_keep must be -1 (no cap) or more, not {keep}")
+            cfg.incidents_keep = keep
         if raw.get("devices", {}).get("inventory"):
             cfg.devices_path = (Path(path).parent / raw["devices"]["inventory"]).resolve()
         det = raw.get("detect", {})

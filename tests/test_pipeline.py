@@ -1055,6 +1055,49 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertTrue(rec["path"].endswith("_auto-storm"))
         self.assertTrue((Path(rec["path"]) / "threadwatch-20231114-22.pcap").exists())
 
+    def test_each_automatic_freeze_prunes_the_oldest_ones_before_it_copies(self):
+        # Nothing but this prunes an incident, and each is a whole ring:
+        # four auto-freezes a day for ever fills the card the ring lives on.
+        from threadwatch.review import incidents
+        pipe = self._pipe()
+        self.cfg.incidents_keep = 2
+        self.cfg.ring_dir.mkdir(parents=True, exist_ok=True)
+        (self.cfg.ring_dir / "threadwatch-20231114-22.pcap").write_bytes(b"ring")
+        self.cfg.incidents_dir.mkdir(parents=True, exist_ok=True)
+        for name in ("20231101T000000_auto-storm", "20231102T000000_auto-storm",
+                     "20231103T000000_the-night-it-broke"):
+            (self.cfg.incidents_dir / name).mkdir()
+        pipe._freeze_now("auto-storm")
+        kept = sorted(i["name"] for i in incidents(self.cfg.incidents_dir))
+        self.assertEqual(kept[:2], ["20231102T000000_auto-storm", "20231103T000000_the-night-it-broke"])
+        self.assertTrue(kept[2].endswith("_auto-storm"))       # the one just taken
+        pruned = [r for r in pipe.events.records if r["event"] == "incidents_pruned"]
+        self.assertEqual([r["removed"] for r in pruned], [["20231101T000000_auto-storm"]])
+
+    def test_a_freeze_that_would_crowd_the_ring_out_is_refused_not_attempted(self):
+        # A snapshot is a second copy of the ring. Taking one that leaves
+        # the ring less room than it still needs trades a week of recording
+        # for one incident, and the recorder exits 1 when the card fills.
+        from threadwatch import review
+        pipe = self._pipe()
+        self.cfg.ring_dir.mkdir(parents=True, exist_ok=True)
+        (self.cfg.ring_dir / "threadwatch-20231114-22.pcap").write_bytes(b"ring")
+        pipe._last_auto_freeze = 1_700_000_000.0
+        real = review.storage
+        review.storage = lambda cfg: {**real(cfg), "disk_free": 1000, "ring_bytes": 900,
+                                      "ring_needs_bytes": 500}
+        try:
+            pipe._freeze_now("auto-storm")
+        finally:
+            review.storage = real
+        self.assertEqual([r for r in pipe.events.records if r["event"] == "incident_frozen"], [])
+        skipped = [r for r in pipe.events.records if r["event"] == "incident_freeze_skipped"]
+        self.assertEqual(len(skipped), 1)
+        self.assertIn("delete incidents", skipped[0]["note"])
+        # Nothing was kept, so the six-hour hold must not stand either.
+        self.assertEqual(pipe._last_auto_freeze,
+                         1_700_000_000.0 - pipe.AUTO_FREEZE_COOLDOWN_S + pipe.AUTO_FREEZE_RETRY_S)
+
     def test_beacon_requests_count_as_join_scanning(self):
         import struct
         from threadwatch.pcap import parse_frame

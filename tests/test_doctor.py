@@ -92,6 +92,27 @@ class DoctorTest(unittest.TestCase):
         self.assertEqual(level, "ok")
         self.assertIn("capped at 8 KB", text)
 
+    def test_disk_check_counts_the_incidents_and_the_snapshot_still_to_come(self):
+        from threadwatch import review
+        self.cfg.ring_dir.mkdir(parents=True)
+        (self.cfg.ring_dir / "threadwatch-20260903-08.pcap").write_bytes(b"x" * 4096)
+        self.cfg.incidents_dir.mkdir(parents=True)
+        (self.cfg.incidents_dir / "20260903T080000_auto-storm").mkdir()
+        (self.cfg.incidents_dir / "20260903T080000_auto-storm" / "a.pcap").write_bytes(b"x" * 8192)
+        self.assertIn("frozen incidents hold 8 KB", doctor.check_disk(self.cfg)[0][2])
+        # With freeze_on_critical on, room for one more whole copy of the
+        # ring is part of the judgement: without it the recorder refuses.
+        self.cfg.freeze_on_critical = True
+        real = review.storage
+        review.storage = lambda cfg: {**real(cfg), "disk_free": 5 * 10 ** 9, "ring_bytes": 5 * 10 ** 9,
+                                      "ring_needs_bytes": 5 * 10 ** 8}
+        try:
+            checks = doctor.check_disk(self.cfg)
+        finally:
+            review.storage = real
+        self.assertEqual(self.levels(checks), [("ok", "disk"), ("warn", "incidents")])
+        self.assertIn("threadwatch incidents --delete", checks[1][2])
+
     def test_env_lines_systemd_would_ignore_are_warned_about_not_loaded(self):
         env = self.d / "alerts.env"
         env.write_text("export DOCTOR_TEST_EXPORTED=abc\n; a comment\nBAD-NAME=x\nDOCTOR_TEST_PLAIN=ok\n")

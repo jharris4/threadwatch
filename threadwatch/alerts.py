@@ -73,7 +73,8 @@ KNOWN_EVENTS = frozenset((
     "poll_starvation", "poll_answered", "rssi_degradation", "rssi_recovered",
     "retransmission_elevation", "partition_or_leader_change", "credentials_stale", "clock_step",
     "border_router_address_changed", "border_router_unlisted", "phase_locked_storm",
-    "incident_frozen", "incident_freeze_failed", "daily_summary", "alert_test", "recorder_started",
+    "incident_frozen", "incident_freeze_failed", "incident_freeze_skipped", "incidents_pruned",
+    "daily_summary", "alert_test", "recorder_started",
     "address_flood",
 ))
 

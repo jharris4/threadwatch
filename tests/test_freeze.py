@@ -306,3 +306,44 @@ class FreezeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IncidentRetentionTest(unittest.TestCase):
+    """Automatic snapshots are the only ones nobody remembers to delete."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cfg = Config(data_dir=Path(self.tmp.name) / "data")
+        self.cfg.incidents_dir.mkdir(parents=True)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _incident(self, name: str) -> Path:
+        d = self.cfg.incidents_dir / name
+        d.mkdir()
+        (d / "threadwatch-20260903-00.pcap").write_bytes(b"x" * 100)
+        return d
+
+    def _names(self):
+        return sorted(p.name for p in self.cfg.incidents_dir.iterdir())
+
+    def test_the_oldest_automatic_incidents_go_and_the_named_ones_stay(self):
+        for stamp in ("20260901T000000", "20260902T000000", "20260903T000000"):
+            self._incident(f"{stamp}_auto-storm")
+        self._incident("20260831T000000_the-night-it-broke")   # frozen by hand, older than all of them
+        self._incident(f"{freeze.STAGING_DIR}")                # a copy in progress is not an incident
+        removed = freeze.prune_auto_incidents(self.cfg.incidents_dir, 2)
+        self.assertEqual(removed, ["20260901T000000_auto-storm"])
+        self.assertEqual(self._names(), [freeze.STAGING_DIR, "20260831T000000_the-night-it-broke",
+                                         "20260902T000000_auto-storm", "20260903T000000_auto-storm"])
+
+    def test_keep_zero_prunes_them_all_and_a_negative_keep_is_no_cap(self):
+        for stamp in ("20260901T000000", "20260902T000000"):
+            self._incident(f"{stamp}_auto-storm")
+        self.assertEqual(freeze.prune_auto_incidents(self.cfg.incidents_dir, -1), [])
+        self.assertEqual(len(self._names()), 2)
+        self.assertEqual(freeze.prune_auto_incidents(self.cfg.incidents_dir, 0),
+                         ["20260901T000000_auto-storm", "20260902T000000_auto-storm"])
+        self.assertEqual(self._names(), [])
+        self.assertEqual(freeze.prune_auto_incidents(self.cfg.incidents_dir / "gone", 1), [])

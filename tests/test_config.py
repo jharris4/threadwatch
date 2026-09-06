@@ -36,6 +36,15 @@ class KeepGbTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self._load('[capture]\nkeep_gb = "lots"\n')
 
+    def test_incidents_keep_is_a_whole_number_of_incidents_or_minus_one(self):
+        self.assertEqual(self._load("[capture]\nincidents_keep = 0\n").incidents_keep, 0)
+        self.assertEqual(self._load("[capture]\nincidents_keep = -1\n").incidents_keep, -1)
+        self.assertEqual(self._load("[capture]\nkeep_files = 24\n").incidents_keep, 4)
+        for bad in ("-2", "2.5", '"four"', "true"):
+            with self.assertRaises(ValueError, msg=bad) as cm:
+                self._load(f"[capture]\nincidents_keep = {bad}\n")
+            self.assertIn("incidents_keep", str(cm.exception))
+
     def test_the_writer_refuses_a_cap_that_would_prune_everything(self):
         with tempfile.TemporaryDirectory() as d:
             for h in ("00", "01", "02"):
@@ -221,6 +230,7 @@ class ExampleConfigTest(unittest.TestCase):
         ("capture", "keep_files"): ("keep_files", 168, 24),
         ("capture", "keep_gb"): ("keep_bytes", 4 * 1024 ** 3, 2 * 1024 ** 3),
         ("capture", "freeze_on_critical"): ("freeze_on_critical", True, False),
+        ("capture", "incidents_keep"): ("incidents_keep", 4, 9),
         ("devices", "inventory"): ("devices_path", "devices.json", "other.json"),
         ("quiet", "silence_s"): ("quiet_s", 1800, 600),
         ("quiet", "min_rssi_dbm"): ("quiet_min_rssi_dbm", -82, -70),

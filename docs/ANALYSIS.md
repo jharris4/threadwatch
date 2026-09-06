@@ -100,7 +100,14 @@ the first per half hour.
 `threadwatch freeze <label>` copies the ring before it rolls over, and so
 does the recorder itself when `[capture] freeze_on_critical` is set and a
 `phase_locked_storm` fires (at most once per six hours, counted from the
-newest automatic incident on disk). Each incident is one directory:
+newest automatic incident on disk). Automatic incidents are capped by
+`[capture] incidents_keep` (4 by default): the oldest `auto-*` ones go
+before each new snapshot is taken. Incidents you froze by hand are never
+pruned, so delete them yourself with `threadwatch incidents --delete`. A
+snapshot that would leave the ring less room than it still needs is
+refused, with an `incident_freeze_skipped` warning saying so.
+
+Each incident is one directory:
 
     data/incidents/20260901T031500_storm-at-noon/
       threadwatch-20260825-04.pcap ... threadwatch-20260901-03.pcap   every ring file, as it was

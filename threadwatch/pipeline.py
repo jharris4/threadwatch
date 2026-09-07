@@ -2257,6 +2257,27 @@ class Pipeline:
                                      "unauthenticated and cannot settle this: the inventory stands. If the "
                                      "device really did move, correct devices.json."))
                 continue
+            # One address, one hostname. Hostnames cost a responder nothing to
+            # invent, and any one of them naming an address already heard on
+            # air goes straight past the pending cap into self.routers, which
+            # had no cap and no expiry: RAM, the whole file rewritten on every
+            # browse, and a longer load at every start, growing for as long as
+            # somebody kept browsing. A border router does not answer to a
+            # second hostname, so the one already holding the address keeps
+            # it -- unless the inventory names the newcomer itself.
+            holder = next((h for h, other in self.routers.items()
+                           if h != host and (other.get("addr") or "").lower() == ext), None)
+            if holder is not None and self.names.entry_for_border_router(host) is None:
+                if (host, ext) not in self._conflict_logged:
+                    if len(self._conflict_logged) >= self.LOGGED_MAX:
+                        self._conflict_logged.clear()
+                    self._conflict_logged.add((host, ext))
+                    print(f"[threadwatch] mdns: {r.get('instance') or host} advertises {ext}, which "
+                          f"{holder} already answers for; ignored", file=sys.stderr, flush=True)
+                continue
+            if holder is not None:
+                del self.routers[holder]        # the inventory named this one instead
+                dirty = True
             name = entry.get("name") if entry else None
             prev = (rec.get("addr") or "").lower() or None
             changed = prev is not None and prev != ext
@@ -2324,8 +2345,34 @@ class Pipeline:
             if new != rec:
                 self.routers[host] = new
                 dirty = True
+        if self._bound_routers(now):
+            dirty = True
         if dirty:
             self._save_border_routers()
+
+    # A backstop under the one-address-one-hostname rule above: bindings for
+    # addresses that are never heard again would otherwise sit in the file
+    # for good, and nothing put a ceiling on the table at all. Hostnames the
+    # inventory names explicitly are kept whatever happens to the rest.
+    ROUTERS_MAX = 64
+    ROUTER_STALE_S = 30 * 86400
+
+    def _bound_routers(self, now: float) -> bool:
+        """Expire and cap discovered host bindings. Returns what changed."""
+        def configured(host: str) -> bool:
+            return self.names.entry_for_border_router(host) is not None
+
+        gone = [host for host, rec in self.routers.items()
+                if not configured(host) and now - (rec.get("seen") or 0) > self.ROUTER_STALE_S]
+        for host in gone:
+            del self.routers[host]
+        if len(self.routers) > self.ROUTERS_MAX:
+            order = sorted(self.routers.items(),
+                           key=lambda kv: (not configured(kv[0]), -(kv[1].get("seen") or 0), kv[0]))
+            for host, _rec in order[self.ROUTERS_MAX:]:
+                del self.routers[host]
+                gone.append(host)
+        return bool(gone)
 
     def _save_border_routers(self) -> None:
         if self.ephemeral:

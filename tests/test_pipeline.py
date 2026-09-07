@@ -2438,6 +2438,43 @@ class BorderRouterTest(unittest.TestCase):
         self.assertEqual(len([e for e in kept if e["addr"] == addrs[-1]]), 1)
         self.assertNotIn(back, [e["addr"] for e in kept])           # it is the live one again
 
+    def test_a_flood_of_invented_hostnames_cannot_grow_the_router_table(self):
+        """A hostname naming an address already heard on air goes past the
+        pending cap into self.routers, which had no cap and no expiry. One
+        authenticated address and a browse full of made-up hostnames grew RAM
+        and border-routers.json without limit, and every browse rewrote the
+        whole file. Hostnames cost the responder nothing."""
+        import contextlib
+        import io
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t = time.time() - 3600
+        pipe.ingest(frame(t, self.OLD))
+        pipe._apply_border_routers([self.router(self.HOST, self.OLD)], t)
+        out = io.StringIO()
+        with contextlib.redirect_stderr(out):
+            pipe._apply_border_routers([self.router(f"fake-{i}.local", self.OLD, instance=f"Fake {i}")
+                                        for i in range(1000)], t + 60)
+        self.assertEqual(list(pipe.routers), [self.HOST])          # the one that already answers for it
+        self.assertEqual(pipe.routers[self.HOST]["addr"], self.OLD)
+        self.assertEqual(pipe.routers[self.HOST]["instance"], "AppleTV Living Room")
+        self.assertEqual(out.getvalue().count("already answers for"), 1000)
+        self.assertLessEqual(len(pipe.routers), pipe.ROUTERS_MAX)
+
+    def test_an_unclaimed_binding_nothing_readvertises_expires(self):
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t = time.time() - 3600
+        pipe.ingest(frame(t, self.OLD))
+        pipe.ingest(frame(t, self.OTBR))
+        pipe._apply_border_routers([self.router(self.HOST, self.OLD),
+                                    self.router("homeassistant-otbr.local", self.OTBR, "HA OTBR")], t)
+        self.assertEqual(sorted(pipe.routers), [self.HOST, "homeassistant-otbr.local"])
+        pipe._apply_border_routers([self.router("homeassistant-otbr.local", self.OTBR, "HA OTBR")],
+                                   t + pipe.ROUTER_STALE_S + 60)
+        # Nothing re-advertised the Apple hub for a month and no entry names
+        # its hostname, so its binding goes; the one devices.json names by
+        # borderRouter stays whatever happens.
+        self.assertEqual(list(pipe.routers), ["homeassistant-otbr.local"])
+
     def test_a_hostname_cannot_claim_an_address_the_inventory_gives_elsewhere(self):
         """Hearing an address on air proves that device exists; it does not
         prove an unauthenticated hostname advertising it belongs to that

@@ -132,10 +132,11 @@ Each snapshot is one directory:
                              with its size, and the commands that read it
       devices.json           the inventory as it was: the names to judge these packets by
       config.toml            the configuration in force at the time (a record: it is not loaded when
-                             the snapshot is read, see below), with every url, header, command, token,
+                             the snapshot is read, see below), with every url, header, command, body, token,
                              topic, password and key blanked to "<redacted>" at whatever depth it
-                             was written (credentials.toml, alerts.env and ha.env are never
-                             copied). Written back out from the parsed file, so the settings are
+                             was written — a body template goes whole, because a form-encoded
+                             receiver is authenticated inside it (credentials.toml, alerts.env and
+                             ha.env are never copied). Written back out from the parsed file, so the settings are
                              all here but your own comments and layout are not (comments can contain
                              secrets too). Invalid TOML is replaced by a fixed placeholder
       status.json            the recorder's status at the time

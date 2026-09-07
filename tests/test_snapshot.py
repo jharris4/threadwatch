@@ -83,6 +83,23 @@ class BundleTest(unittest.TestCase):
         self.assertEqual(tomllib.loads(snapshot.redact_config(dotted))["alerts"]["sinks"][0]["headers"],
                          {"Authorization": "<redacted>"})
 
+    def test_a_credential_written_into_a_body_template_does_not_travel(self):
+        # An HTTP sink's body is written by the operator, and a form-based
+        # receiver authenticates inside it. Redaction reads key names, and
+        # "body" read as innocent, so the token in the template went into
+        # the bundle whole while its header said every secret was blanked.
+        import tomllib
+        text = ('[[alerts.sinks]]\nname = "phone"\ntype = "http"\n'
+                'url = "https://example.invalid/hook"\n'
+                'body = "token=FAKE_SECRET&message={summary}"\n'
+                '[[alerts.sinks]]\nname = "chat"\ntype = "http"\n'
+                'body = \'{{"content": "{summary}", "key": "FAKE_SECRET"}}\'\n')
+        out = snapshot.redact_config(text)
+        self.assertNotIn("FAKE_SECRET", out)
+        sinks = tomllib.loads(out)["alerts"]["sinks"]
+        self.assertEqual([s["body"] for s in sinks], ["<redacted>", "<redacted>"])
+        self.assertEqual([s["name"] for s in sinks], ["phone", "chat"])   # which sink it was still reads
+
     def test_the_values_that_are_not_secret_come_back_unchanged(self):
         # The round trip rewrites the file, so every type an operator can
         # write has to survive it: bool must not arrive as 1, and a nested

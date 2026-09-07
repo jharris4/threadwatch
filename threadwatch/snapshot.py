@@ -48,10 +48,16 @@ STATE_FILES = ("status.json", "last-seen.json", "observed-names.json", "frames-b
 # actually writes, and over-redacting a bundle costs nothing while
 # under-redacting one ships a bearer token.
 # Secrets are meant to live in alerts.env as ${VAR} references, but a
-# token pasted into a URL or a header must not travel with the packets.
+# token pasted into a URL, a header or a body must not travel with the
+# packets. An HTTP sink's body is a template the operator writes whole,
+# and a form-encoded API is authenticated inside it ("token=...&
+# message={summary}"): its text cannot be told from its credentials
+# without parsing every body format a receiver accepts, so the whole
+# template goes. What judged the packets is the sink and its severities,
+# not the wording it sent.
 # credentials.toml, alerts.env and ha.env are never copied.
 REDACT_WORDS = ("url", "header", "command", "token", "topic", "password",
-                "secret", "auth", "username", "key")
+                "secret", "auth", "username", "key", "body")
 REDACTED = "<redacted>"
 MANIFEST = "manifest.json"
 _LABEL = re.compile(r"[^A-Za-z0-9._-]+")

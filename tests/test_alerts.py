@@ -4,6 +4,7 @@ import json
 import os
 import re
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -629,6 +630,51 @@ class DeliveryTests(unittest.TestCase):
             # A user:password before the host goes too, wherever it turns up.
             self.assertEqual(alerts._redact_text("at https://u:pw@hc.example/ping/abc now"),
                              "at https://hc.example/... now")
+
+    def test_a_credential_a_failing_command_prints_stays_out_of_the_journal(self):
+        # A command sink authenticates with a header or a token on its
+        # argument list, and ${VAR} has put the real value there by the
+        # time it runs. curl -v echoes the headers it sent; a script
+        # written for a sink prints whatever it likes. Both end up in the
+        # journal through _failed, and the journal is pasted into issues.
+        shouting = alerts.CommandSink(name="c", command=[
+            "sh", "-c", "echo 'Authorization: Bearer FAKE_SECRET' >&2; exit 1"])
+        with self.assertRaises(Exception) as cm:
+            shouting.send(REC)
+        said = alerts._describe_error(cm.exception)
+        self.assertNotIn("FAKE_SECRET", said)
+        self.assertEqual(said, "exit 1: Authorization: <redacted>")
+        # A bare scheme, and a parameter named for what it carries.
+        self.assertEqual(alerts._redact_text("sent Bearer FAKE_SECRET twice"),
+                         "sent Bearer <redacted> twice")
+        self.assertEqual(alerts._redact_text("rejected: api_key=FAKE_SECRET"),
+                         "rejected: api_key=<redacted>")
+
+    def test_a_timed_out_command_is_described_without_its_arguments(self):
+        # str(TimeoutExpired) quotes the whole argument list, token and
+        # all. What went wrong is the timeout, not the command.
+        exc = subprocess.TimeoutExpired(["curl", "-H", "Authorization: Bearer FAKE_SECRET"], 5)
+        said = alerts._describe_error(exc)
+        self.assertEqual(said, "timed out after 5 s")
+        self.assertNotIn("FAKE_SECRET", said)
+
+    def test_an_expanded_secret_is_scrubbed_in_any_shape_the_program_prints(self):
+        # The pattern above only catches credentials written the way a
+        # header is. The values ${VAR} expansion put into this sink's own
+        # definition are known exactly, so a program that prints one in
+        # prose is caught too.
+        os.environ["TW_LEAK_TOKEN"] = "sk-FAKE-abcdef"
+        try:
+            sink = alerts.build_sink({"type": "command", "name": "c",
+                                      "command": ["curl", "-u", "${TW_LEAK_TOKEN}"]}, 0, print)
+        finally:
+            os.environ.pop("TW_LEAK_TOKEN", None)
+        self.assertEqual(sink.secrets, ("sk-FAKE-abcdef",))
+        self.assertNotIn("secrets=", repr(sink))     # a sink turns up in exception text and test output
+        exc = subprocess.CalledProcessError(1, sink.command,
+                                            stderr=b"the mesh refused sk-FAKE-abcdef, try another")
+        said = alerts._describe_error(exc, sink.secrets)
+        self.assertEqual(said, "exit 1: the mesh refused <redacted>, try another")
 
     def test_heartbeat_uses_failure_url_when_unhealthy(self):
         hb = alerts.Heartbeat(name="g", url=self.srv.url + "/ok?success=true",

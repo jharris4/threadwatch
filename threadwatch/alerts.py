@@ -105,11 +105,14 @@ class ConfigError(Exception):
 
 # ----------------------------------------------------------------- helpers
 
-def expand_env(value: Any, missing: set[str]) -> Any:
+def expand_env(value: Any, missing: set[str], found: set[str] | None = None) -> Any:
     """Expand ${VAR} references in strings (recursively through dict/list).
 
     Names of unset variables are collected into ``missing`` and left in place,
-    so the caller can decide to disable the sink with a clear message.
+    so the caller can decide to disable the sink with a clear message. The
+    values that were substituted are collected into ``found`` when it is
+    given: those are the secrets alerts.env holds, and knowing them is
+    what lets a failure be logged without them (_redact_text).
     """
     if isinstance(value, str):
         def _sub(m):
@@ -117,12 +120,14 @@ def expand_env(value: Any, missing: set[str]) -> Any:
             if v is None:
                 missing.add(m.group(1))
                 return m.group(0)
+            if found is not None:
+                found.add(v)
             return v
         return _ENV_REF.sub(_sub, value)
     if isinstance(value, dict):
-        return {k: expand_env(v, missing) for k, v in value.items()}
+        return {k: expand_env(v, missing, found) for k, v in value.items()}
     if isinstance(value, list):
-        return [expand_env(v, missing) for v in value]
+        return [expand_env(v, missing, found) for v in value]
     return value
 
 
@@ -256,6 +261,10 @@ class Sink:
     # never opens a window and never appears in a digest.
     events: frozenset | None = None
     ignore_events: frozenset = frozenset()
+    # The values ${VAR} expansion put into this sink's definition, so that
+    # what a failing send prints can be logged without them. Never in the
+    # repr: a sink turns up in exception text and in test output.
+    secrets: tuple = field(default=(), repr=False)
     _last: dict = field(default_factory=dict)      # event -> start of its current window
     _pending: dict = field(default_factory=dict)   # event -> records held back this window
     # event -> start of the window its pending records were held in. A
@@ -506,7 +515,8 @@ def build_sink(raw: dict, index: int, log: Callable[[str], None],
     if not raw.get("enabled", True):
         return None
     missing: set[str] = set()
-    raw = expand_env(raw, missing)
+    found: set[str] = set()
+    raw = expand_env(raw, missing, found)
     if missing:
         reason = f"environment variable(s) not set: {', '.join(sorted(missing))} (see config/alerts.env)"
         log(f"alert sink '{name}' disabled: {reason}")
@@ -525,6 +535,7 @@ def build_sink(raw: dict, index: int, log: Callable[[str], None],
         timeout_s=float(raw.get("timeout_s", 10.0)),
         events=_event_filter(raw, "events", name, log),
         ignore_events=_event_filter(raw, "ignore_events", name, log) or frozenset(),
+        secrets=tuple(sorted(found, key=len, reverse=True)),
     )
     if kind == "http":
         if not raw.get("url"):
@@ -693,7 +704,7 @@ class Dispatcher:
                 _bounded(s, partial(s.send, record), s.timeout_s, "send")
                 out.append((s, None))
             except Exception as exc:
-                out.append((s, _describe_error(exc)))
+                out.append((s, _describe_error(exc, s.secrets)))
         return out
 
     def stats(self) -> dict:
@@ -767,7 +778,7 @@ class Dispatcher:
     def _failed(self, sink: Sink, record: dict, item: dict | None, exc: Exception) -> None:
         """A send that raised: try again later, spool it when the process
         is leaving, or give it up when the record is too old to be news."""
-        err = _describe_error(exc)
+        err = _describe_error(exc, sink.secrets)
         attempt = (item["attempt"] if item else 0) + 1
         now = time.time()
         age = now - float(record.get("ts") or now)
@@ -956,25 +967,55 @@ def _maybe_delivered(exc: BaseException) -> bool:
 
 # A URL anywhere in free text, for _redact_text.
 _URL_IN_TEXT = re.compile(r"\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s'\"<>|]+")
+# An authentication credential written the way a program prints one: a
+# header or a parameter whose name says what it carries, and the rest of
+# that line with it (an Authorization value is "Bearer <token>", two
+# words), or a bare scheme and its token. curl -v echoes the headers it
+# sent; a script written for a sink prints whatever it likes.
+_SECRET_KV = re.compile(r"(?i)\b([a-z0-9_.-]*(?:authorization|api[-_]?key|token|secret|"
+                        r"password|passwd|auth)[a-z0-9_.-]*)(\s*[:=]\s*)[^\r\n]+")
+_SECRET_SCHEME = re.compile(r"(?i)\b(bearer|basic|digest)\s+[^\s\r\n]+")
+# Under this many characters, a value expanded from the environment is
+# not scrubbed out of free text: a two-character one is a substring of
+# ordinary words and would blank the diagnostic instead of the secret.
+_SCRUB_MIN = 6
 
 
-def _redact_text(text: str) -> str:
-    """Every URL in a line reduced to scheme and host, as describe() does
-    for a configured one. A command sink's stderr is written by a program
-    the operator chose - curl echoing the address it could not reach is
-    the ordinary case - and for ntfy, Discord, Healthchecks, Uptime Kuma
-    and Home Assistant the secret is the path. The journal is not where
-    that belongs, and it is the one output nobody thinks of as one."""
-    return _URL_IN_TEXT.sub(lambda m: _redact_url(m.group(0)), text)
+def _redact_text(text: str, secrets: tuple = ()) -> str:
+    """Free text with what must not reach the journal taken out of it.
+
+    Every URL is reduced to scheme and host, as describe() does for a
+    configured one: a command sink's stderr is written by a program the
+    operator chose - curl echoing the address it could not reach is the
+    ordinary case - and for ntfy, Discord, Healthchecks, Uptime Kuma and
+    Home Assistant the secret is the path. Credentials that are not URLs
+    go too: the header shapes above, and the exact values ${VAR}
+    expansion put into this sink's own definition (``secrets``), which is
+    the only way to catch a token a program prints in a shape nobody can
+    write a pattern for. The journal is the one output nobody thinks of
+    as one, and it is pasted into issues."""
+    text = _URL_IN_TEXT.sub(lambda m: _redact_url(m.group(0)), text)
+    text = _SECRET_KV.sub(lambda m: f"{m.group(1)}{m.group(2)}<redacted>", text)
+    text = _SECRET_SCHEME.sub(lambda m: f"{m.group(1)} <redacted>", text)
+    for secret in secrets:
+        if len(secret) >= _SCRUB_MIN:
+            text = text.replace(secret, "<redacted>")
+    return text
 
 
-def _describe_error(exc: Exception) -> str:
+def _describe_error(exc: Exception, secrets: tuple = ()) -> str:
     if isinstance(exc, subprocess.CalledProcessError):
-        err = _redact_text((exc.stderr or b"").decode(errors="replace").strip())
+        err = _redact_text((exc.stderr or b"").decode(errors="replace").strip(), secrets)
         return f"exit {exc.returncode}" + (f": {err}" if err else "")
+    if isinstance(exc, subprocess.TimeoutExpired):
+        # Never str(exc): it quotes the whole argument list, and by then
+        # ${VAR} expansion has put the real token into the arguments -
+        # "curl -H Authorization: Bearer ..." is how a command sink
+        # authenticates. What went wrong is the timeout, not the command.
+        return f"timed out after {float(exc.timeout):g} s"
     if isinstance(exc, urllib.error.HTTPError):
         return f"HTTP {exc.code}"
-    return _redact_text(f"{type(exc).__name__}: {exc}")
+    return _redact_text(f"{type(exc).__name__}: {exc}", secrets)
 
 
 # -------------------------------------------------------------- heartbeats

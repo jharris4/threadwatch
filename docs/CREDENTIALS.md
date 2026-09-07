@@ -91,7 +91,10 @@ log and state files carry names, addresses and MLE facts. What the
 recorder prints is safe to paste into a bug report: sink and heartbeat
 URLs appear in the journal as scheme, host and port only, a command sink
 as its program name, and `import`, `doctor`, `status` and `devices` never
-print a key or a token. The three things worth checking before pasting
+print a key or a token. What a failing command sink printed on its own
+standard error is logged with its URLs, its `Authorization`-shaped lines
+and every value expanded from `alerts.env` taken out of it, and a
+command that timed out is logged without its argument list. The three things worth checking before pasting
 are a `config.toml` with a webhook URL in it, a shell transcript that
 `cat`ted one of the files above, and a pcap you share together with the
 key that decrypts it.

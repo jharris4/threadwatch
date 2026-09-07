@@ -194,12 +194,22 @@ def main(argv=None) -> int:
             print("no status file; is the recorder running?")
             return 1
         from .review import status_state
-        status = json.loads(path.read_text())
+        try:
+            status = json.loads(path.read_text())
+        except ValueError:
+            print("status file is unreadable (mid-write? damaged?)")
+            return 1
         # The one reading of a status file's age (written every 30 s by
         # the watchdog), shared with the status page and doctor.
         state, age = status_state(status, time.time())
+        if state == "none":
+            print("status file holds no recorder state; is the recorder running?")
+            return 1
         status["status_age_s"] = round(age, 1)
-        status["daemon_alive"] = state != "dead"
+        # Only a status file the recorder is still writing says it is alive.
+        # "dead" is a stale file; "none" is an empty or damaged one, which is
+        # no evidence of a recorder at all.
+        status["daemon_alive"] = state in ("live", "quiet")
         print(json.dumps(status, indent=1))
         return 0
 

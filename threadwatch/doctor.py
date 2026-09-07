@@ -166,6 +166,8 @@ def check_daemon(cfg, now: float | None = None) -> list[Check]:
         return [(WARN, "recorder", "status.json is unreadable (mid-write?)")]
     from .review import status_state
     state, age = status_state(st, now)
+    if state == "none":
+        return [(WARN, "recorder", "status.json holds no recorder state (empty, or restored damaged)")]
     if state == "dead":
         return [(FAIL, "recorder", f"not running: status last written {age / 60:.0f} min ago")]
     fa = st.get("last_frame_age_s", 0)

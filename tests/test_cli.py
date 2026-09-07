@@ -501,6 +501,34 @@ class DispatchTest(CliCase):
         self.assertEqual(code, 1)
         self.assertIn("no status file", out)
 
+    def test_status_does_not_call_an_empty_or_damaged_status_file_alive(self):
+        """A restored-empty or half-written status.json is no evidence of a
+        recorder. Only "live" and "quiet" are alive; "none" is not a fresher
+        "dead", and a script reading daemon_alive must not see true."""
+        state = self.d / "data" / "state"
+        state.mkdir(parents=True)
+        path = state / "status.json"
+        for text in ("{}", "[]", '"nonsense"'):
+            with self.subTest(status=text):
+                path.write_text(text)
+                code, out, _ = self.run_cli("status")
+                self.assertEqual(code, 1, out)
+                self.assertNotIn('"daemon_alive": true', out)
+        # A file with no readable "updated" is as old as no file at all, not
+        # as fresh as one written a moment ago: NaN loses every comparison.
+        path.write_text('{"updated": NaN}')
+        code, out, _ = self.run_cli("status")
+        self.assertEqual(code, 0)
+        self.assertFalse(json.loads(out.replace("NaN", "0"))["daemon_alive"])
+        path.write_text('{"updated":')
+        code, out, _ = self.run_cli("status")
+        self.assertEqual(code, 1)
+        self.assertIn("unreadable", out)
+        path.write_text(json.dumps({"updated": time.time(), "last_frame_age_s": 1.0}))
+        code, out, _ = self.run_cli("status")
+        self.assertEqual(code, 0)
+        self.assertTrue(json.loads(out)["daemon_alive"])
+
     def test_report_suggest_prints_entries_and_a_rotation_hint(self):
         from threadwatch.config import load
         from threadwatch.names import LastSeen

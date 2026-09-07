@@ -12,6 +12,7 @@ and the CLI both render from here.
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time
 from pathlib import Path
@@ -327,10 +328,15 @@ def status_state(status: dict | None, now: float) -> tuple[str, float]:
     """How to read a status file, and how old it is: "none" (no file, or
     one with nothing in it), "dead" (nothing has written it for
     STATUS_DEAD_S), "quiet" (alive, hearing nothing) or "live"."""
-    if not status:
+    if not isinstance(status, dict) or not status:
         return "none", 0.0
     updated = status.get("updated")
-    age = now - (updated if isinstance(updated, (int, float)) else 0)
+    # No usable "updated" is not evidence that anything is running: read it
+    # as old, not as fresh. json.loads accepts NaN, and every comparison
+    # against NaN is false, so an unchecked one would fall through to "live".
+    if isinstance(updated, bool) or not isinstance(updated, (int, float)) or not math.isfinite(updated):
+        updated = 0
+    age = now - updated
     if age > STATUS_DEAD_S:
         return "dead", age
     if (status.get("last_frame_age_s") or 0) > STATUS_QUIET_S:

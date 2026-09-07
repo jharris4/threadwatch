@@ -1167,9 +1167,12 @@ class QuietPolicyTest(unittest.TestCase):
         self.cfg.ring_dir.mkdir(parents=True, exist_ok=True)
         (self.cfg.ring_dir / "threadwatch-20231114-22.pcap").write_bytes(b"ring")
         self.cfg.snapshots_dir.mkdir(parents=True, exist_ok=True)
-        for name in ("20231101T000000_auto-storm", "20231102T000000_auto-storm",
-                     "20231103T000000_the-night-it-broke"):
-            (self.cfg.snapshots_dir / name).mkdir()
+        for name, trigger in (("20231101T000000_auto-storm", "phase_locked_storm"),
+                              ("20231102T000000_auto-storm", "phase_locked_storm"),
+                              ("20231103T000000_the-night-it-broke", "manual")):
+            d = self.cfg.snapshots_dir / name
+            d.mkdir()
+            (d / "manifest.json").write_text(json.dumps({"format": 1, "trigger": trigger}))
         pipe._save_snapshot_now("auto-storm", "phase_locked_storm")
         kept = sorted(i["name"] for i in snapshots(self.cfg.snapshots_dir))
         self.assertEqual(kept[:2], ["20231102T000000_auto-storm", "20231103T000000_the-night-it-broke"])

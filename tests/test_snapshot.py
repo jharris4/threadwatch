@@ -1,5 +1,6 @@
 """save_snapshot against a ring that keeps rotating."""
 
+import json
 import shutil
 import sys
 import tempfile
@@ -468,10 +469,12 @@ class SnapshotRetentionTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _snapshot(self, name: str) -> Path:
+    def _snapshot(self, name: str, trigger: str = "manual") -> Path:
         d = self.cfg.snapshots_dir / name
         d.mkdir()
         (d / "threadwatch-20260903-00.pcap").write_bytes(b"x" * 100)
+        (d / snapshot.MANIFEST).write_text(json.dumps({"format": 1, "label": name.partition("_")[2],
+                                                       "trigger": trigger}))
         return d
 
     def _names(self):
@@ -479,7 +482,7 @@ class SnapshotRetentionTest(unittest.TestCase):
 
     def test_the_oldest_automatic_snapshots_go_and_the_named_ones_stay(self):
         for stamp in ("20260901T000000", "20260902T000000", "20260903T000000"):
-            self._snapshot(f"{stamp}_auto-storm")
+            self._snapshot(f"{stamp}_auto-storm", trigger="phase_locked_storm")
         self._snapshot("20260831T000000_the-night-it-broke")   # saved by hand, older than all of them
         self._snapshot(f"{snapshot.STAGING_DIR}")                # a copy in progress is not a snapshot
         removed = snapshot.prune_auto_snapshots(self.cfg.snapshots_dir, 2)
@@ -489,13 +492,34 @@ class SnapshotRetentionTest(unittest.TestCase):
 
     def test_keep_zero_prunes_them_all_and_a_negative_keep_is_no_cap(self):
         for stamp in ("20260901T000000", "20260902T000000"):
-            self._snapshot(f"{stamp}_auto-storm")
+            self._snapshot(f"{stamp}_auto-storm", trigger="phase_locked_storm")
         self.assertEqual(snapshot.prune_auto_snapshots(self.cfg.snapshots_dir, -1), [])
         self.assertEqual(len(self._names()), 2)
         self.assertEqual(snapshot.prune_auto_snapshots(self.cfg.snapshots_dir, 0),
                          ["20260901T000000_auto-storm", "20260902T000000_auto-storm"])
         self.assertEqual(self._names(), [])
         self.assertEqual(snapshot.prune_auto_snapshots(self.cfg.snapshots_dir / "gone", 1), [])
+
+    def test_a_snapshot_saved_by_hand_and_called_auto_is_not_pruned(self):
+        # The label is the operator's to choose and the CLI reserves no
+        # prefix: what makes a snapshot automatic is the trigger that
+        # asked for it, in the manifest.
+        self._snapshot("20260901T000000_auto-investigation")                       # typed at the CLI
+        self._snapshot("20260902T000000_auto-storm", trigger="phase_locked_storm")  # the recorder's
+        self.assertEqual(snapshot.prune_auto_snapshots(self.cfg.snapshots_dir, 0),
+                         ["20260902T000000_auto-storm"])
+        self.assertEqual(self._names(), ["20260901T000000_auto-investigation"])
+
+    def test_a_bundle_with_no_readable_manifest_is_kept(self):
+        # Only a copy cut short has no manifest, and one whose manifest
+        # cannot be read cannot say who asked for it. Deleting evidence on
+        # that guess is the one outcome with no way back.
+        nameless = self._snapshot("20260901T000000_auto-storm", trigger="phase_locked_storm")
+        (nameless / snapshot.MANIFEST).unlink()
+        torn = self._snapshot("20260902T000000_auto-storm", trigger="phase_locked_storm")
+        (torn / snapshot.MANIFEST).write_text("{not json")
+        self.assertEqual(snapshot.prune_auto_snapshots(self.cfg.snapshots_dir, 0), [])
+        self.assertEqual(len(self._names()), 2)
 
 
 if __name__ == "__main__":

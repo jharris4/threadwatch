@@ -282,16 +282,38 @@ def saved_at(snapshot_dir: Path) -> float | None:
         return None
 
 
+def is_auto_snapshot(snapshot_dir: Path) -> bool:
+    """Did snapshot_on_critical take this snapshot, rather than a person?
+
+    Read from the manifest's trigger, which is the event that called for
+    the copy and "manual" for the ones somebody asked for by name. The
+    label cannot answer this: it is the operator's to choose, and
+    `threadwatch snapshot auto-investigation` is a snapshot saved by hand
+    however it reads - one that retention deleted at the next storm when
+    this was decided on the "auto-" prefix. A bundle whose manifest is
+    missing or unreadable is not called automatic: nothing else remembers
+    to keep a snapshot somebody saved, so the ambiguous ones stay."""
+    try:
+        manifest = json.loads((snapshot_dir / MANIFEST).read_text())
+    except (OSError, ValueError):
+        return False
+    trigger = manifest.get("trigger") if isinstance(manifest, dict) else None
+    if not isinstance(trigger, str):
+        return False
+    return trigger.strip().lower() not in ("", "manual")
+
+
 def prune_auto_snapshots(snapshots_dir: Path, keep: int) -> list[str]:
     """Remove all but the newest ``keep`` automatic snapshots and return
-    their names, oldest first. Only those snapshot_on_critical made
-    (label ``auto-*``) are pruned: a snapshot somebody saved by hand and
-    named is kept, however old, because nothing else remembers to.
+    their names, oldest first. Only those snapshot_on_critical made are
+    pruned (is_auto_snapshot, from the manifest): a snapshot somebody
+    saved by hand is kept, however old and whatever it is called, because
+    nothing else remembers to.
     ``keep`` of 0 prunes every automatic one; a negative keep is no cap."""
     if keep < 0 or not snapshots_dir.is_dir():
         return []
     autos = sorted(d for d in snapshots_dir.iterdir()
-                   if d.is_dir() and d.name != STAGING_DIR and d.name.partition("_")[2].startswith("auto-"))
+                   if d.is_dir() and d.name != STAGING_DIR and is_auto_snapshot(d))
     removed = []
     for d in autos[:max(0, len(autos) - keep)]:
         shutil.rmtree(d, ignore_errors=True)

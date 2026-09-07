@@ -224,7 +224,7 @@ def run_device(cfg: Config, target: str, pcap_file: Path | None = None,
                     vouched = is_ours and pipe.last_sighting in addr_set
                     # ACK for our previous unicast transmission
                     if (prev_frame is not None and f.ftype == 2
-                            and f.seq == prev_frame.seq and f.ts - prev_frame.ts < 0.05):
+                            and f.seq == prev_frame.seq and 0.0 <= f.ts - prev_frame.ts < 0.05):
                         per_hour[hour_of(prev_frame.ts)]["acked"] += 1
                     prev_frame = f if is_ours and f.dst not in (None, "ffff") else None
                     if not is_ours:

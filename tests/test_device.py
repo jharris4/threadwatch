@@ -246,6 +246,19 @@ class RunDeviceTest(unittest.TestCase):
         self.assertIn("no rejoin-related MLE seen from this device", text)
         self.assertIn("event log: nothing recorded for this device.", text)
 
+    def test_an_ack_stamped_before_its_frame_is_not_counted(self):
+        """The hour table's ACK window was one-sided -- under 50 ms later, with
+        no floor -- so an ACK a hundred seconds earlier than the frame it
+        supposedly answers was counted. An imported capture with records out of
+        order, or a backward clock step, read as a healthy link."""
+        frames = [(self._at("2026-09-03 08:00"), self._psdu(self.DEV, 20)),
+                  (self._at("2026-09-03 08:00", -100.0), self._ack(20)),
+                  (self._at("2026-09-03 08:10"), self._psdu(self.DEV, 21)),
+                  (self._at("2026-09-03 08:10", 0.002), self._ack(21))]
+        rows = self._rows(self._run(frames))
+        # date, hour, frames, polls, tx, acked: two transmissions, one answered
+        self.assertEqual(rows[0][:6], ["09-03", "08h", "2", "0", "2", "1"])
+
     def test_replayed_frames_are_traffic_but_not_sightings(self):
         # Three copies of one frame: the pipeline accepts the first and
         # refuses the other two, and the report used to count all three,

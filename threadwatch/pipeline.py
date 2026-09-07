@@ -1107,10 +1107,13 @@ class Pipeline:
         # when its disappearance is the thing to report.
         pan = f.src_pan if f.src_pan != BROADCAST_PAN else None
 
-        # ACK pairing: an ACK within 50 ms bearing the pending seq.
+        # ACK pairing: an ACK within 50 ms bearing the pending seq. 0.0 <= as
+        # the retry detector reads it: an ACK stamped before the frame it
+        # answers is a backward clock step or an out-of-order import, not an
+        # answer. Counting it inflated the ACK rate and cleared a pending poll.
         prev = self.last_frame
         if (f.ftype == 2 and prev is not None and prev.src
-                and prev.seq == f.seq and ts - prev.ts < 0.05):
+                and prev.seq == f.seq and 0.0 <= ts - prev.ts < 0.05):
             stats = self.devices.get(self._last_who or prev.src)
             if stats and stats.ack_pending_seq == f.seq:
                 stats.acked += 1

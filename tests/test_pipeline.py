@@ -1437,6 +1437,18 @@ class PollStarvationTest(unittest.TestCase):
         self.assertEqual((evs[0]["unanswered_polls"], evs[0]["acked_polls"]), (10, 5))
         self.assertEqual(self._events(pipe, "poll_answered"), [])
 
+    def test_an_ack_stamped_before_its_frame_is_not_that_frames_ack(self):
+        """The window was one-sided: anything under 50 ms later paired, and so
+        did an ACK a hundred seconds earlier. A backward clock step or an
+        out-of-order imported capture inflated the ACK rate and cleared a poll
+        that was still unanswered. The retry detector already required 0.0 <=."""
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t = 1_700_000_000.0
+        pipe.ingest(poll(t, SENSOR, 42))
+        pipe.ingest(ack(t - 100.0, 42))
+        self.assertEqual((pipe.devices[SENSOR].tx, pipe.devices[SENSOR].acked), (1, 0))
+        self.assertEqual(pipe.devices[SENSOR].poll_pending_seq, 42)
+
     def test_a_device_never_answered_is_not_starving(self):
         # The sniffer may simply not hear that parent's ACKs.
         pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())

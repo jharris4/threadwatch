@@ -10,5 +10,8 @@ config/credentials.toml
 config/alerts.env
 config/ha.env
 .DS_Store
+# What a deploy without a .git records as the revision it copied
+# (bin/push-to-host.sh writes it on the host, never here).
+REVISION
 
 .venv/

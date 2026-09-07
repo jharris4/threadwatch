@@ -132,7 +132,7 @@ class DoctorTest(unittest.TestCase):
         real = config_mod.repo_commit
         config_mod.repo_commit = lambda: None
         try:
-            self.assertIn("no .git here", doctor.check_version()[0][2])
+            self.assertIn("no .git and no REVISION here", doctor.check_version()[0][2])
         finally:
             config_mod.repo_commit = real
 

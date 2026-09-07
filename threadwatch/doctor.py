@@ -308,7 +308,8 @@ def check_version() -> list[Check]:
     from . import __version__
     from .config import repo_commit
     commit = repo_commit()
-    what = f"threadwatch {__version__}" + (f" ({commit})" if commit else " (no .git here: deployed by rsync?)")
+    what = f"threadwatch {__version__}" + (f" ({commit})" if commit
+                                          else " (no .git and no REVISION here: an old rsync deploy?)")
     started = _run(["systemctl", "show", "-p", "ExecMainStartTimestamp", "--value", "threadwatch"]) \
         if shutil.which("systemctl") else None
     if started:

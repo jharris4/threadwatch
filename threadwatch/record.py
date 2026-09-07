@@ -13,7 +13,7 @@ from pathlib import Path
 
 from . import __version__
 from .alerts import HeartbeatRunner, build_heartbeats, build_sinks
-from .config import Config, repo_commit
+from .config import Config, running_commit
 from .events import EventLog, NullEventLog
 from .pcap import Frame, PcapFormatError, PcapStreamReader, PcapWriter, scan_file
 from .pipeline import Pipeline, load_decryptor
@@ -295,6 +295,9 @@ def run_record(cfg: Config) -> None:
     # start_threaded() would leave the interpreter waiting on that thread
     # forever: a live process that systemd never restarts, holding the port.
     port = cfg.serial_port or find_sniffer_port()
+    # Read now, while the checkout is still the one this process imported
+    # its modules from: every status write reports it (running_commit).
+    _log(f"threadwatch {__version__} ({running_commit() or 'no .git and no REVISION here'})")
     sinks = build_sinks(cfg.alerts_raw, _log)
     events = EventLog(cfg.events_dir, sinks)
     for s in sinks:
@@ -513,8 +516,11 @@ def _write_status(cfg, port, total, started, pipe: Pipeline, ring, decryptor,
         "updated": time.time(),
         # Which code is recording: a restart that did not happen, or a
         # deploy that did not land, is invisible in everything else here.
+        # The revision this process started on, not the checkout's now: a
+        # git pull under a running recorder used to make every status
+        # write claim the new commit while the old code was still running.
         "version": __version__,
-        "commit": repo_commit(),
+        "commit": running_commit(),
         "last_frame_age_s": round(last_frame_age, 1),
         "last_frame_ts": last_frame_ts,
         "port": port,

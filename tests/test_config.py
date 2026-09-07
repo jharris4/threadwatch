@@ -416,6 +416,59 @@ class ExampleConfigTest(unittest.TestCase):
             self.assertEqual(beats[0].headers["Authorization"], "Bearer tk_gatus")
 
 
+class RevisionTest(unittest.TestCase):
+    """Which code a process is running, which is what a deploy asks."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self._real_root, config_mod.REPO_ROOT = config_mod.REPO_ROOT, self.root
+        self._real_running = list(config_mod._running)
+        config_mod._running.clear()
+
+    def tearDown(self):
+        config_mod.REPO_ROOT = self._real_root
+        config_mod._running[:] = self._real_running
+        self.tmp.cleanup()
+
+    def test_the_running_revision_does_not_move_when_the_checkout_does(self):
+        # A daemon runs the code it imported. Re-reading HEAD on every
+        # status write made a `git pull` under a running recorder claim the
+        # newly deployed commit while the old code was still recording -
+        # the opposite of what the line is for.
+        (self.root / config_mod.REVISION_FILE).write_text("old-code\n")
+        self.assertEqual(config_mod.running_commit(), "old-code")
+        (self.root / config_mod.REVISION_FILE).write_text("new-checkout\n")
+        self.assertEqual(config_mod.repo_commit(), "new-checkout")     # the checkout moved
+        self.assertEqual(config_mod.running_commit(), "old-code")      # this process did not
+
+    def test_a_deploy_without_a_git_says_what_it_copied(self):
+        # rsync ships no .git, so without the file push-to-host.sh writes
+        # there is nothing at all to say which code the host holds.
+        self.assertIsNone(config_mod.repo_commit())
+        (self.root / config_mod.REVISION_FILE).write_text("abc1234+\nignored second line\n")
+        self.assertEqual(config_mod.repo_commit(), "abc1234+")
+        (self.root / config_mod.REVISION_FILE).write_text("\n")
+        self.assertIsNone(config_mod.repo_commit())
+
+    def test_uncommitted_edits_are_marked_on_the_checkout_commit(self):
+        # push-to-host.sh ships an uncommitted edit to a tracked file, so
+        # the commit alone does not describe what is running.
+        import subprocess
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@x"}
+        run = lambda *a: subprocess.run(["git", "-C", str(self.root), *a], env=env,
+                                        capture_output=True, check=True)
+        run("init", "-q")
+        (self.root / "f.txt").write_text("one\n")
+        run("add", "f.txt")
+        run("commit", "-qm", "first")
+        clean = config_mod.repo_commit()
+        self.assertTrue(clean and not clean.endswith("+"))
+        (self.root / "f.txt").write_text("two\n")
+        self.assertEqual(config_mod.repo_commit(), clean + "+")
+
+
 class UnknownNamesTest(unittest.TestCase):
     """A name load() does not read is a typo or a setting from another
     version, and tomllib parses both without complaint. Ignored, the

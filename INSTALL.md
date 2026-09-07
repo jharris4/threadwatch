@@ -96,10 +96,12 @@ The running units keep the code they have already loaded until you restart
 both, so restart promptly: a module a unit has not imported yet is read
 from the new file, and the process is then running two versions at once.
 `bin/push-to-host.sh --push-only` says so, naming the modules it changed.
-`bin/threadwatch doctor`'s `version` line, and the same line on the status
-page, say which commit is recording and when the unit started, which is
-how you tell a restart that happened from one that did not. The rest of
-`doctor` says the box is fit to record and answers the same either way.
+`bin/threadwatch doctor`'s `version` line says which commit is on disk
+here and when the unit started; the status page and `bin/threadwatch
+status` say which commit the running daemon started on, which does not
+move when the checkout does. The two differing is a restart that did not
+happen. The rest of `doctor` says the box is fit to record and answers
+the same either way.
 State (last-seen table, event log, ring) lives under `data/`, so a restart
 loses nothing but the few seconds the daemon is down; the quiet detector
 knows about that gap and does not count it against any device.
@@ -110,7 +112,10 @@ gitignored secrets, to `~/threadwatch` on the host (set `DEST_DIR` to
 deploy somewhere else under the home directory), then restart as above. An uncommitted edit to a tracked
 file still ships; a file that was never committed does not, and the script
 warns when one of those is a `.py` or lives in `bin/`. Without `--push-only`
-it also runs setup-host.sh for you.
+it also runs setup-host.sh for you. rsync ships no `.git`, so the push
+writes the revision it copied to `REVISION` on the host, marked `+` when
+the working tree it came from held uncommitted edits; that is what
+`--version`, `doctor` and the status page read there.
 
 `config/` travels one way, and the workstation's copy wins. Every file
 under `config/` on the workstation overwrites the host's file of that

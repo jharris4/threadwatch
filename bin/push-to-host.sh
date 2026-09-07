@@ -110,7 +110,20 @@ rsync -a --delete \
   --filter 'P /config/***' --filter 'P /.venv/***' \
   "$REPO/" "$TARGET:$DEST_DIR/"
 ssh "$TARGET" "chmod 400 $DEST_DIR/config/credentials.toml $DEST_DIR/config/alerts.env $DEST_DIR/config/ha.env 2>/dev/null || true"
-echo "pushed to $TARGET:$DEST_DIR"
+
+# What the host holds, written on the host: rsync ships no .git, so
+# --version, doctor and the status page would otherwise have nothing to
+# say about which code is there - the one question a deploy asks. Written
+# after the transfer, since --delete removes it (it is not in the source
+# tree) and nothing untracked may be added to this working tree. The "+"
+# is this script's own subject: an uncommitted edit ships too, and then
+# the commit alone does not describe what is running there.
+REVISION="$(git -C "$REPO" rev-parse --short HEAD)"
+if [ -n "$(git -C "$REPO" status --porcelain --untracked-files=no)" ]; then
+  REVISION="$REVISION+"
+fi
+printf '%s\n' "$REVISION" | ssh "$TARGET" "cat > $DEST_DIR/REVISION"
+echo "pushed to $TARGET:$DEST_DIR ($REVISION)"
 
 # rsync renames each changed file into place, so the running units keep the
 # old code only for the modules they have already imported. Anything they

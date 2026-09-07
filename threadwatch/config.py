@@ -12,18 +12,61 @@ from .detect import ONSETS_MAX, DetectorConfig
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
-def repo_commit() -> str | None:
-    """The checkout's commit, when this is running from one (a deploy by
-    rsync ships no .git). What tells a host running the code you pushed
-    from one running a six-month-old copy."""
+# What a deploy that ships no .git leaves behind to say which revision it
+# copied (bin/push-to-host.sh writes it). Without it an rsynced host can
+# say nothing at all about which code it holds, which is the one question
+# a deploy needs answered.
+REVISION_FILE = "REVISION"
+
+
+def _git(*args: str) -> str | None:
     import subprocess
-    if not (REPO_ROOT / ".git").exists():
-        return None
     try:
-        return subprocess.run(["git", "-C", str(REPO_ROOT), "rev-parse", "--short", "HEAD"],
-                              capture_output=True, text=True, timeout=5).stdout.strip() or None
+        done = subprocess.run(["git", "-C", str(REPO_ROOT), *args],
+                              capture_output=True, text=True, timeout=5)
     except (OSError, subprocess.SubprocessError):
         return None
+    return done.stdout if done.returncode == 0 else None
+
+
+def repo_commit() -> str | None:
+    """The revision of the code at REPO_ROOT as it stands on disk now.
+
+    The checkout's HEAD, marked "+" when the working tree holds edits that
+    are not in it (push-to-host.sh rsyncs the working tree, edits and
+    all), or what a deploy without a .git recorded in REVISION. What tells
+    a host running the code you pushed from one running a six-month-old
+    copy. A process that has been running has to ask running_commit()
+    instead: this answer moves under it."""
+    if not (REPO_ROOT / ".git").exists():
+        try:
+            return (REPO_ROOT / REVISION_FILE).read_text().strip().splitlines()[0][:64] or None
+        except (OSError, IndexError):
+            return None
+    head = (_git("rev-parse", "--short", "HEAD") or "").strip()
+    if not head:
+        return None
+    dirty = _git("status", "--porcelain", "--untracked-files=no")
+    return head + ("+" if dirty and dirty.strip() else "")
+
+
+_running: list = []
+
+
+def running_commit() -> str | None:
+    """The revision the calling process is running, resolved once and kept.
+
+    A process runs the code it imported, and repo_commit() answers for the
+    checkout as it is now: `git pull` under a running recorder moves HEAD,
+    and a status line that re-read it then claimed the newly deployed
+    commit while the daemon still executed the old one - the opposite of
+    what the line is for, since it is how a restart that did not happen is
+    caught. Ask it at start (a long-lived process should, before anything
+    can change under it); a short-lived command may as well ask
+    repo_commit() and answer for the checkout."""
+    if not _running:
+        _running.append(repo_commit())
+    return _running[0]
 
 
 @dataclass

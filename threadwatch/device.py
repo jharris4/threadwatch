@@ -318,15 +318,23 @@ def run_device(cfg: Config, target: str, pcap_file: Path | None = None,
     # it has pending, so ack_rate here is the stricter number and the one
     # the recorder judges a link by. Nothing else in the tool reads
     # DeviceStats.as_dict.
-    live = next((pipe.devices[a] for a in addrs if a in pipe.devices), None)
-    if live is not None:
+    # One block per address that has any, rather than the first address in
+    # inventory order. A device that rotated keeps a DeviceStats per address,
+    # and taking one of them described an old - possibly retired - address's
+    # link while the hour table above counted every address's frames: the two
+    # halves of one report disagreeing about what they covered. They are not
+    # merged: an RSSI average and a poll cadence belong to the address they
+    # were measured on, and a rotation is exactly where that matters.
+    measured = [(a, pipe.devices[a]) for a in addrs if a in pipe.devices]
+    for a, live in measured:
         d = live.as_dict()
         rssi = "-" if d["rssi_ewma"] is None else (
             f"{d['rssi_ewma']} dBm (min {d['rssi_min']:.0f}, max {d['rssi_max']:.0f})")
         acks = "-" if d["ack_rate"] is None else f"{d['ack_rate'] * 100:.0f}% of {d['tx']} unicast"
         poll = "-" if d["median_poll_interval_s"] is None else (
             f"{d['polls']} every {fmt_duration(d['median_poll_interval_s'])} (median)")
-        print(f"\nrssi:  {rssi}\nacked: {acks}\npolls: {poll}")
+        head = f"\n{a}:" if len(measured) > 1 else ""
+        print(f"{head}\nrssi:  {rssi}\nacked: {acks}\npolls: {poll}")
 
     if gaps:
         print(f"\nsilences (>{fmt_duration(cfg.quiet_s)}, the configured [quiet] silence_s):")

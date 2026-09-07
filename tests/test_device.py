@@ -604,6 +604,48 @@ class DeviceMleAnalysisTest(unittest.TestCase):
         self.assertIn("polls: 3 every 2m (median)", text)
         self.assertIn("rssi:  -", text)                                 # the test frames carry none
 
+    def test_a_rotated_device_gets_a_stats_block_per_address(self):
+        """The summary took one address's DeviceStats with next(...), chosen by
+        inventory order and possibly retired, while the hour table above
+        counted every address the entry lists: the two halves of one report
+        disagreed about what they covered. One frame from the first address
+        and three from the second reported "0% of 1 unicast"."""
+        import contextlib
+        import io
+        import json
+        import tempfile
+
+        from test_identity import secured_ext_frame
+
+        from threadwatch.config import Config
+        from threadwatch.device import run_device
+        from threadwatch.pcap import Frame, PcapWriter
+        payload = b"\x7f\x33\xf0\x11\x22"
+        frames = [(self.T0, secured_ext_frame(SED, 1, payload))]
+        frames += [(self.T0 + i, secured_ext_frame(OTHER, 10 + i, payload)) for i in range(1, 4)]
+        with tempfile.TemporaryDirectory() as d:
+            cred = Path(d) / "credentials.toml"
+            cred.write_text(f'[credentials]\nnetwork_key = "{KEY.hex()}"\n')
+            inv = Path(d) / "devices.json"
+            inv.write_text(json.dumps([{"name": "Hall Sensor", "extendedAddresses": [SED, OTHER]}]))
+            cfg = Config(data_dir=Path(d) / "data", credentials_path=cred, devices_path=inv)
+            pcap = Path(d) / "window.pcap"
+            with open(pcap, "wb") as fh:
+                w = PcapWriter(fh, 195)
+                for ts, raw in frames:
+                    w.write(Frame(ts=ts, raw=raw, psdu=raw, rssi=None, channel=None, lqi=None))
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                code = run_device(cfg, "Hall Sensor", pcap)
+        text = out.getvalue()
+        self.assertEqual(code, 0)
+        # Both addresses are named, each with its own transmissions, and the
+        # four frames the hour table counts are all accounted for.
+        self.assertIn(f"{SED}:", text)
+        self.assertIn(f"{OTHER}:", text)
+        self.assertIn("acked: 0% of 1 unicast", text)
+        self.assertIn("acked: 0% of 3 unicast", text)
+
     def test_a_device_that_never_tried_to_attach_is_said_so_in_as_many_words(self):
         # The documented reasoning: no rejoin after a silence points at the
         # device rather than at RF, so the absence has to be printed.

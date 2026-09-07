@@ -146,6 +146,52 @@ reach the pages.
   allowlist, so config, secrets, `data/` and anything else in the
   working tree stay out without being named.
 
+## Time zone
+
+Neither container inherits the host's time zone, and a container with
+none runs in UTC. threadwatch reads the *local* day and hour in several
+places: the hourly ring filenames (`threadwatch-20260907-08.pcap`), the
+daily event files (`events/2026-09-07.jsonl`), the day the review pages
+walk back through, and `[summary] hour`. On a host that is not on UTC,
+`hour = 8` therefore pages at 08:00 UTC rather than at eight in the
+morning where you are, and a day on the review pages ends at the wrong
+midnight. Moving the same `data/` between a native install and a
+container changes how its hour-based filenames read, for the same reason.
+
+Give both services the same zone as the host. Mounting the host's own
+zone file needs nothing installed in the image:
+
+```yaml
+services:
+  recorder:
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+  web:
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+```
+
+`compose.yaml` carries both lines commented out, because turning this on
+moves the day and hour boundaries of a recorder already running: the
+switch belongs to you, not to a `git pull`. Setting `TZ=Europe/London`
+in `environment:` instead works only where the image has the zone files
+(`python:3.12-slim` does not install `tzdata`), and quietly falls back to
+UTC where it does not -- which is the failure this section is about, so
+prefer the mount, or add `tzdata` to the image and use `TZ`.
+
+Check what each container actually thinks the time is, which is the only
+answer that settles it:
+
+```bash
+docker compose exec recorder date
+docker compose exec web date
+date                                   # the host, for comparison
+```
+
+`docker compose run --rm --no-deps recorder status` prints stamps in the
+recorder's zone as well. Change the setting and both containers need
+recreating (`docker compose up -d --force-recreate`), not restarting.
+
 ## Everyday commands
 
 The image's entrypoint is `bin/threadwatch`, so any CLI command works as

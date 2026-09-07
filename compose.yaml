@@ -36,6 +36,15 @@ services:
     volumes:
       - ./config:/app/config
       - ./data:/app/data
+      # A container inherits no time zone and runs in UTC. threadwatch reads
+      # the local day and hour for the ring's hourly filenames, the daily
+      # event files, the review pages' days and [summary] hour, so on a host
+      # that is not on UTC `hour = 8` pages at the wrong time of day and the
+      # pages' days end at the wrong midnight. Uncomment here and under web
+      # to take the host's zone (docs/DOCKER.md, "Time zone"). Left off by
+      # default because turning it on moves the day and hour boundaries of a
+      # recorder already running, which is a choice, not an upgrade.
+      # - /etc/localtime:/etc/localtime:ro
     # required: false needs Docker Compose 2.24.0 or newer; an older one
     # rejects the whole file naming env_file. docs/DOCKER.md gives the
     # classic form to use instead.
@@ -88,3 +97,6 @@ services:
     volumes:
       - ./config:/app/config:ro
       - ./data:/app/data:ro
+      # The same zone as recorder, or the pages label the recorder's days
+      # and hours with different ones (docs/DOCKER.md, "Time zone").
+      # - /etc/localtime:/etc/localtime:ro

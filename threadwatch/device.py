@@ -173,23 +173,29 @@ def run_device(cfg: Config, target: str, pcap_file: Path | None = None,
         return tuple(_t.localtime(ts)[:4])
 
     def inspect(f, h):
-        """MLE visibility for one of our data frames (credentials only)."""
-        from .crypto import MLE_UDP_PORT, Decryptor
-        ext = f.src if len(f.src) == 16 else None
-        plain = decryptor.decrypt_frame(f.psdu, ext, f.src if len(f.src) == 4 else None)
-        if not plain:
-            return
-        r = Decryptor.udp_ports(plain, mac_src_ext=ext,
-                                mac_dst_ext=f.dst if f.dst and len(f.dst) == 16 else None,
-                                mac_dst_short=f.dst if f.dst and len(f.dst) == 4 else None)
-        if r and MLE_UDP_PORT in (r[0], r[1]):
-            info = decryptor.parse_mle(r[2], ext or decryptor.short_to_ext.get(f.src), r[3], r[4])
-            if info:
-                h["mle"][info.command_name] = h["mle"].get(info.command_name, 0) + 1
-                if info.secured and info.command_name in ("Parent Request", "Child ID Request", "Announce"):
-                    mle_events.append((f.ts, info.command_name))
+        """MLE visibility for one of our data frames, as the pipeline just
+        read it (Pipeline.last_mle).
 
-    undecodable = 0
+        Never a second decode of the same bytes. Parsing the frame again
+        here called parse_mle with its default bind_short, which applies
+        the short address the message asserts without the counter check
+        the pipeline makes first - so a replayed message moved an address
+        the pipeline had refused to move, in the very decryptor the
+        pipeline goes on using, and the report disagreed with replay and
+        the recorder over one capture. A stale message is still traffic
+        and still counted as the message it is; only a fresh authenticated
+        one is an attach attempt the device actually made."""
+        got = pipe.last_mle
+        if got is None:
+            return
+        info, fresh = got
+        h["mle"][info.command_name] = h["mle"].get(info.command_name, 0) + 1
+        if fresh and info.command_name in ("Parent Request", "Child ID Request", "Announce"):
+            mle_events.append((f.ts, info.command_name))
+
+    # An MLE payload the pipeline could not parse: its own count, since
+    # the report no longer decodes anything itself.
+    parse_failed_before = decryptor.stats.get("parse_failed", 0)
     refused = 0                # frames bearing the address that did not vouch for it
     skipped_bytes = skipped_files = tail_bytes = 0
     unreadable: list[tuple[Path, Exception]] = []
@@ -240,10 +246,7 @@ def run_device(cfg: Config, target: str, pcap_file: Path | None = None,
                     else:
                         refused += 1
                     if f.ftype == 1:
-                        try:
-                            inspect(f, h)
-                        except Exception:   # one malformed unsecured payload; keep going
-                            undecodable += 1
+                        inspect(f, h)
         except Exception as exc:
             # A file that cannot be opened or is not a pcap: said on stderr,
             # not woven into the report. With none readable there is no
@@ -262,6 +265,7 @@ def run_device(cfg: Config, target: str, pcap_file: Path | None = None,
         raise SystemExit(f"threadwatch device: could not read {path}: {exc}" if len(files) == 1 else
                          f"threadwatch device: none of the {len(files)} ring files could be read "
                          f"(first: {path}: {exc})")
+    undecodable = decryptor.stats.get("parse_failed", 0) - parse_failed_before
     if undecodable:
         print(f"({undecodable} frames with undecodable payloads skipped)")
     if refused:

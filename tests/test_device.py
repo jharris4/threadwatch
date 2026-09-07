@@ -611,6 +611,43 @@ class DeviceMleAnalysisTest(unittest.TestCase):
         self.assertIn("frames with undecodable payloads skipped", text)
         self.assertIn("Parent Request", text)                  # the good frame still read
 
+    def test_a_replayed_message_is_neither_a_second_attach_nor_a_moved_address(self):
+        # The report used to decode each MLE frame a second time, with
+        # parse_mle's default bind_short: the short address a message
+        # asserts was applied without the counter check the pipeline makes
+        # first, in the very decryptor the pipeline goes on using. A
+        # replayed message then moved an address the pipeline had refused
+        # to move - onto a device that had since given it up - and was
+        # listed as an attach attempt that never happened. One capture,
+        # and the report disagreed with replay and the recorder over it.
+        from unittest import mock
+
+        from threadwatch.crypto import Decryptor
+
+        def advertisement(short):
+            return b"\x00\x02" + bytes.fromhex(short)          # Source Address TLV
+
+        held_0400 = self._mle_frame(SED, 4, 5000, 1, advertisement("0400"))   # A, while it held 0400
+        attach = self._mle_frame(SED, 9, 5000, 3)               # a Parent Request from A
+        frames = [(self.T0, held_0400),
+                  (self.T0 + 2, self._mle_frame(SED, 4, 5000, 2, advertisement("0800"))),   # A moves
+                  (self.T0 + 4, self._mle_frame(OTHER, 4, 5000, 1, advertisement("0400"))),  # B takes 0400
+                  (self.T0 + 6, attach),
+                  (self.T0 + 8, attach),                        # the same message again, off the air
+                  (self.T0 + 10, held_0400)]                    # and the stale advertisement with it
+        d = Decryptor(network_key=KEY)
+        with mock.patch("threadwatch.device.load_decryptor", return_value=d):
+            code, text = self._run(frames)
+        self.assertEqual(code, 0)
+        self.assertEqual(d.short_to_ext.get("0400"), OTHER)     # the device that holds it now
+        self.assertEqual(d.short_to_ext.get("0800"), SED)
+        section = text.split("rejoin-related MLE (attach attempts):")[1]
+        self.assertEqual([line for line in section.splitlines() if "Parent Request" in line],
+                         [f"  {time.strftime('%m-%d %H:%M:%S', time.localtime(self.T0 + 6))}"
+                          "  Parent Request"])
+        row = next(l for l in text.splitlines() if l.startswith("09-03 08h"))
+        self.assertIn("Parent Requestx2", row)                  # a replay is still traffic
+
     def test_a_name_that_resolves_to_nothing_exits_with_the_resolver_s_message(self):
         with self.assertRaises(SystemExit) as cm:
             self._run([], target="nothing like it")

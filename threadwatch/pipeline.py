@@ -171,6 +171,14 @@ class Pipeline:
         # also vouched for (see ingest). Attribution alone is 64 bits the
         # sender asserts; this is the frame the pipeline counted.
         self.last_sighting: str | None = None
+        # The MLE message the last frame carried, if it carried one, as
+        # (info, fresh): fresh means secured and its counter ahead of the
+        # last accepted, which is what _apply_mle acts on. Read by
+        # `device`, so a report decodes no frame a second time - decoding
+        # it again bound the short address the message asserts without
+        # this check, and a replayed message then moved an address the
+        # pipeline had refused to move.
+        self.last_mle: tuple | None = None
         self.beacon_times = deque(maxlen=16)
         self._join_scan_evt = 0.0
         self.dup_recent = {}                    # (src, seq, pan) -> ts
@@ -1322,6 +1330,7 @@ class Pipeline:
 
         self.last_frame = f
         self.last_sighting = who if (who and live) else None
+        self.last_mle = (info, fresh_mle) if info is not None else None
         return who
 
     # -------------------------------------------------- poll starvation

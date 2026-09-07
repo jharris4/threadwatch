@@ -37,6 +37,34 @@ def frame(ts, src, pan=OWN_PAN, rssi=-60.0, seq=None, dst="0000", counter=None):
                  ftype=1, seq=seq, dst_pan=pan, dst=dst, src_pan=pan, src=src)
 
 
+class SnapshotCoverageTest(unittest.TestCase):
+    def test_replay_uses_bundled_outages_without_future_credit_or_writes(self):
+        from threadwatch.events import day_of
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            t = 1_700_000_000.0
+            (root / "blind-spans.json").write_text(json.dumps([[t + 10, 3590]]))
+            (root / "events").mkdir()
+            event = dict(event="recorder_started", severity="info", ts=t + 3600,
+                         last_frame_ts=t + 10)
+            (root / "events" / (day_of(t) + ".jsonl")).write_text(json.dumps(event) + "\n")
+            before = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
+            for pruned in (False, True):
+                if pruned:
+                    (root / "blind-spans.json").write_text("[]")
+                cfg = Config(snapshot_dir=root, devices_path=root / "devices.json", pan_id=OWN_PAN)
+                pipe = Pipeline(cfg, NullEventLog(), stub_decryptor(), ephemeral=True)
+                self.assertEqual(pipe.seen.table, {})
+                pipe.ingest(frame(t, SENSOR))
+                self.assertEqual(pipe.silence_s(pipe.seen.table[SENSOR], t + 5), 5)
+                pipe.ingest(frame(t + 3610, ROUTER))
+                pipe.periodic(t + 3610)
+                self.assertFalse(any(r["event"] == "device_quiet" for r in pipe.events.records))
+                self.assertEqual(pipe.silence_s(pipe.seen.table[SENSOR], t + 3610), 20)
+                if not pruned:
+                    self.assertEqual(before, {p: p.read_bytes() for p in root.rglob("*") if p.is_file()})
+
+
 class StateFileShapeTest(unittest.TestCase):
     """A state file that is valid JSON of the wrong shape (a list, a
     string, a number, null; a table whose rows are strings) parsed fine

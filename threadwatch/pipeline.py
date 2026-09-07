@@ -330,6 +330,8 @@ class Pipeline:
         self.blind_path = cfg.state_dir / "blind-spans.json"
         self._wall, self._mono = time.time, time.monotonic   # swapped by tests
         self._clock = (self._wall(), self._mono())
+        if ephemeral and cfg.snapshot_dir is not None:
+            self._blind = self._load_snapshot_blind()
         if not ephemeral:
             now = self._clock[0]
             self._blind = self._load_blind()
@@ -486,6 +488,27 @@ class Pipeline:
                   "device in full", file=sys.stderr, flush=True)
             return []
 
+    def _load_snapshot_blind(self) -> list[tuple[float, float]]:
+        """Recover pruned outages from bundled events; union overlapping evidence."""
+        from .events import read_all
+        spans = self._load_blind()
+        for rec in read_all(self.cfg.events_dir):
+            if rec["event"] == "recorder_started":
+                start = rec.get("last_frame_ts")
+                if isinstance(start, (int, float)) and start < rec["ts"]:
+                    spans.append((start, rec["ts"] - start))
+            elif rec["event"] == "clock_step":
+                step = rec.get("step_s")
+                if isinstance(step, (int, float)) and step > 0:
+                    spans.append((rec["ts"] - step, step))
+        merged = []
+        for start, end in sorted((s, s + n) for s, n in spans if n > 0):
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+            else:
+                merged.append((start, end))
+        return [(s, e - s) for s, e in merged]
+
     def _save_blind(self) -> None:
         """Write the blind spans, less those no silence reaches back over
         (every row was heard after them) and beyond the newest BLIND_MAX."""
@@ -637,7 +660,11 @@ class Pipeline:
     def silence_s(self, row: dict, now: float) -> float:
         """How long the recorder has actually heard nothing from a device."""
         silent = now - row["last_seen"]
-        blind = sum(length for since, length in self._blind if row["last_seen"] <= since)
+        if self.ephemeral and self.cfg.snapshot_dir is not None:
+            blind = sum(max(0.0, min(now, since + length) - max(row["last_seen"], since))
+                        for since, length in self._blind)
+        else:
+            blind = sum(length for since, length in self._blind if row["last_seen"] <= since)
         return silent - max(0.0, blind)
 
     def _identity_silence_s(self, addr: str, row: dict, now: float) -> float:

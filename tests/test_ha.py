@@ -484,6 +484,31 @@ class WritePrivateTest(unittest.TestCase):
             self.assertEqual(ha.current_key(p), "11")
             self.assertEqual(sorted(x.name for x in Path(d).iterdir()), ["credentials.toml"])
 
+    def test_a_pre_existing_permissive_temp_file_is_not_written_through(self):
+        """os.open's mode applies only when it creates the file. A leftover or
+        planted credentials.toml.tmp at 0644 took the new key and stayed
+        world-readable until the chmod -- and stayed that way for good if the
+        write raised first. Nothing is written to a name chosen in advance."""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "credentials.toml"
+            planted = Path(d) / "credentials.toml.tmp"
+            planted.write_text("")
+            os.chmod(planted, 0o644)
+            secret = "[credentials]\nnetwork_key = \"%s\"\n" % ("ab" * 16)
+            write_private(p, secret)
+            self.assertEqual(p.read_text(), secret)
+            self.assertEqual(oct(p.stat().st_mode & 0o777), "0o600")
+            self.assertEqual(planted.read_text(), "")           # untouched
+            self.assertEqual(sorted(x.name for x in Path(d).iterdir()),
+                             ["credentials.toml", "credentials.toml.tmp"])
+
+    def test_a_failed_write_leaves_no_secret_behind(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "credentials.toml"
+            with self.assertRaises(TypeError):
+                write_private(p, None)
+            self.assertEqual(list(Path(d).iterdir()), [])
+
 
 
 class PlanBorderRoutersTest(unittest.TestCase):

@@ -33,6 +33,7 @@ import os
 import socket
 import ssl
 import struct
+import tempfile
 import time
 import urllib.parse
 from pathlib import Path
@@ -455,12 +456,22 @@ def thread_dataset(ha: HomeAssistant, dataset_id: str | None = None) -> dict:
 def write_private(path: Path, text: str) -> None:
     """Write a secrets file readable and writable by its owner only (0600:
     private, still editable), replacing atomically."""
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as fh:
-        fh.write(text)
-    os.chmod(tmp, 0o600)
-    tmp.replace(path)
+    # A fixed ".tmp" name next to the destination could already exist -- left
+    # by a crash, or planted by anyone who can write the directory. The mode
+    # passed to open applies only when creating a file, so reusing a 0644 one
+    # published the new key for the length of the write, and a crash before
+    # the chmod left it that way. mkstemp creates a fresh name exclusively at
+    # 0600, and never follows a symlink already sitting there.
+    fd, name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    tmp = Path(name)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        os.chmod(tmp, 0o600)
+        tmp.replace(path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)     # never leave a secret behind under a stray name
+        raise
 
 
 def current_key(path: Path) -> str | None:

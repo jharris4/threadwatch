@@ -83,6 +83,17 @@ def plan_inventory(entries: list[dict], found: list[dict]) -> tuple[list[dict], 
     matches a name that is unique in HA."""
     entries = copy.deepcopy(entries)
     changes: list[str] = []
+    # Multiple live HA addresses in one identity require a human decision
+    # about historical addresses and metadata. Never rename the shared object
+    # twice or silently assign its history to whichever HA result came last.
+    claimed_addresses = {_norm(dev["addr"]).upper() for dev in found}
+    for entry in entries:
+        claims = sorted(claimed_addresses.intersection(_addresses(entry)))
+        if len(claims) > 1:
+            raise ValueError(f"inventory conflict: {entry.get('name')!r} contains separate Home Assistant "
+                             f"devices at {', '.join(claims)}; split this entry in devices.json, assigning "
+                             "its historical addresses and metadata to the appropriate device, then retry; "
+                             "nothing was written")
     holders: dict[str, list[dict]] = {}
     for dev in found:
         holders.setdefault(dev["name"].strip().lower(), []).append(dev)

@@ -174,3 +174,9 @@ The OTBR add-on journal (`ha addons logs core_openthread_border_router`)
 is the border router's own view — `ChannelAccessFailure` lines there
 correlating with threadwatch's flood windows is exactly the
 cross-instrument proof that closed the 2026-09-01 incident.
+
+If Home Assistant identifies multiple devices whose addresses already share one
+inventory entry, import stops without writing inventory or credentials. Split the
+named entry in `devices.json`, assigning notes, router hostname and historical
+addresses to the appropriate device, then retry. This also applies when the HA
+devices share a display name; names alone cannot settle ownership of history.

@@ -388,6 +388,19 @@ class DatasetTest(unittest.TestCase):
 
 
 class PlanInventoryTest(unittest.TestCase):
+    def test_merged_entry_is_refused_without_losing_metadata(self):
+        import copy
+        existing = [{"name": "Merged", "extendedAddresses": ["00:11:22:33:44:55:66:77", "8899AABBCCDDEEFF"],
+                     "note": "history", "borderRouter": "hub.local"}]
+        before = copy.deepcopy(existing)
+        for names in (("Sensor", "Router"), ("Sensor", "Sensor")):
+            found = [{"name": names[0], "addr": "0011223344556677"},
+                     {"name": names[1], "addr": "8899AABBCCDDEEFF"}]
+            for ordered in (found, found[::-1]):
+                with self.assertRaisesRegex(ValueError, "inventory conflict.*split this entry"):
+                    plan_inventory(existing, ordered)
+                self.assertEqual(existing, before)
+
     def test_merge_keeps_hand_written_entries_and_reports_each_change(self):
         existing = [
             {"name": "Living Room Motion", "extendedAddress": "F00D000000000001", "note": "by the window"},
@@ -669,6 +682,19 @@ class RunImportTest(unittest.TestCase):
         import threadwatch.mdns as mdns_mod
         ha_mod.HomeAssistant, ha_mod.thread_devices, ha_mod.thread_dataset, mdns_mod.browse = self.saved
         self.tmp.cleanup()
+
+    def test_conflict_does_not_write_inventory_or_credentials(self):
+        import threadwatch.ha as ha_mod
+        ha_mod.thread_devices = lambda ha, log=None: [
+            {"name": "Sensor", "addr": "0011223344556677"},
+            {"name": "Router", "addr": "8899AABBCCDDEEFF"}]
+        original = json.dumps([{"name": "Merged", "extendedAddresses": [
+            "0011223344556677", "8899AABBCCDDEEFF"], "note": "keep"}])
+        self.cfg.devices_path.write_text(original)
+        with self.assertRaisesRegex(ValueError, "inventory conflict"):
+            run_import(self.cfg, self.cfg.devices_path, write=True, out=lambda line: None)
+        self.assertEqual(self.cfg.devices_path.read_text(), original)
+        self.assertFalse(self.cfg.credentials_path.exists())
 
     def test_the_inventory_lock_is_held_for_the_whole_run(self):
         # BUG-12: an import overlapping an adopt is the other lost-update

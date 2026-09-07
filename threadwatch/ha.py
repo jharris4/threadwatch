@@ -48,6 +48,14 @@ class HAError(RuntimeError):
     API error. The message says what to do."""
 
 
+class HADeadline(HAError):
+    """The caller's deadline passed while a message was still being read.
+
+    Separate from the other read failures because only the caller knows
+    what it was waiting for, and can say so.
+    """
+
+
 # ----------------------------------------------------------------- env file
 
 def load_env(path: Path) -> dict[str, str]:
@@ -118,11 +126,25 @@ class FrameReader:
     """Reassembles messages from a byte stream: fragmentation, ping/pong,
     close. ``recv`` is any callable returning bytes (b"" at EOF)."""
 
-    def __init__(self, recv: Callable[[int], bytes], send: Callable[[bytes], None], initial: bytes = b""):
+    def __init__(self, recv: Callable[[int], bytes], send: Callable[[bytes], None], initial: bytes = b"",
+                 set_timeout: Callable[[float], None] | None = None, timeout: float = 20.0):
         self._recv, self._send_raw, self._buf = recv, send, initial
+        self._set_timeout, self._timeout = set_timeout, timeout
 
-    def _exact(self, n: int) -> bytes:
+    def _exact(self, n: int, deadline: float | None = None) -> bytes:
         while len(self._buf) < n:
+            # Checked before every read, not once per message. The socket
+            # timeout bounds silence only, and each successful read renews
+            # it: a peer that keeps sending -- pings, events nobody asked
+            # for, a partial frame a byte at a time -- kept the reader here
+            # for as long as it liked while the caller's deadline passed
+            # unread. The read itself is shortened to what is left.
+            if deadline is not None:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise HADeadline("Home Assistant did not finish answering in time")
+                if self._set_timeout is not None:
+                    self._set_timeout(min(left, self._timeout))
             try:
                 chunk = self._recv(min(RECV_CHUNK, max(4096, n - len(self._buf))))
             except TimeoutError as exc:
@@ -144,22 +166,32 @@ class FrameReader:
         except OSError as exc:
             raise HAError(f"lost the connection to Home Assistant ({exc})") from exc
 
-    def message(self) -> str:
-        """The next text message, replying to pings on the way."""
+    def message(self, deadline: float | None = None) -> str:
+        """The next text message, replying to pings on the way. ``deadline``
+        is an absolute time.monotonic() the whole read must finish inside."""
+        try:
+            return self._message(deadline)
+        finally:
+            # The socket is shared with the sends: give it its own timeout
+            # back rather than whatever was left of somebody's deadline.
+            if deadline is not None and self._set_timeout is not None:
+                self._set_timeout(self._timeout)
+
+    def _message(self, deadline: float | None) -> str:
         parts: list[bytes] = []
         while True:
-            b0, b1 = self._exact(2)
+            b0, b1 = self._exact(2, deadline)
             fin, opcode = b0 & 0x80, b0 & 0x0F
             masked, n = b1 & 0x80, b1 & 0x7F
             if n == 126:
-                n = struct.unpack(">H", self._exact(2))[0]
+                n = struct.unpack(">H", self._exact(2, deadline))[0]
             elif n == 127:
-                n = struct.unpack(">Q", self._exact(8))[0]
+                n = struct.unpack(">Q", self._exact(8, deadline))[0]
             if n > MAX_FRAME_BYTES or sum(len(p) for p in parts) + n > MAX_FRAME_BYTES:
                 raise HAError(f"websocket frame declares {n} bytes, over the {MAX_FRAME_BYTES} byte limit: "
                               "is that really Home Assistant answering?")
-            mask = self._exact(4) if masked else b""
-            data = self._exact(n)
+            mask = self._exact(4, deadline) if masked else b""
+            data = self._exact(n, deadline)
             if mask:
                 data = bytes(b ^ mask[i & 3] for i, b in enumerate(data))
             if opcode == 0x9:                      # ping
@@ -240,7 +272,8 @@ class HomeAssistant:
     def connect(self) -> "HomeAssistant":
         sock, rest = ws_connect(self.url)
         self._sock = sock
-        self._reader = FrameReader(sock.recv, sock.sendall, rest)
+        self._reader = FrameReader(sock.recv, sock.sendall, rest,
+                                   set_timeout=sock.settimeout, timeout=sock.gettimeout() or 20.0)
         try:
             hello = self._recv_json()
             if hello.get("type") != "auth_required":
@@ -287,9 +320,9 @@ class HomeAssistant:
         except OSError as exc:
             raise HAError(f"lost the connection to Home Assistant ({exc})") from exc
 
-    def _recv_json(self) -> dict:
+    def _recv_json(self, deadline: float | None = None) -> dict:
         assert self._reader is not None
-        return json.loads(self._reader.message())
+        return json.loads(self._reader.message(deadline))
 
     def call(self, type_: str, **fields: Any) -> Any:
         """Send one command; return its ``result``. Events and other
@@ -322,11 +355,23 @@ class HomeAssistant:
             self._send_json({"id": msg_id, "type": type_, **fields})
         out: list[Any] = [None] * len(requests)
         pending = set(ids)
+
+        def overdue() -> HAError:
+            return HAError(f"Home Assistant has not answered {len(pending)} of {len(requests)} request(s) "
+                           f"({', '.join(sorted({requests[ids[m]][0] for m in pending}))}) within {waited:g} s")
         while pending:
             if time.monotonic() > deadline:
-                raise HAError(f"Home Assistant has not answered {len(pending)} of {len(requests)} request(s) "
-                              f"({', '.join(sorted({requests[ids[m]][0] for m in pending}))}) within {waited:g} s")
-            reply = self._recv_json()
+                raise overdue()
+            # The deadline goes into the read as well. Checking it only
+            # between whole messages bounded nothing: Home Assistant pushes
+            # events unasked and answers pings, and every read renewed the
+            # socket's own timeout, so a responsive but unhelpful endpoint
+            # could hold an import here indefinitely -- with the inventory
+            # lock held for as long.
+            try:
+                reply = self._recv_json(deadline)
+            except HADeadline:
+                raise overdue() from None
             msg_id = reply.get("id")
             if msg_id not in pending or reply.get("type") != "result":
                 continue

@@ -211,7 +211,7 @@ class CallDeadlineTest(unittest.TestCase):
         client = ha.HomeAssistant("ws://ha.local:8123", "token")
         sent = []
         client._sock = type("Sock", (), {"sendall": lambda self, b: sent.append(b)})()
-        client._reader = type("Reader", (), {"message": lambda self: next(messages)})()
+        client._reader = type("Reader", (), {"message": lambda self, deadline=None: next(messages)})()
         return client, sent
 
     def test_a_peer_that_streams_events_and_never_answers_is_given_up_on(self):
@@ -226,6 +226,56 @@ class CallDeadlineTest(unittest.TestCase):
         self.assertIn("2 of 2 request(s)", str(cm.exception))
         self.assertIn("matter/node_diagnostics", str(cm.exception))
         self.assertEqual(len(sent), 2)                          # both commands had gone out
+
+    def test_a_peer_that_pings_forever_does_not_outlast_the_deadline(self):
+        """call_many checked its deadline only between whole messages, and
+        FrameReader.message() answers pings and skips pushed events without
+        returning. Every read also renewed the socket's own timeout, so an
+        endpoint that kept sending held the reader inside one message() call
+        for as long as it liked -- and the import held the inventory lock
+        for exactly that long."""
+        clock = [1000.0]
+        timeouts = []
+
+        class PingForever:
+            """A socket that answers every read with another ping, and whose
+            clock advances a second per read."""
+
+            def __init__(self):
+                self.buf = b""
+                self.sent = b""
+
+            def recv(self, n):
+                clock[0] += 1.0
+                if not self.buf:
+                    self.buf = server_frame(0x9, b"ping")
+                out, self.buf = self.buf[:n], self.buf[n:]
+                return out
+
+            def sendall(self, data):
+                self.sent += data
+
+        sock = PingForever()
+        real = time.monotonic
+        time.monotonic = lambda: clock[0]
+        try:
+            reader = ha.FrameReader(sock.recv, sock.sendall, set_timeout=timeouts.append, timeout=20.0)
+            with self.assertRaises(ha.HADeadline):
+                reader.message(deadline=clock[0] + 5.0)
+            client = ha.HomeAssistant("ws://ha.local:8123", "token")
+            client._sock = type("Sock", (), {"sendall": lambda self, b: None})()
+            client._reader = ha.FrameReader(sock.recv, sock.sendall, set_timeout=timeouts.append, timeout=20.0)
+            with self.assertRaises(HAError) as cm:
+                client.call_many([("matter/node_diagnostics", {"device_id": "d1"})], deadline_s=3.0)
+        finally:
+            time.monotonic = real
+        self.assertNotIsInstance(cm.exception, ha.HADeadline)    # said in the caller's terms
+        self.assertIn("1 of 1 request(s)", str(cm.exception))
+        self.assertIn("within 3 s", str(cm.exception))
+        # Each read was bounded by what was left, and the socket got its own
+        # timeout back for the sends that share it.
+        self.assertTrue(all(t <= 20.0 for t in timeouts), timeouts)
+        self.assertEqual(timeouts[-1], 20.0)
 
     def test_results_arriving_before_the_deadline_are_collected(self):
         client, _sent = self._client(iter([
@@ -755,7 +805,7 @@ class CallManyTest(unittest.TestCase):
                    {"id": 3, "type": "result", "success": False, "error": {"message": "nope"}},
                    {"id": 1, "type": "result", "success": True, "result": "one"}]
         ha._send_json = lambda obj: sent.append(obj)
-        ha._recv_json = lambda: replies.pop(0)
+        ha._recv_json = lambda deadline=None: replies.pop(0)
         out = ha.call_many([("a", {"x": 1}), ("b", {}), ("c", {})])
         self.assertEqual([m["id"] for m in sent], [1, 2, 3])
         self.assertEqual(sent[0], {"id": 1, "type": "a", "x": 1})

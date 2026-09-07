@@ -191,14 +191,26 @@ between runs.
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # pyserial, cryptography, tomli-w
-.venv/bin/python3 -m unittest discover -s tests -v                     # the suite; under a minute, slower on a Pi
+.venv/bin/pip install -r requirements-dev.txt                        # ruff, pinned to the version CI runs
+.venv/bin/python3 -m unittest discover -t . -s tests -v                # the suite; under a minute, slower on a Pi
 .venv/bin/python3 -m unittest tests.test_pipeline                      # one module
+.venv/bin/ruff check .                                                 # the other half of CI
 ```
+
+Both are the commands CI runs, spelled the same way, so a local pass
+means what a CI pass means. `-t .` is the form CI uses: it names the
+modules `tests.test_x` and imports the `tests` package first, which is
+where the mDNS guard that keeps the suite off the LAN is installed
+(`tests/no_lan.py`). `ruff` lives in `requirements-dev.txt` rather than
+`requirements.txt` so the Pi never installs it, and is pinned exactly
+there so a ruff release cannot turn `main` red on its own -- which also
+means an unpinned local ruff can disagree with CI.
 
 Python 3.11 and 3.12 are supported (3.11 is what Debian bookworm ships
 on the Pi; `tomllib` is why nothing older works). CI runs the suite on
-both and builds the Docker image on every push and pull request
-(`.github/workflows/tests.yml`); a change is done when it passes there.
+both, runs `ruff check .` once, and builds the Docker image on every push
+and pull request (`.github/workflows/tests.yml`); a change is done when
+all three pass there.
 Tests are plain `unittest`, one file per module, and build their frames
 and state in temporary directories, so they need no dongle, no network
 and no secrets.
@@ -242,7 +254,7 @@ default in them is checked against `--help` and the source).
       config.py    config.toml loading
       record.py    the recorder (ring buffer) + replay
       cli.py       command-line interface
-    tests/         unittest suite (python3 -m unittest discover -s tests)
+    tests/         unittest suite (python3 -m unittest discover -t . -s tests)
     vendor/        Nordic's sniffer extcap module (BSD, unmodified)
     firmware/      sniffer firmware hex + prebuilt DFU package
     bin/           threadwatch CLI shim, flash-dongle.sh, setup-host.sh (host install),

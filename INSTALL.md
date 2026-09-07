@@ -191,7 +191,7 @@ git clone https://github.com/jharris4/threadwatch.git && cd threadwatch
 python3 --version                    # 3.11 or newer; else: brew install python
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # bin/threadwatch picks .venv up
 cp config/config.example.toml config/config.toml                     # set your channel
-# config/credentials.toml with the network key: docs/CREDENTIALS.md (chmod 600)
+cp config/credentials.example.toml config/credentials.toml && chmod 600 config/credentials.toml   # then paste the network key: docs/CREDENTIALS.md
 bin/threadwatch doctor               # dongle: nRF 802.15.4 sniffer at /dev/cu.usbmodem...
 ```
 

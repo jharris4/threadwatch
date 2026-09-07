@@ -45,11 +45,11 @@ ever printing it (docs/HOME-ASSISTANT.md, including the token setup).
 #   curl -s http://core-openthread-border-router:8081/node/dataset/active
 # and read "networkKey".
 
-cat > config/credentials.toml <<'TOML'
-[credentials]
-network_key = "PUT_32_HEX_CHARS_HERE"
-TOML
+cp config/credentials.example.toml config/credentials.toml
 chmod 600 config/credentials.toml
+# and replace PUT_32_HEX_CHARS_HERE with the key; the file is:
+#   [credentials]
+#   network_key = "0123456789abcdef0123456789abcdef"
 ```
 
 `bin/push-to-host.sh` carries the file to the capture host with the rest

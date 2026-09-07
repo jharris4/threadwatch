@@ -256,6 +256,43 @@ class QuietPolicyTest(unittest.TestCase):
     def _quiet(pipe):
         return [r["addr"] for r in pipe.events.records if r["event"] == "device_quiet"]
 
+    def test_a_rotated_device_is_not_quiet_at_the_address_it_left(self):
+        """The documented rotation -- `name <new-address> <existing-name>` --
+        adds an address to an existing entry, but the quiet check ran per
+        address, so the older one crossed its threshold and paged while the
+        device was authenticating from the newer one. Only the mDNS path sets
+        rotated_to; a rotation entered by hand had nothing to say it."""
+        d = Path(self.tmp.name)
+        (d / "devices.json").write_text(json.dumps([
+            {"name": "Hall Sensor", "extendedAddresses": [SENSOR.upper(), ROUTER]},
+        ]))
+        pipe = self._pipe()
+        t = 1_700_000_000.0
+        pipe.ingest(frame(t, SENSOR))                      # the address it had
+        pipe.ingest(frame(t + 2000, ROUTER))               # the address it rotated to
+        pipe.periodic(t + 2000)
+        self.assertEqual(self._quiet(pipe), [])
+        # Silent at both, and it is reported again.
+        pipe.periodic(t + 2000 + 31 * 60)
+        self.assertEqual(sorted(set(self._quiet(pipe))), sorted({SENSOR, ROUTER}))
+
+    def test_two_devices_that_merely_share_a_name_are_still_judged_apart(self):
+        """Quietness spans one entry's own address list, not everything
+        names.addresses_of would gather: two separate entries someone gave the
+        same name are two devices, and one talking must not answer for the
+        other."""
+        d = Path(self.tmp.name)
+        (d / "devices.json").write_text(json.dumps([
+            {"name": "Hall Sensor", "extendedAddress": SENSOR},
+            {"name": "Hall Sensor", "extendedAddress": ROUTER},
+        ]))
+        pipe = self._pipe()
+        t = 1_700_000_000.0
+        pipe.ingest(frame(t, SENSOR))
+        pipe.ingest(frame(t + 2000, ROUTER))
+        pipe.periodic(t + 2000)
+        self.assertEqual(self._quiet(pipe), [SENSOR])
+
     def test_one_quiet_window_for_every_device_whatever_the_inventory_says(self):
         pipe = self._pipe()
         t0 = 1_700_000_000.0

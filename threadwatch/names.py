@@ -206,6 +206,25 @@ class DeviceNames:
                     out.append(a)
         return out
 
+    def entry_addresses_of(self, addr: str) -> list[str]:
+        """The addresses listed in the one inventory entry ``addr`` belongs
+        to, ``addr`` first; an address in no entry is a device of one.
+
+        Narrower than addresses_of on purpose: that one also gathers other
+        entries under the same name, and inferring one device from a shared
+        name would let an unrelated device's traffic answer for this one.
+        """
+        a = _norm(addr)
+        entry = self.by_addr.get(a)
+        if entry is None:
+            return [a]
+        out = [a]
+        for other in entry_addresses(entry):
+            other = _norm(other)
+            if other and other != a and other not in out:
+                out.append(other)
+        return out
+
     def resolve(self, target: str) -> tuple[list[str], str]:
         """A 16-hex address, or a case-insensitive substring of one
         inventory name, to (every address of that device, display name).

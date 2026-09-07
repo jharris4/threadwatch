@@ -639,6 +639,27 @@ class Pipeline:
         blind = sum(length for since, length in self._blind if row["last_seen"] <= since)
         return silent - max(0.0, blind)
 
+    def _identity_silence_s(self, addr: str, row: dict, now: float) -> float:
+        """Silence across every address the device's inventory entry lists.
+
+        The documented rotation workflow -- `name <new-address>
+        <existing-name>` -- adds an address to an existing entry, but the
+        quiet check ran on each address alone, so the entry's older address
+        crossed its threshold and paged while the device was sending
+        authenticated traffic from the newer one. Only the mDNS path sets
+        rotated_to; a rotation entered by hand had nothing to say it.
+
+        The entry's own list, not names.addresses_of: a device is not
+        inferred from a shared name here, because that would let one device's
+        traffic keep an unrelated one from ever being reported quiet.
+        """
+        silence = self.silence_s(row, now)
+        for other in self.names.entry_addresses_of(addr)[1:]:
+            sibling = self.seen.table.get(other)
+            if sibling is not None and "last_seen" in sibling:
+                silence = min(silence, self.silence_s(sibling, now))
+        return silence
+
     # A wall-clock jump this large against the monotonic clock is a step
     # (NTP correcting a Pi that booted on its saved time), not slew.
     CLOCK_STEP_MIN_S = 60.0
@@ -1840,7 +1861,7 @@ class Pipeline:
             pan = row.get("pan")
             if dominant is not None and pan is not None and pan != dominant:
                 continue
-            if self.silence_s(row, now) > self.quiet_threshold_s(addr):
+            if self._identity_silence_s(addr, row, now) > self.quiet_threshold_s(addr):
                 self._report_quiet(addr, row, now)
         self._check_links(now, dominant)
         if not self.ephemeral:

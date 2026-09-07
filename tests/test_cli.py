@@ -496,6 +496,24 @@ class DispatchTest(CliCase):
         self.assertEqual(code, 1)
         self.assertIn("threadwatch import: cannot reach Home Assistant", err)
 
+    def test_events_skips_a_record_with_no_event_name_instead_of_crashing(self):
+        """read_day accepted a record with a numeric ts and a severity but no
+        event name; the events command pops that field without a default, so
+        one such line raised KeyError and lost the whole day's history."""
+        import contextlib
+        day = time.strftime("%Y-%m-%d")
+        now = time.time()
+        events = self.d / "data" / "state" / "events"
+        events.mkdir(parents=True)
+        (events / f"{day}.jsonl").write_text(
+            json.dumps({"ts": now, "severity": "info"}) + "\n"
+            + json.dumps({"ts": now, "severity": "warning", "event": "device_quiet",
+                          "addr": "a" * 16}) + "\n")
+        with contextlib.redirect_stderr(io.StringIO()):
+            code, out, _ = self.run_cli("events", "-n", "5")
+        self.assertEqual(code, 0)
+        self.assertIn("device_quiet", out)
+
     def test_status_says_so_when_the_daemon_has_never_run(self):
         code, out, _ = self.run_cli("status")
         self.assertEqual(code, 1)

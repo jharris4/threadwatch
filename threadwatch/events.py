@@ -16,6 +16,7 @@ blocks on the network and never raises because of it.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import sys
@@ -228,8 +229,15 @@ def read_day(events_dir: Path, day: str) -> list[dict]:
         # handed to every consumer, each of which assumes a dict with a
         # numeric ts and a severity: the recorder's summary check raised
         # on it every 30 s, and every review page for the day was a 500.
+        # The event name belongs to that same contract: `threadwatch events`
+        # pops it without a default, and a record without one was a KeyError
+        # that lost the whole day rather than one line. A non-finite ts got
+        # through the comparisons above and raised in date formatting.
         if (not isinstance(rec, dict) or isinstance(rec.get("ts"), bool)
-                or not isinstance(rec.get("ts"), (int, float)) or not isinstance(rec.get("severity"), str)):
+                or not isinstance(rec.get("ts"), (int, float))
+                or not math.isfinite(rec["ts"])
+                or not isinstance(rec.get("severity"), str)
+                or not isinstance(rec.get("event"), str) or not rec["event"]):
             dropped += 1
             continue
         out.append(rec)
@@ -239,7 +247,7 @@ def read_day(events_dir: Path, day: str) -> list[dict]:
             _dropped_said[path] = dropped
         if not said:
             print(f"[threadwatch] {path.name}: skipped {dropped} line(s) that are not event records "
-                  "(not JSON, or no numeric ts and severity)", file=sys.stderr, flush=True)
+                  "(not JSON, or no finite ts, severity and event name)", file=sys.stderr, flush=True)
     # Insert and evict under the lock: the web server serves each request
     # on its own thread, and picking the oldest entry while another thread
     # inserts or deletes raised mid-iteration.

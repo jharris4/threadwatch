@@ -114,7 +114,15 @@ class MalformedLineTest(unittest.TestCase):
     BAD = ["null", "42", "[]", '"text"', "true", '{"event": "device_quiet"}',
            '{"ts": "yesterday", "event": "device_quiet", "severity": "warning"}',
            '{"ts": true, "event": "x", "severity": "info"}',
-           '{"ts": 1700000000, "event": "x"}', "not json at all"]
+           '{"ts": 1700000000, "event": "x"}', "not json at all",
+           # No event name: accepted by the old check, then a KeyError out of
+           # `threadwatch events`, which pops it without a default.
+           '{"ts": 1700000000, "severity": "info"}',
+           '{"ts": 1700000000, "severity": "info", "event": ""}',
+           '{"ts": 1700000000, "severity": "info", "event": 7}',
+           # A ts that no comparison rejects and no date formatter accepts.
+           '{"ts": NaN, "event": "x", "severity": "info"}',
+           '{"ts": Infinity, "event": "x", "severity": "info"}']
 
     def test_lines_that_are_not_records_are_skipped_and_said_once(self):
         import contextlib
@@ -141,7 +149,8 @@ class MalformedLineTest(unittest.TestCase):
                 events_mod._read_cache.clear()
                 self.assertEqual(read_day(d, day), good)
             self.assertEqual(out.getvalue(), f"[threadwatch] {day}.jsonl: skipped {len(self.BAD)} line(s) that "
-                                             "are not event records (not JSON, or no numeric ts and severity)\n")
+                                             "are not event records (not JSON, or no finite ts, severity "
+                                             "and event name)\n")
             # The consumers that crashed: episodes for the review page, and
             # the recorder's summary of the day.
             eps = day_episodes(d, day, now=TS + 3600)

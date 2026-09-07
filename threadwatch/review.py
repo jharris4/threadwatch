@@ -276,6 +276,19 @@ def fmt_episode(ep: dict, stamp_fmt: str = "%m-%d %H:%M") -> str:
 EPISODE_WINDOW_DAYS = 31
 
 
+def episode_onset(ep: dict) -> float:
+    """When the interval an episode reports actually began, which is not when
+    it was announced. A silence starts at the device's last frame, a
+    starvation at the first unanswered poll, a signal drop at the first low
+    reading -- each of them before the threshold that logged the event. The
+    alert time stays in ``start``."""
+    for key in ("silent_since", "starved_since", "low_since"):
+        since = ep.get(key)
+        if isinstance(since, (int, float)) and not isinstance(since, bool):
+            return float(since)
+    return ep["start"]
+
+
 def day_episodes(events_dir: Path, day: str, now: float | None = None) -> list[dict]:
     """Episodes that touch a day. Grouping runs over the days around it
     (EPISODE_WINDOW_DAYS either side), so a silence that began days ago
@@ -289,8 +302,14 @@ def day_episodes(events_dir: Path, day: str, now: float | None = None) -> list[d
     out = []
     for ep in group_episodes(records, now):
         ep_end = ep["end"] if ep["end"] is not None else (now or time.time())
-        if ep_end >= start and ep["start"] < end:
-            ep["carried_over"] = ep["start"] < start   # began on an earlier day
+        # By the interval's onset, not by the alert that announced it. A
+        # device last heard at 23:50 whose device_quiet was logged at 00:20
+        # belonged to neither day by the alert time: it was missing from the
+        # evening it began in, while the next day's episode counted those ten
+        # minutes in its duration.
+        onset = episode_onset(ep)
+        if ep_end >= start and onset < end:
+            ep["carried_over"] = onset < start         # began on an earlier day
             out.append(ep)
     return out
 

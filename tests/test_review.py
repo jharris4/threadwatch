@@ -290,6 +290,27 @@ class DayBoundaryTest(unittest.TestCase):
             self.assertEqual(notes(day_of(start - 1)), [("a second before midnight", False)])
             self.assertEqual(notes(day_of(end)), [("at the next midnight", False)])
 
+    def test_a_silence_that_began_before_midnight_is_on_that_day_too(self):
+        """Episodes were selected by the alert timestamp, but a quiet spell
+        starts at the device's last frame, half an hour or more before the
+        threshold logs it. A device last heard at 23:50 and announced at 00:20
+        was missing from the evening it went quiet in, while the next day's
+        episode counted those ten minutes in its duration."""
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp) / "events"
+            log = EventLog(events)
+            day = day_of(T0)
+            start, end = day_bounds(day)
+            last_seen = start - 600                       # 23:50 the evening before
+            log.emit("device_quiet", "warning", start + 1800, addr=AQ, name="Basement AQ",
+                     silent_for_s=2400, last_seen=last_seen)
+            now = start + 3600
+            evening = [e for e in day_episodes(events, day_of(last_seen), now) if e["kind"] == "quiet"]
+            self.assertEqual([e["carried_over"] for e in evening], [False])
+            self.assertEqual(evening[0]["silent_since"], last_seen)
+            morning = [e for e in day_episodes(events, day, now) if e["kind"] == "quiet"]
+            self.assertEqual([e["carried_over"] for e in morning], [True])
+
 
 class DayViewTest(unittest.TestCase):
     def setUp(self):

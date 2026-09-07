@@ -240,8 +240,17 @@ def _finite(section: str, key: str, value):
     the coercions around each call site (a quoted channel, a "0x4e21" PAN id)
     are unchanged.
     """
-    if isinstance(value, float) and not math.isfinite(value):
-        raise ValueError(f"[{section}] {key} must be a finite number, not {value:g}")
+    # Float-valued settings also accept numeric strings. Validate the
+    # converted value so quoted "nan", "inf" and overflowing exponents
+    # cannot reintroduce non-finite durations after this check.
+    number = value
+    if isinstance(value, str):
+        try:
+            number = float(value)
+        except ValueError:
+            pass                       # preserve each setting's own coercion/error
+    if isinstance(number, float) and not math.isfinite(number):
+        raise ValueError(f"[{section}] {key} must be a finite number, not {value!r}")
     return value
 
 

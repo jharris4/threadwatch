@@ -847,6 +847,14 @@ class ConfigValidationTest(unittest.TestCase):
                     self._load(body)
                 self.assertIn("finite", str(cm.exception))
 
+    def test_quoted_nonfinite_durations_are_also_rejected(self):
+        for section, key in (("polls", "confirm_s"), ("link", "hold_s"),
+                             ("border_routers", "browse_s"), ("record", "keep_gb")):
+            for value in ("nan", "inf", "-inf", "1e999"):
+                with self.subTest(section=section, value=value):
+                    with self.assertRaisesRegex(ValueError, "finite"):
+                        self._load(f'[{section}]\n{key} = "{value}"\n')
+
     def test_quoted_channel_is_coerced_not_carried_as_a_string(self):
         self.assertEqual(self._load('[network]\nchannel = "25"\n').channel, 25)
 

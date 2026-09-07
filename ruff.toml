@@ -1,6 +1,6 @@
 # Ruff is a development tool, not a runtime one. It is deliberately absent
 # from requirements.txt: that file is what the Pi installs, and it stays
-# down to pyserial and cryptography. The pinned version lives in
+# limited to runtime dependencies. The pinned version lives in
 # requirements-dev.txt, because a ruff release can add rules and turn a
 # green main red without a commit of its own.
 

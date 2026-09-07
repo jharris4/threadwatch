@@ -21,8 +21,8 @@ sudo bin/setup-host.sh              # the recorder runs as you
 sudo bin/setup-host.sh --user bob   # ...or as another user
 ```
 
-It does everything after the OS is installed: the two Python packages
-(pyserial, cryptography) from your distro, falling back to a repo-local
+It does everything after the OS is installed: the Python packages
+(pyserial, cryptography, tomli-w) from your distro, falling back to a repo-local
 venv where there is no apt/dnf/pacman/zypper; serial-port group
 membership (dialout or uucp); `config/config.toml` from the example if
 missing; `credentials.toml`, `alerts.env` and `ha.env` locked to 0400 if

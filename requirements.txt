@@ -7,3 +7,5 @@ pyserial>=3.5
 # reads the floor from this line and checks the installed version against
 # it, because the distro packages it installs are often behind pip's.
 cryptography>=38
+# Serialize structurally redacted snapshot configs; 1.0 is in Debian bookworm.
+tomli-w>=1.0

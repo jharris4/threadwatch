@@ -109,6 +109,31 @@ class BundleTest(unittest.TestCase):
         self.assertNotIn("FAKE_SECRET", out)
         self.assertIn("did not parse", out)
 
+    def test_parser_errors_cannot_copy_input_into_the_placeholder(self):
+        import tomllib
+
+        for text in (
+            '["FAKE_SECRET"]\nx = 1\n["FAKE_SECRET"]\ny = 2\n',
+            '[alerts]\nheaders = {"FAKE_SECRET" = 1, "FAKE_SECRET" = 2}\n',
+        ):
+            with self.subTest(text=text):
+                with self.assertRaises(tomllib.TOMLDecodeError):
+                    tomllib.loads(text)
+                out = snapshot.redact_config(text)
+                self.assertEqual(out, "# the configuration in force did not parse as TOML; redacted whole\n")
+                self.assertEqual(tomllib.loads(out), {})
+
+    def test_comments_cannot_carry_secrets_into_the_snapshot(self):
+        import tomllib
+
+        text = ('# old token: FAKE_SECRET_STANDALONE\n'
+                '# url = "https://example.invalid/FAKE_SECRET_DISABLED"\n'
+                '[network] # FAKE_SECRET_TABLE\n'
+                'channel = 25 # FAKE_SECRET_INLINE\n')
+        out = snapshot.redact_config(text)
+        self.assertNotIn("FAKE_SECRET", out)
+        self.assertEqual(tomllib.loads(out), {"network": {"channel": 25}})
+
     def test_the_shipped_example_config_survives_redaction_as_valid_toml(self):
         import tomllib
 

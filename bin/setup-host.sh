@@ -44,7 +44,7 @@ if [ -z "$PY" ] || ! "$PY" -c 'import sys; sys.exit(sys.version_info < (3, 11))'
 fi
 echo "    $("$PY" --version) ($PY)"
 
-echo "==> Python packages (pyserial, cryptography)"
+echo "==> Python packages (pyserial, cryptography, tomli-w)"
 if [ "$PY" = "$VENV/bin/python3" ]; then
   # An existing venv is the service's interpreter whatever package manager
   # the host has: repair it in place.
@@ -52,17 +52,19 @@ if [ "$PY" = "$VENV/bin/python3" ]; then
   echo "    installed into $VENV (bin/threadwatch prefers it over the system python3)"
 elif command -v apt-get >/dev/null; then
   apt-get update -qq
-  apt-get install -y -qq python3-serial python3-cryptography > /dev/null
-  echo "    apt: python3-serial, python3-cryptography"
+  apt-get install -y -qq python3-serial python3-cryptography python3-tomli-w > /dev/null
+  echo "    apt: python3-serial, python3-cryptography, python3-tomli-w"
 elif command -v dnf >/dev/null; then
-  dnf install -y -q python3-pyserial python3-cryptography
-  echo "    dnf: python3-pyserial, python3-cryptography"
+  dnf install -y -q python3-pyserial python3-cryptography python3-tomli-w
+  echo "    dnf: python3-pyserial, python3-cryptography, python3-tomli-w"
 elif command -v pacman >/dev/null; then
-  pacman -S --needed --noconfirm --quiet python-pyserial python-cryptography
-  echo "    pacman: python-pyserial, python-cryptography"
+  pacman -S --needed --noconfirm --quiet python-pyserial python-cryptography python-tomli-w
+  echo "    pacman: python-pyserial, python-cryptography, python-tomli-w"
 elif command -v zypper >/dev/null; then
-  zypper --quiet install -y python3-pyserial python3-cryptography
-  echo "    zypper: python3-pyserial, python3-cryptography"
+  # openSUSE packages are named for the interpreter (e.g. python311).
+  SUSE_PY_PACKAGE=$("$PY" -c 'import sys; print(f"python{sys.version_info.major}{sys.version_info.minor}")')
+  zypper --quiet install -y "$SUSE_PY_PACKAGE-pyserial" "$SUSE_PY_PACKAGE-cryptography" "$SUSE_PY_PACKAGE-tomli-w"
+  echo "    zypper: $SUSE_PY_PACKAGE-pyserial, $SUSE_PY_PACKAGE-cryptography, $SUSE_PY_PACKAGE-tomli-w"
 else
   # No known package manager: a repo-local venv, which bin/threadwatch prefers
   # over the system python3 whenever it exists.
@@ -73,17 +75,18 @@ else
 fi
 # What the service will do at its first import, done here where the
 # failure names the interpreter rather than in the journal.
-if ! "$PY" -c 'import serial, cryptography' 2>/dev/null; then
-  echo "    ERROR: $PY cannot import pyserial and cryptography after the install above; the recorder would not start" >&2
+if ! "$PY" -c 'import serial, cryptography, tomli_w' 2>/dev/null; then
+  echo "    ERROR: $PY cannot import pyserial, cryptography and tomli-w after the install above; the recorder would not start" >&2
   exit 1
 fi
 # Importable is not the same as new enough, and the distro branches above
 # install whatever the release ships: bookworm's python3-cryptography is
 # older than pip's. The floor comes from requirements.txt so there is one
 # copy of it.
-FLOOR=$(sed -n 's/^cryptography>=\([0-9.]*\).*/\1/p' "$REPO/requirements.txt")
-HAVE=$("$PY" -c 'from importlib.metadata import version; print(version("cryptography"))' 2>/dev/null || echo "")
-if [ -n "$FLOOR" ] && ! "$PY" - "$FLOOR" "$HAVE" <<'PYEOF'
+for PACKAGE in cryptography tomli-w; do
+  FLOOR=$(sed -n "s/^${PACKAGE}>=\\([0-9.]*\\).*/\\1/p" "$REPO/requirements.txt")
+  HAVE=$("$PY" -c 'import sys; from importlib.metadata import version; print(version(sys.argv[1]))' "$PACKAGE" 2>/dev/null || echo "")
+  if [ -n "$FLOOR" ] && ! "$PY" - "$FLOOR" "$HAVE" <<'PYEOF'
 import sys
 
 
@@ -93,12 +96,13 @@ def parts(v):
 
 sys.exit(0 if parts(sys.argv[2]) >= parts(sys.argv[1]) else 1)
 PYEOF
-then
-  echo "    ERROR: $PY has cryptography ${HAVE:-unknown}, below the ${FLOOR} requirements.txt asks for;" >&2
-  echo "           install it with pip into a venv instead of the distro package" >&2
-  exit 1
-fi
-echo "    $PY imports pyserial and cryptography ${HAVE:-?}"
+  then
+    echo "    ERROR: $PY has $PACKAGE ${HAVE:-unknown}, below the ${FLOOR} requirements.txt asks for;" >&2
+    echo "           install it with pip into a venv instead of the distro package" >&2
+    exit 1
+  fi
+  echo "    $PY imports $PACKAGE ${HAVE:-?}"
+done
 
 echo "==> Serial port access for $RUN_USER"
 SERIAL_GROUP=""

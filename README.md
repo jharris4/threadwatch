@@ -190,7 +190,7 @@ between runs.
 ## Developing
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # pyserial, cryptography
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # pyserial, cryptography, tomli-w
 .venv/bin/python3 -m unittest discover -s tests -v                     # the suite; under a minute, slower on a Pi
 .venv/bin/python3 -m unittest tests.test_pipeline                      # one module
 ```

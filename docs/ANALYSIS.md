@@ -134,7 +134,8 @@ Each snapshot is one directory:
                              topic, password and key blanked to "<redacted>" at whatever depth it
                              was written (credentials.toml, alerts.env and ha.env are never
                              copied). Written back out from the parsed file, so the settings are
-                             all here but your own comments and layout are not
+                             all here but your own comments and layout are not (comments can contain
+                             secrets too). Invalid TOML is replaced by a fixed placeholder
       status.json            the recorder's status at the time
       last-seen.json         the last-seen table: first/last heard, frames, RSSI per address
       observed-names.json    SRP hostnames harvested from the mesh

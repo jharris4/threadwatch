@@ -18,7 +18,6 @@ runs is skipped, not fatal.
 
 from __future__ import annotations
 
-import datetime
 import fcntl
 import json
 import os
@@ -27,6 +26,8 @@ import shutil
 import time
 import tomllib
 from pathlib import Path
+
+import tomli_w
 
 from . import __version__
 from .config import repo_commit
@@ -95,8 +96,8 @@ def redact_config(text: str) -> str:
     and the ones it did not - a dotted key, an inline table, an array of
     inline tables - carried a webhook URL and a bearer token into the
     bundle intact. Redacting the parsed data instead reaches every value
-    at every depth whatever shape it was written in, and what is emitted
-    parses by construction. The cost is the operator's comments and
+    at every depth whatever shape it was written in. Tomli-W serializes
+    the redacted data. The cost is the operator's comments and
     layout, which do not survive the round trip: a reader of the snapshot
     still sees which sinks and settings were in force, without seeing
     where they pointed."""
@@ -104,12 +105,13 @@ def redact_config(text: str) -> str:
         return text
     try:
         data = tomllib.loads(text)
-    except tomllib.TOMLDecodeError as exc:
+    except tomllib.TOMLDecodeError:
         # A configuration the recorder itself could not have loaded. Say so
         # and blank it whole: copying the text through unparsed is the one
-        # case where nothing has looked at what is in it.
-        return f"# the configuration in force did not parse as TOML ({exc}); redacted whole\n"
-    return _HEADER + _dump_table(_redact(data, False), ()).lstrip("\n") + "\n"
+        # case where nothing has looked at what is in it. Parser errors can
+        # quote input, so even the diagnostic must not travel with the copy.
+        return "# the configuration in force did not parse as TOML; redacted whole\n"
+    return _HEADER + tomli_w.dumps(_redact(data, False))
 
 
 # What replaces the operator's own comments at the top of the copy.
@@ -131,85 +133,6 @@ def _redact(value, secret: bool):
     if isinstance(value, list):
         return [_redact(v, False) for v in value]
     return value
-
-
-def _dump_table(table: dict, path: tuple[str, ...], header: str | None = None) -> str:
-    """One table and everything below it as TOML text. Its own values come
-    first and its sub-tables after, which is the order TOML requires: a key
-    written below a [header] belongs to that table, not to this one."""
-    lines = [header] if header else []
-    lines += [f"{_key(k)} = {_value(v)}" for k, v in table.items()
-              if not _is_table(v) and not _is_table_array(v)]
-    for k, v in table.items():
-        name = _key_path(path + (k,))
-        if _is_table(v):
-            lines += ["", _dump_table(v, path + (k,), f"[{name}]")]
-        elif _is_table_array(v):
-            for item in v:
-                lines += ["", _dump_table(item, path + (k,), f"[[{name}]]")]
-    return "\n".join(lines)
-
-
-def _is_table(value) -> bool:
-    return isinstance(value, dict)
-
-
-def _is_table_array(value) -> bool:
-    """A list [[alerts.sinks]] can be written as. An empty list, or one
-    holding anything but tables, is an ordinary value and stays inline."""
-    return isinstance(value, list) and bool(value) and all(isinstance(v, dict) for v in value)
-
-
-def _key(key: str) -> str:
-    return key if _BARE_KEY.fullmatch(key) else _string(key)
-
-
-def _key_path(path: tuple[str, ...]) -> str:
-    return ".".join(_key(part) for part in path)
-
-
-def _value(value) -> str:
-    """One TOML value. bool is checked before int, which it is a subclass
-    of, or a sink's enabled = true would come back out as 1."""
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, str):
-        return _string(value)
-    if isinstance(value, int):
-        return str(value)
-    if isinstance(value, float):
-        if value != value:
-            return "nan"
-        if value in (float("inf"), float("-inf")):
-            return "inf" if value > 0 else "-inf"
-        return repr(value)
-    if isinstance(value, (datetime.datetime, datetime.date, datetime.time)):
-        return value.isoformat()
-    if isinstance(value, list):
-        return "[" + ", ".join(_value(v) for v in value) + "]"
-    if isinstance(value, dict):
-        return "{" + ", ".join(f"{_key(k)} = {_value(v)}" for k, v in value.items()) + "}"
-    return _string(str(value))
-
-
-def _string(text: str) -> str:
-    """A TOML basic string. Newlines and the rest of the control characters
-    are escaped rather than left in: a multi-line value written as \"\"\"...\"\"\"
-    comes back as one escaped line, which parses to the same string."""
-    out = []
-    for ch in text:
-        if ch in _ESCAPES:
-            out.append(_ESCAPES[ch])
-        elif ch < " " or ch == "\x7f":
-            out.append(f"\\u{ord(ch):04x}")
-        else:
-            out.append(ch)
-    return '"' + "".join(out) + '"'
-
-
-_BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")
-_ESCAPES = {"\\": "\\\\", '"': '\\"', "\b": "\\b", "\t": "\\t",
-            "\n": "\\n", "\f": "\\f", "\r": "\\r"}
 
 
 # A reader of the bundle months later should know which code judged it.

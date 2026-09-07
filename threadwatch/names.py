@@ -65,11 +65,34 @@ def _norm(addr: str) -> str:
 
 def entry_addresses(entry: dict) -> list[str]:
     """Every address an inventory entry lists, as written: the
-    `extendedAddresses` list and then a single `extendedAddress`."""
-    addrs = [str(a) for a in (entry.get("extendedAddresses") or [])]
-    if entry.get("extendedAddress"):
-        addrs.append(str(entry["extendedAddress"]))
+    `extendedAddresses` list and then a single `extendedAddress`.
+
+    A field of the wrong type yields nothing rather than raising: the file
+    is hand-edited, and `"extendedAddresses": 123` used to raise TypeError
+    out of here - which stopped the recorder from starting, failed every
+    page that names a device, and took doctor down with them, where a
+    stray entry or a mistyped address is only skipped and reported.
+    address_field_error says what is wrong with one, for the callers that
+    tell the operator."""
+    listed = entry.get("extendedAddresses")
+    addrs = [str(a) for a in listed] if isinstance(listed, (list, tuple)) else []
+    one = entry.get("extendedAddress")
+    if one and isinstance(one, (str, int, float)) and not isinstance(one, bool):
+        addrs.append(str(one))
     return addrs
+
+
+def address_field_error(entry: dict) -> str | None:
+    """What is wrong with the shape of this entry's address fields, or
+    None when they can be read. Not whether the addresses themselves are
+    valid: that is _EXT_ADDR, per address, and reported per address."""
+    listed = entry.get("extendedAddresses")
+    if listed is not None and not isinstance(listed, (list, tuple)):
+        return f"extendedAddresses is {type(listed).__name__}, not a list"
+    one = entry.get("extendedAddress")
+    if one and (isinstance(one, bool) or not isinstance(one, (str, int, float))):
+        return f"extendedAddress is {type(one).__name__}, not one address"
+    return None
 
 
 class AmbiguousName(ValueError):
@@ -111,6 +134,14 @@ class DeviceNames:
             # entry must not stop the recorder or 500 every review page.
             self.entries = [e for e in raw if isinstance(e, dict)]
             for entry in self.entries:
+                shape = address_field_error(entry)
+                if shape:
+                    # The addresses of this one entry are lost; the file is
+                    # not. Said as loudly as a mistyped address is.
+                    print(f"[threadwatch] {inventory_path.name}: {shape} in the entry for "
+                          f"{entry.get('name')!r}: its addresses are ignored, so its device stays "
+                          "unknown until it is fixed (threadwatch doctor checks it)",
+                          file=sys.stderr, flush=True)
                 for a in entry_addresses(entry):
                     n = _norm(str(a))
                     # Every inventory address is fed to the decryptor's nonce
@@ -550,6 +581,13 @@ def read_inventory(inventory_path: Path) -> list[dict]:
             what = "null" if entry is None else f"a {type(entry).__name__}"
             raise ValueError(f"{inventory_path.name}: entry {i} is {what}, not a device object "
                              f"({{\"name\": ..., \"extendedAddress\": ...}}); fix the file first")
+        # An address field of the wrong type, for the same reason: a
+        # rewrite would either lose that entry's addresses or fail
+        # halfway through building the new file.
+        shape = address_field_error(entry)
+        if shape:
+            raise ValueError(f"{inventory_path.name}: entry {i} ({entry.get('name') or 'unnamed'}): "
+                             f"{shape}; fix the file first")
     return entries
 
 

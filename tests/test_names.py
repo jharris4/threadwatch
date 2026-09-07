@@ -1,5 +1,7 @@
 """Inventory helpers: suggested entries for unknown addresses, and adopt."""
 
+import contextlib
+import io
 import json
 import sys
 import tempfile
@@ -264,6 +266,31 @@ class NameTest(unittest.TestCase):
             with self.assertRaises(ValueError) as cm:
                 adopt(inv, TV1, "Living Room Apple TV")
             self.assertIn("entry 1 is a str", str(cm.exception))
+
+    def test_an_address_field_of_the_wrong_type_is_skipped_and_named(self):
+        # The file is hand-edited, and "extendedAddresses": 123 raised
+        # TypeError out of entry_addresses: the recorder would not start,
+        # every page that names a device failed, and doctor - the one
+        # command that reports on the file - crashed with them. It is one
+        # bad field: the rest of the inventory still names its devices.
+        with tempfile.TemporaryDirectory() as d:
+            inv = Path(d) / "devices.json"
+            before = json.dumps([{"name": "Sensor", "extendedAddresses": 123},
+                                 {"name": "Office Air Quality", "extendedAddress": AQ.upper()}])
+            inv.write_text(before)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                names = DeviceNames(inv)
+            self.assertEqual(names.name(AQ), "Office Air Quality")
+            self.assertIsNone(names.name("0011223344556677"))
+            self.assertIn("extendedAddresses is int, not a list", err.getvalue())
+            self.assertIn("'Sensor'", err.getvalue())
+            # A command about to rewrite the file refuses, as it does for
+            # a stray null, rather than dropping those addresses.
+            with self.assertRaises(ValueError) as cm:
+                adopt(inv, TV1, "Living Room Apple TV")
+            self.assertIn("entry 1 (Sensor): extendedAddresses is int, not a list", str(cm.exception))
+            self.assertEqual(inv.read_text(), before)
 
     def test_rejects_bad_input_without_touching_the_file(self):
         with tempfile.TemporaryDirectory() as d:

@@ -50,6 +50,14 @@ class DoctorTest(unittest.TestCase):
         self.assertEqual(level, "warn")
         self.assertIn("1 devices, 1 addresses", text)
         self.assertIn("entry 2 is null, entry 3 is a str", text)
+        # An address field of the wrong type: entry_addresses raised
+        # TypeError out of this check, so the one command that reports on
+        # the file said "doctor check crashed" instead of which entry.
+        inv.write_text(json.dumps([{"name": "A", "extendedAddress": "0011223344556677"},
+                                   {"name": "Sensor", "extendedAddresses": 123}]))
+        level, _, text = doctor.check_inventory(self.cfg)[0]
+        self.assertEqual(level, "warn")
+        self.assertIn("entry 2 (Sensor): extendedAddresses is int, not a list", text)
 
     def test_credentials_permissions_and_key(self):
         self.cfg.credentials_path = self.d / "absent.toml"

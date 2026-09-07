@@ -48,8 +48,9 @@ def check_inventory(cfg) -> list[Check]:
         return [(FAIL, "inventory", f"{path.name} is not valid JSON: {exc}")]
     if not isinstance(entries, list):
         return [(FAIL, "inventory", f"{path.name} must be a JSON list")]
-    from .names import _EXT_ADDR, _norm, entry_addresses
+    from .names import _EXT_ADDR, _norm, address_field_error, entry_addresses
     bad, addrs, unnamed, wrong_shape = [], 0, 0, []
+    bad_fields = []
     for i, e in enumerate(entries, 1):
         # A null an editor left, or a bare string: the recorder skips it
         # and keeps recording, and naming it is this check's whole job.
@@ -59,6 +60,14 @@ def check_inventory(cfg) -> list[Check]:
             continue
         if not (e.get("name") or "").strip():
             unnamed += 1
+        # An address field of the wrong type - a number where the list of
+        # addresses belongs. The recorder ignores that entry's addresses;
+        # naming which entry it is, is this check's job. It used to raise
+        # TypeError out of entry_addresses instead, here and in the
+        # recorder, so the one command that reports on the file could not.
+        shape = address_field_error(e)
+        if shape:
+            bad_fields.append(f"entry {i} ({e.get('name') or 'unnamed'}): {shape}")
         for a in entry_addresses(e):
             addrs += 1
             if not _EXT_ADDR.match(_norm(a)):
@@ -67,6 +76,9 @@ def check_inventory(cfg) -> list[Check]:
     if wrong_shape:
         return [(WARN, "inventory", f"{text}; skipped, not device objects: {', '.join(wrong_shape[:5])}"
                                     " (adopt and import refuse to rewrite the file until it is fixed)")]
+    if bad_fields:
+        return [(WARN, "inventory", f"{text}; addresses ignored, the field is not a list of addresses: "
+                                    f"{', '.join(bad_fields[:5])}")]
     if bad:
         return [(WARN, "inventory", f"{text}; ignored (not 16 hex digits): {', '.join(bad[:5])}")]
     if unnamed:

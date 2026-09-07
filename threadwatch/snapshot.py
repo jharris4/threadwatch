@@ -30,7 +30,7 @@ from pathlib import Path
 import tomli_w
 
 from . import __version__
-from .config import repo_commit
+from .config import repo_commit, running_commit
 
 # border-routers.json is the hostname -> address history of every hub that
 # rotates its address: without it a snapshot cannot name the border
@@ -121,7 +121,7 @@ def redact_config(text: str) -> str:
 
 
 # What replaces the operator's own comments at the top of the copy.
-_HEADER = ('# The configuration in force when this snapshot was saved, with every\n'
+_HEADER = ('# Configuration source (see manifest provenance), with every\n'
            '# secret value replaced by "<redacted>". Written back out from the\n'
            '# parsed file, so the comments and the layout of the original are not\n'
            '# here; the settings that judged these packets are.\n\n')
@@ -145,7 +145,40 @@ def _redact(value, secret: bool):
 _commit = repo_commit
 
 
-def write_manifest(cfg, dest: Path, label: str, now: float, trigger: str | None) -> dict:
+PROVENANCE_FILE = "capture-provenance.json"
+
+
+def remember_capture(cfg, entries: list[dict]) -> None:
+    """Publish the recorder's loaded inputs atomically for other snapshot processes."""
+    import copy
+    cfg.capture_provenance = {
+        "source": "recorder_start", "started_at": time.time(),
+        "commit": running_commit(), "channel": cfg.channel, "pan_id": cfg.pan_id,
+        "config": cfg.loaded_config, "inventory": copy.deepcopy(entries),
+    }
+    cfg.state_dir.mkdir(parents=True, exist_ok=True)
+    tmp = (cfg.state_dir / PROVENANCE_FILE).with_suffix(".tmp")
+    tmp.write_text(json.dumps(cfg.capture_provenance))
+    tmp.replace(cfg.state_dir / PROVENANCE_FILE)
+
+
+def capture_provenance(cfg) -> dict | None:
+    if cfg.capture_provenance is not None:
+        return cfg.capture_provenance
+    try:
+        value = json.loads((cfg.state_dir / PROVENANCE_FILE).read_text())
+        if (isinstance(value, dict) and value.get("source") == "recorder_start"
+                and isinstance(value.get("inventory"), list)
+                and isinstance(value.get("channel"), int)
+                and "pan_id" in value and "commit" in value):
+            return value
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def write_manifest(cfg, dest: Path, label: str, now: float, trigger: str | None,
+                   provenance: dict | None = None) -> dict:
     """manifest.json: what the bundle holds and the recorder that made it.
     Written last, so a bundle without one was cut short."""
     files = {str(p.relative_to(dest)): p.stat().st_size for p in sorted(dest.rglob("*")) if p.is_file()}
@@ -154,13 +187,16 @@ def write_manifest(cfg, dest: Path, label: str, now: float, trigger: str | None)
     manifest = {
         "format": 1,
         "threadwatch": __version__,
-        "commit": _commit(),
+        "commit": provenance["commit"] if provenance else _commit(),
+        "provenance": provenance["source"] if provenance else "snapshot_process_inputs; capture provenance unavailable",
+        "recorder_started_at": provenance.get("started_at") if provenance else None,
         "saved_at": now,
         "saved_at_local": time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(now)),
         "label": label,
         "trigger": trigger or "manual",
-        "channel": cfg.channel,
-        "pan_id": None if cfg.pan_id is None else f"0x{cfg.pan_id:04x}",
+        "channel": provenance["channel"] if provenance else cfg.channel,
+        "pan_id": (None if (pan := provenance["pan_id"] if provenance else cfg.pan_id) is None
+                   else f"0x{pan:04x}"),
         "capture_files": "one pcap per local hour, named threadwatch-YYYYMMDD-HH.pcap; "
                          "the newest was still being written",
         "ring_files": len(pcaps),
@@ -244,17 +280,26 @@ def save_snapshot(cfg, label: str = "snapshot", now: float | None = None,
                     shutil.copy2(src, dest / extra)
             if cfg.events_dir.exists():
                 shutil.copytree(cfg.events_dir, dest / "events", dirs_exist_ok=True)
-            # The names and settings in force now: a snapshot read after
-            # a device rotated its address, or the quiet window changed,
-            # must be judged by what was current when it was saved.
-            if cfg.devices_path and cfg.devices_path.exists():
-                shutil.copy2(cfg.devices_path, dest / "devices.json")
-            if cfg.config_path and cfg.config_path.exists():
-                (dest / "config.toml").write_text(redact_config(cfg.config_path.read_text()))
+            provenance = capture_provenance(cfg)
+            if provenance:
+                (dest / "devices.json").write_text(json.dumps(provenance["inventory"], indent=2))
+                if provenance.get("config") is not None:
+                    (dest / "config.toml").write_text(provenance["config"])
+                (dest / PROVENANCE_FILE).write_text(json.dumps(provenance, indent=2))
+            else:
+                # Legacy/offline captures have no recorder evidence. Label
+                # these inputs explicitly rather than claiming they captured the ring.
+                if cfg.devices_path and cfg.devices_path.exists():
+                    shutil.copy2(cfg.devices_path, dest / "devices.json")
+                source = cfg.loaded_config
+                if source is None and cfg.config_path and cfg.config_path.exists():
+                    source = redact_config(cfg.config_path.read_text())
+                if source is not None:
+                    (dest / "config.toml").write_text(source)
             kept = len(list(dest.glob("threadwatch-*.pcap")))
             if kept != count:
                 raise OSError(f"{count} ring files were copied but the snapshot holds {kept}")
-            write_manifest(cfg, dest, label, now, trigger)
+            write_manifest(cfg, dest, label, now, trigger, provenance)
         except BaseException:
             # A copy cut short by a full disk, an I/O error or Ctrl-C would
             # otherwise stay behind looking like a whole snapshot, with nothing

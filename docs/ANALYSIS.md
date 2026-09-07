@@ -256,3 +256,15 @@ to your border router, that approximates what the border router hears —
 which is what matters for CCA/channel-access failures. For localization
 walks, a laptop + the same dongle in Wireshark, or an ESP32-C6 energy
 scanner, works room by room.
+
+### Snapshot capture provenance
+
+New recorder runs save `capture-provenance.json`: the redacted configuration
+loaded at startup, loaded inventory, channel/PAN, start time, and cached running
+revision. Automatic and separately requested snapshots use this record, so edits
+awaiting a restart do not replace the capture settings. The manifest identifies
+this as `recorder_start`. It describes that run; a ring spanning several recorder
+runs may contain packets captured with earlier settings. For legacy captures
+without this record, the manifest labels the inputs as belonging to the snapshot
+process and says capture provenance is unavailable. Such inputs are not proof of
+what captured the packets. Replay still uses the selected analysis configuration.

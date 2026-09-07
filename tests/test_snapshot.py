@@ -18,6 +18,36 @@ class BundleTest(unittest.TestCase):
     """What travels with the packets: the inventory, the configuration
     with its secrets blanked, and a manifest naming it all."""
 
+    def test_loaded_recorder_inputs_survive_disk_edits_and_external_snapshot(self):
+        import tomllib
+        from unittest.mock import patch
+
+        from threadwatch.config import load
+        from threadwatch.snapshot import remember_capture
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "config.toml"
+            path.write_text('[network]\nchannel = 25\n[[alerts.sinks]]\nurl = "SECRET"\n')
+            inventory = root / "devices.json"
+            original = [{"name": "Sensor", "extendedAddress": "0011223344556677"}]
+            inventory.write_text(json.dumps(original))
+            cfg = load(path)
+            cfg.data_dir = root / "data"
+            path.write_text('[network]\nchannel = 15\n')
+            with patch("threadwatch.snapshot.running_commit", return_value="running-revision"):
+                remember_capture(cfg, original)
+            inventory.write_text("[]")
+            for label, inputs in (("automatic", cfg), ("external", load(path))):
+                inputs.data_dir = cfg.data_dir
+                dest, _ = snapshot.save_snapshot(inputs, label)
+                manifest = json.loads((dest / "manifest.json").read_text())
+                self.assertEqual(manifest["channel"], 25)
+                self.assertEqual(manifest["commit"], "running-revision")
+                self.assertEqual(manifest["provenance"], "recorder_start")
+                self.assertEqual(tomllib.loads((dest / "config.toml").read_text())["network"]["channel"], 25)
+                self.assertEqual(json.loads((dest / "devices.json").read_text()), original)
+                self.assertNotIn("SECRET", (dest / snapshot.PROVENANCE_FILE).read_text())
+
     def test_redaction_blanks_secret_values_and_keeps_the_shape(self):
         import tomllib
         text = ('[network]\nchannel = 25\nkeep_hours = 168\n'

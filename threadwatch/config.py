@@ -94,6 +94,8 @@ class Config:
     # files and the event log sit at its top level, and nothing is ever
     # written there. See for_snapshot.
     snapshot_dir: Path | None = None
+    loaded_config: str | None = None       # redacted source captured by load()
+    capture_provenance: dict | None = None # recorder startup evidence
     # Silence (seconds) before a device_quiet event. 30 min: the 2026-09-02
     # soak (9.8 h, 22 sleepy end devices) showed 19 of them never silent for
     # 3 min and the rest under 30 min once marginal-reception devices are
@@ -270,7 +272,10 @@ def load(path: Path | None) -> Config:
     if path:
         cfg.config_dir = Path(path).resolve().parent
         cfg.config_path = Path(path).resolve()
-        raw = tomllib.loads(Path(path).read_text())
+        source = Path(path).read_text()
+        raw = tomllib.loads(source)
+        from .snapshot import redact_config
+        cfg.loaded_config = redact_config(source)
         check_sections(raw, Path(path))
         net = raw.get("network", {})
         cfg.channel = int(_finite("network", "channel", net.get("channel", cfg.channel)))

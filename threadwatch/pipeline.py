@@ -118,6 +118,9 @@ class Pipeline:
         # only reads; nothing here writes the file back (_save_border_routers
         # returns on ephemeral, and no browse runs offline).
         self.names = DeviceNames(cfg.devices_path, cfg.state_dir / "border-routers.json")
+        if not ephemeral:
+            from .snapshot import remember_capture
+            remember_capture(cfg, self.names.entries)
         self.seen = LastSeen(None if ephemeral else cfg.state_dir / "last-seen.json")
         self.detector = Detector(cfg.detector)
         # How often a storm that rumbles on is escalated to the event log,

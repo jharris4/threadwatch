@@ -95,30 +95,52 @@ def plan_inventory(entries: list[dict], found: list[dict]) -> tuple[list[dict], 
              for dev in found]
     by_addr = {a: e for e in entries for a in _addresses(e)}
     by_name = {(e.get("name") or "").strip().lower(): e for e in entries if e.get("name")}
+
+    def _model(dev: dict, entry: dict) -> None:
+        if dev.get("model") and not entry.get("model"):
+            entry["model"] = dev["model"]
+            changes.append(f"{dev['name']}: model {dev['model']!r}")
+
+    # Address first, for every device, before any name is used to match:
+    # an address is proof and a name is a guess. Interleaved, one HA
+    # listing order merged two live devices into one entry - a device
+    # renamed in HA while another took its former name arrived as the new
+    # name first, was read as that entry rotating its address, and the
+    # renamed device then found the same entry by its own address and
+    # renamed it, so both addresses ended up under one name and one
+    # device lost its identity in the file --write writes.
+    named_later = []
     for dev in found:
         addr = dev["addr"].upper()
         entry = by_addr.get(addr)
-        if entry is not None:
-            if (entry.get("name") or "").strip() != dev["name"]:
-                changes.append(f"rename {entry.get('name')!r} -> {dev['name']!r} ({addr})")
-                by_name.pop((entry.get("name") or "").strip().lower(), None)
-                entry["name"] = dev["name"]
-                by_name[dev["name"].lower()] = entry
-            if dev.get("model") and not entry.get("model"):
-                entry["model"] = dev["model"]
-                changes.append(f"{dev['name']}: model {dev['model']!r}")
+        if entry is None:
+            named_later.append(dev)
             continue
+        if (entry.get("name") or "").strip() != dev["name"]:
+            changes.append(f"rename {entry.get('name')!r} -> {dev['name']!r} ({addr})")
+            by_name.pop((entry.get("name") or "").strip().lower(), None)
+            entry["name"] = dev["name"]
+            by_name[dev["name"].lower()] = entry
+        _model(dev, entry)
+    # What no address matched: a device known under an address it has
+    # rotated away from, or one nothing here has seen before.
+    claimed = {dev["addr"].upper(): dev for dev in found}
+    for dev in named_later:
+        addr = dev["addr"].upper()
         # A device told apart by its address is one of several live at
         # once, never a rotating device known under an old address: it is
         # matched by address or added, whatever entry carries its name.
         entry = by_name.get(dev["name"].lower()) if addr not in apart else None
+        # An entry holding an address another device in this same import
+        # is live at cannot be the same device rotating: two addresses
+        # answering at one moment are two devices.
+        if entry is not None and any(claimed.get(a, dev) is not dev for a in _addresses(entry)):
+            entry = None
         if entry is not None:
             n = _add_address(entry, addr)
             by_addr[addr] = entry
             changes.append(f"{dev['name']}: new address {addr} (now {n} addresses)")
-            if dev.get("model") and not entry.get("model"):
-                entry["model"] = dev["model"]
-                changes.append(f"{dev['name']}: model {dev['model']!r}")
+            _model(dev, entry)
             continue
         new = {"name": dev["name"], "extendedAddress": addr}
         if dev.get("model"):

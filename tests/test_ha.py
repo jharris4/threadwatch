@@ -421,6 +421,26 @@ class PlanInventoryTest(unittest.TestCase):
         self.assertEqual([e["name"] for e in planned], ["Sensor (ABCD)", "Sensor (55ABCD)", "Sensor (001234)"])
         self.assertEqual([len(_addrs(e)) for e in planned], [1, 1, 1])
 
+    def test_a_rename_and_a_new_device_taking_the_old_name_stay_two_devices(self):
+        # A device renamed in HA while a different one takes its former
+        # name. Read in HA's order, the new device arrived first, matched
+        # the old entry by name and was written into it as a rotated
+        # address; the renamed device then found that same entry by its
+        # own address and renamed it, so one entry held both devices and
+        # the new one lost its identity. Address before name settles it,
+        # whichever order HA answers in.
+        existing = [{"name": "Kitchen", "extendedAddress": "1111111111111111", "note": "by the sink"}]
+        order = [{"name": "Kitchen", "model": None, "addr": "2222222222222222"},
+                 {"name": "Hall", "model": None, "addr": "1111111111111111"}]
+        for found in (order, list(reversed(order))):
+            planned, changes = plan_inventory(existing, found)
+            self.assertEqual([e["name"] for e in planned], ["Hall", "Kitchen"])
+            self.assertEqual([_addrs(e) for e in planned],
+                             [["1111111111111111"], ["2222222222222222"]])
+            self.assertEqual(planned[0]["note"], "by the sink")     # the note stays with its address
+            self.assertIn("rename 'Kitchen' -> 'Hall' (1111111111111111)", changes)
+            self.assertIn("add 'Kitchen' = 2222222222222222", changes)
+
     def test_a_colon_formatted_address_is_the_same_address(self):
         # BUG-07: the loader takes 00:11:22:... but the importer matched
         # addresses as written, so HA's 001122... never found the entry and

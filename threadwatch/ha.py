@@ -255,13 +255,23 @@ class HomeAssistant:
         return self
 
     def close(self) -> None:
-        if self._sock is not None:
+        # The close frame is a courtesy; releasing the descriptor is not.
+        # Both used to share one try, so a sendall that raised on an already
+        # broken connection -- the usual reason to be closing -- skipped the
+        # close and left the socket to be collected whenever. The reader
+        # holds the same socket through its bound recv/sendall, so it goes too.
+        sock, self._sock, self._reader = self._sock, None, None
+        if sock is None:
+            return
+        try:
+            sock.sendall(encode_frame(0x8, struct.pack(">H", 1000)))
+        except OSError:
+            pass
+        finally:
             try:
-                self._sock.sendall(encode_frame(0x8, struct.pack(">H", 1000)))
-                self._sock.close()
+                sock.close()
             except OSError:
                 pass
-            self._sock = None
 
     def __enter__(self) -> "HomeAssistant":
         return self.connect()

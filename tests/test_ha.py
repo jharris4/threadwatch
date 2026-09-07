@@ -897,6 +897,32 @@ class HandshakeTest(unittest.TestCase):
                                             "create a new long-lived access token and update HA_TOKEN")
         self.assertIsNone(client._sock)                                 # closed on the way out
 
+    def test_a_broken_connection_is_still_closed_when_the_close_frame_fails(self):
+        """Sending the close frame and closing the socket shared one try, so
+        an OSError from sendall -- a connection already broken, the usual
+        reason to be closing -- skipped the close and dropped the only
+        reference to the descriptor."""
+        closed = []
+
+        class BrokenSocket:
+            def sendall(self, data):
+                raise OSError("broken pipe")
+
+            def close(self):
+                closed.append(True)
+
+            def recv(self, n):
+                return b""
+
+        client = ha.HomeAssistant("ws://ha.local:8123/api/websocket", "tok")
+        sock = BrokenSocket()
+        client._sock = sock
+        client._reader = ha.FrameReader(sock.recv, sock.sendall)
+        client.close()
+        self.assertEqual(closed, [True])
+        self.assertIsNone(client._sock)
+        self.assertIsNone(client._reader)
+
     def test_an_unexpected_greeting_is_named(self):
         url, _seen = self._ha({"type": "event", "event": {}}, None)
         client = ha.HomeAssistant(url, "tok")

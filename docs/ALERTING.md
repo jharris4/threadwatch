@@ -85,6 +85,7 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `recorder_started` | info after a requested stop or on the first start ever, notice when the last run ended any other way | `cause` (`stopped`, `stalled`, `sniffer_died`, `stream_ended`, `crashed`, `unknown` for a run that left no note: a power cut or a kill, `first_start`), `gap_s` (since the last frame any run heard), `last_frame_ts`, `stopped_ts` (when the last run ended, if it left the note), `exit_code`, `note` |
 | `border_router_address_changed` | notice | `addr`, `name`, `previous`, `hostname`, `note` |
 | `border_router_unlisted` | notice | `addr`, `hostname`, `note` |
+| `border_router_address_conflict` | warning | `addr`, `name` (the entry devices.json gives the address to), `hostname`, `claimed_by` (the entry the hostname belongs to), `note` |
 | `phase_locked_storm` | critical | detector snapshot (`period_s`, `onsets`, ...) |
 | `snapshot_saved` | info | `label`, `path`, `ring_files`, `note` (with `[record] snapshot_on_critical`) |
 | `snapshot_failed` | warning | `label`, `note` |
@@ -210,7 +211,14 @@ which address each border router has now, keyed by its stable hostname,
 and names the new address from the same devices.json entry; the old
 address is retired rather than reported quiet. `border_router_unlisted`,
 once per router, is one that matches no entry: `threadwatch import --write`
-creates the entry (or `threadwatch name` names it). Both need the
+creates the entry (or `threadwatch name` names it).
+`border_router_address_conflict` is that rotation refused: the hostname
+belongs to one entry and the address it advertises belongs to another.
+mDNS is unauthenticated, so anyone on the LAN can advertise any address
+under any hostname, and hearing that address on air proves only that the
+device exists, not whose hostname it answers to. The inventory stands and
+nothing is renamed or retired; if the device really did move, correct
+devices.json. Both need the
 recorder to hear the routers' mDNS, which is link-local: the same subnet,
 or a network that reflects mDNS between VLANs. `threadwatch doctor` says
 whether it can.

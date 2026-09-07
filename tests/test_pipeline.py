@@ -2438,6 +2438,40 @@ class BorderRouterTest(unittest.TestCase):
         self.assertEqual(len([e for e in kept if e["addr"] == addrs[-1]]), 1)
         self.assertNotIn(back, [e["addr"] for e in kept])           # it is the live one again
 
+    def test_a_hostname_cannot_claim_an_address_the_inventory_gives_elsewhere(self):
+        """Hearing an address on air proves that device exists; it does not
+        prove an unauthenticated hostname advertising it belongs to that
+        device. A responder could advertise a hub's hostname carrying another
+        device's address: the hub's entry took that address, the other
+        device's traffic was presented under the hub's name, and the hub's own
+        row was retired -- which exempts it from quiet alerts for as long as
+        it stays silent."""
+        d = Path(self.tmp.name)
+        (d / "devices.json").write_text(json.dumps([
+            {"name": "Living Room Apple TV", "extendedAddress": self.OLD, "borderRouter": self.HOST},
+            {"name": "Hall Sensor", "extendedAddress": self.OTBR}]))
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t = time.time() - 3600
+        pipe.ingest(frame(t, self.OLD))
+        pipe.ingest(frame(t + 10, self.OTBR))              # the sensor, heard most recently
+        pipe._apply_border_routers([self.router(self.HOST, self.OLD)], t + 20)
+        self.assertEqual(pipe.routers[self.HOST]["addr"], self.OLD)
+        # The forged advertisement: the hub's hostname, the sensor's address.
+        pipe._apply_border_routers([self.router(self.HOST, self.OTBR)], t + 30)
+        self.assertEqual(pipe.routers[self.HOST]["addr"], self.OLD)          # unmoved
+        self.assertEqual(pipe.names.name(self.OTBR), "Hall Sensor")          # still its own
+        self.assertNotIn("rotated_to", pipe.seen.table[self.OLD])            # the hub is not retired
+        conflicts = [r for r in pipe.events.records if r["event"] == "border_router_address_conflict"]
+        self.assertEqual(len(conflicts), 1)
+        self.assertEqual((conflicts[0]["addr"], conflicts[0]["name"], conflicts[0]["claimed_by"]),
+                         (self.OTBR, "Hall Sensor", "Living Room Apple TV"))
+        pipe._apply_border_routers([self.router(self.HOST, self.OTBR)], t + 700)
+        self.assertEqual(len([r for r in pipe.events.records
+                              if r["event"] == "border_router_address_conflict"]), 1)   # said once
+        # And the hub's own silence is still reported: nothing retired it.
+        pipe.periodic(t + 31 * 60)
+        self.assertIn(self.OLD, [r["addr"] for r in pipe.events.records if r["event"] == "device_quiet"])
+
     def test_an_address_never_heard_on_air_is_not_believed(self):
         # Anyone on the LAN can advertise _meshcop._udp with any address in
         # it. A forged record must not retire the real row (silencing its

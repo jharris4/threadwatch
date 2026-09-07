@@ -155,6 +155,7 @@ class Pipeline:
         # LOGGED_MAX): a LAN has a handful of border routers, not hundreds.
         self._unheard_logged: set[str] = set()      # mDNS addresses never heard on air, complained about once
         self._stale_logged: set[tuple] = set()      # (hostname, address) stale mDNS answers, complained about once
+        self._conflict_logged: set[tuple] = set()   # (hostname, address) claims on another entry's device, said once
         self._pending_routers: dict[str, dict] = {}  # ext -> the mDNS record waiting for that address to be heard
         self.partition: tuple | None = None
         self._crypto_mark = (0, 0)          # (decrypted, failed) when decryption last worked
@@ -2232,6 +2233,30 @@ class Pipeline:
             rec = self.routers.get(host) or {}
             entry = (self.names.entry_for_border_router(host) or self.names.by_addr.get(ext)
                      or (self.names.entry_named(rec["name"]) if rec.get("name") else None))
+            # Hearing an address on air proves that device exists. It does not
+            # prove that an unauthenticated hostname advertising the address
+            # belongs to it. A responder that knows two addresses could
+            # advertise a hub's hostname carrying a sensor's address: the
+            # hostname's entry took the sensor's address, the sensor's traffic
+            # was then presented under the hub's name, and the hub's real row
+            # was retired -- which exempts it from quiet alerts for as long as
+            # it stays silent. An address the inventory already gives to
+            # somebody else is a conflict, not a rotation, and it needs
+            # evidence mDNS cannot supply.
+            owner = self.names.by_addr.get(ext)
+            if entry is not None and owner is not None and owner is not entry:
+                if (host, ext) not in self._conflict_logged:
+                    if len(self._conflict_logged) >= self.LOGGED_MAX:
+                        self._conflict_logged.clear()
+                    self._conflict_logged.add((host, ext))
+                    self._emit("border_router_address_conflict", "warning", now, addr=ext,
+                               name=owner.get("name"), hostname=host,
+                               claimed_by=entry.get("name"),
+                               note=(f"{r.get('instance') or host} advertises {ext}, which devices.json "
+                                     f"gives to {owner.get('name')!r}, as {entry.get('name')!r}. mDNS is "
+                                     "unauthenticated and cannot settle this: the inventory stands. If the "
+                                     "device really did move, correct devices.json."))
+                continue
             name = entry.get("name") if entry else None
             prev = (rec.get("addr") or "").lower() or None
             changed = prev is not None and prev != ext

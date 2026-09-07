@@ -3,7 +3,14 @@
 # set your channel; see docs/DOCKER.md for the dongle device path.
 services:
   recorder:
-    build: .
+    # REVISION stamps the built image with the commit it holds, so
+    # --version, status and doctor can answer "is this the code I pushed?"
+    # from inside a container, which has no .git to read. Empty is allowed
+    # and reports no commit; docs/DOCKER.md gives the one-line build.
+    build:
+      context: .
+      args:
+        REVISION: ${REVISION:-}
     image: threadwatch
     command: record
     restart: unless-stopped
@@ -60,7 +67,10 @@ services:
     # and never hit that, but `up -d web` on its own, a compose pull, or
     # an up after an image prune would either fail confusingly or pull a
     # stranger's image and run it against this config.
-    build: .
+    build:
+      context: .
+      args:
+        REVISION: ${REVISION:-}
     image: threadwatch
     # 0.0.0.0 is this container's own network namespace, not the host's.
     # The published port below forwards to the container's bridge address,

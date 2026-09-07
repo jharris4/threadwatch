@@ -229,7 +229,25 @@ docker compose run --rm --no-deps recorder snapshot mylabel
 ## Update
 
 ```bash
-git pull && docker compose up -d --build
+git pull && REVISION=$(git rev-parse --short HEAD) docker compose up -d --build
 ```
 
 `data/` is untouched; the quiet detector knows about the restart gap.
+
+`REVISION` is what lets `--version`, `status`, `/api/status` and
+`doctor`'s `version` line answer "is this container running the code I
+pushed?". Those read the checkout's `.git`, which is deliberately not
+copied into the image, or a `REVISION` file, which nothing in the image
+creates: build without it and they report the version with no commit. It
+is only a stamp -- an empty one builds fine, and it says nothing about
+whether the working tree was clean, so build from a committed tree if you
+want the answer to mean anything.
+
+```bash
+docker compose run --rm --no-deps recorder --version   # what the image holds
+git rev-parse --short HEAD                             # what the checkout is
+```
+
+Nothing else in the image depends on it, and the recorder's own
+`REVISION` on a native host (written by `bin/push-to-host.sh`) is the same
+mechanism.

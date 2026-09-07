@@ -15,6 +15,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 # volumes, never part of the image; so is whatever else the working tree
 # holds. A new directory the container needs is added there.
 COPY . .
+# "Is the host running the code I pushed?" is answered by repo_commit(),
+# which reads .git or, where there is none, a REVISION file. Neither is in
+# the image by default: .git is deliberately not copied, so without this
+# --version, status and doctor report no commit at all for a container.
+# compose.yaml passes this from the environment (docs/DOCKER.md); a
+# REVISION file already in the build context is copied above and stands
+# when the argument is empty.
+ARG REVISION=""
+RUN if [ -n "$REVISION" ]; then printf '%s\n' "$REVISION" > /app/REVISION; fi
 # Not root. Everything the container writes goes into the bind-mounted
 # config/ and data/ on the host, and as uid 0 those become a data/ the
 # native recorder - an unprivileged user, systemd/threadwatch.service -

@@ -12,6 +12,12 @@
 !bin/threadwatch
 !threadwatch/
 !vendor/
+# The deployed commit, which config.repo_commit() reads when there is no
+# .git -- and there is none here, deliberately (a build context with the
+# whole history in it is not what the image needs). Absent, --version,
+# status and doctor report no commit for the image; see the REVISION build
+# argument in the Dockerfile and docs/DOCKER.md.
+!REVISION
 # Caches inside the trees allowed above.
 **/__pycache__/
 **/*.pyc

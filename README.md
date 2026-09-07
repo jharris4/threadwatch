@@ -129,7 +129,12 @@ question: *why did this device go offline?*
 of the checkout it runs from. `doctor`'s `version` line adds when the
 unit started, and `status`, `/status` and `/api/status` carry the pair
 the running daemon was built from, which is the one that answers the
-question after a deploy that may not have landed.
+question after a deploy that may not have landed. The commit comes from
+the checkout's `.git`, or from a `REVISION` file where there is none:
+`bin/push-to-host.sh` writes one on the recorder, and a Docker image
+needs `REVISION=$(git rev-parse --short HEAD)` on the build
+(docs/DOCKER.md, "Update") -- built without it, the image reports the
+version and no commit.
 
 ## Naming devices (the human-readable problem)
 

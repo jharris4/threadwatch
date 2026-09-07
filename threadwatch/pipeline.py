@@ -276,6 +276,7 @@ class Pipeline:
                     table[addr] = gens
         self.replayed = 0                            # frames refused as replays this run
         self._replay_said: dict[str, float] = {}     # addr -> when its replays were last mentioned
+        self._counter_was_retry = False              # last counter decision was a retry (see _counter_advances)
         self._resolve_after: dict[str, float] = {}   # short addr -> next attempt ts
         self._resolve_fails: dict[str, int] = {}     # short addr -> searches that found nobody, in a row
         self._resolve_tokens = float(self.RESOLVE_TRIALS_BURST)   # candidate trials in hand (see identity)
@@ -897,6 +898,7 @@ class Pipeline:
         credentialed layer, and whether the MAC layer vouched. An
         unsecured frame vouches for nothing here; a secured MLE message
         inside one may (ingest asks _deep_inspect)."""
+        self._counter_was_retry = False      # cleared here too: _verify has early returns
         if not who or not f.psdu:
             return None, False
         plain, counter, sequence = self.decryptor.decrypt_frame_counter(f.psdu, who, None)
@@ -917,6 +919,8 @@ class Pipeline:
 
     def _counter_advances(self, table: dict, who: str, counter: int, ts: float, what: str,
                           sequence: int | None) -> bool:
+        # Set for the caller that has just asked, and read straight after.
+        self._counter_was_retry = False
         gens = table.setdefault(who, {})
         if sequence is None:
             # Nothing said which generation authenticated this one. Judge it
@@ -942,7 +946,12 @@ class Pipeline:
         if counter > last[0]:
             return self._accept_counter(gens, sequence, counter, ts)
         if counter == last[0] and 0.0 <= ts - last[1] < self.RETRY_WINDOW_S:
-            return True                          # a MAC retry of the copy just accepted
+            # A MAC retry of the copy just accepted. It is the same sighting
+            # of a live device, so it still counts as one -- but it is not a
+            # second message, and anything counting independent evidence has
+            # to know the difference (see _note_observed_name).
+            self._counter_was_retry = True
+            return True
         self._say_replay(who, ts, f"a secured {what} with counter {counter} at or below the last accepted "
                                   f"({last[0]}) under key generation {sequence} is not counted as a sighting: "
                                   "a replay of an earlier frame, or the device's counter went backwards")
@@ -1133,6 +1142,7 @@ class Pipeline:
         # and the stats below: the sender's liveness, signal and polls are
         # its own, not those of whatever put its address on the air.
         plain, live = self._verify(f, who)
+        retry = self._counter_was_retry
         info, src_for_mle, names = (self._deep_inspect(f, plain) if f.ftype == 1 and plain is not None
                                     else (None, None, ()))
         # A secured MLE message vouches for the sender of the unsecured
@@ -1145,6 +1155,7 @@ class Pipeline:
         if who and info is not None and info.secured and info.counter is not None:
             fresh_mle = self._counter_advances(self._mle_counter, who, info.counter, ts, "MLE message",
                                                info.key_sequence)
+            retry = retry or self._counter_was_retry
             live = live or fresh_mle
         if info is not None and info.secured and fresh_mle:
             self._apply_mle(f, info, src_for_mle)
@@ -1177,7 +1188,7 @@ class Pipeline:
             # name is only kept for a sender this frame vouched for and
             # that the table has room for.
             for name in names:
-                self._note_observed_name(who, name)
+                self._note_observed_name(who, name, repeat=retry)
             was_new = who not in self.seen.table
             self.seen.touch(who, ts, f.ftype, pan=pan, rssi=f.rssi)
             row = self.seen.table[who]
@@ -1786,10 +1797,21 @@ class Pipeline:
     # first when a new one arrives.
     OBSERVED_NAMES_MAX = 16
 
-    def _note_observed_name(self, owner: str, name: str) -> None:
+    def _note_observed_name(self, owner: str, name: str, repeat: bool = False) -> None:
+        """``repeat`` marks a frame the MAC layer accepted as a retry: the
+        same bytes again, milliseconds later.
+
+        The count is what names.MIN_SIGHTINGS reads to tell a hostname a
+        device really registered from a DNS-shaped accident in encrypted
+        application data, and a retransmission carries the identical payload.
+        Counting it made one accidental match its own corroboration and put
+        it up as an inventory suggestion, which is exactly what asking for
+        two sightings was meant to prevent. A retry still records a name not
+        seen before -- it is a sighting, just not a second one."""
         seen = self.observed_names.setdefault(owner, {})
         if name in seen:
-            seen[name] += 1
+            if not repeat:
+                seen[name] += 1
             return
         if len(seen) >= self.OBSERVED_NAMES_MAX:
             weakest = min(seen, key=lambda n: (seen[n], n))

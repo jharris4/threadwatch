@@ -489,6 +489,31 @@ class HarvestedNameAdmissionTest(unittest.TestCase):
             pipe._forget(SED)
             self.assertEqual(pipe.observed_names, {})
 
+    def test_a_retransmission_is_not_a_second_sighting_of_the_name(self):
+        """Two sightings are asked for so a DNS-shaped accident in encrypted
+        application data does not become an inventory suggestion. A MAC retry
+        carries the identical payload, counter and all, and was scraped and
+        counted again -- so a single accidental match corroborated itself,
+        precisely for the packets that get retried."""
+        from threadwatch.names import suggest_entries
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._cfg(tmp)
+            pipe = Pipeline(cfg, NullEventLog(), Decryptor(network_key=KEY))
+            t0 = 1_700_000_000.0
+            payload = lowpan_udp(49154, 5540, b"\x09randomfoo\x05local\x00")
+            pipe.ingest(parse_frame(t0, secured_ext_frame(SED, 100, payload), 195))
+            pipe.ingest(parse_frame(t0 + 0.1, secured_ext_frame(SED, 100, payload), 195))   # the retry
+            self.assertEqual(pipe.observed_names, {SED: {"randomfoo.local": 1}})
+            unknown = [{"addr": SED}]
+            self.assertEqual([e["name"] for e in suggest_entries(unknown, pipe.observed_names)], [""])
+            # The retry is still a sighting of the device, and of a name not
+            # recorded before; it is just not a second, independent one.
+            self.assertIn(SED, pipe.seen.table)
+            pipe.ingest(parse_frame(t0 + 1, secured_ext_frame(SED, 101, payload), 195))     # a new message
+            self.assertEqual(pipe.observed_names, {SED: {"randomfoo.local": 2}})
+            self.assertEqual([e["name"] for e in suggest_entries(unknown, pipe.observed_names)],
+                             ["randomfoo.local"])
+
 
 class MleThroughThePipelineTest(unittest.TestCase):
     """Frame -> MAC decryption -> 6LoWPAN -> MLE, as the live pipeline runs

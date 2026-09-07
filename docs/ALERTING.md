@@ -551,3 +551,9 @@ restarting or raising `Pipeline.AUTH_MAX`. As before, restart restores counters
 only for persisted last-seen rows; history of evicted/refused rows is not durable,
 so restarting is not a replay-safe way to clear capacity. No automatic expiry is
 used within a run.
+
+The mDNS browse retains at most 4,096 distinct DNS records, deduplicates repeated
+answers, and logs once when it refuses new records at that limit. Existing
+record updates still apply. This bounds memory before the pipeline's separate
+64-router retention cap; a saturated browse may omit newly advertised routers
+until a later browse succeeds.

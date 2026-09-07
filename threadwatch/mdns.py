@@ -157,6 +157,24 @@ def _norm_host(name: str) -> str:
     return name.rstrip(".").lower()
 
 
+# The browse deadline bounds elapsed time, not how much a noisy LAN can
+# advertise within it. Keep updates for known records but refuse new keys
+# at this ceiling; duplicate multicast/unicast replies share one slot.
+RECORDS_MAX = 4096
+
+
+def retain_records(records: dict, incoming: list[tuple[str, int, object]]) -> bool:
+    dropped = False
+    for name, rtype, value in incoming:
+        multi = str(value) if rtype in (TYPE_PTR, TYPE_A, TYPE_AAAA) else None
+        key = (_norm_host(name), rtype, multi)
+        if key not in records and len(records) >= RECORDS_MAX:
+            dropped = True
+            continue
+        records[key] = (name, rtype, value)
+    return dropped
+
+
 def collect_routers(records: list[tuple[str, int, object]], service: str = SERVICE) -> dict[str, dict]:
     """Border routers from a pile of records, keyed by instance name. An
     instance with no SRV or TXT yet is still returned (so the caller can
@@ -208,7 +226,8 @@ def browse(service: str = SERVICE, timeout: float = 4.0, log=lambda m: None) -> 
     # leaking one more matters most, and the recorder browses every
     # browse_s for the life of the process.
     socks.append(query_sock)
-    records: list[tuple[str, int, object]] = []
+    records: dict[tuple, tuple[str, int, object]] = {}
+    capped = False
     asked_detail: set[str] = set()
     try:
         query_sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 255)
@@ -252,7 +271,7 @@ def browse(service: str = SERVICE, timeout: float = 4.0, log=lambda m: None) -> 
             # answer on the group - a printer announcing itself - used to
             # count as a complete browse and stop the retries the lost or
             # delayed MeshCoP replies need.
-            found = collect_routers(records, service)
+            found = collect_routers(list(records.values()), service)
             if time.time() >= next_ask and not (found and all(r["complete"] for r in found.values())):
                 ask()
                 next_ask = time.time() + 1.0
@@ -263,16 +282,18 @@ def browse(service: str = SERVICE, timeout: float = 4.0, log=lambda m: None) -> 
                 except OSError:
                     continue
                 try:
-                    records.extend(parse_message(data))
+                    if retain_records(records, parse_message(data)) and not capped:
+                        capped = True
+                        log(f"mDNS record limit ({RECORDS_MAX}) reached; new records ignored for this browse")
                 except (ValueError, struct.error):
                     continue
             # Instances announced without their SRV/TXT: ask for those.
-            for full, info in collect_routers(records, service).items():
+            for full, info in collect_routers(list(records.values()), service).items():
                 if not info["complete"] and full not in asked_detail:
                     asked_detail.add(full)
                     query_sock.sendto(build_query([(full, TYPE_SRV), (full, TYPE_TXT)]), (MDNS_GROUP, MDNS_PORT))
     finally:
         for s in socks:
             s.close()
-    found = collect_routers(records, service)
+    found = collect_routers(list(records.values()), service)
     return sorted((dict(v) for v in found.values()), key=lambda r: r["instance"].lower())

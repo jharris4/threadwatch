@@ -221,6 +221,23 @@ class BrowseTest(unittest.TestCase):
         self.assertEqual([r["instance"] for r in found], ["OTB"])
         self.assertEqual(log, [])
 
+    def test_browse_bounds_records_and_deduplicates_replies(self):
+        ptr_only, details = self._answers()
+        noise = [response([rr(encode_name(f"noise-{i}.local"), TYPE_A, bytes([192, 0, 2, 1]))])
+                 for i in range(30)]
+        sizes = []
+        original = mdns.collect_routers
+
+        def collect(records, service=SERVICE):
+            sizes.append(len(records))
+            return original(records, service)
+
+        with mock.patch.object(mdns, "RECORDS_MAX", 8), mock.patch.object(mdns, "collect_routers", collect):
+            found, _made, log = self._browse([ptr_only] * 20 + [details] + noise)
+        self.assertLessEqual(max(sizes), 8)
+        self.assertTrue(found[0]["complete"])
+        self.assertEqual(sum("record limit" in line for line in log), 1)
+
     def test_a_refused_read_and_a_cut_datagram_do_not_end_the_browse(self):
         ptr_only, details = self._answers()
         cut = struct.pack(">HHHHHH", 0, 0x8400, 0, 1, 0, 0) + b"\x05abc"   # one answer, name cut short

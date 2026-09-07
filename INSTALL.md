@@ -42,11 +42,16 @@ create `config/credentials.toml` with the Thread **network key**
 (docs/CREDENTIALS.md says where to find it): the recorder does not start
 without it. Log out and in once if the group membership was new.
 
-All three files (`config.toml`, `credentials.toml`, `devices.json`) are
-read once, when a process starts: the daemon never re-reads them, so an
-edit takes effect at the next `sudo systemctl restart threadwatch`
-(and `threadwatch-web` for `[web]`, which the pages read at their own
-start). Until then the old channel, thresholds, sinks and names stand.
+The recorder reads all three files (`config.toml`, `credentials.toml`,
+`devices.json`) once, when it starts, and never re-reads them: an edit
+takes effect at the next `sudo systemctl restart threadwatch`, and until
+then the old channel, thresholds, sinks and names stand. The web process
+reads its `[web]` settings once at its own start (`sudo systemctl restart
+threadwatch-web`), but builds the names from `devices.json` afresh on
+every request, so a rename shows on the pages at once. That is also why a
+device just renamed can be named one way on a page and the other way in
+an alert the recorder sends: the recorder is still on the names it
+started with.
 
 **Without setup-host.sh**, the equivalent by hand is: install pyserial
 and cryptography (or `python3 -m venv .venv && .venv/bin/pip install -r

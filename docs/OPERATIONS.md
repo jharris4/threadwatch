@@ -215,8 +215,11 @@ The daemon's own diagnostics, with what to do when one keeps appearing:
 `bin/threadwatch status` prints `data/state/status.json`, which the daemon
 rewrites every 30 seconds, plus two fields it works out on the spot:
 `status_age_s`, how old the file is, and `daemon_alive`, true when it is
-under 90 seconds old. (`/status` and `/api/status` on the review pages
-show the same file.) The fields:
+under 90 seconds old — three missed writes. That one figure is what the
+page header, the status page, `doctor` and the coverage timeline all read
+the file's age by, so they cannot disagree about whether the recorder is
+running. (`/status` and `/api/status` on the review pages show the same
+file.) The fields:
 
 | field | meaning |
 | --- | --- |

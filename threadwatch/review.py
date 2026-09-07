@@ -310,10 +310,32 @@ COVERAGE_MIN_S = 60.0
 # How far past a day the log is read for a start whose gap reaches back
 # into it; an outage longer than this shows on its first days only.
 COVERAGE_LOOKAHEAD_DAYS = EPISODE_WINDOW_DAYS
-# A status file this old is a daemon that is not running (it writes every
-# 30 s while alive); the header and the status page use the same figure.
-STATUS_DEAD_S = 180.0
+# A status file this old is a daemon that is not running: the watchdog
+# writes it every 30 s while alive, so three writes have been missed.
+# This is the only figure any of them may use. Read at 90 s in the status
+# page's capture row, `threadwatch status` and doctor, and at 180 s in the
+# page header and here, one status file was a daemon that was both
+# "capturing" and "not running" - on the same page, during the outage the
+# page exists to report.
+STATUS_DEAD_S = 90.0
+# A daemon that is alive but has heard nothing for this long: a quiet
+# channel, the wrong channel, or a dongle that has stopped hearing.
 STATUS_QUIET_S = 120.0
+
+
+def status_state(status: dict | None, now: float) -> tuple[str, float]:
+    """How to read a status file, and how old it is: "none" (no file, or
+    one with nothing in it), "dead" (nothing has written it for
+    STATUS_DEAD_S), "quiet" (alive, hearing nothing) or "live"."""
+    if not status:
+        return "none", 0.0
+    updated = status.get("updated")
+    age = now - (updated if isinstance(updated, (int, float)) else 0)
+    if age > STATUS_DEAD_S:
+        return "dead", age
+    if (status.get("last_frame_age_s") or 0) > STATUS_QUIET_S:
+        return "quiet", age
+    return "live", age
 
 _BLIND_NOTES = {
     "stopped": "the recorder was stopped",

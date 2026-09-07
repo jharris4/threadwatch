@@ -202,6 +202,15 @@ class PageBranchTest(unittest.TestCase):
         _st, body = self.get("/status")
         self.assertIn('<span class="ok">capturing</span>', body)
         self.assertIn('<span class="ok">running</span>', body)
+        # The header read the age at 180 s and the capture row at 90, so
+        # one status file between the two made a single page say both, in
+        # the middle of the outage it exists to report.
+        self.status(updated=self.now - 120, last_frame_age_s=0)
+        _st, body = self.get("/status")
+        self.assertIn('<span class="bad">capture stale</span>', body)
+        self.assertIn('<span class="bad">not running</span>', body)
+        self.assertNotIn('<span class="ok">capturing</span>', body)
+        self.assertNotIn('<span class="ok">running</span>', body)
 
     def test_the_devices_page_marks_a_retired_address_a_foreign_pan_and_a_fading_link(self):
         self.status(updated=self.now, last_frame_age_s=3)

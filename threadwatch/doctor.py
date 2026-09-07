@@ -164,11 +164,12 @@ def check_daemon(cfg, now: float | None = None) -> list[Check]:
         st = json.loads(path.read_text())
     except ValueError:
         return [(WARN, "recorder", "status.json is unreadable (mid-write?)")]
-    age = now - st.get("updated", 0)
-    if age > 90:
+    from .review import status_state
+    state, age = status_state(st, now)
+    if state == "dead":
         return [(FAIL, "recorder", f"not running: status last written {age / 60:.0f} min ago")]
     fa = st.get("last_frame_age_s", 0)
-    if fa > 120:
+    if state == "quiet":
         return [(WARN, "recorder", f"alive but no frames for {fa:.0f} s (quiet channel? wrong channel?)")]
     return [(OK, "recorder", f"running, last frame {fa:.0f} s ago, {st.get('frames_total', 0):,} frames this run")]
 

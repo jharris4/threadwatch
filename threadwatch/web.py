@@ -39,6 +39,7 @@ from .review import (
     recording_for_day,
     select_devices,
     snapshots,
+    status_state,
     storage,
     today,
 )
@@ -264,12 +265,15 @@ class Site:
     def header(self) -> str:
         st = self.status()
         now = time.time()
-        age = now - st.get("updated", 0) if st else None
-        if not st:
+        # One reading of the file for the whole page (status_state): the
+        # header called a daemon "capturing" that the status page's own
+        # capture row called "not running", for the same status file.
+        state, age = status_state(st, now)
+        if state == "none":
             live = '<span class="bad">no status yet</span>'
-        elif age > 180:
+        elif state == "dead":
             live = f'<span class="bad">capture stale</span> (status {fmt_duration(age)} old)'
-        elif st.get("last_frame_age_s", 0) > 120:
+        elif state == "quiet":
             live = f'<span class="warn">no frames for {fmt_duration(st["last_frame_age_s"])}</span>'
         else:
             live = '<span class="ok">capturing</span>'
@@ -582,8 +586,8 @@ class Site:
         if not st:
             row("recorder", '<span class="bad">no status file: the recorder has not run here</span>')
         else:
-            age = now - st.get("updated", 0)
-            alive = age < 90
+            state, age = status_state(st, now)
+            alive = state != "dead"
             row("capture", ('<span class="ok">running</span>' if alive else
                             '<span class="bad">not running</span>')
                            + f' <span class="muted">(status written {fmt_duration(age)} ago; '

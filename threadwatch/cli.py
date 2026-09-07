@@ -193,10 +193,13 @@ def main(argv=None) -> int:
         if not path.exists():
             print("no status file; is the recorder running?")
             return 1
+        from .review import status_state
         status = json.loads(path.read_text())
-        age = time.time() - status.get("updated", 0)
+        # The one reading of a status file's age (written every 30 s by
+        # the watchdog), shared with the status page and doctor.
+        state, age = status_state(status, time.time())
         status["status_age_s"] = round(age, 1)
-        status["daemon_alive"] = age < 90    # written every 30 s by the watchdog
+        status["daemon_alive"] = state != "dead"
         print(json.dumps(status, indent=1))
         return 0
 

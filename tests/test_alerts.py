@@ -1006,6 +1006,41 @@ class RetryTest(unittest.TestCase):
             d._thread.join(2)                                          # let it finish before the directory goes
 
 
+    def test_what_a_cooldown_still_holds_at_a_timed_out_close_is_spooled(self):
+        # A sink parked in one send while a second alert is held for its
+        # digest. close() reaches its deadline, and the fallback copied the
+        # queue and the in-flight record only: the held record lived in the
+        # sink and nowhere else, and the recorder's os._exit took it. Its
+        # event is on disk, but nothing resumes an event.
+        with tempfile.TemporaryDirectory() as tmp:
+            spool = Path(tmp) / "alert-spool.jsonl"
+            gate = threading.Event()
+
+            class Parked(alerts.Sink):
+                def send(self, record):
+                    gate.wait(5)
+
+            sink = Parked(name="parked", timeout_s=5, cooldown_s=3600)
+            d = alerts.Dispatcher([sink], lambda m: None, spool=spool)
+            now = time.time()
+            d.offer({**REC, "ts": now, "addr": "1111111111111111"})     # in flight, and parked
+            self.assertTrue(wait_for(lambda: d._inflight))
+            d.offer({**REC, "ts": now, "addr": "2222222222222222"})     # inside the cooldown: held
+            self.assertTrue(wait_for(lambda: sink.next_digest_at(now) is not None))
+            d.close(timeout=0.1)
+            self.assertTrue(d._thread.is_alive())                       # still parked in the first send
+            lines = [json.loads(line) for line in spool.read_text().splitlines()]
+            self.assertEqual(len(lines), 2)
+            self.assertEqual(lines[0]["record"]["addr"], "1111111111111111")
+            digest = lines[1]["record"]
+            self.assertEqual((digest["digest"], digest["count"], digest["event"]),
+                             (True, 1, REC["event"]))
+            self.assertEqual(digest["first_ts"], digest["last_ts"])   # the one record held
+            self.assertEqual(sink._pending, {})     # taken from the sink, not copied out of it
+            gate.set()
+            d._thread.join(2)
+
+
 class AlertChainTest(unittest.TestCase):
     """config.toml -> config.load -> build_sinks -> EventLog -> Pipeline ->
     the HTTP body a sink receives. Every link has its own tests; this is

@@ -663,7 +663,9 @@ class Dispatcher:
         """Deliver everything queued, send every held-back digest now, and
         stop the thread; returns after ``timeout`` at the latest (a sink
         that hangs must not keep the process from exiting). What a sink
-        refused, and what the thread never got to, is spooled."""
+        refused, what the thread never got to, and what its cooldowns were
+        still holding is spooled: the recorder exits through os._exit the
+        moment this returns, so what is not on disk by then is gone."""
         if self._thread is None:
             return
         with self._cv:
@@ -671,10 +673,18 @@ class Dispatcher:
             self._cv.notify()
         self._thread.join(timeout)
         if self._thread.is_alive():
-            # Parked in a send: whatever is still queued, and the record
-            # in flight, would leave with the process.
+            # Parked in a send: whatever is still queued, the record in
+            # flight, and everything the cooldowns are still holding would
+            # leave with the process. The worker closes every window only
+            # on its last pass, which it never reaches while parked, so the
+            # held records are taken here - out of their sinks, under the
+            # lock, so a worker that wakes up after all cannot send them a
+            # second time.
             with self._cv:
                 items = list(self._inflight) + self._queue
+                now = time.time()
+                items += [{"record": rec, "sinks": [s], "attempt": 0}
+                          for s in self.sinks for rec in s.due_digests(now, all_pending=True)]
                 self._undelivered.extend(self._spool_item(it) for it in items)
                 self._queue.clear()
                 self._inflight = []

@@ -908,6 +908,34 @@ class RetryTest(unittest.TestCase):
             alerts.Dispatcher([], print, spool=spool)
             self.assertTrue(spool.exists())
 
+    def test_a_damaged_spool_item_is_skipped_and_the_recorder_still_starts(self):
+        """Only the JSON parse and the attempt conversion were guarded; the
+        sink names and the timestamp were used outside that boundary. A record
+        with ts "invalid" raised ValueError out of the Dispatcher constructor,
+        so the whole capture service failed to start over one notification --
+        and renaming the spool to .inflight did not help, since the next start
+        reads that too."""
+        with tempfile.TemporaryDirectory() as tmp:
+            spool = Path(tmp) / "alert-spool.jsonl"
+            now = time.time()
+            bad = [{"record": {**REC, "ts": "invalid"}, "sinks": ["flaky"], "attempt": 0},
+                   {"record": {**REC, "ts": float("nan")}, "sinks": ["flaky"], "attempt": 0},
+                   {"record": {**REC, "ts": True}, "sinks": ["flaky"], "attempt": 0},
+                   {"record": {**REC, "ts": now}, "sinks": 7, "attempt": 0},
+                   {"record": {**REC, "ts": now}, "sinks": [{"name": "flaky"}], "attempt": 0},
+                   {"record": [1, 2], "sinks": ["flaky"], "attempt": 0},
+                   {"record": {**REC, "ts": now}, "sinks": ["flaky"], "attempt": -5}]
+            good = {"record": {**REC, "ts": now, "name": "kept"}, "sinks": ["flaky"], "attempt": 1}
+            spool.write_text("".join(json.dumps(i) + "\n" for i in [*bad, good]))
+            sink = FlakySink(fail=0)
+            msgs = []
+            d = alerts.Dispatcher([sink], msgs.append, spool=spool)
+            self.addCleanup(d.close, 2.0)
+            self.assertTrue(wait_for(lambda: len(sink.sent) == 1))
+            self.assertEqual([r["name"] for r in sink.sent], ["kept"])
+            self.assertEqual(d.stats()["resumed"], 1)
+            self.assertIn(f"{len(bad)} unreadable or for a sink no longer configured, dropped", msgs[0])
+
     def test_the_spool_stays_on_disk_until_its_records_are_delivered(self):
         # The spool was read, queued in memory and unlinked before a single
         # record was sent: a start-up failure after the log was built, an

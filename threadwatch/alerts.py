@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import shlex
@@ -883,17 +884,31 @@ class Dispatcher:
         now = time.time()
         stale = skipped = 0
         for line in lines:
+            # Everything an item has to be, checked inside the guard that
+            # skips it. A spool file is a file on disk: one damaged, or
+            # restored from a backup that mangled it, used to raise out of
+            # this constructor and so out of the recorder's startup, and
+            # renaming it to .inflight did not help because the next start
+            # read that too. One bad notification must not cost the capture.
             try:
                 it = json.loads(line)
                 record, names, attempt = it["record"], it["sinks"], int(it.get("attempt", 0))
+                if not isinstance(record, dict) or attempt < 0:
+                    raise ValueError("not a spool item")
+                stamp = record.get("ts")
+                if isinstance(stamp, bool):
+                    raise ValueError("ts is not a timestamp")
+                ts = now if stamp is None else float(stamp)
+                if not math.isfinite(ts):
+                    raise ValueError("ts is not finite")
+                targets = [by_name[n] for n in names if isinstance(n, str) and n in by_name]
             except (ValueError, KeyError, TypeError):
                 skipped += 1
                 continue
-            targets = [by_name[n] for n in names if n in by_name]
-            if not targets or not isinstance(record, dict):
+            if not targets:
                 skipped += 1
                 continue
-            if now - float(record.get("ts") or now) > self.stale_s:
+            if now - ts > self.stale_s:
                 stale += 1
                 continue
             self._queue.append({"record": record, "sinks": targets, "attempt": attempt, "due": now})

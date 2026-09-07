@@ -370,13 +370,15 @@ class Pipeline:
             for addr, row in self.seen.table.items():
                 if row.get("rotated_to"):
                     continue          # an Apple hub's old address: retired, not quiet
-                if self.silence_s(row, now) <= self.quiet_threshold_s(addr):
+                if self._identity_silence_s(addr, row, now) <= self.quiet_threshold_s(addr):
                     row.pop("quiet_reported_ts", None)
                     if row.pop("quiet_reported", None):
                         # Heard again after its announced silence, but the
                         # recorder died before saying so: close the silence
                         # at the moment it was actually heard.
-                        self._emit("device_returned", "notice", row["last_seen"],
+                        returned = max(self.seen.table[a]["last_seen"]
+                                       for a in self.names.entry_addresses_of(addr) if a in self.seen.table)
+                        self._emit("device_returned", "notice", returned,
                                    addr=addr, name=self.names.name(addr))
                         announced += 1
                     continue
@@ -1305,15 +1307,19 @@ class Pipeline:
             if was_new and not self._flooded(ts):
                 self._emit("device_first_seen", "info", ts, addr=who,
                            name=self.names.name(who))
-            if who in self.quiet_reported:
-                self.quiet_reported.discard(who)
-                self.seen.table[who].pop("quiet_reported", None)
-                self.seen.table[who].pop("quiet_reported_ts", None)
-                self._emit("device_returned", "notice", ts, addr=who,
-                           name=self.names.name(who))
-                # Persist at once: a crash before the next 30 s save would
-                # leave the row flagged and a restart would announce this
-                # return a second time. Returns are rare, saves are cheap.
+            returned = False
+            for addr in self.names.entry_addresses_of(who):
+                if addr not in self.quiet_reported:
+                    continue
+                self.quiet_reported.discard(addr)
+                self.seen.table[addr].pop("quiet_reported", None)
+                self.seen.table[addr].pop("quiet_reported_ts", None)
+                self._emit("device_returned", "notice", ts, addr=addr,
+                           name=self.names.name(addr))
+                returned = True
+            if returned:
+                # Close existing per-address episodes even when the identity
+                # returned under a new address. Persist before a restart.
                 self.seen.save()
 
         # Beacons, or beacon requests (an unsecured MAC command, id 7):

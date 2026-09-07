@@ -345,6 +345,22 @@ class QuietPolicyTest(unittest.TestCase):
         pipe.periodic(t + 2000 + 31 * 60)
         self.assertEqual(sorted(set(self._quiet(pipe))), sorted({SENSOR, ROUTER}))
 
+    def test_manual_rotation_stays_active_after_restart_and_closes_old_quiet(self):
+        self.cfg.devices_path.write_text(json.dumps([
+            {"name": "Hall Sensor", "extendedAddresses": [SENSOR, ROUTER]}]))
+        now = time.time()
+        pipe = self._pipe()
+        pipe.ingest(frame(now - 2100, SENSOR))
+        pipe.periodic(now - 200)
+        self.assertIn(SENSOR, pipe.quiet_reported)
+        pipe.ingest(frame(now - 100, ROUTER))
+        self.assertNotIn(SENSOR, pipe.quiet_reported)
+        returned = [r for r in pipe.events.records if r["event"] == "device_returned"]
+        self.assertEqual([(r["addr"], r["ts"]) for r in returned], [(SENSOR, now - 100)])
+        restarted = self._pipe()
+        self.assertEqual(self._quiet(restarted), [])
+        self.assertEqual(restarted.quiet_reported, set())
+
     def test_two_devices_that_merely_share_a_name_are_still_judged_apart(self):
         """Quietness spans one entry's own address list, not everything
         names.addresses_of would gather: two separate entries someone gave the

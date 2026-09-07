@@ -17,9 +17,31 @@ Your own network's PAN ID is in every frame; find it once
 | --- | --- |
 | Any foreign 802.15.4 network on my channel? | `wpan.src_pan && wpan.src_pan != 0x4e21` |
 | Who is scanning/joining? | `wpan.frame_type == 0x0 \|\| (wpan.frame_type == 0x3 && wpan.cmd == 0x07)` (beacons, beacon requests) |
-| Everything one device sent | `wpan.src64 == 66:41:7f:e1:10:ed:69:50` |
+| What one device sent under its extended address | `wpan.src64 == 66:41:7f:e1:10:ed:69:50` |
+| ...and under its short one (add its 0x address) | `wpan.src64 == 66:41:7f:e1:10:ed:69:50 \|\| wpan.src16 == 0x3401` |
 | Sleepy children polling their parents | `wpan.frame_type == 0x3 && wpan.cmd == 0x04` |
 | Traffic converging on one node (e.g. a hub) | `wpan.dst16 == 0x8400` |
+
+**`wpan.src64` alone is not everything one device sent.** A device sends
+from its extended address while it attaches and from the short address
+its parent gave it afterwards, and for a sleepy end device that short
+address carries the bulk of what it sends, polls included. Filtering on
+the 64-bit source alone therefore shows a working sleepy device as nearly
+silent, and hides the unanswered polls that say its parent has stopped
+answering.
+
+Find the short address the device holds now -- `threadwatch report`, the
+review pages, or `wpan.src16` on frames next to one of its extended-source
+frames -- and add it to the filter. Two cautions come with it: a short
+address is unique within one PAN and is reassigned when a device
+re-attaches, so an old one in a long capture may be somebody else by the
+end, and a device that rotates its extended address has more than one
+64-bit source over the same window.
+
+For attribution the recorder has already done, rather than a filter you
+have to keep current, use `threadwatch device "<name>"`: it resolves short
+sources back to the extended address by MAC nonce and counts only frames
+the network key vouches for.
 
 Useful tshark one-liners:
 

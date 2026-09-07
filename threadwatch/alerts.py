@@ -920,8 +920,10 @@ class Dispatcher:
             # read that too. One bad notification must not cost the capture.
             try:
                 it = json.loads(line)
-                record, names, attempt = it["record"], it["sinks"], int(it.get("attempt", 0))
-                if not isinstance(record, dict) or attempt < 0:
+                record, names, attempt = it["record"], it["sinks"], it.get("attempt", 0)
+                if (not isinstance(record, dict) or isinstance(attempt, bool)
+                        or not isinstance(attempt, int) or attempt < 0
+                        or not isinstance(names, list) or not all(isinstance(n, str) for n in names)):
                     raise ValueError("not a spool item")
                 stamp = record.get("ts")
                 if isinstance(stamp, bool):
@@ -929,8 +931,9 @@ class Dispatcher:
                 ts = now if stamp is None else float(stamp)
                 if not math.isfinite(ts):
                     raise ValueError("ts is not finite")
-                targets = [by_name[n] for n in names if isinstance(n, str) and n in by_name]
-            except (ValueError, KeyError, TypeError):
+                record = {**record, "ts": ts}  # subsequent age checks see the validated number
+                targets = [by_name[n] for n in names if n in by_name]
+            except (ValueError, KeyError, TypeError, OverflowError):
                 skipped += 1
                 continue
             if not targets:

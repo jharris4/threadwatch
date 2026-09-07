@@ -968,6 +968,11 @@ class RetryTest(unittest.TestCase):
                    {"record": {**REC, "ts": now}, "sinks": [{"name": "flaky"}], "attempt": 0},
                    {"record": [1, 2], "sinks": ["flaky"], "attempt": 0},
                    {"record": {**REC, "ts": now}, "sinks": ["flaky"], "attempt": -5}]
+            bad += [{"record": {**REC, "ts": now}, "sinks": ["flaky"], "attempt": attempt}
+                    for attempt in (float("inf"), 1.5, True, "2")]
+            bad += [{"record": {**REC, "ts": now}, "sinks": names, "attempt": 1}
+                    for names in ("flaky", {"flaky": True}, ["flaky", 7])]
+            bad.append({"record": {**REC, "ts": 10 ** 400}, "sinks": ["flaky"], "attempt": 1})
             good = {"record": {**REC, "ts": now, "name": "kept"}, "sinks": ["flaky"], "attempt": 1}
             spool.write_text("".join(json.dumps(i) + "\n" for i in [*bad, good]))
             sink = FlakySink(fail=0)

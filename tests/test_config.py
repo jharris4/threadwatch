@@ -14,6 +14,36 @@ from threadwatch import config as config_mod
 from threadwatch.record import RingWriter
 
 
+class InventoryIsolationTest(unittest.TestCase):
+    def test_explicit_config_never_falls_back_to_another_inventory(self):
+        from unittest.mock import patch
+
+        from threadwatch.cli import _inventory_path
+        from threadwatch.names import DeviceNames, adopt
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            default = root / "repo" / "config"
+            default.mkdir(parents=True)
+            inventory = default / "devices.json"
+            original = '[{"name":"Default","extendedAddress":"0011223344556677"}]'
+            inventory.write_text(original)
+            (default / "config.toml").write_text("")
+            other = root / "other"
+            other.mkdir()
+            path = other / "config.toml"
+            path.write_text("")
+            with patch.object(config_mod, "REPO_ROOT", root / "repo"):
+                cfg = config_mod.load(path)
+                self.assertEqual(_inventory_path(cfg), other / "devices.json")
+                self.assertEqual(DeviceNames(cfg.devices_path).entries, [])
+                adopt(_inventory_path(cfg), "8899aabbccddeeff", "Other")
+                self.assertEqual(inventory.read_text(), original)
+                self.assertEqual(config_mod.load(None).devices_path, inventory)
+                self.assertEqual(config_mod.load(path).devices_path, other / "devices.json")
+                path.write_text('[devices]\ninventory = "custom.json"\n')
+                self.assertEqual(config_mod.load(path).devices_path, other / "custom.json")
+
+
 class KeepGbTest(unittest.TestCase):
     def _load(self, text):
         with tempfile.TemporaryDirectory() as d:

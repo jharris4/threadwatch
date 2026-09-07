@@ -265,6 +265,7 @@ def check_sections(raw: dict, path: Path) -> None:
 
 
 def load(path: Path | None) -> Config:
+    explicit_path = path is not None
     cfg = Config()
     if path is None:
         default = REPO_ROOT / "config" / "config.toml"
@@ -432,13 +433,15 @@ def load(path: Path | None) -> Config:
         if raw.get("credentials", {}).get("file"):
             cfg.credentials_path = (Path(path).parent / raw["credentials"]["file"]).resolve()
     if cfg.devices_path is None:
-        # Beside the config file first: that is where `threadwatch name`
-        # writes when [devices] inventory is unset, so a --config elsewhere
-        # reads back the names it adopted. The repo default is the fallback.
-        for candidate in (cfg.config_dir / "devices.json", REPO_ROOT / "config" / "devices.json"):
-            if candidate.exists():
-                cfg.devices_path = candidate
-                break
+        if explicit_path:
+            # This is both the read location and the destination for name/import,
+            # including when the second recorder's inventory does not exist yet.
+            cfg.devices_path = cfg.config_dir / "devices.json"
+        else:
+            for candidate in (cfg.config_dir / "devices.json", REPO_ROOT / "config" / "devices.json"):
+                if candidate.exists():
+                    cfg.devices_path = candidate
+                    break
     if cfg.credentials_path is None:
         default_creds = cfg.config_dir / "credentials.toml"
         if default_creds.exists():

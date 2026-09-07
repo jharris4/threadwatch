@@ -165,7 +165,8 @@ class NameTest(CliCase):
         # This checkout may carry a real config/devices.json; keep the test
         # (and adopt's write) away from it.
         with mock.patch.object(config_mod, "REPO_ROOT", self.d / "repo"):
-            self.assertIsNone(config_mod.load(Path(self.cfg)).devices_path)   # no inventory anywhere yet
+            self.assertEqual(config_mod.load(Path(self.cfg)).devices_path,
+                             (self.d / "devices.json").resolve())  # authoritative even before creation
             code, out, _ = self.run_cli("name", "66417fe110ed6950", "Office AQ")
             self.assertEqual(code, 0)
             self.assertIn(str(self.d / "devices.json"), out)

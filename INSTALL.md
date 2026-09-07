@@ -254,3 +254,8 @@ ssh -t pi@threadwatch.local 'sudo sh -c "echo \"pi ALL=(ALL) NOPASSWD: ALL\" > /
 **Storage.** Either measured rate is fine for a good SD card; a small
 USB SSD is nicer if you have one (`data_dir` in config.toml). NTP is on
 by default in Raspberry Pi OS; leave it.
+
+An explicit `--config /path/to/config.toml` defaults to
+`/path/to/devices.json`, even before that inventory exists. It does not borrow
+the repository's default inventory. `name` and `import --write` create/edit that
+adjacent file unless `[devices] inventory` explicitly selects another path.

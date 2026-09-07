@@ -278,6 +278,10 @@ class Pipeline:
                     gens.setdefault(_whole(prev[2]), (prev[0], _seconds(prev[1])))
                 if gens:
                     table[addr] = gens
+        self._auth_addresses = set(self._mac_counter) | set(self._mle_counter)
+        if len(self._auth_addresses) > self.AUTH_MAX:
+            raise ValueError("saved authentication history exceeds AUTH_MAX; increase the cap before restarting")
+        self._auth_capped_at: float | None = None
         self.replayed = 0                            # frames refused as replays this run
         self._replay_said: dict[str, float] = {}     # addr -> when its replays were last mentioned
         self._counter_was_retry = False              # last counter decision was a retry (see _counter_advances)
@@ -968,11 +972,24 @@ class Pipeline:
     # generations are kept per device: the newest heard, and the one before
     # it, which a device that has not rotated yet is still sending under.
     KEEP_GENERATIONS = 2
+    # Do not evict counters with device rows: that would make a captured
+    # frame fresh again. Bound the shared MAC/MLE address population instead.
+    AUTH_MAX = 16_384
 
     def _counter_advances(self, table: dict, who: str, counter: int, ts: float, what: str,
                           sequence: int | None) -> bool:
         # Set for the caller that has just asked, and read straight after.
         self._counter_was_retry = False
+        if who not in self._auth_addresses:
+            if len(self._auth_addresses) >= self.AUTH_MAX:
+                if self._auth_capped_at is None or ts - self._auth_capped_at >= self.CAP_NOTE_S:
+                    self._auth_capped_at = ts
+                    self._emit("authentication_history_full", "warning", ts, limit=self.AUTH_MAX,
+                               note="authentication history is full: new addresses are not counted as live; "
+                                    "existing replay counters are retained and raw capture continues. "
+                                    "Investigate authenticated address churn before restarting.")
+                return False
+            self._auth_addresses.add(who)
         gens = table.setdefault(who, {})
         if sequence is None:
             # Nothing said which generation authenticated this one. Judge it
@@ -1020,7 +1037,7 @@ class Pipeline:
     def _say_replay(self, who: str, ts: float, note: str) -> None:
         """Count a refused frame and say why, once an hour per device."""
         self.replayed += 1
-        if ts - self._replay_said.get(who, -1e12) >= 3600.0:
+        if who in self._auth_addresses and ts - self._replay_said.get(who, -1e12) >= 3600.0:
             self._replay_said[who] = ts
             print(f"[threadwatch] {self.names.name(who) or who}: {note} (said once an hour)",
                   file=sys.stderr, flush=True)

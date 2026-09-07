@@ -37,6 +37,47 @@ def frame(ts, src, pan=OWN_PAN, rssi=-60.0, seq=None, dst="0000", counter=None):
                  ftype=1, seq=seq, dst_pan=pan, dst=dst, src_pan=pan, src=src)
 
 
+class AuthenticationHistoryCapTest(unittest.TestCase):
+    def test_churn_is_bounded_and_evicted_device_replays_stay_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pipe = Pipeline(Config(data_dir=Path(tmp), devices_path=Path(tmp) / "devices.json"),
+                            NullEventLog(), stub_decryptor(), ephemeral=True)
+            pipe.TRACK_MAX = 2
+            pipe.AUTH_MAX = 4
+            t = 1_700_000_000.0
+            for i in range(20):
+                pipe.ingest(frame(t + i * 10, f"{i + 1:016x}", counter=10))
+            self.assertEqual(len(pipe._auth_addresses), 4)
+            self.assertEqual(len(pipe._mac_counter), 4)
+            self.assertLessEqual(len(pipe.seen.table), 2)
+            self.assertNotIn("0000000000000001", pipe.seen.table)
+            pipe.ingest(frame(t + 300, "0000000000000001", counter=9))
+            self.assertNotIn("0000000000000001", pipe.seen.table)
+            # A new layer for an existing address is allowed, while new
+            # identities cannot bypass the shared cap through MLE.
+            self.assertTrue(pipe._counter_advances(pipe._mle_counter, "0000000000000001", 10, t, "MLE", 0))
+            for i in range(20, 40):
+                self.assertFalse(pipe._counter_advances(pipe._mle_counter, f"{i:016x}", 1, t, "MLE", 0))
+            self.assertEqual(len(pipe._mle_counter), 1)
+            self.assertLessEqual(len(pipe._replay_said), 4)
+            pipe.ingest(frame(t + 301, "0000000000000001", counter=11))
+            self.assertIn("0000000000000001", pipe.seen.table)
+            self.assertEqual(sum(r["event"] == "authentication_history_full" for r in pipe.events.records), 1)
+
+    def test_refused_tracking_admission_still_has_bounded_counter_history(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            pipe = Pipeline(Config(data_dir=Path(tmp), devices_path=Path(tmp) / "devices.json"),
+                            NullEventLog(), stub_decryptor(), ephemeral=True)
+            pipe.AUTH_MAX = 3
+            with patch.object(pipe, "_admit", return_value=False):
+                for i in range(10):
+                    pipe.ingest(frame(1_700_000_000.0 + i, f"{i + 1:016x}", counter=10))
+            self.assertEqual(pipe.seen.table, {})
+            self.assertEqual(len(pipe._mac_counter), 3)
+            self.assertEqual(len(pipe._auth_addresses), 3)
+
+
 class SnapshotCoverageTest(unittest.TestCase):
     def test_replay_uses_bundled_outages_without_future_credit_or_writes(self):
         from threadwatch.events import day_of

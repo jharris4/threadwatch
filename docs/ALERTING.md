@@ -532,3 +532,22 @@ url = "https://cronitor.link/p/<api-key>/<monitor>?state=run"
 failure_url = "https://cronitor.link/p/<api-key>/<monitor>?state=fail"
 interval_s = 60
 ```
+
+### Authentication history capacity
+
+`authentication_history_full` warns (at most hourly) when a recorder run has
+accepted 16,384 distinct authenticated extended addresses. MAC and MLE share this
+limit; each retains at most two key generations per address. Device-table eviction
+does not erase replay counters. At capacity, known addresses continue to advance
+and reject replays, but new addresses cannot establish liveness or device stats.
+Raw packets still enter the ring. Invalid MICs cannot consume this capacity.
+
+This counts addresses, not packets: 100 stable addresses use 100 slots regardless
+of traffic volume. Starting from 100 addresses, 10 new addresses per day take
+about 4.5 years to fill it; one new authenticated address per second takes about
+4.5 hours. These are illustrative rates, not measured network behavior. Churn
+also includes legitimate address rotations. Investigate the source before
+restarting or raising `Pipeline.AUTH_MAX`. As before, restart restores counters
+only for persisted last-seen rows; history of evicted/refused rows is not durable,
+so restarting is not a replay-safe way to clear capacity. No automatic expiry is
+used within a run.

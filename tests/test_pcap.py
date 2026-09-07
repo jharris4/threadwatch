@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch.pcap import DLT_NOFCS, DLT_TAP, Frame, PcapStreamReader, PcapWriter, complete_length
+from threadwatch.pcap import DLT_NOFCS, DLT_TAP, DLT_WITHFCS, Frame, PcapStreamReader, PcapWriter, complete_length
 from threadwatch.record import RingWriter
 
 
@@ -494,6 +494,25 @@ class FormatRejectionTest(unittest.TestCase):
         with self.assertRaises(PcapFormatError):
             self._reader(nanos)
         self.assertEqual(complete_length_of(nanos), 0)
+
+    def test_an_ethernet_capture_is_refused_not_read_as_802_15_4(self):
+        """Any link type reached parse_frame, which reads arbitrary bytes as
+        a plausible 802.15.4 frame: a 60-byte zero-valued Ethernet record came
+        back as a beacon. Supplying the wrong capture is an input error, not a
+        file full of join scans."""
+        from threadwatch.pcap import PcapFormatError
+        DLT_ETHERNET = 1
+        raw = bytes(60)
+        data = struct.pack("<LHHIILL", 0xA1B2C3D4, 2, 4, 0, 0, 0xFFFF, DLT_ETHERNET)
+        data += struct.pack("<LLLL", 1, 0, len(raw), len(raw)) + raw
+        with self.assertRaises(PcapFormatError) as cm:
+            self._reader(data)
+        self.assertIn("unsupported pcap link type 1", str(cm.exception))
+        self.assertIn("802.15.4", str(cm.exception))
+        for dlt in (DLT_WITHFCS, DLT_NOFCS, DLT_TAP):
+            with self.subTest(dlt=dlt):
+                head = struct.pack("<LHHIILL", 0xA1B2C3D4, 2, 4, 0, 0, 0xFFFF, dlt)
+                self.assertEqual(self._reader(head).dlt, dlt)
 
     def test_a_big_endian_file_reads_whole(self):
         raw = b"\x41\x88\x01\xcd\xab\x01\x00\x02\x00"

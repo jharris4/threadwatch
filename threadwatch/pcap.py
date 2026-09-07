@@ -15,6 +15,7 @@ from typing import BinaryIO, Iterator
 DLT_TAP = 283
 DLT_NOFCS = 230
 DLT_WITHFCS = 195       # IEEE802_15_4_WITHFCS: every frame ends in a 2-byte FCS
+SUPPORTED_DLTS = (DLT_WITHFCS, DLT_NOFCS, DLT_TAP)
 # TAP TLV 0 (FCS type) says whether a frame ends in one: 1 is CRC-16 (two
 # bytes), 2 CRC-32 (four). The vendored sniffer strips the FCS and writes
 # no such TLV; a capture from another tool may carry it.
@@ -299,6 +300,15 @@ class PcapStreamReader:
             magic = struct.unpack("<L", header[:4])[0]
             raise PcapFormatError(f"unsupported pcap magic {magic:#x} (pcapng? convert with: tshark -F pcap)")
         self.endian, self.snaplen, self.dlt = opened
+        # Only the three 802.15.4 link types mean anything to parse_frame.
+        # Any other capture (Ethernet, Wi-Fi, a tcpdump of the wrong
+        # interface) went straight to the MAC parser, which reads arbitrary
+        # bytes as plausible beacons and join scans. A capture in the wrong
+        # format is an input error, not damage inside a supported one.
+        if self.dlt not in SUPPORTED_DLTS:
+            raise PcapFormatError(
+                f"unsupported pcap link type {self.dlt}: threadwatch reads 802.15.4 captures "
+                f"({DLT_WITHFCS} with FCS, {DLT_NOFCS} without, {DLT_TAP} TAP)")
         try:
             seekable = stream.seekable()
         except (AttributeError, ValueError):

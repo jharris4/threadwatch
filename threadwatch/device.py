@@ -3,9 +3,9 @@
 Walks the ring pcaps (or a given file) and produces a per-hour narrative for
 one device: cadence, RSSI trend, ACK health, MLE activity (with credentials),
 silences — the questions you ask when something went offline. The packets
-last a week; the event log is kept forever, so the device's episodes from
-it (quiet spells, rejoins, bad links) follow, newest first, to answer
-"has this happened before?".
+last a week; the event log lasts a year by default ([events] keep_days),
+so the device's episodes from it (quiet spells, rejoins, bad links)
+follow, newest first, to answer "has this happened before?".
 """
 
 from __future__ import annotations

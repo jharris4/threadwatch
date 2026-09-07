@@ -673,9 +673,18 @@ class Site:
         table = (f'<table><tr><th>saved</th><th>label</th><th>packets</th>'
                  f'<th>size</th><th></th></tr>{"".join(trs)}</table>'
                  if trs else '<p class="empty">no snapshots</p>')
+        # What is kept, in as many words: an operator who reads "kept
+        # forever" leaves the evidence here instead of exporting it, and
+        # the automatic ones are capped.
+        cap = self.cfg.keep_snapshots
+        kept = ("the ones you saved by hand are kept until you delete them; the ones a critical event "
+                + ("saved are kept for ever too ([record] keep_snapshots = -1)" if cap < 0 else
+                   "saves are not kept at all ([record] keep_snapshots = 0)" if cap == 0 else
+                   f"saves, labelled auto-*, are capped at the newest {cap} "
+                   f"([record] keep_snapshots)"))
         intro = (f'<p class="muted">Snapshots of the ring buffer taken with '
-                 f'<code>threadwatch snapshot &lt;label&gt;</code>, '
-                 f'kept forever under <code>{esc(self.cfg.snapshots_dir)}</code>. Open them in Wireshark or with '
+                 f'<code>threadwatch snapshot &lt;label&gt;</code>, under '
+                 f'<code>{esc(self.cfg.snapshots_dir)}</code>: {kept}. Open them in Wireshark or with '
                  f'<code>threadwatch device --pcap</code> / <code>replay</code>.</p>')
         return self.page("snapshots", f'<h1>snapshots</h1>{intro}{table}')
 
@@ -692,7 +701,8 @@ class Site:
                 '<i>yesterday</i>, and a silence not yet over keeps carrying forward until the '
                 'device returns. The strip of days shows how many events '
                 'each day had, with warnings in amber and criticals in red. Packets are kept for a '
-                'week in the ring buffer and forever in snapshots; the top of a day page says '
+                'week in the ring buffer, and in a snapshot for as long as the snapshots page says; '
+                'the top of a day page says '
                 'which still exist. The devices page shows how well the sniffer hears each device: '
                 '<i>marginal</i> means its silences are more likely fading than failure.</p>')
         return self.page("what these mean", f'<h1>What these events mean</h1>{sev}{conv}{items}')

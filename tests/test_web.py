@@ -212,6 +212,24 @@ class PageBranchTest(unittest.TestCase):
         self.assertNotIn('<span class="ok">capturing</span>', body)
         self.assertNotIn('<span class="ok">running</span>', body)
 
+    def test_the_snapshots_page_says_what_retention_actually_keeps(self):
+        # It said snapshots are "kept forever", and help said packets last
+        # forever in one: an operator who reads that leaves the evidence
+        # here instead of exporting it, while the automatic ones are
+        # capped at four by default and pruned at the next critical event.
+        _st, body = self.get("/snapshots")
+        self.assertNotIn("kept forever", body)
+        self.assertIn("kept until you delete them", body)
+        self.assertIn("capped at the newest 4", body)
+        _st, body = self.get("/help")
+        self.assertNotIn("forever in snapshots", body)
+        self.cfg.keep_snapshots = -1
+        _st, body = self.get("/snapshots")
+        self.assertIn("kept for ever too", body)
+        self.cfg.keep_snapshots = 0
+        _st, body = self.get("/snapshots")
+        self.assertIn("not kept at all", body)
+
     def test_the_devices_page_marks_a_retired_address_a_foreign_pan_and_a_fading_link(self):
         self.status(updated=self.now, last_frame_age_s=3)
         self.seen({

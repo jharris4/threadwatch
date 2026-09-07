@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import tomllib
 from dataclasses import dataclass, field
@@ -226,6 +227,22 @@ SECTIONS: dict[str, frozenset[str] | None] = {
 }
 
 
+def _finite(section: str, key: str, value):
+    """A number a range check can actually reject, or a ValueError.
+
+    TOML has ``nan`` and ``inf``. Every comparison against nan is false, so
+    ``if x < 0: raise`` reads as satisfied and the setting is accepted; a
+    positive infinity passes "0 or more" and then sets a confirmation time no
+    packet timestamp reaches, so the delay never ends. Neither is a duration,
+    a threshold or a limit. Values of other types are handed back untouched:
+    the coercions around each call site (a quoted channel, a "0x4e21" PAN id)
+    are unchanged.
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError(f"[{section}] {key} must be a finite number, not {value:g}")
+    return value
+
+
 def check_sections(raw: dict, path: Path) -> None:
     """Reject sections and keys load() would otherwise ignore in silence."""
     where = f" in {path}"
@@ -256,13 +273,14 @@ def load(path: Path | None) -> Config:
         raw = tomllib.loads(Path(path).read_text())
         check_sections(raw, Path(path))
         net = raw.get("network", {})
-        cfg.channel = int(net.get("channel", cfg.channel))
+        cfg.channel = int(_finite("network", "channel", net.get("channel", cfg.channel)))
         if not 11 <= cfg.channel <= 26:
             raise ValueError(f"[network] channel must be 11-26, not {cfg.channel}")
         if net.get("pan_id") is not None:
             raw_pan = net["pan_id"]
             try:
-                cfg.pan_id = int(raw_pan, 0) if isinstance(raw_pan, str) else int(raw_pan)
+                cfg.pan_id = (int(raw_pan, 0) if isinstance(raw_pan, str)
+                              else int(_finite("network", "pan_id", raw_pan)))
             except ValueError:
                 raise ValueError(f"[network] pan_id must be a PAN id such as \"0x4e21\", not {raw_pan!r}") from None
             if not 0 <= cfg.pan_id <= 0xfffe:
@@ -271,7 +289,7 @@ def load(path: Path | None) -> Config:
         cfg.serial_port = rec.get("serial_port") or None
         if rec.get("data_dir"):
             cfg.data_dir = Path(os.path.expandvars(str(rec["data_dir"]))).expanduser()
-        cfg.keep_hours = int(rec.get("keep_hours", cfg.keep_hours))
+        cfg.keep_hours = int(_finite("record", "keep_hours", rec.get("keep_hours", cfg.keep_hours)))
         if cfg.keep_hours < 1:
             raise ValueError(f"[record] keep_hours must be at least 1, not {cfg.keep_hours}")
         if rec.get("keep_gb") is not None:
@@ -279,8 +297,9 @@ def load(path: Path | None) -> Config:
             # written at each rotation (RingWriter._prune loops while the
             # total exceeds it), and zero would be no cap at all: neither
             # is a size to keep.
+            gb = _finite("record", "keep_gb", rec["keep_gb"])
             try:
-                keep_gb = float(rec["keep_gb"])
+                keep_gb = float(gb)
             except (TypeError, ValueError):
                 raise ValueError(f"[record] keep_gb must be a number of gigabytes, not {rec['keep_gb']!r}") from None
             if not keep_gb > 0:
@@ -308,7 +327,7 @@ def load(path: Path | None) -> Config:
             value = det[key]
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ValueError(f"[detect] {key} must be a number of {unit}, not {value!r}")
-            return float(value)
+            return float(_finite("detect", key, value))
         if "flood_multiplier" in det:
             cfg.detector.flood_multiplier = _number("flood_multiplier", "times the baseline")
             if not cfg.detector.flood_multiplier > 0:
@@ -357,7 +376,7 @@ def load(path: Path | None) -> Config:
             raise ValueError(f"[detect] period_onsets must be at most {ONSETS_MAX}, not "
                              f"{cfg.detector.period_onsets}")
         quiet = raw.get("quiet", {})
-        cfg.quiet_s = float(quiet.get("silence_s", cfg.quiet_s))
+        cfg.quiet_s = float(_finite("quiet", "silence_s", quiet.get("silence_s", cfg.quiet_s)))
         # There is no "disable" value here, though [summary] hour = -1 and
         # [border_routers] browse_s = 0 both mean that in the same file. At
         # zero or less the quiet test is true for every device on every
@@ -366,24 +385,27 @@ def load(path: Path | None) -> Config:
         # about a real silence again.
         if not cfg.quiet_s > 0:
             raise ValueError(f"[quiet] silence_s must be more than 0 seconds, not {cfg.quiet_s:g}")
-        cfg.quiet_min_rssi_dbm = float(quiet.get("min_rssi_dbm", cfg.quiet_min_rssi_dbm))
+        cfg.quiet_min_rssi_dbm = float(_finite("quiet", "min_rssi_dbm",
+                                              quiet.get("min_rssi_dbm", cfg.quiet_min_rssi_dbm)))
         link = raw.get("link", {})
-        cfg.link_drop_db = float(link.get("drop_db", cfg.link_drop_db))
-        cfg.link_hold_s = float(link.get("hold_s", cfg.link_hold_s))
+        cfg.link_drop_db = float(_finite("link", "drop_db", link.get("drop_db", cfg.link_drop_db)))
+        cfg.link_hold_s = float(_finite("link", "hold_s", link.get("hold_s", cfg.link_hold_s)))
         polls = raw.get("polls", {})
-        cfg.poll_rearm_s = float(polls.get("rearm_s", cfg.poll_rearm_s))
-        cfg.poll_confirm_s = float(polls.get("confirm_s", cfg.poll_confirm_s))
+        cfg.poll_rearm_s = float(_finite("polls", "rearm_s", polls.get("rearm_s", cfg.poll_rearm_s)))
+        cfg.poll_confirm_s = float(_finite("polls", "confirm_s", polls.get("confirm_s", cfg.poll_confirm_s)))
         if cfg.poll_confirm_s < 0:
             raise ValueError(f"[polls] confirm_s must be 0 (page at once) or more, not {cfg.poll_confirm_s:g}")
         retrans = raw.get("retransmissions", {})
-        cfg.retrans_confirm_s = float(retrans.get("confirm_s", cfg.retrans_confirm_s))
+        cfg.retrans_confirm_s = float(_finite("retransmissions", "confirm_s",
+                                             retrans.get("confirm_s", cfg.retrans_confirm_s)))
         if cfg.retrans_confirm_s < 0:
             raise ValueError("[retransmissions] confirm_s must be 0 (page at the first minute) or more, "
                              f"not {cfg.retrans_confirm_s:g}")
         brs = raw.get("border_routers", {})
-        cfg.border_router_browse_s = float(brs.get("browse_s", cfg.border_router_browse_s))
+        cfg.border_router_browse_s = float(_finite("border_routers", "browse_s",
+                                                  brs.get("browse_s", cfg.border_router_browse_s)))
         summary = raw.get("summary", {})
-        cfg.summary_hour = int(summary.get("hour", cfg.summary_hour))
+        cfg.summary_hour = int(_finite("summary", "hour", summary.get("hour", cfg.summary_hour)))
         if not -1 <= cfg.summary_hour <= 23:
             raise ValueError(f"[summary] hour must be 0-23, or -1 to disable, not {cfg.summary_hour}")
         cfg.summary_severity = str(summary.get("severity", cfg.summary_severity))
@@ -391,12 +413,12 @@ def load(path: Path | None) -> Config:
             raise ValueError(f"[summary] severity must be info, notice, warning or critical, "
                              f"not {cfg.summary_severity!r}")
         events = raw.get("events", {})
-        cfg.events_keep_days = int(events.get("keep_days", cfg.events_keep_days))
+        cfg.events_keep_days = int(_finite("events", "keep_days", events.get("keep_days", cfg.events_keep_days)))
         if cfg.events_keep_days < 0:
             raise ValueError(f"[events] keep_days must be 0 (keep for ever) or more, not {cfg.events_keep_days}")
         web = raw.get("web", {})
         cfg.web_bind = str(web.get("bind", cfg.web_bind))
-        cfg.web_port = int(web.get("port", cfg.web_port))
+        cfg.web_port = int(_finite("web", "port", web.get("port", cfg.web_port)))
         # Sinks and heartbeats are built lazily (alerts.build_sinks /
         # build_heartbeats) so ${ENV} expansion and validation happen where
         # a disabled sink can be logged rather than crash config loading.

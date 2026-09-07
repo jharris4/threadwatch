@@ -816,6 +816,36 @@ class ConfigValidationTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self._load(body)
 
+    def test_nan_and_inf_are_configuration_errors_not_settings(self):
+        """TOML has nan and inf, and neither is a duration. Every comparison
+        against nan is false, so `if x < 0: raise` read as satisfied: a NaN
+        [polls] confirm_s was accepted and then made `hold > 0` false, paging
+        at once instead of holding. A positive infinite one passed "0 or more"
+        and set a confirmation time no packet timestamp can reach, so the page
+        never came. An infinite channel or port raised OverflowError out of
+        int(), which is a traceback rather than a configuration error."""
+        for body in ('[polls]\nconfirm_s = nan\n',
+                     '[polls]\nconfirm_s = inf\n',
+                     '[polls]\nrearm_s = nan\n',
+                     '[detect]\nalert_cooldown_s = nan\n',
+                     '[detect]\nflood_multiplier = inf\n',
+                     '[quiet]\nsilence_s = nan\n',
+                     '[quiet]\nmin_rssi_dbm = -nan\n',
+                     '[link]\ndrop_db = inf\n',
+                     '[link]\nhold_s = nan\n',
+                     '[retransmissions]\nconfirm_s = nan\n',
+                     '[border_routers]\nbrowse_s = inf\n',
+                     '[record]\nkeep_hours = inf\n',
+                     '[record]\nkeep_gb = nan\n',
+                     '[network]\nchannel = inf\n',
+                     '[summary]\nhour = nan\n',
+                     '[events]\nkeep_days = inf\n',
+                     '[web]\nport = inf\n'):
+            with self.subTest(body=body.strip()):
+                with self.assertRaises(ValueError) as cm:
+                    self._load(body)
+                self.assertIn("finite", str(cm.exception))
+
     def test_quoted_channel_is_coerced_not_carried_as_a_string(self):
         self.assertEqual(self._load('[network]\nchannel = "25"\n').channel, 25)
 

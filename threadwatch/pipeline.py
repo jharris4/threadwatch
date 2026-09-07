@@ -586,13 +586,20 @@ class Pipeline:
         tmp.replace(self.frames_by_hour_path)
 
     def _last_auto_snapshot_on_disk(self) -> float:
-        """When the newest auto-* snapshot was saved, so the cooldown holds
+        """When the newest automatic snapshot was saved, so the cooldown holds
         across a restart: a daemon that comes back mid-storm must not copy
-        the whole ring (gigabytes) a second time and fill the card."""
+        the whole ring (gigabytes) a second time and fill the card.
+
+        Which snapshots are automatic is the manifest trigger's to say, as it
+        is for retention (snapshot.is_auto_snapshot). Reading it off the
+        "auto-" label instead meant `threadwatch snapshot auto-investigation`,
+        a perfectly good name, started the next restart inside a six-hour
+        cooldown and let a real storm go unpreserved."""
         from .review import snapshots
+        from .snapshot import is_auto_snapshot
         try:
             for inc in snapshots(self.cfg.snapshots_dir):      # newest first
-                if inc["label"].startswith("auto-"):
+                if is_auto_snapshot(self.cfg.snapshots_dir / inc["name"]):
                     return float(inc["saved"])
         except OSError:
             pass

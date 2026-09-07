@@ -1037,9 +1037,17 @@ class QuietPolicyTest(unittest.TestCase):
     def test_auto_snapshot_cooldown_survives_a_restart(self):
         self.cfg.snapshot_on_critical = True
         t0 = 1_700_000_000.0
-        for age, label in ((2 * 3600, "auto-storm"), (30 * 3600, "auto-storm"), (60, "manual")):
+        # The trigger in the manifest says which of these the recorder took,
+        # as it does for retention: the label is the operator's to choose, and
+        # "auto-investigation" below is one somebody asked for by name.
+        for age, label, trigger in ((2 * 3600, "auto-storm", "phase_locked_storm"),
+                                    (30 * 3600, "auto-storm", "phase_locked_storm"),
+                                    (60, "auto-investigation", "manual"),
+                                    (60, "manual", "manual")):
             stamp = time.strftime("%Y%m%dT%H%M%S", time.localtime(t0 - age))
-            (self.cfg.snapshots_dir / f"{stamp}_{label}").mkdir(parents=True)
+            inc = self.cfg.snapshots_dir / f"{stamp}_{label}"
+            inc.mkdir(parents=True)
+            (inc / "manifest.json").write_text(json.dumps({"trigger": trigger, "label": label}))
         pipe = self._pipe()                                # a restart mid-storm
         saved = []
         pipe.snapshotter = lambda label, trigger: saved.append(label)
@@ -1052,6 +1060,28 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual(storms, [None, "auto-phase_locked_storm"])
         self.assertEqual(saved, ["auto-phase_locked_storm"])
         self.assertEqual(Pipeline(self.cfg, NullEventLog(), stub_decryptor(), ephemeral=True)._last_auto_snapshot, 0.0)
+
+    def test_a_snapshot_named_auto_by_hand_does_not_hold_the_cooldown(self):
+        """The cooldown was reconstructed from the "auto-" label while
+        retention already read the manifest trigger. A snapshot somebody saved
+        as `threadwatch snapshot auto-investigation` therefore suppressed
+        automatic capture of a later storm for six hours after a restart --
+        and it predates the incident, so it holds none of the evidence."""
+        self.cfg.snapshot_on_critical = True
+        t0 = 1_700_000_000.0
+        stamp = time.strftime("%Y%m%dT%H%M%S", time.localtime(t0 - 60))
+        inc = self.cfg.snapshots_dir / f"{stamp}_auto-investigation"
+        inc.mkdir(parents=True)
+        (inc / "manifest.json").write_text(json.dumps({"trigger": "manual", "label": "auto-investigation"}))
+        pipe = self._pipe()
+        self.assertEqual(pipe._last_auto_snapshot, 0.0)
+        saved = []
+        pipe.snapshotter = lambda label, trigger: saved.append(label)
+        pipe.detector.storm_active = True
+        pipe.detector.storm_details = {"period": 80.5, "onsets": [1.0, 2.0, 3.0]}
+        pipe.detector.add_frame = lambda ts: setattr(pipe.detector, "storm_active", True)
+        pipe.ingest(frame(t0, ROUTER))
+        self.assertEqual(saved, ["auto-phase_locked_storm"])
 
     def test_a_copy_cut_short_by_the_last_run_does_not_hold_the_cooldown(self):
         self.cfg.snapshot_on_critical = True

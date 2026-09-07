@@ -90,6 +90,7 @@ the line; under Docker, `docker compose ps` and the log.
 | 2 | `no frames for Ns - capture stalled` | the watchdog: three minutes without a frame after capture had begun |
 | 3 | `capture stream ended` | the sniffer closed the stream: dongle unplugged, or its process died |
 | 4 | `sniffer thread died before delivering any data` | the serial port could not be opened: held by another process, or gone |
+| 5 | `exit: <step> failed: ...` | the run ended the way it meant to, but a step of its shutdown did not: the ring would not close, or the last-seen table would not save (a full disk). What could still be saved was; the line names the step |
 
 Every way out but a kill leaves `data/state/last-exit.json` saying which
 of these it was; the next start logs a `recorder_started` event with that

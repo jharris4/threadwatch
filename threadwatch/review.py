@@ -341,6 +341,7 @@ _BLIND_NOTES = {
     "stopped": "the recorder was stopped",
     "stalled": "the recorder was not running: it left after 3 min without frames and was restarted",
     "crashed": "the recorder crashed and was restarted",
+    "cleanup_failed": "the recorder stopped as asked but could not put all of it away (a full disk?)",
     "sniffer_died": "the recorder lost its sniffer and was restarted",
     "stream_ended": "the recorder lost its capture stream (dongle unplugged?) and was restarted",
     "unknown": "the recorder was not running, and left no note of how it ended (power cut, or killed)",

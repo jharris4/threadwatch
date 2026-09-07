@@ -408,6 +408,8 @@ class Pipeline:
              "sniffer_died": "the last run left when its sniffer thread died",
              "stream_ended": "the last run left when the capture stream ended (dongle unplugged?)",
              "crashed": "the last run crashed",
+             "cleanup_failed": "the last run ended as asked but could not put all of it away "
+                               "(see its journal: the ring, the last-seen table)",
              "unknown": "the last run left no note of how it ended (power cut, or killed)"}
 
     def _announce_start(self, now: float, last_alive: float | None) -> None:

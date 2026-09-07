@@ -186,10 +186,14 @@ def capture_stalled(age: float, timeout: float = STALL_TIMEOUT_S) -> bool:
 # The watchdog's exit codes, so the journal says which way the capture went.
 EXIT_STALLED = 2            # no frames for STALL_TIMEOUT_S
 EXIT_SNIFFER_DIED = 4       # the sniffer thread died before delivering any data
+# A run that ended the way it meant to, but could not put all of it away:
+# the ring would not close, the last-seen table would not save. The
+# journal names the step; the status must not read as a clean stop.
+EXIT_CLEANUP_FAILED = 5
 # How a run ended, by its exit code, as the note it leaves for the next
 # start says it (record_exit). Every other code is "exit_<code>".
 EXIT_REASONS = {0: "stopped", 1: "crashed", EXIT_STALLED: "stalled", 3: "stream_ended",
-                EXIT_SNIFFER_DIED: "sniffer_died"}
+                EXIT_SNIFFER_DIED: "sniffer_died", EXIT_CLEANUP_FAILED: "cleanup_failed"}
 EXIT_FILE = "last-exit.json"
 
 
@@ -452,26 +456,43 @@ def run_record(cfg: Config) -> None:
         signal.signal(signal.SIGINT, signal.SIG_IGN)
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         try:
-            sniffer._stop()
-        except Exception:
-            pass
-        watchdog_stop.set()
-        try:
-            pipe.seen.save()
-        except Exception as exc:
-            _log(f"last-seen.json not saved: {exc}")
-        if ring:
-            ring.close()
-        fifo_path.unlink(missing_ok=True)
-        record_exit(cfg.state_dir, exit_code, beat["last_frame"] or prior_frame)
-        # os._exit skips thread joins: the alert thread's queue and the
-        # digests its cooldowns hold would go with it.
-        events.close()
-        _log(f"stopped after {total} frames")
-        # The vendored sniffer starts a non-daemon thread and worker
-        # processes that outlive _stop(); everything of ours is closed and
-        # saved by now, so end the process outright rather than hang.
-        os._exit(exit_code)
+            # Each step may fail without taking the rest with it, as the
+            # stalled exit above does it. A full disk out of ring.close()
+            # used to propagate from here: no alerts drained or spooled,
+            # no exit note, the FIFO left behind, and no os._exit - with
+            # both signals ignored by then and the sniffer's non-daemon
+            # thread still alive, which is a recorder nothing can stop.
+            def cleanup(what, step) -> bool:
+                try:
+                    step()
+                    return False
+                except Exception as exc:
+                    _log(f"exit: {what} failed: {exc}")
+                    return True
+
+            lost = cleanup("sniffer stop", sniffer._stop)
+            watchdog_stop.set()
+            lost |= cleanup("last-seen save", pipe.seen.save)
+            if ring:
+                lost |= cleanup("ring close", ring.close)
+            lost |= cleanup("FIFO cleanup", lambda: fifo_path.unlink(missing_ok=True))
+            if lost and exit_code == 0:
+                # Something of this run did not land. The journal says
+                # which step; the status must not read as a clean stop,
+                # and the note the next start reads says so too.
+                exit_code = EXIT_CLEANUP_FAILED
+            cleanup("exit note", lambda: record_exit(cfg.state_dir, exit_code,
+                                                     beat["last_frame"] or prior_frame))
+            # os._exit skips thread joins: the alert thread's queue and the
+            # digests its cooldowns hold would go with it.
+            cleanup("alert delivery", events.close)
+            _log(f"stopped after {total} frames")
+        finally:
+            # The vendored sniffer starts a non-daemon thread and worker
+            # processes that outlive _stop(); everything of ours is closed
+            # and saved by now, so end the process outright rather than
+            # hang - whatever happened above.
+            os._exit(exit_code)
 
 
 def status_tick(cfg, port, beat: dict, started: float, started_mono: float, pipe: Pipeline,

@@ -16,6 +16,7 @@ from threadwatch.crypto import Decryptor
 from threadwatch.events import NullEventLog
 from threadwatch.pipeline import Pipeline
 from threadwatch.record import (
+    EXIT_CLEANUP_FAILED,
     EXIT_FILE,
     EXIT_SNIFFER_DIED,
     EXIT_STALLED,
@@ -613,6 +614,56 @@ class RunRecordTest(unittest.TestCase):
         self.assertEqual([c[0] for c in self.calls[1:]], ["stop", "events.close"])
         self.assertEqual(self._exit_note()["code"], 3)
         self.assertTrue((self.cfg.state_dir / "last-seen.json").exists())
+
+    def test_a_ring_that_will_not_close_does_not_stop_the_rest_of_the_shutdown(self):
+        # A full disk out of ring.close() propagated out of the finally
+        # block: the alerts were never drained or spooled, no exit note
+        # was written, the FIFO stayed behind, and os._exit was never
+        # reached - with both signals ignored by then and the sniffer's
+        # non-daemon thread still alive, which is a recorder nothing can
+        # stop. Each step now fails on its own, and the exit is certain.
+        import errno
+        from unittest import mock
+
+        from threadwatch.record import RingWriter
+        self.hold.set()
+        with mock.patch.object(RingWriter, "close",
+                               side_effect=OSError(errno.ENOSPC, "No space left on device")):
+            code, out = self._run()
+        self.assertEqual(code, 3)                      # how the run ended, not how it tidied up
+        self.assertEqual(self.exits, [("MainThread", 3)])
+        self.assertIn("exit: ring close failed", out)
+        self.assertEqual([c[0] for c in self.calls[1:]], ["stop", "events.close"])
+        self.assertEqual(self._exit_note()["code"], 3)
+        self.assertFalse((self.cfg.state_dir / "capture.fifo").exists())
+        self.assertTrue((self.cfg.state_dir / "last-seen.json").exists())
+
+    def test_a_stop_that_could_not_put_everything_away_is_not_reported_as_clean(self):
+        # The run ended as asked, but part of it did not land. exit 0 and
+        # "stopped" would say the opposite of what happened.
+        import errno
+        import os
+        import signal
+        import threading
+        from unittest import mock
+
+        from threadwatch.record import RingWriter
+
+        def send():
+            self.reader_open.wait(5)
+            time.sleep(0.1)
+            os.kill(os.getpid(), signal.SIGTERM)
+            time.sleep(0.2)
+            self.hold.set()
+        threading.Thread(target=send, daemon=True).start()
+        with mock.patch.object(RingWriter, "close",
+                               side_effect=OSError(errno.ENOSPC, "No space left on device")):
+            code, out = self._run()
+        self.assertEqual(code, EXIT_CLEANUP_FAILED)
+        self.assertIn("exit: ring close failed", out)
+        self.assertEqual((self._exit_note()["code"], self._exit_note()["reason"]),
+                         (EXIT_CLEANUP_FAILED, "cleanup_failed"))
+        self.assertEqual([c[0] for c in self.calls[1:]], ["stop", "events.close"])
 
     def test_the_watchdog_exits_for_a_dead_sniffer_and_for_a_stall(self):
         from unittest import mock

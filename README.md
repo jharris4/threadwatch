@@ -225,8 +225,20 @@ sink (events collect in memory). A detector or a decoder is written once
 and behaves the same in all three, and an analysis command can never
 touch the live recorder's state. Keep that: a new detector goes in the
 pipeline, not in a command; anything that writes state or talks to the
-outside checks `ephemeral` first. Nordic's sniffer module under `vendor/`
-is unmodified and not covered by the suite.
+outside checks `ephemeral` first.
+
+Nordic's sniffer module under `vendor/` is upstream code with a small
+local patch surface, and the suite does cover that surface. Every change
+is marked `# threadwatch local change` in the file; today they are the
+serial reader's, and they exist because a flight recorder that drops
+frames without counting them cannot tell you it did: a garbled serial
+line becomes a counted `ParseFailure` instead of being swallowed by a
+bare `except`, and a disconnected dongle ends the reader instead of
+spinning on the failing read. `VendoredSnifferTest` in
+`tests/test_record.py` drives `serial_reader` over a fake serial port and
+asserts both. On a vendor refresh, take the upstream file, `grep -n
+"threadwatch local change"` the old one, reapply each, and run that test
+-- it fails if a reapplied change was missed.
 
 Commit messages say what the change does for the reader of the code, not
 what was typed; the docs are part of the change (every command, flag and
@@ -255,7 +267,8 @@ default in them is checked against `--help` and the source).
       record.py    the recorder (ring buffer) + replay
       cli.py       command-line interface
     tests/         unittest suite (python3 -m unittest discover -t . -s tests)
-    vendor/        Nordic's sniffer extcap module (BSD, unmodified)
+    vendor/        Nordic's sniffer extcap module (BSD; local changes marked
+                   "threadwatch local change", covered by tests/test_record.py)
     firmware/      sniffer firmware hex + prebuilt DFU package
     bin/           threadwatch CLI shim, flash-dongle.sh, setup-host.sh (host install),
                    push-to-host.sh (deploy a checkout to the recorder)

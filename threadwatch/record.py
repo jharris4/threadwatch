@@ -271,6 +271,62 @@ class Housekeeping:
         return run
 
 
+class RadioClock:
+    """Keeps the radio's own packet timing, and manages the epoch offset.
+
+    The sniffer stamps every frame from the dongle's clock and converts it
+    to epoch time once, at its first packet (vendor correct_time), so the
+    intervals between frames as they leave the sniffer are the intervals the
+    radio heard. The recorder used to replace each stamp with time.time() at
+    the moment Python got round to it, which threw those intervals away: a
+    disk stall, CPU contention or a FIFO backlog -- during the very storm
+    being investigated -- collapsed seconds of traffic into milliseconds,
+    and the pcap kept no trace of the real timing for Wireshark or replay to
+    recover. Flood periodicity, retry classification, ACK timing and poll
+    cadence are all read off those intervals.
+
+    So the packet's own timing is kept, and only the offset between the
+    dongle's clock and the host's NTP-aligned one is managed here. The
+    offset is nudged by at most MAX_SLEW per second of captured time, which
+    is an order of magnitude more than a crystal drifts and small enough
+    that no interval is meaningfully distorted. A gap too large to walk off
+    is stepped instead and reported: that is a sniffer restart re-anchoring
+    itself on its own first packet, or the host clock being stepped.
+    """
+
+    STEP_S = 2.0            # beyond this, walking the offset off would take hours
+    MAX_SLEW = 1e-3         # 1 ms per captured second; crystal drift is under 100 ppm
+
+    def __init__(self, wall=time.time, step_s: float = STEP_S, max_slew: float = MAX_SLEW):
+        self._wall, self.step_s, self.max_slew = wall, step_s, max_slew
+        self.offset: float | None = None
+        self._last_raw: float | None = None
+        self.steps = 0                       # re-anchorings this run
+        self.last_step_s = 0.0               # how far the last one moved
+
+    def stamp(self, raw_ts: float) -> float:
+        """The epoch timestamp to record for a frame the sniffer stamped
+        ``raw_ts``. Sets ``last_step_s`` non-zero on the frame that stepped."""
+        now = self._wall()
+        self.last_step_s = 0.0
+        if self.offset is None:
+            self.offset = now - raw_ts       # the first frame lands at wall clock
+            self._last_raw = raw_ts
+            return raw_ts + self.offset
+        error = now - (raw_ts + self.offset)
+        if abs(error) > self.step_s:
+            self.offset += error
+            self.steps += 1
+            self.last_step_s = error
+        else:
+            # Bounded by captured time, not by how many frames arrived: a
+            # burst must not buy the correction a bigger budget.
+            room = self.max_slew * max(0.0, raw_ts - self._last_raw)
+            self.offset += max(-room, min(room, error))
+        self._last_raw = raw_ts
+        return raw_ts + self.offset
+
+
 def capture_healthy(last_frame_mono: float | None, now: float,
                     timeout: float = STALL_TIMEOUT_S) -> bool | None:
     """The heartbeat's answer: unknown (None) until this run has heard a
@@ -423,12 +479,17 @@ def run_record(cfg: Config) -> None:
     # because the os._exit in finally would otherwise swallow it.
     exit_code = 0
     try:
+        radio_clock = RadioClock()
         with open(fifo_path, "rb") as fifo:
             reader = PcapStreamReader(fifo)
             ring = RingWriter(cfg.ring_dir, cfg.keep_hours, reader.dlt, cfg.keep_bytes)
             beat["ring"] = ring
             for frame in reader:
-                frame.ts = time.time()   # host wall clock, NTP-aligned
+                # The radio's timing, carried on the host's epoch (RadioClock).
+                frame.ts = radio_clock.stamp(frame.ts)
+                if radio_clock.last_step_s:
+                    _log(f"capture clock re-anchored by {radio_clock.last_step_s:+.3f} s "
+                         "(sniffer restarted, or the host clock stepped)")
                 ring.write(frame)
                 pipe.ingest(frame)
                 total += 1

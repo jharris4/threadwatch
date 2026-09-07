@@ -423,6 +423,69 @@ class StatusTickTest(unittest.TestCase):
         self.assertTrue(self.logs[0].startswith("status.json not written: "), self.logs)
 
 
+class RadioClockTest(unittest.TestCase):
+    """The recorder's timestamps: the radio's intervals, on the host's epoch."""
+
+    def _clock(self, wall):
+        from threadwatch.record import RadioClock
+        return RadioClock(wall=lambda: wall[0])
+
+    def test_intervals_survive_a_backlog_the_host_clock_would_have_erased(self):
+        """Frames buffered in the serial reader or the FIFO are processed in a
+        rush. Stamping them with time.time() at that moment collapsed the
+        traffic they represent -- exactly during the storms worth recording,
+        when disk stalls and CPU contention cause the backlog."""
+        wall = [1_700_000_000.0]
+        clock = self._clock(wall)
+        out = []
+        for raw in (500.0, 500.25, 500.5, 501.0):     # a second of radio, drained at once
+            out.append(clock.stamp(raw))
+        # Intact but for the offset correction the clock allows itself per
+        # captured second: the whole second arrived while wall clock stood
+        # still, so it is correcting at exactly that bound throughout.
+        for expected, got in zip((0.0, 0.25, 0.5, 1.0), (t - out[0] for t in out), strict=True):
+            self.assertAlmostEqual(got, expected, delta=2 * clock.MAX_SLEW)
+        self.assertEqual(out[0], wall[0])             # the first frame lands at wall clock
+
+    def test_the_offset_is_walked_toward_the_host_clock_not_jumped(self):
+        wall = [1_700_000_000.0]
+        clock = self._clock(wall)
+        clock.stamp(0.0)
+        wall[0] += 100.5                              # 100 s of radio, host clock 100.5 s on: drifting
+        stamped = clock.stamp(100.0)
+        # Half a second out, corrected by at most MAX_SLEW per captured second.
+        self.assertAlmostEqual(stamped, 1_700_000_100.0 + clock.MAX_SLEW * 100, places=6)
+        self.assertEqual(clock.steps, 0)
+
+    def test_a_gap_too_large_to_walk_off_is_stepped_and_reported(self):
+        """A sniffer that restarts re-anchors on its own first packet, and a
+        host whose clock is stepped moves under the offset. Neither can be
+        slewed away in any useful time."""
+        wall = [1_700_000_000.0]
+        clock = self._clock(wall)
+        clock.stamp(500.0)
+        wall[0] += 10.0
+        stamped = clock.stamp(9.0)                    # the sniffer restarted: its clock began again
+        self.assertEqual(stamped, wall[0])
+        self.assertEqual(clock.steps, 1)
+        self.assertAlmostEqual(clock.last_step_s, 501.0, places=6)
+        # ...and the next frame carries on from the new anchor, intervals intact.
+        self.assertAlmostEqual(clock.stamp(9.5) - stamped, 0.5, delta=2 * clock.MAX_SLEW)
+        self.assertEqual(clock.steps, 1)
+        self.assertEqual(clock.last_step_s, 0.0)      # only the frame that stepped reports one
+
+    def test_a_burst_of_frames_does_not_buy_a_bigger_correction(self):
+        """The correction is bounded by captured time, not by frame count: a
+        thousand frames in one radio second must not slew a thousand times."""
+        wall = [1_700_000_000.0]
+        clock = self._clock(wall)
+        clock.stamp(0.0)
+        wall[0] += 1.5                                # half a second of error to work off
+        for i in range(1, 1001):
+            last = clock.stamp(i / 1000.0)            # a radio second, a thousand frames
+        self.assertLessEqual(abs(last - (1_700_000_000.0 + 1.0)), clock.MAX_SLEW * 1.0 + 1e-9)
+
+
 class RunRecordTest(unittest.TestCase):
     """run_record itself: the live loop, the watchdog's two verdicts, the
     signal handler and the shutdown, with its two boundaries faked. The
@@ -591,7 +654,21 @@ class RunRecordTest(unittest.TestCase):
         ring = sorted(self.cfg.ring_dir.glob("threadwatch-*.pcap"))
         self.assertEqual(len(ring), 1)
         with open(ring[0], "rb") as fh:
-            self.assertEqual(len(list(PcapStreamReader(fh))), 3)
+            written = [f.ts for f in PcapStreamReader(fh)]
+        self.assertEqual(len(written), 3)
+        # The FIFO carries frames one second apart. Every stamp used to be
+        # replaced with time.time() as the loop got to it, so two seconds of
+        # captured traffic reached the ring inside a millisecond and the real
+        # timing was gone from the evidence for good. Each interval is now the
+        # radio's, less at most the offset correction the clock allows itself
+        # per captured second -- this fake sniffer hands over three seconds of
+        # radio time at once, so it is correcting at exactly that bound.
+        from itertools import pairwise
+
+        from threadwatch.record import RadioClock
+        for got in (b - a for a, b in pairwise(written)):
+            self.assertAlmostEqual(got, 1.0, delta=2 * RadioClock.MAX_SLEW)
+        self.assertLess(abs(written[0] - time.time()), 60)      # ...on the host's epoch, not the dongle's
         self.assertFalse((self.cfg.state_dir / "capture.fifo").exists())
         self.assertEqual((self._exit_note()["code"], self._exit_note()["reason"]), (3, "stream_ended"))
         self.assertIn("stopped after 3 frames", out)

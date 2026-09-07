@@ -131,6 +131,15 @@ class FrameReader:
         self._recv, self._send_raw, self._buf = recv, send, initial
         self._set_timeout, self._timeout = set_timeout, timeout
 
+    def _deadline(self, deadline: float | None) -> None:
+        if deadline is None:
+            return
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise HADeadline("Home Assistant did not finish answering in time")
+        if self._set_timeout is not None:
+            self._set_timeout(min(left, self._timeout))
+
     def _exact(self, n: int, deadline: float | None = None) -> bytes:
         while len(self._buf) < n:
             # Checked before every read, not once per message. The socket
@@ -139,12 +148,7 @@ class FrameReader:
             # for, a partial frame a byte at a time -- kept the reader here
             # for as long as it liked while the caller's deadline passed
             # unread. The read itself is shortened to what is left.
-            if deadline is not None:
-                left = deadline - time.monotonic()
-                if left <= 0:
-                    raise HADeadline("Home Assistant did not finish answering in time")
-                if self._set_timeout is not None:
-                    self._set_timeout(min(left, self._timeout))
+            self._deadline(deadline)
             try:
                 chunk = self._recv(min(RECV_CHUNK, max(4096, n - len(self._buf))))
             except TimeoutError as exc:
@@ -157,12 +161,15 @@ class FrameReader:
             if not chunk:
                 raise HAError("Home Assistant closed the websocket")
             self._buf += chunk
+        self._deadline(deadline)       # buffered frames also consume the batch budget
         out, self._buf = self._buf[:n], self._buf[n:]
         return out
 
-    def _send(self, data: bytes) -> None:
+    def _send(self, data: bytes, deadline: float | None = None) -> None:
+        self._deadline(deadline)
         try:
             self._send_raw(data)
+            self._deadline(deadline)
         except OSError as exc:
             raise HAError(f"lost the connection to Home Assistant ({exc})") from exc
 
@@ -195,7 +202,7 @@ class FrameReader:
             if mask:
                 data = bytes(b ^ mask[i & 3] for i, b in enumerate(data))
             if opcode == 0x9:                      # ping
-                self._send(encode_frame(0xA, data))
+                self._send(encode_frame(0xA, data), deadline)
                 continue
             if opcode == 0xA:                      # pong
                 continue
@@ -320,6 +327,23 @@ class HomeAssistant:
         except OSError as exc:
             raise HAError(f"lost the connection to Home Assistant ({exc})") from exc
 
+    def _send_before(self, obj: dict, deadline: float) -> None:
+        """Bound each command send by the same budget as its replies."""
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise HADeadline("Home Assistant batch send exceeded its deadline")
+        sock = self._sock
+        timeout = sock.gettimeout() if sock is not None and hasattr(sock, "gettimeout") else None
+        try:
+            if sock is not None and hasattr(sock, "settimeout"):
+                sock.settimeout(min(timeout, left) if timeout is not None else left)
+            self._send_json(obj)
+            if time.monotonic() >= deadline:
+                raise HADeadline("Home Assistant batch send exceeded its deadline")
+        finally:
+            if sock is not None and hasattr(sock, "settimeout"):
+                sock.settimeout(timeout)
+
     def _recv_json(self, deadline: float | None = None) -> dict:
         assert self._reader is not None
         return json.loads(self._reader.message(deadline))
@@ -347,18 +371,20 @@ class HomeAssistant:
         any answer is still missing at the deadline."""
         waited = self.DEADLINE_S if deadline_s is None else deadline_s
         deadline = time.monotonic() + waited
-        ids: dict[int, int] = {}
-        for i, (type_, fields) in enumerate(requests):
-            msg_id = self._next_id
-            self._next_id += 1
-            ids[msg_id] = i
-            self._send_json({"id": msg_id, "type": type_, **fields})
+        ids = {self._next_id + i: i for i in range(len(requests))}
+        self._next_id += len(requests)
         out: list[Any] = [None] * len(requests)
         pending = set(ids)
 
         def overdue() -> HAError:
             return HAError(f"Home Assistant has not answered {len(pending)} of {len(requests)} request(s) "
                            f"({', '.join(sorted({requests[ids[m]][0] for m in pending}))}) within {waited:g} s")
+        try:
+            for msg_id, i in ids.items():
+                type_, fields = requests[i]
+                self._send_before({"id": msg_id, "type": type_, **fields}, deadline)
+        except HADeadline:
+            raise overdue() from None
         while pending:
             if time.monotonic() > deadline:
                 raise overdue()

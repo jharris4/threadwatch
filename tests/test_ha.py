@@ -100,6 +100,44 @@ class WebSocketFramingTest(unittest.TestCase):
             opcode, data = unmask(encode_frame(0x1, b"x" * size))
             self.assertEqual((opcode, data), (0x1, b"x" * size))
 
+    def test_buffered_pings_and_sends_obey_the_absolute_deadline(self):
+        from unittest.mock import patch
+        clock = [0.0]
+        timeouts, sent = [], []
+
+        def send(data):
+            sent.append(data)
+            clock[0] += 0.6
+
+        reader = FrameReader(lambda n: b"", send,
+                             initial=server_frame(0x9, b"x") * 10 + server_frame(0x1, b"{}"),
+                             set_timeout=timeouts.append)
+        with patch("threadwatch.ha.time.monotonic", side_effect=lambda: clock[0]):
+            with self.assertRaises(ha.HADeadline):
+                reader.message(deadline=1.0)
+        self.assertEqual(len(sent), 2)
+        self.assertAlmostEqual(timeouts[-2], 0.4)
+        self.assertEqual(timeouts[-1], 20.0)
+
+    def test_batch_sends_stop_when_the_shared_budget_expires(self):
+        from unittest.mock import patch
+        clock = [0.0]
+        sent, timeouts = [], []
+        client = ha.HomeAssistant("ws://ha.local:8123", "token")
+        client._sock = type("Sock", (), {"gettimeout": lambda self: 20.0,
+                                       "settimeout": lambda self, t: timeouts.append(t)})()
+
+        def send(obj):
+            sent.append(obj)
+            clock[0] += 0.6
+
+        client._send_json = send
+        with patch("threadwatch.ha.time.monotonic", side_effect=lambda: clock[0]):
+            with self.assertRaisesRegex(HAError, "within 1 s"):
+                client.call_many([("a", {}), ("b", {}), ("c", {})], deadline_s=1.0)
+        self.assertEqual(len(sent), 2)
+        self.assertEqual(timeouts, [1.0, 20.0, 0.4, 20.0])
+
     def test_reader_reassembles_and_answers_pings(self):
         big = json.dumps({"k": "v" * 70000}).encode()
         stream = (server_frame(0x9, b"hi") + server_frame(0x1, b'{"a":', fin=False)

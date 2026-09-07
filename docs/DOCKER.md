@@ -93,6 +93,26 @@ address, so a server on the container's loopback would refuse every
 connection. Here it is the publish, not the bind, that says who can
 reach the pages.
 
+`[web] bind` and `[web] port` are therefore both overridden here: the
+same `command:` pins `--port 8080` to match the right-hand side of the
+`ports:` mapping. **Changing `[web] port` does not move the published
+port.** To read the pages somewhere other than `127.0.0.1:8080`, change
+the *left* side of the mapping and recreate the container:
+
+```yaml
+    ports:
+      - "127.0.0.1:9090:8080"    # host 9090 -> the container's 8080
+```
+
+```bash
+docker compose up -d --force-recreate web
+```
+
+Editing both sides works too, as long as the right-hand side and
+`--port` agree; leaving them out of step is what makes the pages
+unreachable. `[web]` still applies to a native install and to `serve` run
+outside the container.
+
 ## Layout
 
 - `./config` is mounted read-write into `recorder` (so `name` can write
@@ -141,7 +161,9 @@ reach the pages.
   is reported disabled.
 - The files in `config/` are read when a container starts: after editing
   `config.toml`, `credentials.toml` or `devices.json`, `docker compose
-  restart recorder` (and `web` for `[web]`).
+  restart recorder` (and `web` for `[web]`). `[web] bind` and `[web] port`
+  are the exception: `compose.yaml` overrides both on the command line,
+  and the published port is the `ports:` mapping's to change ("Start").
 - The image holds the code and nothing else: `.dockerignore` is an
   allowlist, so config, secrets, `data/` and anything else in the
   working tree stay out without being named.

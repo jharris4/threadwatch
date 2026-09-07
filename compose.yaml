@@ -67,7 +67,14 @@ services:
     # so a server on the container's loopback - the [web] bind default,
     # right for a native install - refuses every connection that arrives.
     # What keeps the pages off the LAN here is the loopback publish.
-    command: ["serve", "--bind", "0.0.0.0"]
+    #
+    # --port pins the container side for the same reason the bind is pinned:
+    # ports: below forwards to 8080 inside the container whatever config.toml
+    # says, so a [web] port = 9090 that only the server honoured moved it off
+    # the published port and the pages stopped answering. Inside its own
+    # namespace the port it listens on is nobody's business but this file's;
+    # change the host side of the mapping instead (docs/DOCKER.md).
+    command: ["serve", "--bind", "0.0.0.0", "--port", "8080"]
     restart: unless-stopped
     depends_on: [recorder]
     # Published on loopback only: the pages have no authentication, and on

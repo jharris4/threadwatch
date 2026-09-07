@@ -126,6 +126,9 @@ keep_days = 365
 # and keep the port on your LAN or behind a proxy that authenticates.
 bind = "127.0.0.1"
 port = 8080
+# Both are overridden in a Docker deployment: compose.yaml passes --bind and
+# --port on the command line, and the published port is its ports: mapping's
+# to change (docs/DOCKER.md). Editing them here moves nothing there.
 
 [alerts]
 # Where warning/critical events go. Any number of sinks; each has its own

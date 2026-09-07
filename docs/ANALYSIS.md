@@ -10,10 +10,10 @@ Timestamps are the radio's, carried on the host's epoch. The dongle
 stamps each frame and the recorder keeps the intervals between them,
 managing only the offset between the dongle's clock and the host's: it is
 corrected by at most a millisecond per captured second, which is well
-clear of crystal drift and far too small to distort an interval, and a
-gap too large to walk off at that rate is stepped instead and logged
-(`capture clock re-anchored`) — a sniffer restart, or NTP stepping the
-host. So a burst that arrives at Python in a rush, behind a disk stall or
+clear of crystal drift and far too small to distort an interval, and an actual
+host wall/monotonic clock discontinuity or backwards radio timestamp is
+stepped and logged (`capture clock re-anchored`). Queue latency alone
+never triggers a step, even when a backlog spans many seconds. So a burst that arrives at Python in a rush, behind a disk stall or
 a busy CPU, still reads as the seconds of traffic it was: every interval
 measurement below, and the detector's own periodicity, depends on that.
 Give Wireshark the key (docs/CREDENTIALS.md, last section) and MLE,

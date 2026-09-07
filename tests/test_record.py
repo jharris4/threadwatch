@@ -428,7 +428,7 @@ class RadioClockTest(unittest.TestCase):
 
     def _clock(self, wall):
         from threadwatch.record import RadioClock
-        return RadioClock(wall=lambda: wall[0])
+        return RadioClock(wall=lambda: wall[0], mono=lambda: wall[0])
 
     def test_intervals_survive_a_backlog_the_host_clock_would_have_erased(self):
         """Frames buffered in the serial reader or the FIFO are processed in a
@@ -446,6 +446,29 @@ class RadioClockTest(unittest.TestCase):
         for expected, got in zip((0.0, 0.25, 0.5, 1.0), (t - out[0] for t in out), strict=True):
             self.assertAlmostEqual(got, expected, delta=2 * clock.MAX_SLEW)
         self.assertEqual(out[0], wall[0])             # the first frame lands at wall clock
+
+    def test_a_long_backlog_and_its_drain_do_not_step_the_clock(self):
+        wall = [1_700_000_000.0]
+        clock = self._clock(wall)
+        first = clock.stamp(0.0)
+        wall[0] += 20
+        stamps = [clock.stamp(float(i)) for i in range(1, 21)]
+        self.assertEqual(clock.steps, 0)
+        self.assertAlmostEqual(stamps[-1] - first, 20, delta=20 * clock.MAX_SLEW)
+        for a, b in zip([first] + stamps, stamps, strict=False):
+            self.assertAlmostEqual(b - a, 1, delta=2 * clock.MAX_SLEW)
+
+    def test_host_steps_are_measured_independently_of_queue_delay(self):
+        from threadwatch.record import RadioClock
+        for step in (120, -120):
+            wall, mono = [1_700_000_000.0], [100.0]
+            clock = RadioClock(wall=lambda w=wall: w[0], mono=lambda m=mono: m[0])
+            first = clock.stamp(0.0)
+            wall[0] += 20 + step
+            mono[0] += 20
+            self.assertAlmostEqual(clock.stamp(1.0) - first, 1 + step)
+            self.assertEqual(clock.last_step_s, step)
+            self.assertEqual(clock.steps, 1)
 
     def test_the_offset_is_walked_toward_the_host_clock_not_jumped(self):
         wall = [1_700_000_000.0]

@@ -285,20 +285,19 @@ class RadioClock:
     recover. Flood periodicity, retry classification, ACK timing and poll
     cadence are all read off those intervals.
 
-    So the packet's own timing is kept, and only the offset between the
-    dongle's clock and the host's NTP-aligned one is managed here. The
-    offset is nudged by at most MAX_SLEW per second of captured time, which
-    is an order of magnitude more than a crystal drifts and small enough
-    that no interval is meaningfully distorted. A gap too large to walk off
-    is stepped instead and reported: that is a sniffer restart re-anchoring
-    itself on its own first packet, or the host clock being stepped.
+    Queue latency cannot distinguish drift from a clock jump. Only a host
+    wall/monotonic discontinuity or a backwards radio timestamp can step
+    the offset; ordinary disagreement is slewed at a bounded rate.
     """
 
-    STEP_S = 2.0            # beyond this, walking the offset off would take hours
+    STEP_S = 2.0            # host wall/monotonic discontinuity threshold
     MAX_SLEW = 1e-3         # 1 ms per captured second; crystal drift is under 100 ppm
 
-    def __init__(self, wall=time.time, step_s: float = STEP_S, max_slew: float = MAX_SLEW):
+    def __init__(self, wall=time.time, step_s: float = STEP_S, max_slew: float = MAX_SLEW,
+                 mono=time.monotonic):
         self._wall, self.step_s, self.max_slew = wall, step_s, max_slew
+        self._mono = mono
+        self._host_clock: tuple[float, float] | None = None
         self.offset: float | None = None
         self._last_raw: float | None = None
         self.steps = 0                       # re-anchorings this run
@@ -307,17 +306,24 @@ class RadioClock:
     def stamp(self, raw_ts: float) -> float:
         """The epoch timestamp to record for a frame the sniffer stamped
         ``raw_ts``. Sets ``last_step_s`` non-zero on the frame that stepped."""
-        now = self._wall()
+        now, mono = self._wall(), self._mono()
+        previous_host = self._host_clock
+        self._host_clock = (now, mono)
         self.last_step_s = 0.0
         if self.offset is None:
             self.offset = now - raw_ts       # the first frame lands at wall clock
             self._last_raw = raw_ts
             return raw_ts + self.offset
         error = now - (raw_ts + self.offset)
-        if abs(error) > self.step_s:
-            self.offset += error
+        host_step = (now - previous_host[0]) - (mono - previous_host[1])
+        if raw_ts < self._last_raw:
+            self.offset += error           # the radio restarted its timebase
             self.steps += 1
             self.last_step_s = error
+        elif abs(host_step) > self.step_s:
+            self.offset += host_step       # preserve any outstanding queue delay
+            self.steps += 1
+            self.last_step_s = host_step
         else:
             # Bounded by captured time, not by how many frames arrived: a
             # burst must not buy the correction a bigger budget.

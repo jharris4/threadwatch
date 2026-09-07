@@ -33,7 +33,11 @@ lost. A send that fails is tried again after 30 s, then 2 min, then 8 min,
 then every 10 min, until the record is six hours old, when it is given up
 and the journal says so (`given up, the record is 6.2 h old`): a quiet
 alert from a morning outage is still news at lunch, a daily summary from
-yesterday is not. What a sink still refuses when the recorder stops (a
+yesterday is not. The age is read before each retry as well as after each
+failure, so a record that went stale while it waited -- for its retry, for
+a sleeping host to wake, behind other deliveries -- is dropped rather than
+delivered by an endpoint that has since recovered. Every record still gets
+its first attempt however old it is. What a sink still refuses when the recorder stops (a
 watchdog restart, a reboot, the house network down with the mesh) is
 written to `data/state/alert-spool.jsonl`, and the next start sends it,
 less what has gone stale, to the sinks it was for by name. Every record

@@ -729,6 +729,15 @@ class Dispatcher:
 
     # ------------------------------------------------------------ thread
 
+    @staticmethod
+    def _age(record: dict, now: float) -> float:
+        """How old the news is. A record with no usable ts is taken as new:
+        dropping it for an age nothing recorded would be guessing."""
+        ts = record.get("ts")
+        if isinstance(ts, bool) or not isinstance(ts, (int, float)) or not math.isfinite(ts):
+            return 0.0
+        return now - ts
+
     def _due(self, item: dict, now: float) -> bool:
         return item["due"] <= now or item["due"] - now > self._max_delay
 
@@ -759,6 +768,24 @@ class Dispatcher:
                 # One entry per delivery still owed, held where close() can
                 # find it. The digests are already out of their sinks'
                 # held records by now: this is the only place they exist.
+                # An alert goes stale while it waits, not only while a send
+                # fails: waiting for its retry, for a sleeping host to wake, or
+                # behind other deliveries. Age was checked when the spool was
+                # loaded and after a failure, never before a send, so a
+                # recovered endpoint delivered hours-old outage news -- and a
+                # retry that then succeeded met no age limit at all. Draining
+                # at close comes through here too.
+                #
+                # Only a record that has already been tried (attempt > 0, which
+                # includes everything resumed from a spool) is dropped this
+                # way. Every record still gets its one attempt however old it
+                # is: the limit is on how long we keep trying, not on whether
+                # to try, and _failed gives up on the old ones after that.
+                if item is not None and item["attempt"] and (age := self._age(item["record"], now)) > self.stale_s:
+                    self.given_up += 1
+                    self.log(f"alert not retried to {', '.join(s.name for s in item['sinks'])}: given up, "
+                             f"the record is {age / 3600:.1f} h old (attempt {item['attempt']})")
+                    item = None
                 sends = [{"record": item["record"], "sinks": [s], "attempt": item["attempt"]}
                          for s in item["sinks"]] if item else []
                 sends += [{"record": rec, "sinks": [s], "attempt": 0} for s, rec in digests]
@@ -792,7 +819,7 @@ class Dispatcher:
         err = _describe_error(exc, sink.secrets)
         attempt = (item["attempt"] if item else 0) + 1
         now = time.time()
-        age = now - float(record.get("ts") or now)
+        age = self._age(record, now)
         with self._cv:
             if _maybe_delivered(exc) and attempt > TIMEOUT_RETRIES:
                 self.given_up += 1

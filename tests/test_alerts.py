@@ -859,6 +859,49 @@ class RetryTest(unittest.TestCase):
         time.sleep(0.2)
         self.assertEqual(sink.fail, 98)
 
+    def test_a_retry_that_went_stale_while_it_waited_is_not_sent(self):
+        """Age was checked when the spool was loaded and after a send failed,
+        never before one. A record could go stale between the two -- waiting
+        for its retry, waiting for a sleeping host to wake, waiting behind
+        other deliveries -- and a recovered endpoint then delivered hours-old
+        outage news. A send that succeeded met no age limit at all."""
+        sink = FlakySink(fail=0)
+        msgs = []
+        d = self._dispatcher([sink], msgs=msgs, stale_s=6 * 3600)
+        now = time.time()
+        with d._cv:                             # a retry queued seven hours ago
+            d._queue.append({"record": {**REC, "ts": now - 7 * 3600, "name": "old news"},
+                             "sinks": [sink], "attempt": 2, "due": now})
+            d._cv.notify()
+        self.assertTrue(wait_for(lambda: d.stats()["given_up"] == 1))
+        self.assertEqual(sink.sent, [])
+        self.assertIn("alert not retried to flaky: given up, the record is 7.0 h old (attempt 2)", msgs[-1])
+
+    def test_a_stale_retry_is_not_sent_by_the_drain_at_close_either(self):
+        sink = FlakySink(fail=0)
+        d = alerts.Dispatcher([sink], print, retry_delays=(30.0,), retry_cap_s=30.0, stale_s=6 * 3600)
+        now = time.time()
+        with d._cv:
+            d._queue.append({"record": {**REC, "ts": now - 7 * 3600}, "sinks": [sink],
+                             "attempt": 1, "due": now + 30})       # not due until long after close
+            d._queue.append({"record": {**REC, "ts": now, "name": "still news"}, "sinks": [sink],
+                             "attempt": 1, "due": now + 30})
+        d.close(2.0)
+        self.assertEqual([r.get("name") for r in sink.sent], ["still news"])
+        self.assertEqual(d.stats()["given_up"], 1)
+
+    def test_an_old_record_still_gets_its_one_attempt(self):
+        """The limit is on how long delivery keeps trying, not on whether to
+        try: a first send is not withheld for age, and the record is given up
+        after it fails."""
+        sink = FlakySink(fail=99)
+        msgs = []
+        d = self._dispatcher([sink], msgs=msgs, stale_s=60)
+        d.offer({**REC, "ts": time.time() - 3600})
+        self.assertTrue(wait_for(lambda: d.stats()["given_up"] == 1))
+        self.assertEqual(sink.fail, 98)                                # tried once
+        self.assertIn("given up, the record is 1.0 h old (attempt 1)", msgs[-1])
+
     def test_the_queue_is_retried_while_a_digest_still_goes_out_on_time(self):
         sink = FlakySink(fail=1, cooldown_s=0.3)
         d = self._dispatcher([sink])

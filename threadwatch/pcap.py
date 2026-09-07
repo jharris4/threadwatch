@@ -76,8 +76,11 @@ def _record_is_plausible(incl: int, snaplen: int) -> bool:
 
 
 # How far back and forward a record's stamp may sit from the one before
-# it and still be believed. A ring file holds an hour and its stamps are
-# the host clock; a capture given to `device` or `replay` may hold days.
+# it and still be believed - when a header has to earn belief, which is
+# only where one is being looked for rather than read at the offset the
+# record before it ended at (see _Records). A ring file holds an hour and
+# its stamps are the host clock; a capture given to `device` or `replay`
+# may hold days.
 _STAMP_BACK_S = 86400
 _STAMP_AHEAD_S = 7 * 86400
 
@@ -97,17 +100,26 @@ class _Records:
     skipped is counted, so no reader answers for a file as if it had read
     all of it.
 
-    A file's headers are held to more than the snaplen bound: a stamp near
-    the record before, a length within the original length, since a
+    A file's headers are held to more than the snaplen bound: a length
+    within the original length, a whole number of microseconds, since a
     flipped bit that leaves a length within the snaplen would otherwise
     swallow the records that follow as one frame's payload. A FIFO is not
     read ahead of the frame in hand, or the recorder would hand frames on
     late, so the sniffer's stream is taken on the snaplen bound alone, as
     it always was.
 
+    The stamp test is evidence for a header nothing else vouches for -
+    one found by scanning - and is not applied to a header sitting exactly
+    where the record before it ended. Applied there, it discarded valid
+    data: two records a week apart, which a filtered or concatenated
+    capture legitimately holds, ended the read at the first of them, and
+    the rest of the file was taken for a tail and not even counted.
+
     good is the offset just past the last record read whole: what a writer
     resuming the file may append at, and what the reader has left out (a
-    record cut short by a crash, a tail of NULs) begins there."""
+    record cut short by a crash, a tail of NULs, records no scan could
+    recover) begins there. tail_bytes is how much that is, so a reader
+    that answers for a file can say it did not read all of it."""
 
     def __init__(self, stream: BinaryIO, endian: str, snaplen: int, seekable: bool):
         self.stream = stream
@@ -121,6 +133,7 @@ class _Records:
         self.good = 24
         self.skipped_bytes = 0
         self.gaps = 0
+        self.tail_bytes = 0        # after good: unread, and no record found in it
         self._last_sec: int | None = None
 
     def _need(self, n: int) -> bool:
@@ -149,13 +162,15 @@ class _Records:
                 return None
         return sec, usec, incl
 
-    def _record(self, at: int, strict: bool, confirm: bool = False) -> tuple | None:
+    def _record(self, at: int, strict: bool, confirm: bool = False, stamp: bool = True) -> tuple | None:
         """The record at _buf[at:], if it is one that can be taken: its
         header, its data all here, and, with confirm, the header after it
-        agreeing with it (or the stream ending there)."""
+        agreeing with it (or the stream ending there). ``stamp`` asks it
+        to sit near the record before it, which only a header found by
+        scanning has to prove."""
         if not self._need(at + 16):
             return None
-        hdr = self._header(at, self._last_sec, strict)
+        hdr = self._header(at, self._last_sec if stamp else None, strict)
         if hdr is None:
             return None
         sec, _usec, incl = hdr
@@ -186,13 +201,21 @@ class _Records:
                 self.gaps += 1
                 return hdr
             at += 1
+        # Nothing more to be had: whatever is left is the tail, and it
+        # begins at good. Counted, not skipped over - a reader that says
+        # what it stepped over inside a file owes the same for what it
+        # never got past at the end of one.
+        self.tail_bytes = passed + len(self._buf)
         return None
 
     def __iter__(self) -> Iterator[tuple[float, bytes]]:
         while True:
-            hdr = self._record(0, strict=self.seekable)
+            # No stamp test here: this offset is where the last record
+            # ended, so the header is not being guessed at.
+            hdr = self._record(0, strict=self.seekable, stamp=False)
             if hdr is None:
                 if not self._need(16) or not self.seekable:
+                    self.tail_bytes = len(self._buf)
                     return                 # EOF, or a record cut short by a crash mid-write
                 hdr = self._resync()
                 if hdr is None:
@@ -262,8 +285,9 @@ def complete_length(path) -> int:
 class PcapStreamReader:
     """Reads classic pcap records from a blocking stream (file or FIFO).
 
-    skipped_bytes and gaps say what the stream held that was not a record
-    (see _Records); a reader that reports on a file owes them a mention."""
+    skipped_bytes and gaps say what the stream held that was not a record,
+    and tail_bytes what it ended with that never became one (see
+    _Records); a reader that reports on a file owes them a mention."""
 
     def __init__(self, stream: BinaryIO):
         self.stream = stream
@@ -288,6 +312,10 @@ class PcapStreamReader:
     @property
     def gaps(self) -> int:
         return self._records.gaps
+
+    @property
+    def tail_bytes(self) -> int:
+        return self._records.tail_bytes
 
     def __iter__(self) -> Iterator[Frame]:
         for ts, data in self._records:

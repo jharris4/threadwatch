@@ -133,6 +133,41 @@ class TruncatedRingTest(unittest.TestCase):
                 self.assertEqual([round(f.ts) for f in PcapStreamReader(fh)], [1_700_000_000, 1_700_000_002])
             self.assertEqual(complete_length(path), path.stat().st_size)
 
+    def test_records_a_week_apart_are_both_read(self):
+        # A filtered or concatenated capture legitimately holds records
+        # days apart. The stamp test was applied to a header sitting
+        # exactly where the record before it ended, so the second was
+        # refused, the scan for a replacement refused it again, and the
+        # rest of the file was taken for a tail: a report over half the
+        # capture that looked complete.
+        buf = io.BytesIO()
+        w = PcapWriter(buf, DLT_NOFCS)
+        w.write(frame(1_700_000_000.0))
+        w.write(frame(1_700_000_000.0 + 8 * 86400))       # eight days later
+        w.write(frame(1_700_000_000.0 - 3 * 86400))       # and back, three days before the first
+        data = buf.getvalue()
+        reader = PcapStreamReader(io.BytesIO(data))
+        self.assertEqual([round(f.ts) for f in reader], [1_700_000_000, 1_700_691_200, 1_699_740_800])
+        self.assertEqual((reader.skipped_bytes, reader.gaps, reader.tail_bytes), (0, 0, 0))
+        self.assertEqual(complete_length_of(data), len(data))
+
+    def test_what_the_reader_never_got_past_at_the_end_is_counted(self):
+        # A tail no scan can recover used to be dropped in silence, so a
+        # replay or a device report over a damaged file looked complete.
+        buf = io.BytesIO()
+        w = PcapWriter(buf, DLT_NOFCS)
+        w.write(frame(1.0)); w.write(frame(2.0))
+        whole = buf.getvalue()
+        reader = PcapStreamReader(io.BytesIO(whole + b"\x00" * 4096))
+        self.assertEqual(len(list(reader)), 2)
+        self.assertEqual((reader.skipped_bytes, reader.gaps, reader.tail_bytes), (0, 0, 4096))
+        reader = PcapStreamReader(io.BytesIO(whole[:-3]))          # a record cut short mid-write
+        self.assertEqual(len(list(reader)), 1)
+        self.assertEqual(reader.tail_bytes, 16 + 9 - 3)
+        reader = PcapStreamReader(io.BytesIO(whole))               # nothing left over
+        self.assertEqual(len(list(reader)), 2)
+        self.assertEqual(reader.tail_bytes, 0)
+
     def test_microseconds_never_round_to_a_full_second(self):
         buf = io.BytesIO()
         PcapWriter(buf, DLT_NOFCS).write(frame(1700000000.9999996))

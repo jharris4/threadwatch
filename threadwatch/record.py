@@ -606,6 +606,9 @@ def run_replay(cfg: Config, pcap_path: Path | list[Path]) -> None:
                 if reader.skipped_bytes:
                     print(f"[threadwatch] {path}: skipped {reader.skipped_bytes} bytes in {reader.gaps} "
                           "place(s) that are not readable records", file=sys.stderr, flush=True)
+                if reader.tail_bytes:
+                    print(f"[threadwatch] {path}: the last {reader.tail_bytes} bytes hold no readable "
+                          "record and were not read", file=sys.stderr, flush=True)
         except (OSError, PcapFormatError) as exc:
             # A path that does not exist, cannot be read, or is not a pcap:
             # one line and exit 1 (as `device` does), not a traceback and not a

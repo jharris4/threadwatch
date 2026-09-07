@@ -191,7 +191,7 @@ def run_device(cfg: Config, target: str, pcap_file: Path | None = None,
 
     undecodable = 0
     refused = 0                # frames bearing the address that did not vouch for it
-    skipped_bytes = skipped_files = 0
+    skipped_bytes = skipped_files = tail_bytes = 0
     unreadable: list[tuple[Path, Exception]] = []
     for path in files:
         try:
@@ -256,6 +256,7 @@ def run_device(cfg: Config, target: str, pcap_file: Path | None = None,
             if reader.skipped_bytes:
                 skipped_bytes += reader.skipped_bytes
                 skipped_files += 1
+            tail_bytes += reader.tail_bytes
     if unreadable and len(unreadable) == len(files):
         path, exc = unreadable[0]
         raise SystemExit(f"threadwatch device: could not read {path}: {exc}" if len(files) == 1 else
@@ -268,6 +269,9 @@ def run_device(cfg: Config, target: str, pcap_file: Path | None = None,
               "a forgery - and count as traffic below but not as sightings of the device)")
     if skipped_bytes:
         print(f"({skipped_bytes} bytes in {skipped_files} ring file(s) are not readable records and were skipped)")
+    if tail_bytes:
+        print(f"({tail_bytes} bytes at the end of the capture(s) hold no readable record and were not read; "
+              "a file cut short by a crash ends this way, and so does one damaged past recovery)")
 
     print(f"=== {display} ({', '.join(addrs)}) ===")
     if unreadable:

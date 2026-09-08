@@ -2258,14 +2258,27 @@ class Pipeline:
     # address. A rebooting router asks the leader for the router id it had
     # and usually gets it back, so an unchanged rloc16 under a new extended
     # address is the rotation's own signature, and nothing off the mesh can
-    # forge it. Failing that, the two weaker signs together: the old address
-    # stopped as the new one started (ROTATION_OVERLAP_S of interleaving
-    # allowed, for the last frames of one crossing the first of the other),
-    # and the new address is heard at about the level the old one was, which
-    # a hub that has not moved will be (ROTATION_RSSI_DB, wider than the
-    # link detector's default drop so a rotation is not judged by it).
+    # forge it. Failing that, the two weaker signs together -- circumstantial,
+    # not proof, so both are bounded tightly enough that unrelated traffic
+    # does not wander into them:
+    #
+    # the handover, which is a reboot and so is quick. The two addresses may
+    # interleave by ROTATION_OVERLAP_S (the last frames of one crossing the
+    # first of the other) and the new address must speak within
+    # ROTATION_HANDOVER_S of the old one's last frame. Without that second
+    # bound the test reads "the new address turned up at some point after
+    # the old one stopped", which any device that joined the mesh a day
+    # later also satisfies;
+    #
+    # the level, which a hub that has not moved keeps (ROTATION_RSSI_DB,
+    # wider than the link detector's default drop so a rotation is not
+    # judged by it). A row's level is an average, and an address heard two
+    # or three times has no average worth comparing, so both rows need
+    # ROTATION_MIN_FRAMES behind theirs before the comparison counts.
     ROTATION_OVERLAP_S = 120.0
+    ROTATION_HANDOVER_S = 15 * 60.0
     ROTATION_RSSI_DB = 10.0
+    ROTATION_MIN_FRAMES = 20
     # An address heard once carries neither an rloc16 nor a settled level,
     # so the browse that first reports a rotation often cannot corroborate
     # one that is real. Each later browse looks again while the claim is
@@ -2274,9 +2287,16 @@ class Pipeline:
     # capture is not coming.
     ROTATION_RECHECK_S = 6 * 3600
 
-    def _rotation_evidence(self, prev: str, ext: str) -> tuple[bool, list[str], list[str]]:
+    def _rotation_evidence(self, prev: str, ext: str) -> tuple[bool, list[str], list[str], bool]:
         """What the radio says about a claimed rotation ``prev`` -> ``ext``:
-        (corroborated, what held, what did not).
+        (corroborated, what held, what did not, whether it contradicts).
+
+        The last of those separates a claim the traffic argues against from
+        one it has nothing to say about yet. A rotation is bound to its new
+        address by that address's first frame, which carries no router id and
+        no average worth the name, so the first look at a real rotation is
+        almost always ignorant rather than doubtful. Reporting the two the
+        same way would put a notice on every reboot.
 
         Hearing an address on air proves the device exists. It does not
         prove that an unauthenticated hostname advertising it belongs to
@@ -2291,9 +2311,10 @@ class Pipeline:
         if old_row is None or new_row is None:
             # An address with no row has not been heard in this run: there is
             # no traffic to judge either way.
-            return False, [], ["one of the addresses is not in the last-seen table"]
+            return False, [], ["one of the addresses is not in the last-seen table"], False
         held: list[str] = []
         missing: list[str] = []
+        against = False
 
         old_id, new_id = old_row.get("rloc16"), new_row.get("rloc16")
         same_id = bool(old_id) and old_id == new_id
@@ -2301,27 +2322,36 @@ class Pipeline:
             held.append(f"kept router id {new_id}")
         elif old_id and new_id:
             missing.append(f"router id changed, {old_id} to {new_id}")
+            against = True
         else:
             missing.append("no router id seen for both addresses")
 
-        # A negative overlap is a gap: the new address started after the old
-        # one was last heard. Positive is the old one still talking once the
-        # new one had begun, which is two devices, not one rebooting.
+        # A negative overlap is a gap: the new address started that long
+        # after the old one was last heard. Positive is the old one still
+        # talking once the new one had begun, which is two devices, not one
+        # rebooting.
         started = max(new_row.get("first_seen", 0.0), new_row.get("resumed_ts", 0.0))
         overlap = old_row.get("last_seen", 0.0) - started
-        handover = overlap <= self.ROTATION_OVERLAP_S
+        handover = -self.ROTATION_HANDOVER_S <= overlap <= self.ROTATION_OVERLAP_S
         if handover:
             held.append("the old address stopped as the new one started")
-        else:
+        elif overlap > self.ROTATION_OVERLAP_S:
             missing.append(f"both addresses were on air together for {round(overlap)} s")
+            against = True
+        else:
+            missing.append(f"the new address first spoke {round(-overlap)} s after the old one stopped")
+            against = True
 
         old_level = old_row.get("rssi_ref")
         if old_level is None:
             old_level = old_row.get("rssi")
         new_level = new_row.get("rssi")
+        heard = min(old_row.get("frames", 0), new_row.get("frames", 0))
         close = False
         if old_level is None or new_level is None:
             missing.append("no signal level for both addresses")
+        elif heard < self.ROTATION_MIN_FRAMES:
+            missing.append(f"only {heard} frames behind a signal level, too few to compare")
         else:
             gap = abs(new_level - old_level)
             close = gap <= self.ROTATION_RSSI_DB
@@ -2329,7 +2359,8 @@ class Pipeline:
                 held.append(f"heard within {gap:.0f} dB of the old address")
             else:
                 missing.append(f"heard {gap:.0f} dB from the old address")
-        return same_id or (handover and close), held, missing
+                against = True
+        return same_id or (handover and close), held, missing, against
 
     def _settle_rotation(self, prev: str, ext: str, name: str | None, host: str,
                          r: dict, now: float, new: dict, late: bool = False) -> None:
@@ -2344,33 +2375,40 @@ class Pipeline:
             # rotated away from is not in the table (evicted under the track
             # cap, or pruned before a restart), and no quiet check is looking
             # at it. Believing the claim suppresses nothing.
-            ok, held, missing = True, ["the old address is no longer tracked"], []
+            ok, held, missing, against = True, ["the old address is no longer tracked"], [], False
         else:
-            ok, held, missing = self._rotation_evidence(prev, ext)
+            ok, held, missing, against = self._rotation_evidence(prev, ext)
+        # The window binds whatever turns up after it, corroboration included:
+        # evidence that arrives half a day late is a coincidence the mesh
+        # happened to supply, not the rotation being witnessed.
+        expired = late and now - new.get("unverified_since", now) > self.ROTATION_RECHECK_S
         who = name or r.get("instance") or host
-        if not (ok or trusted):
-            if late:
-                # A claim that has had its chance. Dropping the marker stops
-                # the looking; the name it was given stands, and the old
-                # address goes on being judged, which is what an
-                # uncorroborated rotation is owed.
-                if now - new.get("unverified_since", now) > self.ROTATION_RECHECK_S:
-                    new.pop("unverified_previous", None)
-                    new.pop("unverified_since", None)
-                return
-            new["unverified_previous"], new["unverified_since"] = prev, now
-            fix = (f'threadwatch name {ext} "{name}"' if name
-                   else f'threadwatch name {ext} "<name>"')
-            self._emit("border_router_rotation_unverified", "notice", now, addr=ext, name=name,
-                       previous=prev, hostname=host, evidence="; ".join(held) or None,
-                       missing="; ".join(missing),
-                       note=(f"{who} advertises {ext}, was {prev}, but the radio does not corroborate it: "
-                             f"{'; '.join(missing)}. mDNS is unauthenticated, so {prev} keeps its name and "
-                             f"stays judged: expect it to report quiet. If the hub really did rotate, "
-                             f"confirm it with: {fix} (then restart the recorder)."))
+        if expired or not (ok or trusted):
+            if not late:
+                new["unverified_previous"], new["unverified_since"] = prev, now
+            # Said once per claim: when the traffic argues against it, which
+            # is worth hearing at once, and when the window runs out with
+            # nothing having corroborated it, which is worth hearing before
+            # the old address's silences are all the operator has to go on.
+            if (against and not late) or expired:
+                if not new.get("unverified_reported"):
+                    new["unverified_reported"] = True
+                    fix = (f'threadwatch name {ext} "{name}"' if name
+                           else f'threadwatch name {ext} "<name>"')
+                    self._emit("border_router_rotation_unverified", "notice", now, addr=ext, name=name,
+                               previous=prev, hostname=host, evidence="; ".join(held) or None,
+                               missing="; ".join(missing),
+                               note=(f"{who} advertises {ext}, was {prev}, but the radio does not "
+                                     f"corroborate it: {'; '.join(missing)}. mDNS is unauthenticated, so "
+                                     f"{prev} keeps its name and stays judged: expect it to report quiet. "
+                                     f"If the hub really did rotate, confirm it with: {fix} (then restart "
+                                     "the recorder)."))
+            if expired:
+                for key in ("unverified_previous", "unverified_since", "unverified_reported"):
+                    new.pop(key, None)
             return
-        new.pop("unverified_previous", None)
-        new.pop("unverified_since", None)
+        for key in ("unverified_previous", "unverified_since", "unverified_reported"):
+            new.pop(key, None)
         if old_row is not None:
             old_row["rotated_to"] = ext
             old_row.pop("quiet_reported_ts", None)
@@ -2504,6 +2542,8 @@ class Pipeline:
                 # six hours again.
                 new["unverified_previous"] = rec["unverified_previous"]
                 new["unverified_since"] = rec.get("unverified_since", now)
+                if rec.get("unverified_reported"):
+                    new["unverified_reported"] = True
             if changed:
                 # One entry per address, newest last, and never the live
                 # one: an A -> B -> A rotation would otherwise leave two

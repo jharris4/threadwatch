@@ -230,20 +230,39 @@ the name. Naming an address and retiring one are separate acts with very
 different costs: a wrong name mislabels a row, where a wrong retirement
 takes the old address out of the quiet, link and starvation checks for
 good, so a device that later dies can never page. The hostname's claim
-carries the name across; the radio decides the retirement. It corroborates
-when the new address kept the old one's router id -- a rebooting router
-asks the leader for the id it had, and nothing off the mesh can arrange
-that -- or, failing that, when the old address stopped as the new one
-started *and* the new one is heard within 10 dB of the level the old one
-was. Otherwise this event says which signs were missing, the old address
-keeps its name and stays judged (expect it to report quiet), and each
-later browse looks again for six hours, since an address heard once has
-neither a router id nor a settled level. To settle it by hand, confirm the
-rotation into the inventory with `threadwatch name <new-address> "<name>"`
-and restart the recorder: a rotation the operator has vouched for is
-covered across the entry's addresses without any retirement.
-`[border_routers] rotation = "trusted"` restores the old behaviour, where
-the advertisement alone retires the old address.
+carries the name across; the radio decides the retirement.
+
+It corroborates when the new address answers to the router id the old one
+held: a rebooting router asks the leader for the id it had, and nothing
+off the mesh can arrange that. Failing that, two weaker signs together --
+the old address stopped as the new one started (they may interleave by
+2 min, and the new address must speak within 15 min of the old one's last
+frame), and the new address is heard within 10 dB of the level the old one
+was, with at least 20 frames behind each average. Those two are
+circumstantial: they are a physical signature the LAN cannot arrange, not
+proof of identity, and they are bounded tightly for that reason. An
+address the mesh happens to supply -- one that joined an hour later, or a
+neighbour at a similar level -- should fail them, and the bounds are what
+makes that so.
+
+Until then the old address keeps its name and stays judged, so expect it
+to report quiet, and each later browse looks again for six hours. Nothing
+that turns up after those six hours retires it, corroboration included: by
+then the evidence is a coincidence the mesh supplied rather than the
+rotation being witnessed. The event itself is emitted once per claim, when
+the traffic argues against the claim (the addresses overlapped, the gap
+was too long, the levels are far apart, the router id changed) and
+otherwise only when the six hours run out -- an address is bound to its
+name by its very first frame, which carries no router id and no average
+worth comparing, so a real rotation is almost always merely unproven at
+first and reporting that would put a notice on every reboot.
+
+To settle it by hand, confirm the rotation into the inventory with
+`threadwatch name <new-address> "<name>"` and restart the recorder: a
+rotation the operator has vouched for is covered across the entry's
+addresses without any retirement. `[border_routers] rotation = "trusted"`
+restores the old behaviour, where the advertisement alone retires the old
+address.
 
 `credentials_stale` means the network key no longer matches the mesh,
 usually because it was re-commissioned: frames keep failing to decrypt and

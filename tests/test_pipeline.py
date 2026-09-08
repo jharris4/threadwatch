@@ -2470,10 +2470,19 @@ class BorderRouterTest(unittest.TestCase):
     def router(host, ext, instance="AppleTV Living Room", vendor="Apple", model="BorderRouter"):
         return {"hostname": host, "ext": ext, "instance": instance, "vendor": vendor, "model": model}
 
+    @staticmethod
+    def heard(pipe, addr, first, rssi=-60.0, n=Pipeline.ROTATION_MIN_FRAMES, every=1.0):
+        """``addr`` on air from ``first``, as a border router is: enough
+        frames for the row to carry a signal level worth comparing. Returns
+        when it was last heard."""
+        for i in range(n):
+            pipe.ingest(frame(first + i * every, addr, rssi=rssi))
+        return first + (n - 1) * every
+
     def test_rebooted_hub_keeps_its_name_and_the_old_address_retires(self):
         pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
         t = time.time() - 3600                              # real-clock times: the restart below judges silences by now
-        pipe.ingest(frame(t, self.OLD))
+        self.heard(pipe, self.OLD, t)
         pipe.ingest(frame(t, self.OTBR))
         pipe._apply_border_routers([self.router(self.HOST, self.OLD),
                                     self.router("homeassistant-otbr.local", self.OTBR, "HA OTBR #AF1B",
@@ -2491,6 +2500,16 @@ class BorderRouterTest(unittest.TestCase):
         first = [r for r in pipe.events.records if r["event"] == "device_first_seen" and r["addr"] == self.NEW]
         self.assertEqual(first[0]["name"], "Living Room Apple TV")
         self.assertEqual(pipe._pending_routers, {})
+        # The frame that binds the name is the only one the new address has:
+        # no router id yet, and no average worth comparing. Nothing is
+        # retired on that, and nothing is reported either, because a look
+        # with nothing to go on is not a look that doubts the claim.
+        self.assertNotIn("rotated_to", pipe.seen.table[self.OLD])
+        self.assertEqual([r["event"] for r in pipe.events.records
+                          if r["event"].startswith("border_router")], [])
+        # Once it has stood up on air, the next browse retires the old one.
+        self.heard(pipe, self.NEW, t + 601)
+        pipe._apply_border_routers([self.router(self.HOST, self.NEW)], t + 700)
         ev = [r for r in pipe.events.records if r["event"] == "border_router_address_changed"]
         self.assertEqual(len(ev), 1)
         self.assertEqual((ev[0]["addr"], ev[0]["previous"], ev[0]["name"]),
@@ -2610,13 +2629,13 @@ class BorderRouterTest(unittest.TestCase):
         after NEW started, and NEW is heard 30 dB away from where OLD was.
         Returns the time of the browse that claims it. OLD's last frame stays
         older than NEW's, so this is a claim to judge, not a stale record."""
-        pipe.ingest(frame(t, self.OLD, rssi=-50.0))
+        self.heard(pipe, self.OLD, t, rssi=-50.0)
         if old_rloc16:
             self.hold_rloc16(pipe, self.OLD, old_rloc16, t + 50, rssi=-50.0)
         pipe._apply_border_routers([self.router(self.HOST, self.OLD)], t)
-        pipe.ingest(frame(t + 100, self.NEW, rssi=-80.0))
-        pipe.ingest(frame(t + 300, self.OLD, rssi=-50.0))
-        pipe.ingest(frame(t + 400, self.NEW, rssi=-80.0))
+        self.heard(pipe, self.NEW, t + 100, rssi=-80.0)
+        self.heard(pipe, self.OLD, t + 300, rssi=-50.0)
+        self.heard(pipe, self.NEW, t + 400, rssi=-80.0)
         pipe._apply_border_routers([self.router(self.HOST, self.NEW)], t + 500)
         return t + 500
 
@@ -2699,6 +2718,78 @@ class BorderRouterTest(unittest.TestCase):
         self.assertEqual(len([r for r in pipe.events.records
                               if r["event"] == "border_router_rotation_unverified"]), 1)
 
+    def test_a_device_that_turned_up_later_cannot_be_claimed_as_the_rotation(self):
+        # "The old address stopped before the new one started" is true of
+        # every device that ever joined the mesh afterwards. Without a bound
+        # on the gap, a forged advertisement naming any such address -- at a
+        # similar level, which says nothing on its own -- retired the hub.
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t = time.time() - 200000
+        stranger = "aaaaaaaaaaaaaaaa"
+        self.heard(pipe, self.OLD, t, rssi=-60.0)
+        pipe._apply_border_routers([self.router(self.HOST, self.OLD)], t)
+        self.heard(pipe, stranger, t + 86400, rssi=-60.0)            # a day later, same level
+        pipe._apply_border_routers([self.router(self.HOST, stranger)], t + 86500)
+        self.assertNotIn("rotated_to", pipe.seen.table[self.OLD])
+        ev = [r for r in pipe.events.records if r["event"] == "border_router_rotation_unverified"]
+        self.assertIn("after the old one stopped", ev[0]["missing"])
+        pipe.periodic(t + 86500)                                     # and the hub's silence is still reported
+        self.assertEqual([r["addr"] for r in pipe.events.records if r["event"] == "device_quiet"], [self.OLD])
+
+    def test_an_unverified_name_does_not_answer_for_the_old_address_silence(self):
+        # Naming binds the address to the entry, and the entry is what
+        # decides whose announced silence a frame ends. An address mDNS
+        # alone put there must not end anybody's: the hub is still gone.
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t = time.time() - 7200
+        at = self.rotate_without_corroboration(pipe, t)
+        pipe.periodic(at + 1700)
+        self.assertEqual([r["addr"] for r in pipe.events.records if r["event"] == "device_quiet"], [self.OLD])
+        pipe.ingest(frame(at + 1800, self.NEW, rssi=-80.0))          # only the candidate is talking
+        self.assertEqual([r["event"] for r in pipe.events.records if r["event"] == "device_returned"], [])
+        self.assertEqual(pipe.quiet_reported, {self.OLD})            # the episode stays open
+        self.assertEqual(pipe.names.entry_addresses_of(self.NEW), [self.NEW])
+        self.assertEqual(pipe.names.name(self.NEW), "Living Room Apple TV")   # still named, though
+
+    def test_corroboration_arriving_after_the_window_does_not_retire(self):
+        # The window has to bind the corroborating case too, or it is not a
+        # window: it only ever stopped the looking when the looking failed.
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t = time.time() - 200000
+        at = self.rotate_without_corroboration(pipe, t, old_rloc16="1c00")
+        self.hold_rloc16(pipe, self.NEW, "1c00", at + 7 * 3600)
+        pipe._apply_border_routers([self.router(self.HOST, self.NEW)], at + 7 * 3600 + 60)
+        self.assertNotIn("rotated_to", pipe.seen.table[self.OLD])
+        self.assertNotIn("unverified_previous", pipe.routers[self.HOST])
+        # The same evidence inside the window does retire it.
+        pipe2 = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        at = self.rotate_without_corroboration(pipe2, t, old_rloc16="1c00")
+        self.hold_rloc16(pipe2, self.NEW, "1c00", at + 3600)
+        pipe2._apply_border_routers([self.router(self.HOST, self.NEW)], at + 3660)
+        self.assertEqual(pipe2.seen.table[self.OLD]["rotated_to"], self.NEW)
+
+    def test_a_claim_nothing_argues_against_is_reported_only_when_it_runs_out(self):
+        # A claim the radio merely knows nothing about is the ordinary state
+        # of a real rotation on the browse that binds it. Reporting that at
+        # once would put a notice on every reboot, so it waits.
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t = time.time() - 200000
+        self.heard(pipe, self.OLD, t)
+        pipe._apply_border_routers([self.router(self.HOST, self.OLD)], t)
+        pipe.ingest(frame(t + 80, self.NEW))            # heard twice and no more: nothing to compare,
+        pipe.ingest(frame(t + 81, self.NEW))            # but nothing against it either
+        pipe._apply_border_routers([self.router(self.HOST, self.NEW)], t + 100)
+        self.assertNotIn("rotated_to", pipe.seen.table[self.OLD])
+        self.assertEqual([r["event"] for r in pipe.events.records
+                          if r["event"].startswith("border_router")], [])          # silent
+        self.assertEqual(pipe.routers[self.HOST]["unverified_previous"], self.OLD)
+        pipe._apply_border_routers([self.router(self.HOST, self.NEW)],
+                                   t + 100 + Pipeline.ROTATION_RECHECK_S + 60)
+        ev = [r for r in pipe.events.records if r["event"] == "border_router_rotation_unverified"]
+        self.assertEqual(len(ev), 1)                                                # said once, at the end
+        self.assertIn("too few to compare", ev[0]["missing"])
+        self.assertNotIn("unverified_previous", pipe.routers[self.HOST])
+
     def test_an_old_address_no_longer_tracked_is_not_held_back(self):
         # The gate exists to stop a claim silencing a row that is still being
         # judged. A row the track cap evicted is judged by nobody, so there
@@ -2735,7 +2826,8 @@ class BorderRouterTest(unittest.TestCase):
         import io
         pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
         t = time.time() - 7200
-        pipe.ingest(frame(t, self.OLD))
+        self.heard(pipe, self.OLD, t)
+        self.hold_rloc16(pipe, self.OLD, "1c00", t + 50)
         pipe._apply_border_routers([self.router(self.HOST, self.OLD)], t)
         forged = "deadbeefdeadbeef"
         out = io.StringIO()
@@ -2757,6 +2849,12 @@ class BorderRouterTest(unittest.TestCase):
         pipe.ingest(frame(t + 41 * 60, self.NEW))
         self.assertEqual((pipe.routers[self.HOST]["addr"], pipe.names.name(self.NEW)),
                          (self.NEW, "Living Room Apple TV"))
+        # Named on the advertisement; retired once the hub is heard holding
+        # the router id it had before the reboot.
+        self.assertNotIn("rotated_to", pipe.seen.table[self.OLD])
+        self.heard(pipe, self.NEW, t + 42 * 60)
+        self.hold_rloc16(pipe, self.NEW, "1c00", t + 43 * 60)
+        pipe._apply_border_routers([self.router(self.HOST, self.NEW)], t + 50 * 60)
         self.assertEqual(pipe.seen.table[self.OLD]["rotated_to"], self.NEW)
 
     def test_forged_advertisements_cannot_grow_the_waiting_room_without_bound(self):
@@ -2798,9 +2896,10 @@ class BorderRouterTest(unittest.TestCase):
         import io
         pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
         t = time.time() - 7200
-        pipe.ingest(frame(t, self.OLD))
+        self.heard(pipe, self.OLD, t)
         pipe._apply_border_routers([self.router(self.HOST, self.OLD)], t)
-        pipe.ingest(frame(t + 600, self.NEW))
+        self.heard(pipe, self.NEW, t + 600)
+        self.hold_rloc16(pipe, self.NEW, "1c00", t + 650)
         pipe._apply_border_routers([self.router(self.HOST, self.NEW)], t + 700)
         self.assertEqual(pipe.seen.table[self.OLD]["rotated_to"], self.NEW)
         pipe.ingest(frame(t + 800, self.NEW))
@@ -2818,7 +2917,8 @@ class BorderRouterTest(unittest.TestCase):
         # A retired address heard on air is live, whatever mDNS said, and
         # its silences count again.
         with contextlib.redirect_stderr(io.StringIO()):
-            pipe.ingest(frame(t + 7100, self.OLD))
+            self.heard(pipe, self.OLD, t + 7100)
+            self.hold_rloc16(pipe, self.OLD, "1c00", t + 7150)   # rebooted: it asks for its id back
         self.assertNotIn("rotated_to", pipe.seen.table[self.OLD])
         pipe.periodic(t + 7100 + 31 * 60)
         self.assertEqual([r["addr"] for r in pipe.events.records if r["event"] == "device_quiet"], [self.NEW, self.OLD])
@@ -2832,11 +2932,16 @@ class BorderRouterTest(unittest.TestCase):
         from threadwatch.review import group_episodes
         pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
         t = time.time() - 7200
-        pipe.ingest(frame(t, self.OLD))
+        self.heard(pipe, self.OLD, t)
+        self.hold_rloc16(pipe, self.OLD, "1c00", t + 50)
         pipe._apply_border_routers([self.router(self.HOST, self.OLD)], t)
         pipe.periodic(t + 31 * 60)                          # the hub rebooted: its old address went quiet
         self.assertEqual([r["addr"] for r in pipe.events.records if r["event"] == "device_quiet"], [self.OLD])
-        pipe.ingest(frame(t + 32 * 60, self.NEW))           # ...and it is back under a new one
+        # ...and it is back under a new one. The outage was longer than any
+        # handover window -- it had to be, to have been reported at all -- so
+        # the router id it asked the leader for back is what carries this one.
+        self.heard(pipe, self.NEW, t + 32 * 60)
+        self.hold_rloc16(pipe, self.NEW, "1c00", t + 33 * 60)
         pipe._apply_border_routers([self.router(self.HOST, self.NEW)], t + 40 * 60)
         back = [r for r in pipe.events.records if r["event"] == "device_returned"]
         self.assertEqual([(r["addr"], r["name"]) for r in back], [(self.OLD, "Living Room Apple TV")])
@@ -2853,7 +2958,7 @@ class BorderRouterTest(unittest.TestCase):
     def test_a_router_matching_no_entry_is_announced_once(self):
         pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
         t = 1_700_000_000.0
-        pipe.ingest(frame(t, "0011223344556677"))
+        self.heard(pipe, "0011223344556677", t)
         stranger = self.router("homepod-kitchen.local", "0011223344556677", "HomePod Kitchen")
         pipe._apply_border_routers([stranger], t)
         pipe._apply_border_routers([stranger], t + 600)
@@ -2861,7 +2966,7 @@ class BorderRouterTest(unittest.TestCase):
         self.assertEqual(len(ev), 1)
         self.assertIn("homepod-kitchen.local", ev[0]["note"])
         self.assertIsNone(pipe.names.name("0011223344556677"))
-        pipe.ingest(frame(t + 1100, "8899aabbccddeeff"))
+        self.heard(pipe, "8899aabbccddeeff", t + 100)
         pipe._apply_border_routers([self.router("homepod-kitchen.local", "8899aabbccddeeff", "HomePod Kitchen")],
                                    t + 1200)
         ev = [r for r in pipe.events.records if r["event"] == "border_router_address_changed"]

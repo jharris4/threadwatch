@@ -111,11 +111,13 @@ browse_s = 600             # 10 min
 # old address exempts it from every quiet check, so an advertisement nobody
 # can check must not be able to silence a device for good. "corroborated"
 # carries the name across on the advertisement but waits for the radio to
-# agree before retiring: the new address kept the old one's router id, or
-# the old address stopped as the new one started and is heard at about the
-# same level. Rotations it cannot corroborate are reported
-# (border_router_rotation_unverified) and the old address stays judged.
-# "trusted" retires on the advertisement alone.
+# agree before retiring: the new address answers to the router id the old
+# one held, or -- circumstantially -- the old address stopped within
+# minutes of the new one starting and the two are heard at about the same
+# level. Rotations it cannot corroborate are reported
+# (border_router_rotation_unverified, docs/ALERTING.md) and the old address
+# stays judged, so it will report quiet until the rotation is confirmed
+# with `threadwatch name`. "trusted" retires on the advertisement alone.
 rotation = "corroborated"  # or "trusted"
 
 [events]

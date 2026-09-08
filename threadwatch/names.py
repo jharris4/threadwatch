@@ -113,6 +113,12 @@ class DeviceNames:
         self.inventory_path = inventory_path
         self.entries: list[dict] = []
         self.border_routers: dict[str, dict] = {}    # addr -> {hostname, instance, vendor, model, name, retired}
+        # Addresses an mDNS advertisement put under an entry, rather than the
+        # inventory. They carry the entry's name, because that is what the
+        # browse is for, but they are not members of it: nobody has confirmed
+        # that this address is that device, and entry_addresses_of decides
+        # whose silence one address's traffic answers for.
+        self.learned: set[str] = set()
         if inventory_path and inventory_path.exists():
             # The file is hand-edited (README): a trailing comma or a
             # truncated save is the likeliest damage, and it must not stop
@@ -170,7 +176,8 @@ class DeviceNames:
                                           "vendor": rec.get("vendor"), "model": rec.get("model"),
                                           "name": rec.get("name"), "retired": not is_current}
                 if entry is not None and a not in self.by_addr:
-                    self.by_addr[a] = entry
+                    self.by_addr[a] = entry     # the same binding learn() makes, restored
+                    self.learned.add(a)
 
     def entry_named(self, name: str) -> dict | None:
         want = name.strip().lower()
@@ -184,8 +191,14 @@ class DeviceNames:
 
     def learn(self, addr: str, entry: dict) -> None:
         """Name an address from an inventory entry it does not list (a
-        border router's new address after a reboot)."""
+        border router's new address after a reboot).
+
+        The name only: see self.learned. An mDNS advertisement is anyone on
+        the LAN, so the address is called what the hostname says without
+        being taken for a member of the entry, which is what would let its
+        traffic answer for the device's own silence."""
         self.by_addr[_norm(addr)] = entry
+        self.learned.add(_norm(addr))
 
     def name(self, addr: str) -> str | None:
         entry = self.by_addr.get(_norm(addr))
@@ -213,10 +226,14 @@ class DeviceNames:
         Narrower than addresses_of on purpose: that one also gathers other
         entries under the same name, and inferring one device from a shared
         name would let an unrelated device's traffic answer for this one.
+        An address the inventory does not list and only mDNS put under the
+        entry is a device of one here for the same reason: the callers use
+        this to decide whose silence a frame ends, and an advertisement
+        nobody can check must not end anybody's.
         """
         a = _norm(addr)
         entry = self.by_addr.get(a)
-        if entry is None:
+        if entry is None or a in self.learned:
             return [a]
         out = [a]
         for other in entry_addresses(entry):

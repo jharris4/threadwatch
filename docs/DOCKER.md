@@ -195,11 +195,26 @@ services:
 
 `compose.yaml` carries both lines commented out, because turning this on
 moves the day and hour boundaries of a recorder already running: the
-switch belongs to you, not to a `git pull`. Setting `TZ=Europe/London`
-in `environment:` instead works only where the image has the zone files
-(`python:3.12-slim` does not install `tzdata`), and quietly falls back to
-UTC where it does not -- which is the failure this section is about, so
-prefer the mount, or add `tzdata` to the image and use `TZ`.
+switch belongs to you, not to a `git pull`. Alternatively, set the same
+`TZ` on both services:
+
+```yaml
+services:
+  recorder:
+    environment:
+      TZ: America/Toronto
+  web:
+    environment:
+      TZ: America/Toronto
+```
+
+The official Python 3.12 slim images include `tzdata` (see the upstream
+[Bookworm Dockerfile](https://github.com/docker-library/python/blob/master/3.12/slim-bookworm/Dockerfile)
+and [Trixie Dockerfile](https://github.com/docker-library/python/blob/master/3.12/slim-trixie/Dockerfile)),
+so named zones work without adding a package to this project's image.
+If using a different base image, verify that its zone data is installed.
+Use either the host-file mount or an explicit `TZ`; a configured `TZ`
+takes precedence over `/etc/localtime`.
 
 Check what each container actually thinks the time is, which is the only
 answer that settles it:
@@ -210,9 +225,9 @@ docker compose exec web date
 date                                   # the host, for comparison
 ```
 
-`docker compose run --rm --no-deps recorder status` prints stamps in the
-recorder's zone as well. Change the setting and both containers need
-recreating (`docker compose up -d --force-recreate`), not restarting.
+The `status` command reports numeric epoch timestamps, so use `date` above
+to check the zone. Change the setting and both containers need recreating
+(`docker compose up -d --force-recreate`), not restarting.
 
 ## Everyday commands
 

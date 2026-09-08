@@ -2386,11 +2386,13 @@ class Pipeline:
         if expired or not (ok or trusted):
             if not late:
                 new["unverified_previous"], new["unverified_since"] = prev, now
-            # Said once per claim: when the traffic argues against it, which
-            # is worth hearing at once, and when the window runs out with
+            # Said once per claim: as soon as the traffic argues against it,
+            # whether that is the look that reported the claim or a later one
+            # (the old address talking on is exactly the contradiction that
+            # takes a second look to see), and when the window runs out with
             # nothing having corroborated it, which is worth hearing before
             # the old address's silences are all the operator has to go on.
-            if (against and not late) or expired:
+            if against or expired:
                 if not new.get("unverified_reported"):
                     new["unverified_reported"] = True
                     fix = (f'threadwatch name {ext} "{name}"' if name

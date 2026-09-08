@@ -2790,6 +2790,55 @@ class BorderRouterTest(unittest.TestCase):
         self.assertIn("too few to compare", ev[0]["missing"])
         self.assertNotIn("unverified_previous", pipe.routers[self.HOST])
 
+    def test_the_browse_does_not_undo_a_rotation_the_operator_confirmed(self):
+        # `threadwatch name` writes the new address into the entry, and that
+        # is the confirmation an unverified rotation asks for. The next
+        # browse names the same address again: the same binding with more
+        # behind it, not an mDNS claim that demotes what the operator wrote.
+        (Path(self.tmp.name) / "devices.json").write_text(json.dumps([
+            {"name": "Living Room Apple TV",
+             "extendedAddresses": [self.OLD.upper(), self.NEW.upper()]}]))
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t = time.time() - 7200
+        self.heard(pipe, self.OLD, t)
+        pipe._apply_border_routers([self.router(self.HOST, self.OLD)], t)
+        pipe.periodic(t + 31 * 60)
+        self.assertEqual([r["addr"] for r in pipe.events.records if r["event"] == "device_quiet"], [self.OLD])
+        pipe.ingest(frame(t + 32 * 60, self.NEW))
+        pipe._apply_border_routers([self.router(self.HOST, self.NEW)], t + 33 * 60)
+        self.assertEqual(pipe.names.learned, set())
+        self.assertEqual(pipe.names.entry_addresses_of(self.NEW), [self.NEW, self.OLD])
+        # The silence announced for the old address is over: its device is
+        # transmitting under the address the operator vouched for.
+        pipe.quiet_reported.add(self.OLD)
+        pipe.seen.table[self.OLD]["quiet_reported"] = True
+        pipe.ingest(frame(t + 34 * 60, self.NEW))
+        self.assertEqual(pipe.quiet_reported, set())
+
+    def test_a_contradiction_only_a_later_look_can_see_is_reported_then(self):
+        # The old address talking on after the new one started is the
+        # contradiction that takes a second look to see: at the browse that
+        # bound the claim there was nothing to go on either way.
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t = time.time() - 200000
+        self.heard(pipe, self.OLD, t, rssi=-60.0)
+        pipe._apply_border_routers([self.router(self.HOST, self.OLD)], t)
+        pipe.ingest(frame(t + 80, self.NEW, rssi=-60.0))
+        pipe.ingest(frame(t + 81, self.NEW, rssi=-60.0))
+        pipe._apply_border_routers([self.router(self.HOST, self.NEW)], t + 100)
+        self.assertEqual([r["event"] for r in pipe.events.records
+                          if r["event"].startswith("border_router")], [])
+        self.heard(pipe, self.OLD, t + 400, rssi=-60.0)      # the old address is plainly still alive
+        self.heard(pipe, self.NEW, t + 600, rssi=-60.0)
+        pipe._apply_border_routers([self.router(self.HOST, self.NEW)], t + 700)
+        ev = [r for r in pipe.events.records if r["event"] == "border_router_rotation_unverified"]
+        self.assertEqual(len(ev), 1)
+        self.assertIn("on air together", ev[0]["missing"])
+        pipe._apply_border_routers([self.router(self.HOST, self.NEW)], t + 1300)
+        self.assertEqual(len([r for r in pipe.events.records
+                              if r["event"] == "border_router_rotation_unverified"]), 1)   # said once
+        self.assertNotIn("rotated_to", pipe.seen.table[self.OLD])
+
     def test_an_old_address_no_longer_tracked_is_not_held_back(self):
         # The gate exists to stop a claim silencing a row that is still being
         # judged. A row the track cap evicted is judged by nobody, so there

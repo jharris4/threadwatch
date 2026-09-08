@@ -190,15 +190,27 @@ class DeviceNames:
                      if str(e.get("borderRouter") or "").rstrip(".").lower() == want), None)
 
     def learn(self, addr: str, entry: dict) -> None:
-        """Name an address from an inventory entry it does not list (a
-        border router's new address after a reboot).
+        """Name an address from an inventory entry (a border router's new
+        address after a reboot).
 
-        The name only: see self.learned. An mDNS advertisement is anyone on
-        the LAN, so the address is called what the hostname says without
-        being taken for a member of the entry, which is what would let its
-        traffic answer for the device's own silence."""
-        self.by_addr[_norm(addr)] = entry
-        self.learned.add(_norm(addr))
+        The name only, when the entry does not list the address: see
+        self.learned. An mDNS advertisement is anyone on the LAN, so the
+        address is called what the hostname says without being taken for a
+        member of the entry, which is what would let its traffic answer for
+        the device's own silence.
+
+        An address the entry does list is a different matter: the operator
+        wrote it there, by hand or with `threadwatch name`, and that is the
+        confirmation the unverified rotations ask for. The browse renaming
+        it must not quietly undo that -- it is the same binding, arrived at
+        with more behind it -- so it is dropped from self.learned instead.
+        """
+        a = _norm(addr)
+        self.by_addr[a] = entry
+        if a in {_norm(str(x)) for x in entry_addresses(entry)}:
+            self.learned.discard(a)
+        else:
+            self.learned.add(a)
 
     def name(self, addr: str) -> str | None:
         entry = self.by_addr.get(_norm(addr))

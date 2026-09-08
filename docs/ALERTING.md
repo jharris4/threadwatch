@@ -255,7 +255,9 @@ was too long, the levels are far apart, the router id changed) and
 otherwise only when the six hours run out -- an address is bound to its
 name by its very first frame, which carries no router id and no average
 worth comparing, so a real rotation is almost always merely unproven at
-first and reporting that would put a notice on every reboot.
+first and reporting that would put a notice on every reboot. A later look
+that finds the contradiction reports it then: the old address talking on
+after the new one started is exactly the sign no first look can see.
 
 To settle it by hand, confirm the rotation into the inventory with
 `threadwatch name <new-address> "<name>"` and restart the recorder: a

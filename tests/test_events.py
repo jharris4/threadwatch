@@ -122,7 +122,10 @@ class MalformedLineTest(unittest.TestCase):
            '{"ts": 1700000000, "severity": "info", "event": 7}',
            # A ts that no comparison rejects and no date formatter accepts.
            '{"ts": NaN, "event": "x", "severity": "info"}',
-           '{"ts": Infinity, "event": "x", "severity": "info"}']
+           '{"ts": Infinity, "event": "x", "severity": "info"}',
+           json.dumps({"ts": 10 ** 400, "event": "x", "severity": "info"}),
+           '{"ts": 1e300, "event": "x", "severity": "info"}',
+           '{"ts": -1e300, "event": "x", "severity": "info"}']
 
     def test_lines_that_are_not_records_are_skipped_and_said_once(self):
         import contextlib
@@ -149,7 +152,7 @@ class MalformedLineTest(unittest.TestCase):
                 events_mod._read_cache.clear()
                 self.assertEqual(read_day(d, day), good)
             self.assertEqual(out.getvalue(), f"[threadwatch] {day}.jsonl: skipped {len(self.BAD)} line(s) that "
-                                             "are not event records (not JSON, or no finite ts, severity "
+                                             "are not event records (not JSON, or no representable ts, severity "
                                              "and event name)\n")
             # The consumers that crashed: episodes for the review page, and
             # the recorder's summary of the day.

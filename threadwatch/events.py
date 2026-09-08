@@ -199,6 +199,16 @@ READ_CACHE_MAX = 128
 _dropped_said: dict[Path, int] = {}     # lines skipped per file, as last reported
 
 
+def _valid_timestamp(value) -> bool:
+    """A finite epoch timestamp the local-day consumers can represent."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value) and 1 <= time.localtime(value).tm_year <= 9999
+    except (OverflowError, OSError, ValueError):
+        return False
+
+
 def read_day(events_dir: Path, day: str) -> list[dict]:
     """Records of one day. Parsed files are cached by (mtime, size): the
     review pages read a window of days per request, and only today's file
@@ -233,9 +243,7 @@ def read_day(events_dir: Path, day: str) -> list[dict]:
         # pops it without a default, and a record without one was a KeyError
         # that lost the whole day rather than one line. A non-finite ts got
         # through the comparisons above and raised in date formatting.
-        if (not isinstance(rec, dict) or isinstance(rec.get("ts"), bool)
-                or not isinstance(rec.get("ts"), (int, float))
-                or not math.isfinite(rec["ts"])
+        if (not isinstance(rec, dict) or not _valid_timestamp(rec.get("ts"))
                 or not isinstance(rec.get("severity"), str)
                 or not isinstance(rec.get("event"), str) or not rec["event"]):
             dropped += 1
@@ -247,7 +255,7 @@ def read_day(events_dir: Path, day: str) -> list[dict]:
             _dropped_said[path] = dropped
         if not said:
             print(f"[threadwatch] {path.name}: skipped {dropped} line(s) that are not event records "
-                  "(not JSON, or no finite ts, severity and event name)", file=sys.stderr, flush=True)
+                  "(not JSON, or no representable ts, severity and event name)", file=sys.stderr, flush=True)
     # Insert and evict under the lock: the web server serves each request
     # on its own thread, and picking the oldest entry while another thread
     # inserts or deletes raised mid-iteration.

@@ -33,7 +33,7 @@ lost. A send that fails is tried again after 30 s, then 2 min, then 8 min,
 then every 10 min, until the record is six hours old, when it is given up
 and the journal says so (`given up, the record is 6.2 h old`): a quiet
 alert from a morning outage is still news at lunch, a daily summary from
-yesterday is not. The age is read before each retry as well as after each
+yesterday is not. The age is read immediately before each sink retry as well as after each
 failure, so a record that went stale while it waited -- for its retry, for
 a sleeping host to wake, behind other deliveries -- is dropped rather than
 delivered by an endpoint that has since recovered. Every record still gets

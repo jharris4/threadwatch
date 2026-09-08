@@ -877,6 +877,31 @@ class RetryTest(unittest.TestCase):
         self.assertEqual(sink.sent, [])
         self.assertIn("alert not retried to flaky: given up, the record is 7.0 h old (attempt 2)", msgs[-1])
 
+    def test_retry_age_is_checked_again_after_another_sink_finishes(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        clock = [1000.0]
+        first, second = FlakySink(name="first"), FlakySink(name="second")
+        sent = first.send
+
+        def slow_send(record):
+            sent(record)
+            clock[0] += 20.0
+
+        first.send = slow_send
+        # Drive a closing worker synchronously, with actual sink sends but
+        # a private clock. No wall-clock sleep or global clock patch is needed.
+        d = alerts.Dispatcher([], lambda line: None, stale_s=60)
+        d.sinks = [first, second]
+        d._closing = True
+        d._queue = [{"record": {**REC, "ts": 950.0}, "sinks": d.sinks, "attempt": 1, "due": 1000.0}]
+        with patch.object(alerts, "time", SimpleNamespace(time=lambda: clock[0])):
+            d._run()
+        self.assertEqual(len(first.sent), 1)
+        self.assertEqual(second.sent, [])
+        self.assertEqual(d.given_up, 1)
+        self.assertEqual(d._inflight, [])
+
     def test_a_stale_retry_is_not_sent_by_the_drain_at_close_either(self):
         sink = FlakySink(fail=0)
         d = alerts.Dispatcher([sink], print, retry_delays=(30.0,), retry_cap_s=30.0, stale_s=6 * 3600)

@@ -794,6 +794,14 @@ class Dispatcher:
             for it in sends:
                 s = it["sinks"][0]
                 try:
+                    # An earlier sink may consume the remaining lifetime of
+                    # this retry. Recheck immediately before each delivery,
+                    # including the shutdown drain, not just when dequeuing.
+                    if it["attempt"] and (age := self._age(it["record"], time.time())) > self.stale_s:
+                        self.given_up += 1
+                        self.log(f"alert not retried to {s.name}: given up, "
+                                 f"the record is {age / 3600:.1f} h old (attempt {it['attempt']})")
+                        continue
                     _bounded(s, partial(s.send, it["record"]), s.timeout_s, "send")
                     self.delivered += 1
                 except Exception as exc:

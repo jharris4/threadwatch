@@ -345,6 +345,7 @@ class ExampleConfigTest(unittest.TestCase):
         ("detect", "period_onsets"): ("detector.period_onsets", 3, 4),
         ("detect", "alert_cooldown_s"): ("detector.alert_cooldown_s", 1800.0, 60.0),
         ("border_routers", "browse_s"): ("border_router_browse_s", 600, 30),
+        ("border_routers", "rotation"): ("border_router_rotation", "corroborated", "trusted"),
         ("events", "keep_days"): ("events_keep_days", 365, 7),
         ("web", "bind"): ("web_bind", "127.0.0.1", "0.0.0.0"),
         ("web", "port"): ("web_port", 8080, 9090),

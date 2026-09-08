@@ -106,6 +106,17 @@ alert_cooldown_s = 1800.0  # seconds between phase_locked_storm events while a s
 # subnet, or the network must reflect mDNS between VLANs; `threadwatch
 # doctor` says what this host sees. 0 disables.
 browse_s = 600             # 10 min
+# What it takes to believe a rotation. mDNS is unauthenticated -- anyone on
+# the LAN can advertise any address under any hostname -- and retiring the
+# old address exempts it from every quiet check, so an advertisement nobody
+# can check must not be able to silence a device for good. "corroborated"
+# carries the name across on the advertisement but waits for the radio to
+# agree before retiring: the new address kept the old one's router id, or
+# the old address stopped as the new one started and is heard at about the
+# same level. Rotations it cannot corroborate are reported
+# (border_router_rotation_unverified) and the old address stays judged.
+# "trusted" retires on the advertisement alone.
+rotation = "corroborated"  # or "trusted"
 
 [events]
 # The event log is one small file per local day (data/state/events/). Day

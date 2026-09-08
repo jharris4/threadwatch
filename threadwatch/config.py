@@ -19,6 +19,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # a deploy needs answered.
 REVISION_FILE = "REVISION"
 
+# [border_routers] rotation: how much evidence retires the address a border
+# router rotated away from. Retirement exempts a row from every quiet check,
+# so this is the setting that decides whether an unauthenticated mDNS record
+# alone can stop a device being reported silent.
+ROTATION_POLICIES = frozenset(("corroborated", "trusted"))
+
 
 def _git(*args: str) -> str | None:
     import subprocess
@@ -135,6 +141,14 @@ class Config:
     # address each border router has now. Apple hubs change theirs on every
     # reboot; this is how the new one gets the old name. 0 disables.
     border_router_browse_s: float = 10 * 60
+    # [border_routers] what it takes to believe a rotation. "corroborated"
+    # (the default) retires the old address only once the radio agrees the
+    # two addresses are one device -- the same router id, or a clean
+    # handover at the same signal level. mDNS is unauthenticated, and a
+    # retired row is exempt from every quiet check, so an advertisement
+    # nobody can check must not be able to silence a device for ever.
+    # "trusted" retires on the advertisement alone, as before.
+    border_router_rotation: str = "corroborated"
     # [summary] one daily_summary event per local day, at this hour (-1 off).
     summary_hour: int = 8
     summary_severity: str = "notice"
@@ -217,7 +231,7 @@ SECTIONS: dict[str, frozenset[str] | None] = {
     "link": frozenset(("drop_db", "hold_s")),
     "polls": frozenset(("rearm_s", "confirm_s")),
     "retransmissions": frozenset(("confirm_s",)),
-    "border_routers": frozenset(("browse_s",)),
+    "border_routers": frozenset(("browse_s", "rotation")),
     "summary": frozenset(("hour", "severity")),
     "detect": frozenset(("flood_multiplier", "flood_min_frames", "period_min_s",
                          "period_max_s", "period_onsets", "alert_cooldown_s")),
@@ -419,6 +433,10 @@ def load(path: Path | None) -> Config:
         brs = raw.get("border_routers", {})
         cfg.border_router_browse_s = float(_finite("border_routers", "browse_s",
                                                   brs.get("browse_s", cfg.border_router_browse_s)))
+        cfg.border_router_rotation = str(brs.get("rotation", cfg.border_router_rotation))
+        if cfg.border_router_rotation not in ROTATION_POLICIES:
+            raise ValueError(f"[border_routers] rotation must be one of "
+                             f"{', '.join(sorted(ROTATION_POLICIES))}, not {cfg.border_router_rotation!r}")
         summary = raw.get("summary", {})
         cfg.summary_hour = int(_finite("summary", "hour", summary.get("hour", cfg.summary_hour)))
         if not -1 <= cfg.summary_hour <= 23:

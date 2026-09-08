@@ -83,9 +83,10 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `credentials_stale` | warning | `failed`, `note` |
 | `clock_step` | info | `step_s` (signed), `note`. The host clock jumped, NTP correcting a boot without an RTC. Forward: silences spanning the jump are not counted against any device. Backward: every timestamp the recorder holds, `last-seen.json` included, is moved back with it |
 | `recorder_started` | info after a requested stop or on the first start ever, notice when the last run ended any other way | `cause` (`stopped`, `stalled`, `sniffer_died`, `stream_ended`, `crashed`, `unknown` for a run that left no note: a power cut or a kill, `first_start`), `gap_s` (since the last frame any run heard), `last_frame_ts`, `stopped_ts` (when the last run ended, if it left the note), `exit_code`, `note` |
-| `border_router_address_changed` | notice | `addr`, `name`, `previous`, `hostname`, `note` |
+| `border_router_address_changed` | notice | `addr`, `name`, `previous`, `hostname`, `evidence` (what corroborated the rotation), `note` |
 | `border_router_unlisted` | notice | `addr`, `hostname`, `note` |
 | `border_router_address_conflict` | warning | `addr`, `name` (the entry devices.json gives the address to), `hostname`, `claimed_by` (the entry the hostname belongs to), `note` |
+| `border_router_rotation_unverified` | notice | `addr`, `name`, `previous`, `hostname`, `evidence` (what held, when anything did), `missing` (what did not), `note` |
 | `phase_locked_storm` | critical | detector snapshot (`period_s`, `onsets`, ...) |
 | `snapshot_saved` | info | `label`, `path`, `ring_files`, `note` (with `[record] snapshot_on_critical`) |
 | `snapshot_failed` | warning | `label`, `note` |
@@ -209,7 +210,8 @@ HomePods take a new Thread extended address every time. The recorder
 asks the LAN over mDNS every `[border_routers] browse_s` (default 10 min)
 which address each border router has now, keyed by its stable hostname,
 and names the new address from the same devices.json entry; the old
-address is retired rather than reported quiet. `border_router_unlisted`,
+address is retired rather than reported quiet, and `evidence` says what
+corroborated that. `border_router_unlisted`,
 once per router, is one that matches no entry: `threadwatch import --write`
 creates the entry (or `threadwatch name` names it).
 `border_router_address_conflict` is that rotation refused: the hostname
@@ -222,6 +224,26 @@ devices.json. Both need the
 recorder to hear the routers' mDNS, which is link-local: the same subnet,
 or a network that reflects mDNS between VLANs. `threadwatch doctor` says
 whether it can.
+
+`border_router_rotation_unverified` is a rotation believed only as far as
+the name. Naming an address and retiring one are separate acts with very
+different costs: a wrong name mislabels a row, where a wrong retirement
+takes the old address out of the quiet, link and starvation checks for
+good, so a device that later dies can never page. The hostname's claim
+carries the name across; the radio decides the retirement. It corroborates
+when the new address kept the old one's router id -- a rebooting router
+asks the leader for the id it had, and nothing off the mesh can arrange
+that -- or, failing that, when the old address stopped as the new one
+started *and* the new one is heard within 10 dB of the level the old one
+was. Otherwise this event says which signs were missing, the old address
+keeps its name and stays judged (expect it to report quiet), and each
+later browse looks again for six hours, since an address heard once has
+neither a router id nor a settled level. To settle it by hand, confirm the
+rotation into the inventory with `threadwatch name <new-address> "<name>"`
+and restart the recorder: a rotation the operator has vouched for is
+covered across the entry's addresses without any retirement.
+`[border_routers] rotation = "trusted"` restores the old behaviour, where
+the advertisement alone retires the old address.
 
 `credentials_stale` means the network key no longer matches the mesh,
 usually because it was re-commissioned: frames keep failing to decrypt and

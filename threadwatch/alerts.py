@@ -74,6 +74,7 @@ KNOWN_EVENTS = frozenset((
     "poll_starvation", "poll_answered", "rssi_degradation", "rssi_recovered",
     "retransmission_elevation", "partition_or_leader_change", "credentials_stale", "clock_step",
     "border_router_address_changed", "border_router_unlisted", "border_router_address_conflict",
+    "border_router_rotation_unverified",
     "phase_locked_storm",
     "snapshot_saved", "snapshot_failed", "snapshot_skipped", "snapshots_pruned",
     "daily_summary", "alert_test", "recorder_started",

@@ -741,7 +741,7 @@ class Pipeline:
     # the pointer alone makes the start-up reconciliation miss the record,
     # discard the flag, and page the same unbroken silence a second time.
     ROW_STAMPS = ("first_seen", "last_seen", "rloc16_ts", "rssi_heard_ts", "rssi_ref_ts",
-                  "starve_confirm_at")
+                  "starve_confirm_at", "resumed_ts")
     STATS_STAMPS = ("last_poll_ts", "ack_pending_ts", "poll_pending_ts", "unanswered_since", "confirm_at")
 
     def _rewind(self, now: float, back: float, since_check: float) -> None:
@@ -1293,7 +1293,11 @@ class Pipeline:
                 # Retired as a hub's old address, yet on air: it is live,
                 # whatever mDNS said, so its silences count again. A retired
                 # row is skipped by every quiet check, so nothing else could
-                # bring it back.
+                # bring it back. This frame starts the address's current
+                # life, which is what a later rotation back to it has to be
+                # judged against: first_seen is the first sighting ever, and
+                # in an A -> B -> A sequence that one is older than B.
+                self.seen.table[who]["resumed_ts"] = ts
                 print(f"[threadwatch] {self.names.name(who) or who} heard on air after its address was "
                       "retired: judged again", file=sys.stderr, flush=True)
             if len(f.src) == 4:
@@ -2250,6 +2254,146 @@ class Pipeline:
     PENDING_MAX = 32
     LOGGED_MAX = 256
 
+    # What the radio has to say before a claimed rotation retires the old
+    # address. A rebooting router asks the leader for the router id it had
+    # and usually gets it back, so an unchanged rloc16 under a new extended
+    # address is the rotation's own signature, and nothing off the mesh can
+    # forge it. Failing that, the two weaker signs together: the old address
+    # stopped as the new one started (ROTATION_OVERLAP_S of interleaving
+    # allowed, for the last frames of one crossing the first of the other),
+    # and the new address is heard at about the level the old one was, which
+    # a hub that has not moved will be (ROTATION_RSSI_DB, wider than the
+    # link detector's default drop so a rotation is not judged by it).
+    ROTATION_OVERLAP_S = 120.0
+    ROTATION_RSSI_DB = 10.0
+    # An address heard once carries neither an rloc16 nor a settled level,
+    # so the browse that first reports a rotation often cannot corroborate
+    # one that is real. Each later browse looks again while the claim is
+    # this young; past it the claim keeps the name it was given and stays
+    # unretired, because evidence that has not arrived in six hours of
+    # capture is not coming.
+    ROTATION_RECHECK_S = 6 * 3600
+
+    def _rotation_evidence(self, prev: str, ext: str) -> tuple[bool, list[str], list[str]]:
+        """What the radio says about a claimed rotation ``prev`` -> ``ext``:
+        (corroborated, what held, what did not).
+
+        Hearing an address on air proves the device exists. It does not
+        prove that an unauthenticated hostname advertising it belongs to
+        the device the inventory gives that hostname to, and the addresses
+        an mDNS responder needs for the claim are in the clear in every
+        802.15.4 header. What a responder off the mesh cannot arrange is
+        the traffic itself: that the old address kept its router id, or
+        that it fell silent exactly as the new one started talking, at the
+        level the sniffer used to hear it at.
+        """
+        old_row, new_row = self.seen.table.get(prev), self.seen.table.get(ext)
+        if old_row is None or new_row is None:
+            # An address with no row has not been heard in this run: there is
+            # no traffic to judge either way.
+            return False, [], ["one of the addresses is not in the last-seen table"]
+        held: list[str] = []
+        missing: list[str] = []
+
+        old_id, new_id = old_row.get("rloc16"), new_row.get("rloc16")
+        same_id = bool(old_id) and old_id == new_id
+        if same_id:
+            held.append(f"kept router id {new_id}")
+        elif old_id and new_id:
+            missing.append(f"router id changed, {old_id} to {new_id}")
+        else:
+            missing.append("no router id seen for both addresses")
+
+        # A negative overlap is a gap: the new address started after the old
+        # one was last heard. Positive is the old one still talking once the
+        # new one had begun, which is two devices, not one rebooting.
+        started = max(new_row.get("first_seen", 0.0), new_row.get("resumed_ts", 0.0))
+        overlap = old_row.get("last_seen", 0.0) - started
+        handover = overlap <= self.ROTATION_OVERLAP_S
+        if handover:
+            held.append("the old address stopped as the new one started")
+        else:
+            missing.append(f"both addresses were on air together for {round(overlap)} s")
+
+        old_level = old_row.get("rssi_ref")
+        if old_level is None:
+            old_level = old_row.get("rssi")
+        new_level = new_row.get("rssi")
+        close = False
+        if old_level is None or new_level is None:
+            missing.append("no signal level for both addresses")
+        else:
+            gap = abs(new_level - old_level)
+            close = gap <= self.ROTATION_RSSI_DB
+            if close:
+                held.append(f"heard within {gap:.0f} dB of the old address")
+            else:
+                missing.append(f"heard {gap:.0f} dB from the old address")
+        return same_id or (handover and close), held, missing
+
+    def _settle_rotation(self, prev: str, ext: str, name: str | None, host: str,
+                         r: dict, now: float, new: dict, late: bool = False) -> None:
+        """Retire ``prev`` for ``ext`` if the radio corroborates the browse's
+        claim, else record the claim as unverified and leave the old address
+        judged. ``late`` is a second look at a claim already reported.
+        """
+        trusted = self.cfg.border_router_rotation == "trusted"
+        old_row = self.seen.table.get(prev)
+        if old_row is None:
+            # Nothing to retire, so nothing to hold back: the address the hub
+            # rotated away from is not in the table (evicted under the track
+            # cap, or pruned before a restart), and no quiet check is looking
+            # at it. Believing the claim suppresses nothing.
+            ok, held, missing = True, ["the old address is no longer tracked"], []
+        else:
+            ok, held, missing = self._rotation_evidence(prev, ext)
+        who = name or r.get("instance") or host
+        if not (ok or trusted):
+            if late:
+                # A claim that has had its chance. Dropping the marker stops
+                # the looking; the name it was given stands, and the old
+                # address goes on being judged, which is what an
+                # uncorroborated rotation is owed.
+                if now - new.get("unverified_since", now) > self.ROTATION_RECHECK_S:
+                    new.pop("unverified_previous", None)
+                    new.pop("unverified_since", None)
+                return
+            new["unverified_previous"], new["unverified_since"] = prev, now
+            fix = (f'threadwatch name {ext} "{name}"' if name
+                   else f'threadwatch name {ext} "<name>"')
+            self._emit("border_router_rotation_unverified", "notice", now, addr=ext, name=name,
+                       previous=prev, hostname=host, evidence="; ".join(held) or None,
+                       missing="; ".join(missing),
+                       note=(f"{who} advertises {ext}, was {prev}, but the radio does not corroborate it: "
+                             f"{'; '.join(missing)}. mDNS is unauthenticated, so {prev} keeps its name and "
+                             f"stays judged: expect it to report quiet. If the hub really did rotate, "
+                             f"confirm it with: {fix} (then restart the recorder)."))
+            return
+        new.pop("unverified_previous", None)
+        new.pop("unverified_since", None)
+        if old_row is not None:
+            old_row["rotated_to"] = ext
+            old_row.pop("quiet_reported_ts", None)
+            was_quiet = old_row.pop("quiet_reported", None) or prev in self.quiet_reported
+            self.quiet_reported.discard(prev)
+            self.seen._dirty = True
+            if was_quiet:
+                # The silence announced for the old address is over: the
+                # device is back under the new one. A retired row is never
+                # judged again, so nothing else could close the episode, and
+                # every day page would carry it open.
+                self._emit("device_returned", "notice", now, addr=prev, name=name,
+                           note=f"back under a new address, {ext}")
+        why = ("; ".join(held) if ok else
+               'the advertisement alone ([border_routers] rotation = "trusted")')
+        seen_late = ", corroborated by a later browse" if late else ""
+        note = (f"{who} now answers to {ext}, was {prev}: an Apple hub takes a new Thread address on "
+                f"every reboot. Retired on {why}{seen_late}, so {prev} is not reported quiet. "
+                + ("Named from its entry; nothing to edit." if name
+                   else "Not in devices.json: see the devices page."))
+        self._emit("border_router_address_changed", "notice", now, addr=ext, name=name,
+                   previous=prev, hostname=host, evidence=why, note=note)
+
     def _apply_border_routers(self, found: list[dict], now: float) -> None:
         """Bind each discovered border router to an inventory entry (by its
         borderRouter hostname, by an address the entry already lists, or
@@ -2352,6 +2496,14 @@ class Pipeline:
             new = {"addr": ext, "name": name, "instance": r.get("instance"), "vendor": r.get("vendor"),
                    "model": r.get("model"), "since": now if (changed or not rec) else rec.get("since", now),
                    "seen": now, "previous": list(rec.get("previous") or []), "announced": rec.get("announced", False)}
+            if not changed and rec.get("unverified_previous"):
+                # A rotation an earlier browse reported but could not
+                # corroborate, carried forward: the look below is at the
+                # same claim, and border-routers.json keeps it over a
+                # restart, so a recorder that came back does not start the
+                # six hours again.
+                new["unverified_previous"] = rec["unverified_previous"]
+                new["unverified_since"] = rec.get("unverified_since", now)
             if changed:
                 # One entry per address, newest last, and never the live
                 # one: an A -> B -> A rotation would otherwise leave two
@@ -2361,6 +2513,15 @@ class Pipeline:
                                    if not (isinstance(e, dict) and (e.get("addr") or "").lower() in retired)]
                 new["previous"].append({"addr": prev, "until": now})
                 new["previous"] = new["previous"][-self.ROUTER_PREVIOUS_MAX:]
+            # Naming and retiring are separate acts, and only one of them is
+            # dangerous. Naming writes an in-memory index that decides what
+            # the pages call an address; got wrong, it mislabels a row, and
+            # the label is there to be seen and corrected. Retiring sets
+            # rotated_to, which takes the old address out of the quiet
+            # checks, out of the link and starvation checks, and out of the
+            # summary's judged set: got wrong, it is a device that can never
+            # page again, and nothing says so. So the hostname's claim is
+            # enough to carry the name across, and only the radio retires.
             if entry is not None:
                 self.names.learn(ext, entry)
             if changed:
@@ -2368,26 +2529,9 @@ class Pipeline:
                 # it was itself retired once (an A -> B -> A sequence).
                 if self.seen.table[ext].pop("rotated_to", None):
                     self.seen._dirty = True
-                old_row = self.seen.table.get(prev)
-                if old_row is not None:
-                    old_row["rotated_to"] = ext
-                    old_row.pop("quiet_reported_ts", None)
-                    was_quiet = old_row.pop("quiet_reported", None) or prev in self.quiet_reported
-                    self.quiet_reported.discard(prev)
-                    self.seen._dirty = True
-                    if was_quiet:
-                        # The silence announced for the old address is over:
-                        # the device is back under the new one. A retired row
-                        # is never judged again, so nothing else could close
-                        # the episode, and every day page would carry it open.
-                        self._emit("device_returned", "notice", now, addr=prev, name=name,
-                                   note=f"back under a new address, {ext}")
-                who = name or r.get("instance") or host
-                self._emit("border_router_address_changed", "notice", now, addr=ext, name=name,
-                           previous=prev, hostname=host,
-                           note=(f"{who} now answers to {ext}, was {prev}: an Apple hub takes a new Thread "
-                                 "address on every reboot. " + ("Named from its entry; nothing to edit." if name
-                                 else "Not in devices.json: see the devices page.")))
+                self._settle_rotation(prev, ext, name, host, r, now, new)
+            elif new.get("unverified_previous"):
+                self._settle_rotation(new["unverified_previous"], ext, name, host, r, now, new, late=True)
             elif entry is None and not new["announced"]:
                 new["announced"] = True
                 self._emit("border_router_unlisted", "notice", now, addr=ext, name=None, hostname=host,

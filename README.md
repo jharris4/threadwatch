@@ -52,7 +52,12 @@ question: *why did this device go offline?*
   devices` lists quiet devices and unknown addresses to label. "Quiet"
   means one thing everywhere (the alert, the listing, the review pages):
   the recorder heard nothing from the device for `[quiet] silence_s` (30
-  min by default) while it was itself up and listening. Apple hubs,
+  min by default) while it was itself up and listening, and nothing else
+  proved it alive for as long: a parent answering the device's keep-alive,
+  or its radio acknowledging a frame, holds the report until that evidence
+  is as old as the silence, and the event then says how long it lasted (a
+  device out of the recorder's earshot, or a radio that outlived its
+  firmware). Apple hubs,
   which take a new Thread address on every reboot, are followed over
   mDNS and keep their names without anyone editing the inventory.
 - **Decryption** (`docs/CREDENTIALS.md`): the recorder needs the Thread

@@ -73,7 +73,7 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `dominant_pan_changed` | notice when first guessed, warning when the guess changes | `pan`, `previous`, `frames`, `note` |
 | `configured_pan_silent` | warning | `pan`, `heard_frames`, `window_s`, `busiest_pan`, `note` |
 | `mle_rejoin_attempt` | notice | `command`, `src`, `name` |
-| `device_quiet` | warning, or notice when `reception` is `marginal` | `addr`, `name`, `silent_for_s` (wall clock since the device's last frame, as the pages show it), `unheard_s` (the part the recorder was listening for, the figure judged against `[quiet] silence_s`), `blind_s` (the difference: the recorder's own outage or clock step), `last_seen`, `rssi_dbm`, `reception`, `note` |
+| `device_quiet` | warning, or notice when `reception` is `marginal` | `addr`, `name`, `silent_for_s` (wall clock since the device's last frame, as the pages show it), `unheard_s` (the part the recorder was listening for, the figure judged against `[quiet] silence_s`), `blind_s` (the difference: the recorder's own outage or clock step), `last_seen`, `rssi_dbm`, `reception`, `note`; when something proved the device alive after its last frame, `vouched_ts` and `vouched_by` (`parent`: its parent answered its keep-alive; `ack`: its radio acknowledged a frame) |
 | `poll_starvation` | notice when first logged, warning once `[polls] confirm_s` later the polls are still unanswered (`confirmed`); notice only when `reception` is `marginal` or `episode` > 1 | `addr`, `name`, `unanswered_polls`, `since`, `starved_for_s`, `acked_polls`, `rssi_dbm`, `reception`, `episode`, `since_previous_s`, `confirmed`, `parent`, `parent_rloc16`, `parent_addr`, `note` |
 | `poll_answered` | notice | `addr`, `name`, `note` |
 | `rssi_degradation` | notice | `addr`, `name`, `rssi_dbm`, `reference_dbm`, `drop_db`, `since`, `low_for_s`, `note` |
@@ -100,7 +100,17 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 `device_quiet` fires after `[quiet] silence_s` of silence (default 30
 min). Routers advertise every few seconds and sleepy end devices poll
 every few, so from the sniffer's point of view neither is quiet for long
-and one window serves both. Two silences
+and one window serves both. Silence is what the recorder itself heard,
+but a device can be out of its earshot and still on the mesh, and two
+things say so: its parent answering its keep-alive (an MLE Child Update
+Response is only ever a reply), and its radio acknowledging a frame
+addressed to it. Either holds the report until that evidence is as old
+as the silence; the event then carries `vouched_ts`/`vouched_by` and the
+note says how long it went on, which is also the difference between a
+device whose radio kept acknowledging for a minute after its last frame
+(a hung stack) and one whose parent answered it for an hour (reception).
+Neither counts as hearing the device: `last_seen`, the pages'
+"silent for" and `device_returned` stay the recorder's own. Two silences
 are deliberately not paged: addresses whose frames carry a foreign PAN id
 (someone else's mesh) are never reported, and devices whose average RSSI
 at the sniffer is below `[quiet] min_rssi_dbm` (default -82) are logged at

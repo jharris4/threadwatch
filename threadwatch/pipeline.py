@@ -370,7 +370,7 @@ class Pipeline:
             for addr, row in self.seen.table.items():
                 if row.get("rotated_to"):
                     continue          # an Apple hub's old address: retired, not quiet
-                if self._identity_silence_s(addr, row, now) <= self.quiet_threshold_s(addr):
+                if not self._is_quiet(addr, row, now):
                     row.pop("quiet_reported_ts", None)
                     if row.pop("quiet_reported", None):
                         # Heard again after its announced silence, but the
@@ -666,14 +666,16 @@ class Pipeline:
         stamps.extend(row["last_seen"] for row in self.seen.table.values() if row.get("last_seen") is not None)
         return max(stamps) if stamps else None
 
-    def silence_s(self, row: dict, now: float) -> float:
-        """How long the recorder has actually heard nothing from a device."""
-        silent = now - row["last_seen"]
+    def silence_s(self, row: dict, now: float, since: float | None = None) -> float:
+        """How long the recorder has actually heard nothing from a device
+        (or, with ``since``, since that moment rather than its last frame)."""
+        last = row["last_seen"] if since is None else since
+        silent = now - last
         if self.ephemeral and self.cfg.snapshot_dir is not None:
-            blind = sum(max(0.0, min(now, since + length) - max(row["last_seen"], since))
-                        for since, length in self._blind)
+            blind = sum(max(0.0, min(now, start + length) - max(last, start))
+                        for start, length in self._blind)
         else:
-            blind = sum(length for since, length in self._blind if row["last_seen"] <= since)
+            blind = sum(length for start, length in self._blind if last <= start)
         return silent - max(0.0, blind)
 
     def _identity_silence_s(self, addr: str, row: dict, now: float) -> float:
@@ -696,6 +698,47 @@ class Pipeline:
             if sibling is not None and "last_seen" in sibling:
                 silence = min(silence, self.silence_s(sibling, now))
         return silence
+
+    def _vouched_silence_s(self, row: dict, now: float) -> float:
+        """How long since something other than its own frame proved the
+        device alive (_vouch): its parent answering its keep-alive, or its
+        radio acknowledging a frame. Infinite when nothing has since its
+        last frame, so the recorder's own silence alone decides."""
+        vouched = row.get("vouched_ts")
+        if vouched is None or vouched <= row["last_seen"]:
+            return float("inf")
+        return self.silence_s(row, now, since=vouched)
+
+    def _is_quiet(self, addr: str, row: dict, now: float) -> bool:
+        """The one rule for device_quiet, at start-up and on every tick: the
+        recorder heard nothing from the device for the window while it was
+        listening, and nothing else proved the device alive for as long.
+
+        A device whose parent keeps answering it is out of the recorder's
+        earshot, not off the mesh: on 2026-09-09 the Downstairs Bathroom Air
+        Quality paged a warning-level silence while its parent answered its
+        keep-alive every four minutes, the same day two other monitors
+        really died. The report waits until the proxy evidence is as old
+        as the silence, and then says how long it lasted."""
+        threshold = self.quiet_threshold_s(addr)
+        return (self._identity_silence_s(addr, row, now) > threshold
+                and self._vouched_silence_s(row, now) > threshold)
+
+    def _vouch(self, addr: str | None, ts: float, how: str) -> None:
+        """Note that the device at ``addr`` (extended, or a short address the
+        decryptor can resolve) was alive at ``ts`` on evidence that is not a
+        frame of its own. Not a sighting: last_seen, RSSI and the stats stay
+        what the recorder heard, so every page still shows when the device
+        was last heard, and device_returned still means heard again."""
+        if not addr:
+            return
+        ext = addr if len(addr) == 16 else self.decryptor.short_to_ext.get(addr)
+        row = self.seen.table.get(ext) if ext else None
+        if row is None or ts <= row.get("last_seen", 0.0) or ts <= (row.get("vouched_ts") or 0.0):
+            return
+        row["vouched_ts"] = ts
+        row["vouched_by"] = how
+        self.seen._dirty = True
 
     # A wall-clock jump this large against the monotonic clock is a step
     # (NTP correcting a Pi that booted on its saved time), not slew.
@@ -741,7 +784,7 @@ class Pipeline:
     # the pointer alone makes the start-up reconciliation miss the record,
     # discard the flag, and page the same unbroken silence a second time.
     ROW_STAMPS = ("first_seen", "last_seen", "rloc16_ts", "rssi_heard_ts", "rssi_ref_ts",
-                  "starve_confirm_at", "resumed_ts")
+                  "starve_confirm_at", "resumed_ts", "vouched_ts")
     STATS_STAMPS = ("last_poll_ts", "ack_pending_ts", "poll_pending_ts", "unanswered_since", "confirm_at")
 
     def _rewind(self, now: float, back: float, since_check: float) -> None:
@@ -1207,6 +1250,10 @@ class Pipeline:
                 stats.ack_pending_seq = None
                 if stats.poll_pending_seq == f.seq:
                     self._poll_answered(self._last_who or prev.src, stats, ts)
+            # The radio that answered is the frame's destination: alive at
+            # this moment, whether or not the recorder hears its own frames.
+            if prev.dst not in (None, "ffff"):
+                self._vouch(prev.dst, ts, "ack")
         self._last_who = who
 
         # Only a frame that vouches for its sender (_verify) feeds the row
@@ -1845,6 +1892,9 @@ class Pipeline:
             short = f"{info.source_addr16:04x}"
             self._note_rloc16(src_for_mle, short, f.ts)
             self.decryptor.short_to_ext[short] = src_for_mle
+        if info.command_name == "Child Update Response" and f.dst not in (None, "ffff"):
+            # Only ever a reply: the child asked within the last second.
+            self._vouch(f.dst, f.ts, "parent")
         if info.command_name in MLE_REJOIN_COMMANDS:
             # addr is the extended address (the review pages key on it);
             # src is whatever the frame carried, often a short address.
@@ -1919,7 +1969,7 @@ class Pipeline:
             pan = row.get("pan")
             if dominant is not None and pan is not None and pan != dominant:
                 continue
-            if self._identity_silence_s(addr, row, now) > self.quiet_threshold_s(addr):
+            if self._is_quiet(addr, row, now):
                 self._report_quiet(addr, row, now)
         self._check_links(now, dominant)
         if not self.ephemeral:
@@ -2683,11 +2733,25 @@ class Pipeline:
         if blind >= 60:
             note += (f" (the recorder itself was not listening for {round(blind / 60)} min of the "
                      f"{round(wall / 60)} min: a restart, a stalled dongle or a clock step)")
+        # Proof of life the recorder did not hear itself (_vouch): the
+        # report waited for it to age out, and says so. A radio that went
+        # on acknowledging for a minute after the device's last frame is
+        # a hung stack with a live radio; a parent that kept answering for
+        # an hour is reception, and the recorder's chair to blame.
+        vouched, how = row.get("vouched_ts"), row.get("vouched_by")
+        proxy = {}
+        if vouched is not None and vouched > row["last_seen"]:
+            proxy = {"vouched_ts": vouched, "vouched_by": how}
+            what = {"parent": "its parent answered its keep-alive",
+                    "ack": "its radio acknowledged a frame"}.get(how, "something answered for it")
+            note += (f"; {what} {round((now - vouched) / 60)} min ago, "
+                     f"{round((vouched - row['last_seen']) / 60)} min after its last frame heard here, "
+                     "so it was alive then, out of the recorder's earshot")
         self._emit(
             "device_quiet", "notice" if marginal else "warning", now, addr=addr,
             name=self.names.name(addr), silent_for_s=round(wall), unheard_s=round(unheard),
             blind_s=round(blind), last_seen=row["last_seen"],
-            rssi_dbm=rssi, reception="marginal" if marginal else "good", note=note)
+            rssi_dbm=rssi, reception="marginal" if marginal else "good", note=note, **proxy)
 
 
 class CredentialsError(RuntimeError):

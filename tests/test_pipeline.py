@@ -430,6 +430,120 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual(by_addr[SENSOR]["severity"], "warning")
         self.assertEqual(by_addr[SENSOR]["reception"], "good")
 
+    def _vouched_pipe(self):
+        """A pipeline holding the identity tests' key, so their MLE builder
+        produces messages this one decrypts."""
+        from tests.test_identity import KEY as IKEY
+        return Pipeline(self.cfg, NullEventLog(), Decryptor(network_key=IKEY))
+
+    @staticmethod
+    def _child_update_response(ts, parent, child, counter):
+        """A fresh Child Update Response from ``parent``, unicast to
+        ``child``'s extended address: the frame a parent sends only in
+        reply to the child's own keep-alive."""
+        from tests.frames import secured_psdu
+        from tests.test_identity import ALL_NODES, LINK_LOCAL, lowpan_udp, mle_message
+        from tests.test_identity import KEY as IKEY
+        from threadwatch.pcap import parse_frame
+        src_ip = LINK_LOCAL + Decryptor._iid_from_ext(parent)
+        msg = mle_message(parent, 0, counter, src_ip, ALL_NODES, b"\x0e")
+        psdu = secured_psdu(parent, counter, dst=child, seq=counter & 0xFF,
+                            payload=lowpan_udp(19788, 19788, msg), key=IKEY)
+        return parse_frame(ts, psdu, 230)
+
+    def test_a_parent_answering_the_keep_alive_holds_the_quiet_until_that_is_as_old(self):
+        # The Downstairs Bathroom monitor on 2026-09-09: unheard by the
+        # recorder for 35 min while its parent answered its Child Update
+        # Request every four minutes. Not off the mesh, just out of earshot.
+        pipe = self._vouched_pipe()
+        t0 = 1_700_000_000.0
+        from tests.frames import secured_psdu
+        from tests.test_identity import KEY as IKEY
+        def heard(ts, src, counter):
+            psdu = secured_psdu(src, counter, seq=counter & 0xFF, key=IKEY)
+            return Frame(ts=ts, raw=b"", psdu=psdu, rssi=-60.0, channel=None, lqi=None,
+                         ftype=1, seq=counter & 0xFF, dst_pan=OWN_PAN, dst="0000", src_pan=OWN_PAN, src=src)
+        for i in range(10):
+            pipe.ingest(heard(t0 + i, SENSOR, 1 + i))
+            pipe.ingest(heard(t0 + i, ROUTER, 1 + i))
+        last_heard = t0 + 9
+        # The parent keeps answering, the recorder hears nothing from the child.
+        for i in range(1, 8):
+            pipe.ingest(self._child_update_response(t0 + i * 240, ROUTER, SENSOR, 100 + i))
+        pipe.ingest(heard(t0 + 40 * 60, ROUTER, 200))
+        self.assertEqual(pipe.seen.table[SENSOR]["last_seen"], last_heard)   # not a sighting
+        self.assertEqual(pipe.seen.table[SENSOR]["vouched_by"], "parent")
+        pipe.periodic(t0 + 40 * 60)
+        self.assertEqual(self._quiet(pipe), [], "held: its parent answered it 12 min ago")
+        pipe.periodic(t0 + 7 * 240 + 30 * 60 + 1)
+        ev = [r for r in pipe.events.records if r["event"] == "device_quiet"]
+        self.assertEqual([r["addr"] for r in ev], [SENSOR])
+        self.assertEqual(ev[0]["severity"], "warning")
+        self.assertEqual(ev[0]["silent_for_s"], round(t0 + 7 * 240 + 30 * 60 + 1 - last_heard))
+        self.assertEqual((ev[0]["vouched_by"], ev[0]["vouched_ts"]), ("parent", t0 + 7 * 240))
+        self.assertIn("its parent answered its keep-alive 30 min ago, 28 min after its last frame", ev[0]["note"])
+        self.assertIn("out of the recorder's earshot", ev[0]["note"])
+
+    def test_an_acknowledgement_from_the_device_holds_the_quiet_and_is_told(self):
+        # The Upstairs Bathroom monitor on 2026-09-09: its last frame at
+        # 08:21:01, its radio still acknowledging its child's polls until
+        # 08:22:44, then nothing. The report waits for the acknowledgements
+        # to be as old as the silence, and says how long they went on.
+        pipe = self._pipe()
+        t0 = 1_700_000_000.0
+        pipe.ingest(frame(t0, SENSOR))
+        pipe.ingest(frame(t0, ROUTER))
+        # Frames addressed to the sensor, each acknowledged within 50 ms.
+        for i in range(1, 21):
+            pipe.ingest(frame(t0 + 5 * i, ROUTER, seq=i, dst=SENSOR))
+            pipe.ingest(ack(t0 + 5 * i + 0.001, i))
+        self.assertEqual(pipe.seen.table[SENSOR]["last_seen"], t0)
+        self.assertEqual((pipe.seen.table[SENSOR]["vouched_by"], pipe.seen.table[SENSOR]["vouched_ts"]),
+                         ("ack", t0 + 100 + 0.001))
+        # One addressed to it that nothing answers changes nothing.
+        pipe.ingest(frame(t0 + 200, ROUTER, seq=99, dst=SENSOR))
+        pipe.ingest(frame(t0 + 201, ROUTER, seq=100))
+        self.assertEqual(pipe.seen.table[SENSOR]["vouched_ts"], t0 + 100 + 0.001)
+        pipe.periodic(t0 + 31 * 60)
+        self.assertEqual(self._quiet(pipe), [], "held: it acknowledged a frame 29 min ago")
+        pipe.periodic(t0 + 100 + 30 * 60 + 1)
+        ev = [r for r in pipe.events.records if r["event"] == "device_quiet"]
+        self.assertEqual([r["addr"] for r in ev], [SENSOR])
+        self.assertEqual(ev[0]["vouched_by"], "ack")
+        self.assertIn("its radio acknowledged a frame 30 min ago, 2 min after its last frame heard here", ev[0]["note"])
+
+    def test_an_acknowledgement_is_not_a_return_and_a_frame_is(self):
+        pipe = self._pipe()
+        t0 = 1_700_000_000.0
+        pipe.ingest(frame(t0, SENSOR))
+        for m in (0, 15, 30):
+            pipe.ingest(frame(t0 + m * 60, ROUTER))
+        pipe.periodic(t0 + 31 * 60)
+        self.assertEqual(self._quiet(pipe), [SENSOR])
+        pipe.ingest(frame(t0 + 32 * 60, ROUTER, seq=7, dst=SENSOR))
+        pipe.ingest(ack(t0 + 32 * 60 + 0.001, 7))
+        self.assertEqual([r["addr"] for r in pipe.events.records if r["event"] == "device_returned"], [])
+        pipe.ingest(frame(t0 + 33 * 60, SENSOR))
+        self.assertEqual([r["addr"] for r in pipe.events.records if r["event"] == "device_returned"], [SENSOR])
+
+    def test_a_recent_vouch_holds_the_quiet_across_a_restart(self):
+        # The start-up pass and the live tick share _is_quiet: a row whose
+        # last frame is old but whose parent answered it lately is not
+        # announced when the recorder comes back either.
+        import json as _json
+        T = time.time()
+        state = self.cfg.state_dir
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "last-seen.json").write_text(_json.dumps(
+            {ROUTER: {"first_seen": T - 7200, "last_seen": T - 3 * self.cfg.quiet_s, "frames": 10,
+                      "types": {}, "pan": OWN_PAN, "vouched_ts": T - 60, "vouched_by": "parent"}}))
+        (state / "blind-spans.json").write_text("[]")
+        (state / "status.json").write_text(_json.dumps({"last_frame_ts": T}))
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        self.assertEqual(self._quiet(pipe), [])
+        pipe.periodic(T + self.cfg.quiet_s + 1)
+        self.assertEqual(self._quiet(pipe), [ROUTER])
+
     def test_report_carries_reception(self):
         pipe = self._pipe()
         t0 = 1_700_000_000.0

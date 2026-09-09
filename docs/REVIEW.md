@@ -32,7 +32,8 @@ proxy that authenticates.
   `[record] keep_snapshots` newer ones have been taken) is shown at the
   top. Today's page opens with a
   *right now* card: devices quiet at this moment (the ones the recorder
-  has announced, after `[quiet] silence_s` of silence it was up to hear;
+  has announced, after `[quiet] silence_s` of silence it was up to hear
+  with nothing vouching for the device meanwhile, docs/ALERTING.md;
   `threadwatch devices` and the daily summary list the same set), devices
   whose signal is down, and unnamed addresses; any day that has a daily
   summary shows it under that. Today's page reloads itself every minute.

@@ -658,17 +658,19 @@ class Tracker:
 
 def availability_by_addr(state_dir: Path) -> dict[str, dict]:
     """For the pages: extended address -> {name, since, paged, burst_id}
-    for every open episode the recorder has on file, from the state and
-    the cached map. Empty without the feature."""
+    for every device the cached map knows, ``since`` None when it is
+    available, from the state file and the map. Empty without the
+    feature (no map on disk)."""
     state = load_state(state_dir / STATE_FILE)
     mapping = load_map(state_dir)
     out = {}
-    for device_id, ep in state["episodes"].items():
-        info = mapping.get(device_id) or {}
+    for device_id, info in mapping.items():
         addr = (info.get("addr") or "").lower()
-        if addr:
-            out[addr] = {"name": info.get("name") or info.get("ha_name"), "since": ep.get("since"),
-                         "paged": bool(ep.get("paged")), "burst_id": ep.get("burst_id")}
+        if not addr:
+            continue
+        ep = state["episodes"].get(device_id) or {}
+        out[addr] = {"name": info.get("name") or info.get("ha_name"), "since": ep.get("since"),
+                     "paged": bool(ep.get("paged")), "burst_id": ep.get("burst_id")}
     return out
 
 
@@ -712,3 +714,12 @@ def poll_once(cfg, mapping: dict[str, dict], entries: list[dict], *, map_age_s: 
     if refreshed is not None:
         result["map"] = refreshed
     return result
+
+
+def credentials_or_none(cfg) -> tuple[str, str] | None:
+    """(url, token) from config/ha.env, or None without a token."""
+    from .ha import HAError, connection_settings
+    try:
+        return connection_settings(cfg.config_dir / "ha.env")
+    except HAError:
+        return None

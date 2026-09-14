@@ -491,6 +491,90 @@ def _check_archive(cfg, slug: str, now: float) -> list[Check]:
     return [(OK, "ha-logs", text)]
 
 
+def check_ha_availability(cfg, now: float | None = None) -> list[Check]:
+    """With [ha_availability] enabled: the settings file loads (FAIL if
+    not), HA answers /api/states, the websocket registry lookup works,
+    which HA Thread devices match the inventory (WARN naming the
+    unmatched, watched under their HA names), devices with no usable
+    entity (WARN), and settings entries whose id HA no longer has or
+    whose kept name or address is out of date (WARN)."""
+    if not getattr(cfg, "ha_availability_enabled", False):
+        return []
+    from .ha import HAError
+    from .haavail import (
+        SettingsError,
+        credentials_or_none,
+        link_fields,
+        load_settings,
+        poll_states,
+        refresh_map,
+        settings_path,
+    )
+    from .httpclient import redact_text, redact_url
+    from .names import read_inventory
+    out: list[Check] = []
+    path = settings_path(cfg)
+    try:
+        settings = load_settings(path)
+        n = len(settings)
+        out.append((OK, "ha-avail", f"{path.name}: {n} per-device entr{'y' if n == 1 else 'ies'}" if path.exists()
+                                    else f"{path.name}: not present (default hold for every device)"))
+    except SettingsError as exc:
+        out.append((FAIL, "ha-avail", f"{exc}: the availability check is off until it is fixed"))
+        settings = {}
+    creds = credentials_or_none(cfg)
+    if creds is None:
+        out.append((WARN, "ha-avail", "[ha_availability] enabled but config/ha.env has no HA_TOKEN: nothing is polled"))
+        return out
+    url, token = creds
+    try:
+        states = poll_states(url, token)
+        out.append((OK, "ha-avail", f"GET /api/states: {len(states)} entities from {redact_url(url)}"))
+    except Exception as exc:
+        out.append((WARN, "ha-avail", f"GET /api/states at {redact_url(url)} failed: "
+                                      f"{redact_text(str(getattr(exc, 'reason', exc)), (token,))}"))
+    try:
+        entries = read_inventory(cfg.devices_path) if cfg.devices_path else []
+    except ValueError:
+        entries = []
+    try:
+        mapping = refresh_map(url, token, entries)
+    except HAError as exc:
+        out.append((WARN, "ha-avail", f"device registry over the websocket: {redact_text(str(exc), (token,))}"))
+        return out
+    matched = [m for m in mapping.values() if m.get("matched")]
+    unmatched = sorted((m.get("ha_name") or "?") for m in mapping.values() if not m.get("matched"))
+    out.append((OK, "ha-avail", f"{len(mapping)} Thread devices in Home Assistant, {len(matched)} matched to the "
+                                "inventory by address"))
+    if unmatched:
+        out.append((WARN, "ha-avail", f"{len(unmatched)} not in devices.json, watched under their HA names: "
+                                      + ", ".join(unmatched) + " (threadwatch import --write adds them)"))
+    empty = sorted((m.get("name") or m.get("ha_name") or "?") for m in mapping.values() if not m.get("entities"))
+    if empty:
+        out.append((WARN, "ha-avail", f"{len(empty)} device(s) with no usable entity, so never judged: "
+                                      + ", ".join(empty)))
+    by_id = {}
+    for device_id, m in mapping.items():
+        by_id[device_id] = {"addr": m.get("addr"), "name": m.get("ha_name")}
+    stale = [entry.get("name") or device_id for device_id, entry in settings.items() if device_id not in by_id]
+    if stale:
+        out.append((WARN, "ha-avail", f"{path.name}: {len(stale)} entr{'y' if len(stale) == 1 else 'ies'} for "
+                                      f"device id(s) Home Assistant no longer has: " + ", ".join(stale)
+                                      + " (remove them, or leave them: they do nothing)"))
+    outdated = []
+    for device_id, entry in settings.items():
+        dev = by_id.get(device_id)
+        if dev is None:
+            continue
+        fresh = link_fields(dev, entries)
+        if fresh["name"] != entry.get("name") or fresh["extendedAddress"] != entry.get("extendedAddress"):
+            outdated.append(entry.get("name") or device_id)
+    if outdated:
+        out.append((WARN, "ha-avail", f"{path.name}: name or extendedAddress out of date for "
+                                      + ", ".join(outdated) + ": run threadwatch import --write"))
+    return out
+
+
 def check_alerts(cfg) -> list[Check]:
     from .alerts import SPOOL_FILE, ConfigError, build_heartbeats, build_sinks
 
@@ -565,7 +649,7 @@ def run_doctor(cfg, find_port: Callable[[], str] | None = None, now: float | Non
                  lambda: check_writable(cfg), check_clock,
                  check_services,
                  lambda: check_alerts(cfg), lambda: check_ha_env(cfg), lambda: check_ha_logs(cfg, now),
-                 lambda: check_web(cfg), check_version):
+                 lambda: check_ha_availability(cfg, now), lambda: check_web(cfg), check_version):
         try:
             checks.extend(step())
         except Exception as exc:   # one broken check must not hide the rest

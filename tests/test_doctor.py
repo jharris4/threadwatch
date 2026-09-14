@@ -484,6 +484,93 @@ class HaLogsCheckTest(unittest.TestCase):
         self.assertIn("a snapshot adds up to 24.0 MB of HA add-on logs", disk[2])
 
 
+class HaAvailabilityCheckTest(unittest.TestCase):
+    """With [ha_availability] on, doctor checks the settings file, the
+    states endpoint, the registry lookup and what matched."""
+
+    def setUp(self):
+        import json
+        import tempfile
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        from threadwatch import haavail
+        from threadwatch.config import Config
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        (d / "devices.json").write_text(json.dumps([{"name": "Front Path Motion",
+                                                     "extendedAddress": "C233A4A5BF8391C9"}]))
+        self.cfg = Config(data_dir=d / "data", config_dir=d, devices_path=d / "devices.json")
+        self.cfg.ha_availability_enabled = True
+        body = json.dumps([{"entity_id": "binary_sensor.motion", "state": "on"}]).encode()
+
+        class H(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        self.httpd = HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=self.httpd.serve_forever, args=(0.005,), daemon=True).start()
+        (d / "ha.env").write_text(f"HA_URL=http://127.0.0.1:{self.httpd.server_port}\nHA_TOKEN=tk_SECRET\n")
+        self.mapping = {
+            "id-motion": {"addr": "C233A4A5BF8391C9", "ha_name": "Motion", "name": "Front Path Motion", "matched": True,
+                          "entities": ["binary_sensor.motion"]},
+            "id-garden": {"addr": "1669674DD15CF0FA", "ha_name": "Garden Sensor", "name": "Garden Sensor",
+                          "matched": False, "entities": []},
+        }
+        self._real = haavail.refresh_map
+        haavail.refresh_map = lambda url, token, entries, log=None: self.mapping
+        self.d = d
+
+    def tearDown(self):
+        from threadwatch import haavail
+        haavail.refresh_map = self._real
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.tmp.cleanup()
+
+    def test_the_checks_name_what_matched_what_did_not_and_what_is_stale(self):
+        import json
+        (self.d / "ha-availability.json").write_text(json.dumps({
+            "id-motion": {"name": "Old Name", "extendedAddress": "C233A4A5BF8391C9", "hold_s": 7200},
+            "id-gone": {"name": "Gone", "mute": True}}))
+        checks = doctor.check_ha_availability(self.cfg)
+        levels = [(c[0], c[2].split(":")[0]) for c in checks]
+        self.assertEqual([c[0] for c in checks], ["ok", "ok", "ok", "warn", "warn", "warn", "warn"], levels)
+        texts = [c[2] for c in checks]
+        self.assertIn("2 per-device entries", texts[0])
+        self.assertIn("GET /api/states: 1 entities", texts[1])
+        self.assertIn("2 Thread devices in Home Assistant, 1 matched", texts[2])
+        self.assertIn("not in devices.json, watched under their HA names: Garden Sensor", texts[3])
+        self.assertIn("no usable entity, so never judged: Garden Sensor", texts[4])
+        self.assertIn("device id(s) Home Assistant no longer has: Gone", texts[5])
+        self.assertIn("out of date for Old Name: run threadwatch import --write", texts[6])
+        for t in texts:
+            self.assertNotIn("tk_SECRET", t)
+
+    def test_a_bad_settings_file_is_a_fail_and_no_token_a_warning(self):
+        (self.d / "ha-availability.json").write_text('{"x": {"hold": 5}}')
+        checks = doctor.check_ha_availability(self.cfg)
+        self.assertEqual(checks[0][0], "FAIL")
+        self.assertIn("unknown field(s) hold", checks[0][2])
+        (self.d / "ha-availability.json").unlink()
+        (self.d / "ha.env").write_text("HA_URL=http://x\n")
+        checks = doctor.check_ha_availability(self.cfg)
+        self.assertEqual([c[0] for c in checks], ["ok", "warn"])
+        self.assertIn("no HA_TOKEN", checks[1][2])
+        self.cfg.ha_availability_enabled = False
+        self.assertEqual(doctor.check_ha_availability(self.cfg), [])
+
+    def test_it_is_part_of_a_whole_run(self):
+        checks = doctor.run_doctor(self.cfg, find_port=lambda: "/dev/x", now=time.time())
+        self.assertIn("ha-avail", [c[1] for c in checks])
+
+
 class BlindSpansCheckTest(unittest.TestCase):
     """blind-spans.json is what every silence is measured against. It used
     to be discarded on any read failure with no journal line and no doctor

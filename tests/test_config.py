@@ -291,6 +291,28 @@ class EventsKeepDaysTest(unittest.TestCase):
             if bad not in ("nan", "inf"):
                 self.assertIn("more than 0", str(cm.exception))
 
+    def test_the_ha_logs_settings_are_off_by_default_and_checked_for_shape(self):
+        cfg = self._load("[network]\nchannel = 25\n")
+        self.assertEqual((cfg.ha_logs_enabled, cfg.ha_logs_addons, cfg.ha_logs_max_hours, cfg.ha_logs_read_timeout_s,
+                          cfg.ha_logs_deadline_s, cfg.ha_logs_retry, cfg.ha_logs_archive),
+                         (False, ["core_openthread_border_router", "core_matter_server"], 12, 30, 900, True, False))
+        cfg = self._load('[ha_logs]\nenabled = true\naddons = ["core_matter_server"]\nmax_hours = 6\n')
+        self.assertEqual((cfg.ha_logs_enabled, cfg.ha_logs_addons, cfg.ha_logs_max_hours),
+                         (True, ["core_matter_server"], 6))
+        for body, want in (('addons = ["Core OTBR"]', "add-on slugs"),
+                           ('addons = "core_matter_server"', "add-on slugs"),
+                           ('addons = [1]', "add-on slugs"),
+                           ('enabled = "yes"', "must be true or false"),
+                           ('retry = 1', "must be true or false"),
+                           ('max_hours = 0', "must be more than 0"),
+                           ('max_hours = -3', "must be more than 0"),
+                           ('deadline_s = nan', "must be a finite number"),
+                           ('read_timeout_s = inf', "must be a finite number"),
+                           ('timeout = 5', "unknown key 'timeout' in [ha_logs]")):
+            with self.subTest(body=body), self.assertRaises(ValueError) as cm:
+                self._load(f"[ha_logs]\n{body}\n")
+            self.assertIn(want, str(cm.exception))
+
     def test_retransmission_confirm_s_defaults_to_five_minutes_zero_at_once_negative_refused(self):
         self.assertEqual(self._load("[network]\nchannel = 25\n").retrans_confirm_s, 300)
         self.assertEqual(self._load("[retransmissions]\nconfirm_s = 0\n").retrans_confirm_s, 0)
@@ -361,6 +383,14 @@ class ExampleConfigTest(unittest.TestCase):
         ("keys", "census_delay_s"): ("key_census_delay_s", 3600, 60),
         ("keys", "rearm_s"): ("key_rearm_s", 3600, 120),
         ("keys", "rotation_hours"): ("key_rotation_hours", 672, 24),
+        ("ha_logs", "enabled"): ("ha_logs_enabled", True, False),
+        ("ha_logs", "addons"): ("ha_logs_addons", ["core_openthread_border_router", "core_matter_server"],
+                                ["core_matter_server"]),
+        ("ha_logs", "max_hours"): ("ha_logs_max_hours", 12, 6),
+        ("ha_logs", "read_timeout_s"): ("ha_logs_read_timeout_s", 30, 5),
+        ("ha_logs", "deadline_s"): ("ha_logs_deadline_s", 900, 60),
+        ("ha_logs", "retry"): ("ha_logs_retry", True, False),
+        ("ha_logs", "archive"): ("ha_logs_archive", False, True),
         ("retransmissions", "confirm_s"): ("retrans_confirm_s", 300, 60),
         ("link", "drop_db"): ("link_drop_db", 8, 3),
         ("link", "hold_s"): ("link_hold_s", 1800, 120),

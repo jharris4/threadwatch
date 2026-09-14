@@ -90,6 +90,35 @@ rearm_s = 3600             # 60 min
 # called "early" in the key_sequence_advanced note. Unset says nothing.
 # rotation_hours = 672
 
+[ha_logs]
+# Copy the Home Assistant OTBR and Matter Server add-on logs into every
+# snapshot, by hand or on a critical event, covering the snapshot's window
+# (docs/ANALYSIS.md, "Snapshots"). The border router's own view of the
+# mesh sits beside the packets, with journal timestamps in UTC. Needs
+# config/ha.env with a long-lived token from an ADMIN user: the add-on log
+# endpoint goes through the Supervisor, which refuses anyone else
+# (docs/HOME-ASSISTANT.md). Off by default; with a token present and this
+# off, snapshots carry no logs and say nothing about it.
+# enabled = true
+# The add-ons to fetch, by Supervisor slug.
+# addons = ["core_openthread_border_router", "core_matter_server"]
+# Never request further back than this. HA's journal is shared by every
+# add-on and short: about 11.5 h here with the OTBR at log level info.
+# max_hours = 12
+# One silent read, and the whole transfer per add-on. HA serves about
+# 1,900 lines/s, so 12 h of OTBR at info takes about five minutes; past
+# the deadline what arrived is kept and the snapshot's ha-logs.json says
+# "partial".
+# read_timeout_s = 30
+# deadline_s = 900
+# The recorder retries a failed or partial fetch at 15 min, 1 h and 4 h
+# after the snapshot, while the window is still inside max_hours.
+# retry = true
+# Keep an hourly archive of the logs under data/ha-logs/ so a snapshot
+# taken long after an incident still has the border router's log for it
+# (phase 2, docs/OPERATIONS.md). Retention follows [record] keep_hours.
+# archive = false
+
 [retransmissions]
 # A minute in which more than 20% of frames were repeats, at over twice the
 # recent baseline, is logged at notice; the warning waits until the rate has

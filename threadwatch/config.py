@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -152,6 +153,20 @@ class Config:
     # under 90% of it after the previous one is called "early" in the
     # key_sequence_advanced note. None says nothing about timing.
     key_rotation_hours: float | None = None
+    # [ha_logs] copy the Home Assistant OTBR and Matter Server add-on logs
+    # into every snapshot (docs/ANALYSIS.md, "Snapshots"). Off by default: it
+    # needs config/ha.env with a token from an admin user, since the add-on
+    # log endpoint goes through the Supervisor.
+    ha_logs_enabled: bool = False
+    ha_logs_addons: list = field(default_factory=lambda: ["core_openthread_border_router", "core_matter_server"])
+    # Never request further back than this: HA's journal retained about
+    # 11.5 h with the OTBR at log level info, and a request past it costs
+    # nothing but returns nothing.
+    ha_logs_max_hours: float = 12.0
+    ha_logs_read_timeout_s: float = 30.0      # one silent read
+    ha_logs_deadline_s: float = 15 * 60       # the whole transfer, per add-on; what arrived is kept past it
+    ha_logs_retry: bool = True                # the recorder retries failed or partial fetches
+    ha_logs_archive: bool = False             # phase 2: the hourly archive under data/ha-logs/
     # [retransmissions] a minute of elevated retries is logged at notice and
     # paged only if the rate has stayed up this long. One minute of
     # elevation is a microwave; a storm building keeps the rate up. 0 pages
@@ -252,6 +267,7 @@ SECTIONS: dict[str, frozenset[str] | None] = {
     "link": frozenset(("drop_db", "hold_s")),
     "polls": frozenset(("rearm_s", "confirm_s")),
     "keys": frozenset(("confirm_s", "fresh_s", "census_delay_s", "rearm_s", "rotation_hours")),
+    "ha_logs": frozenset(("enabled", "addons", "max_hours", "read_timeout_s", "deadline_s", "retry", "archive")),
     "retransmissions": frozenset(("confirm_s",)),
     "border_routers": frozenset(("browse_s", "rotation")),
     "summary": frozenset(("hour", "severity")),
@@ -263,6 +279,10 @@ SECTIONS: dict[str, frozenset[str] | None] = {
     "alerts": None,
     "heartbeats": None,
 }
+
+
+# An add-on slug as the Supervisor names them: core_openthread_border_router.
+_ADDON_SLUG = re.compile(r"^[a-z0-9_]+$")
 
 
 def _finite(section: str, key: str, value):
@@ -461,6 +481,23 @@ def load(path: Path | None) -> Config:
             cfg.key_rotation_hours = float(_finite("keys", "rotation_hours", keys["rotation_hours"]))
             if not cfg.key_rotation_hours > 0:
                 raise ValueError(f"[keys] rotation_hours must be more than 0, not {cfg.key_rotation_hours:g}")
+        ha_logs = raw.get("ha_logs", {})
+        for name, attr in (("enabled", "ha_logs_enabled"), ("retry", "ha_logs_retry"), ("archive", "ha_logs_archive")):
+            value = ha_logs.get(name, getattr(cfg, attr))
+            if not isinstance(value, bool):
+                raise ValueError(f"[ha_logs] {name} must be true or false, not {value!r}")
+            setattr(cfg, attr, value)
+        addons = ha_logs.get("addons", cfg.ha_logs_addons)
+        if not isinstance(addons, list) or not all(isinstance(a, str) and _ADDON_SLUG.match(a) for a in addons):
+            raise ValueError(f"[ha_logs] addons must be a list of add-on slugs (lower-case letters, digits and "
+                             f"underscores, e.g. \"core_openthread_border_router\"), not {addons!r}")
+        cfg.ha_logs_addons = list(addons)
+        for name, attr in (("max_hours", "ha_logs_max_hours"), ("read_timeout_s", "ha_logs_read_timeout_s"),
+                           ("deadline_s", "ha_logs_deadline_s")):
+            value = float(_finite("ha_logs", name, ha_logs.get(name, getattr(cfg, attr))))
+            if not value > 0:
+                raise ValueError(f"[ha_logs] {name} must be more than 0, not {value:g}")
+            setattr(cfg, attr, value)
         retrans = raw.get("retransmissions", {})
         cfg.retrans_confirm_s = float(_finite("retransmissions", "confirm_s",
                                              retrans.get("confirm_s", cfg.retrans_confirm_s)))

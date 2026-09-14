@@ -842,5 +842,118 @@ class ArchiveTest(unittest.TestCase):
         self.assertEqual(status["addons"][OTBR]["hours"]["20250913-20"]["complete"], True)
 
 
+class RecorderArchiveTest(unittest.TestCase):
+    """The recorder's side of the archive: a pass on a thread after each
+    hour, its events through events.emit, its status entry, and doctor's
+    view of it."""
+
+    def setUp(self):
+        from threadwatch.config import Config
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        (d / "devices.json").write_text("[]")
+        self.cfg = Config(data_dir=d / "data", config_dir=d, devices_path=d / "devices.json")
+        self.cfg.ha_logs_enabled = True
+        self.cfg.ha_logs_archive = True
+        self.cfg.ha_logs_addons = [OTBR]
+        self.cfg.ha_logs_max_hours = 3
+        now = time.time()
+        self.srv = FakeSupervisor({OTBR: [(now - 3 * 3600 + i * 600, f"line {i}") for i in range(19)]})
+        (d / "ha.env").write_text(f"HA_URL={self.srv.url}\nHA_TOKEN={TOKEN}\n")
+
+    def tearDown(self):
+        self.srv.close()
+        self.tmp.cleanup()
+
+    def _pipe(self):
+        from threadwatch.crypto import Decryptor
+        from threadwatch.events import NullEventLog
+        from threadwatch.pipeline import Pipeline
+        pipe = Pipeline(self.cfg, NullEventLog(), Decryptor(network_key=bytes(16)))
+        pipe._emit = lambda *a, **kw: self.fail("an archive report went through _emit")
+        return pipe
+
+    def _run_pass(self, pipe, now):
+        pipe._poll_ha_archive(now)
+        self.assertIsNotNone(pipe._archive_thread)
+        pipe._archive_thread.join(10)
+        pipe._poll_ha_archive(now + 1)
+
+    def test_the_pass_runs_on_a_thread_and_the_status_entry_follows_it(self):
+        pipe = self._pipe()
+        self.assertEqual(pipe.ha_logs_archive_status()[OTBR]["last_archived"], None)
+        now = time.time()
+        self._run_pass(pipe, now)
+        status = pipe.ha_logs_archive_status()[OTBR]
+        self.assertEqual(status["last_archived"], halogs.hour_name(now - 3600 - 120))
+        self.assertGreaterEqual(status["hours_on_disk"], 2)
+        self.assertEqual((status["pending"], status["lost"]), ([], []))
+        self.assertEqual([r["event"] for r in pipe.events.records if r["event"].startswith("ha_logs")], [])
+        # Not again before the next hour boundary.
+        n = len(self.srv.requests)
+        pipe._poll_ha_archive(now + 60)
+        self.assertIsNone(pipe._archive_thread)
+        self.assertEqual(len(self.srv.requests), n)
+        self.assertEqual(pipe._next_archive, (int(now // 3600) + 1) * 3600 + halogs.ARCHIVE_GRACE_S)
+
+    def test_an_outage_is_said_once_and_its_end_once_through_events_emit(self):
+        pipe = self._pipe()
+        now = time.time()
+        self._run_pass(pipe, now)
+        self.srv.status = 503
+        pipe._next_archive = 0.0
+        self._run_pass(pipe, now + 3600 + 120)                      # the hour just ended fails: pending
+        self.assertEqual(pipe.ha_logs_archive_status()[OTBR]["pending"], [halogs.hour_name(now)])
+        self.assertLessEqual(pipe._next_archive, now + 3600 + 121 + halogs.ARCHIVE_RETRY_S)   # pulled forward
+        for k in range(1, 5):                                       # an hour of 15-minute passes
+            pipe._next_archive = 0.0
+            self._run_pass(pipe, now + 3600 + 120 + k * 900)
+        stalled = [r for r in pipe.events.records if r["event"] == "ha_logs_archive_stalled"]
+        self.assertEqual(len(stalled), 1)
+        self.assertEqual((stalled[0]["severity"], stalled[0]["addons"]), ("notice", [OTBR]))
+        self.srv.status = 200
+        pipe._next_archive = 0.0
+        self._run_pass(pipe, now + 3600 + 120 + 5 * 900)
+        resumed = [r for r in pipe.events.records if r["event"] == "ha_logs_archive_resumed"]
+        self.assertEqual(len(resumed), 1)
+        self.assertEqual(resumed[0]["severity"], "info")
+        self.assertEqual(pipe.ha_logs_archive_status()[OTBR]["pending"], [])
+        for text in json.dumps(pipe.events.records):
+            self.assertNotIn(TOKEN, text)
+
+    def test_doctor_warns_when_the_archive_is_behind_and_the_status_page_shows_it(self):
+        from threadwatch import doctor
+        from threadwatch.web import Site
+        now = time.time()
+        checks = doctor.check_ha_logs(self.cfg, now=now)
+        self.assertEqual([c[0] for c in checks], ["ok", "warn"])             # the probe, then the empty archive
+        self.assertIn("nothing yet", checks[1][2])
+        pipe = self._pipe()
+        self._run_pass(pipe, now)
+        checks = doctor.check_ha_logs(self.cfg, now=now)
+        self.assertEqual([c[0] for c in checks], ["ok", "ok"])
+        self.assertIn("archive up to", checks[1][2])
+        checks = doctor.check_ha_logs(self.cfg, now=now + 4 * 3600)
+        self.assertEqual(checks[1][0], "warn")
+        self.assertIn("has not kept up", checks[1][2])
+        (self.cfg.state_dir / "status.json").write_text(json.dumps({
+            "updated": now, "last_frame_age_s": 1,
+            "ha_logs_archive": {OTBR: {"last_archived": "20250913-21", "hours_on_disk": 6,
+                                        "pending": ["20250913-22"], "lost": ["20250913-15"]}}}))
+        body = Site(self.cfg).status_page()
+        self.assertIn("<th>HA log archive</th>", body)
+        self.assertIn(f"{OTBR}: up to 20250913-21 UTC", body)
+        self.assertIn('<span class="warn">1 pending</span>', body)
+        self.assertIn('<span class="bad">1 lost</span> <span class="muted">(20250913-15)</span>', body)
+
+    def test_with_the_archive_off_nothing_runs_and_status_is_null(self):
+        self.cfg.ha_logs_archive = False
+        pipe = self._pipe()
+        pipe.periodic(time.time())
+        self.assertIsNone(pipe._archive_thread)
+        self.assertIsNone(pipe.ha_logs_archive_status())
+        self.assertEqual(self.srv.requests, [])
+
+
 if __name__ == "__main__":
     unittest.main()

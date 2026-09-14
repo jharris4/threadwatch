@@ -281,6 +281,14 @@ class Pipeline:
         self._halogs_thread = None
         self._halogs_result: list | None = None
         self._next_halogs = 0.0
+        # The hourly archive of the same logs ([ha_logs] archive): a pass
+        # just after each hour ends, every ARCHIVE_RETRY_S while anything
+        # is pending, on a thread; its events and its status entry are
+        # applied on the capture thread.
+        self._archive_thread = None
+        self._archive_result: dict | None = None
+        self._next_archive = 0.0
+        self._archive_status: dict | None = None
         self._last_auto_snapshot = 0.0 if ephemeral else self._last_auto_snapshot_on_disk()
         if not ephemeral and cfg.border_router_browse_s > 0:
             # Imported here rather than at the first browse, minutes in. A
@@ -900,7 +908,8 @@ class Pipeline:
         # configured_pan_silent; join-scan, stale-credential and storm
         # notices all held back.
         for attr in ("_retrans_since", "_retrans_alerted", "_retrans_paged", "_retrans_up", "_retrans_closed",
-                     "_win_start", "_next_browse", "_next_halogs", "_join_scan_evt", "_stale_evt", "_pan_silent_evt",
+                     "_win_start", "_next_browse", "_next_halogs", "_next_archive", "_join_scan_evt", "_stale_evt",
+                     "_pan_silent_evt",
                      "_pan_window_start", "_last_auto_snapshot", "_storm_evt"):
             t = getattr(self, attr)
             if t and before(t):
@@ -2063,6 +2072,8 @@ class Pipeline:
             self._poll_border_routers(now)
         if not self.ephemeral and self.cfg.ha_logs_enabled and self.cfg.ha_logs_retry:
             self._poll_ha_logs(now)
+        if not self.ephemeral and self.cfg.ha_logs_enabled and self.cfg.ha_logs_archive:
+            self._poll_ha_archive(now)
         # Devices on another PAN (a neighbour's mesh, an unpaired device
         # announcing itself) are tracked for the report but never alerted on:
         # their absence says nothing about this network.
@@ -2312,6 +2323,63 @@ class Pipeline:
                                + f": {'; '.join(errors)}; {how}"))
 
     HA_LOGS_RETRY_S = 15 * 60
+
+    def _poll_ha_archive(self, now: float) -> None:
+        """The hourly archive pass (halogs.archive_pass) on a thread: due
+        ARCHIVE_GRACE_S after each hour boundary, and every ARCHIVE_RETRY_S
+        while hours are pending. The next periodic pass emits the events
+        the pass produced and refreshes the status entry."""
+        from .halogs import ARCHIVE_GRACE_S, ARCHIVE_RETRY_S, archive_status
+        if self._archive_thread is not None:
+            if self._archive_thread.is_alive():
+                return
+            self._archive_thread.join()
+            self._archive_thread = None
+            result, self._archive_result = self._archive_result, None
+            if result is not None:
+                for event, severity, fields in result.get("events", []):
+                    # events.emit: a report on the archive is never a
+                    # reason to snapshot, and never pages.
+                    self.events.emit(event, severity, now, **fields)
+                self._archive_status = archive_status(self.cfg, result.get("state"))
+                if result.get("pending"):
+                    self._next_archive = min(self._next_archive, now + ARCHIVE_RETRY_S)
+            return
+        if now < self._next_archive:
+            return
+        # The next hour boundary plus the grace; a pending backlog pulls it
+        # forward when the result comes in (above).
+        self._next_archive = (int(now // 3600) + 1) * 3600 + ARCHIVE_GRACE_S
+        secrets = self._halogs_secrets()
+
+        def run():
+            from .halogs import archive_pass, credentials, prune_archive
+            try:
+                result = archive_pass(self.cfg, now, credentials(self.cfg), secrets=secrets,
+                                      log=lambda msg: print(f"[threadwatch] {msg}", file=sys.stderr, flush=True))
+                pruned = prune_archive(self.cfg)
+                if pruned:
+                    print(f"[threadwatch] ha-logs archive: dropped {len(pruned)} hour(s) past [record] keep_hours",
+                          file=sys.stderr, flush=True)
+                self._archive_result = result
+            except Exception as exc:
+                print(f"[threadwatch] HA log archive pass failed: {type(exc).__name__}: {exc}",
+                      file=sys.stderr, flush=True)
+                self._archive_result = None
+
+        self._archive_thread = threading.Thread(target=run, name="ha-logs-archive", daemon=True)
+        self._archive_thread.start()
+
+    def ha_logs_archive_status(self) -> dict | None:
+        """The 'ha_logs_archive' entry of status.json: per add-on the last
+        hour archived, the hours on disk, pending and lost; None with the
+        archive off."""
+        if not (self.cfg.ha_logs_enabled and self.cfg.ha_logs_archive):
+            return None
+        if self._archive_status is None:
+            from .halogs import archive_status
+            self._archive_status = archive_status(self.cfg)
+        return self._archive_status
 
     def _poll_ha_logs(self, now: float) -> None:
         """Every HA_LOGS_RETRY_S, on a thread, retry the failed or partial

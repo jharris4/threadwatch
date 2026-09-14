@@ -634,6 +634,9 @@ def _write_status(cfg, port, total, started, pipe: Pipeline, ring, decryptor,
         # status page reads it; crypto.key_sequence below is the
         # decryptor's own, which a straggler frame can also raise).
         "keys": pipe.keys_status(),
+        # With [ha_logs] archive on: per add-on the last hour archived, the
+        # hours pending and lost; null otherwise.
+        "ha_logs_archive": pipe.ha_logs_archive_status(),
     }
     status["crypto"] = {**decryptor.stats, "key_sequence": decryptor.key_sequence}
     tmp = cfg.state_dir / "status.tmp"

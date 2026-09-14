@@ -693,6 +693,19 @@ class Site:
                                       + (f' {ago(when, now)}' if when else "")
                                       + (f', previously {esc(keys["previous"])}' if keys.get("previous") is not None
                                          else "") + '</span>')
+            archive = st.get("ha_logs_archive")
+            if isinstance(archive, dict):
+                parts = []
+                for slug, a in archive.items():
+                    last = a.get("last_archived")
+                    text = f'{esc(slug)}: ' + (f'up to {esc(last)} UTC' if last else "nothing archived yet")
+                    if a.get("pending"):
+                        text += f' <span class="warn">{len(a["pending"])} pending</span>'
+                    if a.get("lost"):
+                        text += (f' <span class="bad">{len(a["lost"])} lost</span> '
+                                 f'<span class="muted">({esc(", ".join(a["lost"]))})</span>')
+                    parts.append(text)
+                row("HA log archive", "; ".join(parts) or '<span class="muted">no add-ons</span>')
             cr = st.get("crypto")
             if cr:
                 row("crypto", '<span class="muted">'

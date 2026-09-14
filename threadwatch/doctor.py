@@ -461,7 +461,34 @@ def check_ha_logs(cfg, now: float | None = None) -> list[Check]:
                                          "stopped"))
         else:
             out.append((OK, "ha-logs", f"{slug}: newest line {when} ({age:.0f} s ago)"))
+    if getattr(cfg, "ha_logs_archive", False):
+        for slug in cfg.ha_logs_addons:
+            out.extend(_check_archive(cfg, slug, now))
     return out
+
+
+ARCHIVE_STALE_S = 2 * 3600
+
+
+def _check_archive(cfg, slug: str, now: float) -> list[Check]:
+    """With the archive on: is its newest hour for this add-on recent? An
+    archive more than two hours behind has missed a boundary pass, which
+    the recorder's own stalled event also says."""
+    from .halogs import archive_status, hour_start
+    status = archive_status(cfg).get(slug) or {}
+    last = status.get("last_archived")
+    if not last:
+        return [(WARN, "ha-logs", f"{slug}: the hourly archive has nothing yet (it fills two minutes after each "
+                                  "hour while the recorder runs)")]
+    age = now - (hour_start(last) + 3600.0)
+    text = f"{slug}: archive up to {last} UTC ({age / 60:.0f} min behind)"
+    if status.get("pending"):
+        text += f", {len(status['pending'])} hour(s) pending"
+    if status.get("lost"):
+        text += f", {len(status['lost'])} lost"
+    if age > ARCHIVE_STALE_S:
+        return [(WARN, "ha-logs", text + ": the archive has not kept up; is the recorder running, and does HA answer?")]
+    return [(OK, "ha-logs", text)]
 
 
 def check_alerts(cfg) -> list[Check]:

@@ -276,6 +276,7 @@ default in them is checked against `--help` and the source).
       review.py    events -> episodes, day index, device summaries
       web.py       read-only review pages (threadwatch serve)
       alerts.py    alert sinks (http/command/ntfy preset) + heartbeats
+      httpclient.py the no-redirect HTTP opener and the URL/text redaction every credentialed call uses
       names.py     address->name inventory, last-seen tracking
       mdns.py      border routers over mDNS (threadwatch border-routers)
       ha.py        Home Assistant websocket client (names, network key)

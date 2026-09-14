@@ -56,12 +56,13 @@ import subprocess
 import threading
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 from typing import Any, Callable
+
+from .httpclient import redact_text, redact_url, urlopen
 
 SEVERITIES = ("info", "notice", "warning", "critical")
 
@@ -406,37 +407,13 @@ class CommandSink(Sink):
             + (f" (+{rest} args)" if rest > 0 else "")
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """Refuse 3xx answers. urlopen follows them by default and re-sends the
-    request's headers, Authorization included, to wherever Location points,
-    another host or not: whoever answers a sink or heartbeat URL (its
-    operator, a MITM on a plain-http one, a DNS race for its name) could
-    collect the bearer token with one 302. None of the supported targets
-    answers a webhook with a redirect, so a 3xx is reported as the HTTP
-    error it is and the token stays with the configured host."""
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
-
-
-_opener = urllib.request.build_opener(_NoRedirect())
-
-
-def _urlopen(req: urllib.request.Request, timeout: float):
-    return _opener.open(req, timeout=timeout)
-
-
-def _redact_url(url: str) -> str:
-    """Scheme and host only for log output: Discord, Healthchecks, Uptime
-    Kuma, Cronitor and Home Assistant all carry the secret in the path,
-    and Gotify, a basic-auth proxy or Uptime Kuma may carry it as
-    user:password before the host."""
-    parts = urllib.parse.urlsplit(url)
-    if not parts.netloc:
-        return "<url>"
-    host = parts.netloc.rsplit("@", 1)[-1]
-    dropped = parts.path not in ("", "/") or parts.query or host != parts.netloc
-    return f"{parts.scheme}://{host}{'/...' if dropped else ''}"
+# The no-redirect opener and the redaction helpers live in httpclient.py
+# (a sink's 302 must not carry the bearer token elsewhere, and the same
+# rule serves the Home Assistant calls); the names here are the ones the
+# sinks were written against.
+_urlopen = urlopen
+_redact_url = redact_url
+_redact_text = redact_text
 
 
 # ----------------------------------------------------------------- presets
@@ -1029,44 +1006,6 @@ def _maybe_delivered(exc: BaseException) -> bool:
     if isinstance(exc, urllib.error.URLError):
         exc = exc.reason if isinstance(exc.reason, BaseException) else exc
     return isinstance(exc, TimeoutError)
-
-
-# A URL anywhere in free text, for _redact_text.
-_URL_IN_TEXT = re.compile(r"\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s'\"<>|]+")
-# An authentication credential written the way a program prints one: a
-# header or a parameter whose name says what it carries, and the rest of
-# that line with it (an Authorization value is "Bearer <token>", two
-# words), or a bare scheme and its token. curl -v echoes the headers it
-# sent; a script written for a sink prints whatever it likes.
-_SECRET_KV = re.compile(r"(?i)\b([a-z0-9_.-]*(?:authorization|api[-_]?key|token|secret|"
-                        r"password|passwd|auth)[a-z0-9_.-]*)(\s*[:=]\s*)[^\r\n]+")
-_SECRET_SCHEME = re.compile(r"(?i)\b(bearer|basic|digest)\s+[^\s\r\n]+")
-# Under this many characters, a value expanded from the environment is
-# not scrubbed out of free text: a two-character one is a substring of
-# ordinary words and would blank the diagnostic instead of the secret.
-_SCRUB_MIN = 6
-
-
-def _redact_text(text: str, secrets: tuple = ()) -> str:
-    """Free text with what must not reach the journal taken out of it.
-
-    Every URL is reduced to scheme and host, as describe() does for a
-    configured one: a command sink's stderr is written by a program the
-    operator chose - curl echoing the address it could not reach is the
-    ordinary case - and for ntfy, Discord, Healthchecks, Uptime Kuma and
-    Home Assistant the secret is the path. Credentials that are not URLs
-    go too: the header shapes above, and the exact values ${VAR}
-    expansion put into this sink's own definition (``secrets``), which is
-    the only way to catch a token a program prints in a shape nobody can
-    write a pattern for. The journal is the one output nobody thinks of
-    as one, and it is pasted into issues."""
-    text = _URL_IN_TEXT.sub(lambda m: _redact_url(m.group(0)), text)
-    text = _SECRET_KV.sub(lambda m: f"{m.group(1)}{m.group(2)}<redacted>", text)
-    text = _SECRET_SCHEME.sub(lambda m: f"{m.group(1)} <redacted>", text)
-    for secret in secrets:
-        if len(secret) >= _SCRUB_MIN:
-            text = text.replace(secret, "<redacted>")
-    return text
 
 
 def _describe_error(exc: Exception, secrets: tuple = ()) -> str:

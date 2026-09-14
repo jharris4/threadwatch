@@ -369,6 +369,15 @@ addresses without any retirement. `[border_routers] rotation = "trusted"`
 restores the old behaviour, where the advertisement alone retires the old
 address.
 
+`snapshot_logs_saved` and `snapshot_logs_failed` report the Home Assistant
+add-on logs that join a snapshot with `[ha_logs] enabled` (docs/ANALYSIS.md,
+"Snapshots"): the first when the OTBR and Matter Server logs for the
+snapshot's window are whole, the second (a notice, so nothing pages) when a
+fetch failed or was cut short, saying whether the recorder retries. A
+missing log is a record, not an emergency: the packets are already safe,
+and the recorder tries again at 15 min, 1 h and 4 h while HA's journal can
+still have the window.
+
 `credentials_stale` means the network key no longer matches the mesh,
 usually because it was re-commissioned: frames keep failing to decrypt and
 none succeed. Capture continues and the ring keeps every frame, but

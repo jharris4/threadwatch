@@ -183,6 +183,51 @@ Each snapshot is one directory:
       key-generations.json   the highest key generation heard, the one before, and who was heard
                              first under each (docs/ALERTING.md, key_sequence_advanced)
       events/                a copy of the whole event log, one file per day
+      ha-logs/<slug>.log.gz  with [ha_logs] enabled: the Home Assistant add-on logs for the snapshot's
+                             window, one gzip per add-on (core_openthread_border_router,
+                             core_matter_server), journal lines with a UTC wall-clock stamp
+      ha-logs.json           what arrived: status (complete, partial, failed, skipped, or fetching
+                             while a copy runs), the window requested, and per add-on the file,
+                             lines, the received window, gap_before_s (how far the journal had
+                             already rolled past the start), any error, and attempts
+
+The manifest lists the logs among its `files` and summarises `ha-logs.json`
+under `ha_logs`; a snapshot that never asked for logs (`[ha_logs]` off) has
+neither. `threadwatch snapshots` marks a snapshot that has them `+ha-logs`
+(`+ha-logs partial` or `failed` when it does not have them whole).
+
+**The add-on logs.** The border router's own view of the mesh is what
+closes an incident (a `ChannelAccessFailure` beside a flood window, a
+Matter node going unreachable beside a `key_lag` page), and Home
+Assistant's journal keeps it for about 11.5 hours with the OTBR at log
+level info, so every snapshot copies it while it exists. The logs are
+added *after* the snapshot is final: a slow or failed fetch never delays,
+invalidates or removes the ring copy, and the recorder retries a failed or
+partial fetch at 15 min, 1 h and 4 h after the snapshot while the journal
+can still have the window (`[ha_logs] retry`). What to know when reading
+one:
+
+- Every line starts with the journal's wall-clock stamp, **in UTC**
+  (`2026-09-13 22:09:43.197 homeassistant app_core_openthread_border_router[697]: ...`),
+  while ring files are named by local hour and Wireshark shows local time.
+  To set a log line beside a frame, convert one side: `date -u -d
+  @<frame epoch>` gives the journal's form of a pcap timestamp, and
+  `TZ=UTC` in front of `tshark -t ad` prints frames in the journal's zone.
+- The OTBR's own uptime stamp (`4d.03:52:00.671`) follows the prefix and is
+  kept: it is what the add-on's other diagnostics quote.
+- `received` in `ha-logs.json` is the first and last stamp that arrived;
+  `gap_before_s` above zero means the journal had already dropped the start
+  of the window. Raising the OTBR's log level fills the journal faster and
+  shortens its retention for every add-on, the Matter Server's included.
+- The token, the network key in any spelling and the values in
+  `alerts.env` are scrubbed from the text before it is written; a
+  `<redacted>` marks where one stood.
+
+```bash
+SNAP=data/snapshots/20260901T031500_storm-at-noon
+zcat "$SNAP"/ha-logs/core_openthread_border_router.log.gz | grep -c ChannelAccessFailure
+zcat "$SNAP"/ha-logs/core_openthread_border_router.log.gz | awk '$1" "$2 >= "2026-09-01 06:55"' | head
+```
 
 The name is the time it was saved (local, `YYYYMMDDTHHMMSS`) and the label
 reduced to filename-safe characters: letters, digits, `.`, `_` and `-`,

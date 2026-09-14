@@ -81,7 +81,9 @@ proxy that authenticates.
   plus one hour when set, since the hour being written is never pruned;
   the doctor's disk check uses the same figure).
 - **/snapshots**: every saved snapshot with when it was saved, the
-  hours its packets cover, and its size. Day pages link to it.
+  hours its packets cover, its size, and the Home Assistant add-on logs
+  it carries (each file with its line count, `partial` when a fetch was
+  cut short). Day pages link to it.
 - **/api/status** (with a `storage` block), **/api/snapshots**,
   **/api/days**, **/api/day/YYYY-MM-DD**, **/api/devices**,
   **/api/device/<addr or name>**:

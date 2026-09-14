@@ -35,6 +35,14 @@ once; HA does not show it again. Paste it into `config/ha.env` as
 list. `HA_URL` is how this machine reaches HA, usually
 `http://homeassistant.local:8123` or the LAN address.
 
+The token carries the rights of the user who created it. `import` needs
+only what any user has, but the add-on log copy behind `[ha_logs]` (below,
+and docs/ANALYSIS.md "Snapshots") reads
+`/api/hassio/addons/<slug>/logs`, which HA forwards to the Supervisor, and
+the Supervisor answers only an **administrator's** token: anyone else gets
+HTTP 401. Create the token from an admin user's profile if you turn that
+on; `threadwatch doctor` says which it has.
+
 **What it fetches**, over HA's websocket API with that token:
 
 - `devices.json`: every Matter-over-Thread device in HA's device registry,
@@ -174,6 +182,15 @@ The OTBR add-on journal (`ha addons logs core_openthread_border_router`)
 is the border router's own view — `ChannelAccessFailure` lines there
 correlating with threadwatch's flood windows is exactly the
 cross-instrument proof that closed the 2026-09-01 incident.
+
+That journal is short (about 11.5 hours with the OTBR at log level info,
+and the window is shared by every add-on), so with `[ha_logs] enabled` in
+config.toml the recorder copies the OTBR and Matter Server logs for the
+snapshot's window into every snapshot, by hand or on a critical event,
+and retries when HA was down. It needs the admin token above in
+`config/ha.env`, which `push-to-host.sh` already ships to the recorder.
+docs/ANALYSIS.md ("Snapshots") says what the copy holds and how to line
+its UTC-stamped lines up with the packets.
 
 If Home Assistant identifies multiple devices whose addresses already share one
 inventory entry, import stops without writing inventory or credentials. Split the

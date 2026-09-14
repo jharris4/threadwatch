@@ -77,7 +77,9 @@ question: *why did this device go offline?*
 - **Snapshots**: `threadwatch snapshot my-label` saves the ring
   buffer before it rolls over, with the inventory, the configuration
   (secrets blanked), the state files, the event log and a manifest, so
-  the snapshot reads on its own months later; with `snapshot_on_critical`
+  the snapshot reads on its own months later, and with `[ha_logs]` on,
+  the Home Assistant OTBR and Matter Server logs for the same window,
+  copied after the ring is safe; with `snapshot_on_critical`
   in config.toml the recorder does it by itself whenever an event of
   `critical` severity fires (the phase-locked storm is the only one
   today), at most once per six hours. `threadwatch
@@ -282,6 +284,7 @@ default in them is checked against `--help` and the source).
       ha.py        Home Assistant websocket client (names, network key)
       importer.py  threadwatch import: devices.json + credentials.toml from HA and mDNS
       snapshot.py  ring buffer -> snapshot (threadwatch snapshot, snapshot_on_critical)
+      halogs.py    the Home Assistant add-on logs (OTBR, Matter Server) copied into each snapshot
       device.py    per-device history reconstruction (threadwatch device)
       doctor.py    preflight checks (threadwatch doctor)
       config.py    config.toml loading

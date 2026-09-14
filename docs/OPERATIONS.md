@@ -131,6 +131,14 @@ each of these too.
 | `record` | | the same, or a config value out of range |
 | `replay`, `device`, `snapshots --delete` | `--snapshot NAME` matches no snapshot, or more than one | |
 
+`snapshot [label]` exits 0 once the ring is copied, whatever became of the
+Home Assistant add-on logs it copies afterwards with `[ha_logs] enabled`
+(docs/ANALYSIS.md, "Snapshots"): it prints one progress line per add-on
+while they arrive (lines, MB, elapsed, refreshed every 5 s on a terminal),
+then the outcome, `ha-logs: complete` or `partial` / `failed` with the
+reason; the recorder retries the latter. `--no-ha-logs` skips the copy, and
+Ctrl-C during it keeps the snapshot and what arrived, marked partial.
+
 
 ## Troubleshooting
 
@@ -172,6 +180,11 @@ non-`ok` line means and what to do about it:
 | `services` failed / inactive | a unit is down | the journal says why; `reset-failed` and restart as above |
 | `alerts.env` mode / `export` prefix | the file is readable by others, or has a line systemd will drop | `chmod 600`; write `NAME=value` |
 | `ha.env` mode NNNN: readable by others | the Home Assistant long-lived access token is world- or group-readable | `chmod 600 config/ha.env` |
+| `ha-logs` enabled but config/ha.env has no HA_TOKEN | `[ha_logs] enabled` and nothing to authenticate with: snapshots carry no add-on logs | put an admin user's token in `config/ha.env` (docs/HOME-ASSISTANT.md) |
+| `ha-logs` HTTP 401 / 403: the token is not an admin user's | the add-on log endpoint goes through the Supervisor, which refuses non-admin tokens | create the token from an admin user's profile |
+| `ha-logs` HTTP 404: no such add-on | an `[ha_logs] addons` slug HA does not know | `ha addons` on the HA host lists the slugs; the defaults are `core_openthread_border_router` and `core_matter_server` |
+| `ha-logs` not reachable | HA did not answer at `HA_URL` within 10 s | check `HA_URL` in `config/ha.env` and that HA is up; the recorder retries snapshot fetches by itself |
+| `ha-logs` newest line N min ago: the add-on looks stopped | the add-on's log has not moved in over ten minutes | start the add-on in HA; a stopped OTBR is a mesh with no border router |
 | `alerts` alert sink 'x' disabled: environment variable(s) not set | a `${NAME}` the sink references is not in `config/alerts.env`; the daemon runs without that sink | add it to alerts.env, restart |
 | `alerts` the recorder refuses to start on this table | a sink or heartbeat with no url, an unknown type, or two sharing a name | fix `[alerts]` / `[[heartbeats]]` in config.toml (docs/ALERTING.md) |
 | `alerts` no sinks / `heartbeats` none | nothing pages you, or nothing pages when the recorder dies | optional; docs/ALERTING.md |

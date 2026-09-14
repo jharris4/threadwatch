@@ -249,6 +249,9 @@ def check_disk(cfg) -> list[Check]:
     saved = sto.get("snapshots_bytes") or 0
     if saved:
         text += f"; snapshots hold {fmt_bytes(saved)}"
+    extra = sto.get("snapshot_extra_bytes") or 0
+    if extra:
+        text += f"; a snapshot adds up to {fmt_bytes(extra)} of HA add-on logs"
     if free < need:
         return [(FAIL, "disk", text + ": it will not fit; lower keep_hours, set keep_gb, or move data_dir")]
     if free < need + 1024 ** 3:
@@ -257,9 +260,11 @@ def check_disk(cfg) -> list[Check]:
     # A snapshot is a whole second copy of the ring, and only keep_snapshots
     # bounds how many are kept, so the room the ring still needs has to
     # survive one more of them.
-    if cfg.snapshot_on_critical and free - sto["ring_bytes"] < need:
+    copy = sto["ring_bytes"] + extra
+    if cfg.snapshot_on_critical and free - copy < need:
         out.append((WARN, "snapshots",
-                    f"snapshot_on_critical is on and one more snapshot ({fmt_bytes(sto['ring_bytes'])}) would "
+                    f"snapshot_on_critical is on and one more snapshot ({fmt_bytes(copy)}"
+                    + (" with the HA logs" if extra else "") + ") would "
                     f"leave less than the {fmt_bytes(need)} the ring still needs: the recorder will refuse it "
                     "until you delete snapshots (threadwatch snapshots --delete) or lower keep_hours"))
     return out
@@ -403,6 +408,62 @@ def check_ha_env(cfg) -> list[Check]:
     return [(OK, "ha.env", f"mode {mode:04o}")]
 
 
+HA_LOGS_PROBE_TIMEOUT_S = 10.0
+HA_LOGS_STALE_S = 10 * 60
+
+
+def check_ha_logs(cfg, now: float | None = None) -> list[Check]:
+    """With [ha_logs] enabled: can this host read each add-on's log? One
+    read-only request per add-on for its newest line (Range:
+    entries=:-1:1), which says whether the token is an admin's, the slug
+    exists, HA answers, and the add-on is running (a newest line over ten
+    minutes old is an add-on that has stopped)."""
+    if not getattr(cfg, "ha_logs_enabled", False):
+        return []
+    import urllib.error
+    import urllib.request
+
+    from .halogs import credentials, journal_stamp
+    from .httpclient import redact_text, redact_url, urlopen
+    settings = credentials(cfg)
+    if settings is None:
+        return [(WARN, "ha-logs", "[ha_logs] enabled but config/ha.env has no HA_TOKEN: snapshots will carry no "
+                                  "add-on logs (docs/HOME-ASSISTANT.md: the token must be an admin user's)")]
+    url, token = settings
+    now = now if now is not None else time.time()
+    out: list[Check] = []
+    for slug in cfg.ha_logs_addons:
+        req = urllib.request.Request(f"{url}/api/hassio/addons/{slug}/logs?verbose",
+                                     headers={"Authorization": f"Bearer {token}", "Accept": "text/plain",
+                                              "Range": "entries=:-1:1"})
+        try:
+            with urlopen(req, timeout=HA_LOGS_PROBE_TIMEOUT_S) as resp:
+                body = resp.read(65536).decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            why = ("the token is not an admin user's, or is wrong" if exc.code in (401, 403)
+                   else "no such add-on" if exc.code == 404 else "unexpected answer")
+            out.append((WARN, "ha-logs", f"{slug}: HTTP {exc.code} from {redact_url(url)}: {why}"))
+            continue
+        except (OSError, ValueError) as exc:
+            out.append((WARN, "ha-logs", f"{slug}: {redact_url(url)} not reachable: "
+                                         f"{redact_text(str(getattr(exc, 'reason', exc)), (token,))}"))
+            continue
+        stamps = [t for t in (journal_stamp(line) for line in body.splitlines()) if t is not None]
+        if not stamps:
+            out.append((WARN, "ha-logs", f"{slug}: the log has no timestamped line: the add-on may be stopped, "
+                                         "or the endpoint did not answer in the journal's verbose format"))
+            continue
+        newest = max(stamps)
+        age = now - newest
+        when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(newest))
+        if age > HA_LOGS_STALE_S:
+            out.append((WARN, "ha-logs", f"{slug}: newest line {when} ({age / 60:.0f} min ago): the add-on looks "
+                                         "stopped"))
+        else:
+            out.append((OK, "ha-logs", f"{slug}: newest line {when} ({age:.0f} s ago)"))
+    return out
+
+
 def check_alerts(cfg) -> list[Check]:
     from .alerts import SPOOL_FILE, ConfigError, build_heartbeats, build_sinks
 
@@ -476,8 +537,8 @@ def run_doctor(cfg, find_port: Callable[[], str] | None = None, now: float | Non
                  lambda: check_last_seen(cfg), lambda: check_blind_spans(cfg), lambda: check_disk(cfg),
                  lambda: check_writable(cfg), check_clock,
                  check_services,
-                 lambda: check_alerts(cfg), lambda: check_ha_env(cfg), lambda: check_web(cfg),
-                 check_version):
+                 lambda: check_alerts(cfg), lambda: check_ha_env(cfg), lambda: check_ha_logs(cfg, now),
+                 lambda: check_web(cfg), check_version):
         try:
             checks.extend(step())
         except Exception as exc:   # one broken check must not hide the rest

@@ -833,12 +833,22 @@ def _span(pcaps: list[str]) -> tuple[str, str] | None:
 DEFAULT_BYTES_PER_HOUR = 30 * 1024 * 1024   # a busy mesh; used until the ring has measured itself
 
 
+# What an hour of HA add-on log costs gzipped, per add-on, for the room a
+# snapshot with logs needs: the OTBR at log level info runs about 47k
+# lines/h, 7 MB raw, under 1 MB gzipped; the Matter Server far less. A
+# round figure that errs high.
+HA_LOG_GZ_BYTES_PER_HOUR = 1024 * 1024
+
+
 def storage(cfg) -> dict:
     """What the recorder keeps on disk and how much room is left there.
     ring_bound_bytes is the most the ring can grow to (keep_hours hours at
     the measured rate, and no more than keep_gb when set); ring_needs_bytes
     is how much of that it has not used yet. Both consumers (doctor, the
-    status page) judge free space against these, so they agree."""
+    status page) judge free space against these, so they agree.
+    snapshot_extra_bytes is what a snapshot adds beyond the ring copy: the
+    HA add-on logs when [ha_logs] is on, [ha_logs] max_hours of each
+    add-on at HA_LOG_GZ_BYTES_PER_HOUR."""
     import shutil
     ring = sorted(p.name for p in cfg.ring_dir.glob("threadwatch-*.pcap")) if cfg.ring_dir.exists() else []
     out = {"ring_files": len(ring), "ring_span": _span(ring), "ring_bytes": _dir_size(cfg.ring_dir),
@@ -861,6 +871,8 @@ def storage(cfg) -> dict:
     out["keep_bytes"] = cfg.keep_bytes
     out["ring_bound_bytes"] = bound
     out["ring_needs_bytes"] = max(0, bound - out["ring_bytes"])
+    out["snapshot_extra_bytes"] = (int(len(cfg.ha_logs_addons) * cfg.ha_logs_max_hours * HA_LOG_GZ_BYTES_PER_HOUR)
+                                   if getattr(cfg, "ha_logs_enabled", False) else 0)
     return out
 
 

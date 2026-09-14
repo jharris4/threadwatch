@@ -553,6 +553,10 @@ class DayViewTest(unittest.TestCase):
         self.assertGreater(sto["disk_free"], 0)
         self.assertEqual((sto["ring_bound_bytes"], sto["ring_needs_bytes"]),
                          (self.cfg.keep_hours * 4096, self.cfg.keep_hours * 4096 - 8192))
+        self.assertEqual(sto["snapshot_extra_bytes"], 0)      # [ha_logs] off: a snapshot is the ring alone
+        self.cfg.ha_logs_enabled = True
+        self.assertEqual(storage(self.cfg)["snapshot_extra_bytes"], 2 * 12 * 1024 * 1024)
+        self.cfg.ha_logs_enabled = False
         self.cfg.keep_bytes = 10000                            # keep_gb wins when it is the smaller bound...
         sto = storage(self.cfg)                                # ...plus the hour being written, never pruned
         self.assertEqual((sto["keep_bytes"], sto["ring_bound_bytes"], sto["ring_needs_bytes"]), (10000, 14096, 5904))

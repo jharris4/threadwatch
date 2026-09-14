@@ -406,6 +406,84 @@ class HaEnvModeTest(unittest.TestCase):
             self.assertIn(("warn", "ha.env"), [(c[0], c[1]) for c in checks])
 
 
+class HaLogsCheckTest(unittest.TestCase):
+    """With [ha_logs] on, doctor asks each add-on for its newest line: the
+    one read-only request that tells an admin token from any other, a
+    running add-on from a stopped one, and HA from nothing at all."""
+
+    def setUp(self):
+        import tempfile
+
+        from threadwatch.config import Config
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        self.cfg = Config(data_dir=d / "data")
+        self.cfg.config_dir = d
+        self.cfg.ha_logs_enabled = True
+        self.cfg.ha_logs_addons = ["core_openthread_border_router", "core_matter_server"]
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _env(self, url, token):
+        (self.cfg.config_dir / "ha.env").write_text(f"HA_URL={url}\nHA_TOKEN={token}\n")
+
+    def test_off_says_nothing_and_no_token_is_a_warning(self):
+        self.cfg.ha_logs_enabled = False
+        self.assertEqual(doctor.check_ha_logs(self.cfg), [])
+        self.cfg.ha_logs_enabled = True
+        level, subject, text = doctor.check_ha_logs(self.cfg)[0]
+        self.assertEqual((level, subject), ("warn", "ha-logs"))
+        self.assertIn("no HA_TOKEN", text)
+
+    def test_each_addon_is_probed_for_its_newest_line(self):
+        from tests.test_halogs import MATTER, OTBR, TOKEN, FakeSupervisor
+        now = time.time()
+        srv = FakeSupervisor({OTBR: [(now - 3600, "old"), (now - 20, "fresh")],
+                              MATTER: [(now - 4000, "the last line before it stopped")]})
+        self.addCleanup(srv.close)
+        self._env(srv.url, TOKEN)
+        checks = doctor.check_ha_logs(self.cfg, now=now)
+        self.assertEqual([(c[0], c[1]) for c in checks], [("ok", "ha-logs"), ("warn", "ha-logs")])
+        self.assertIn(f"{OTBR}: newest line", checks[0][2])
+        self.assertIn("20 s ago", checks[0][2])
+        self.assertIn("67 min ago", checks[1][2])
+        self.assertIn("looks stopped", checks[1][2])
+        self.assertEqual([r["headers"]["range"] for r in srv.requests], ["entries=:-1:1"] * 2)
+        for c in checks:
+            self.assertNotIn(TOKEN, c[2])
+        # A token that is not an admin's, and a slug HA does not know.
+        self._env(srv.url, "tk_not_admin")
+        checks = doctor.check_ha_logs(self.cfg, now=now)
+        self.assertEqual([c[0] for c in checks], ["warn", "warn"])
+        self.assertIn("HTTP 401", checks[0][2])
+        self.assertIn("admin", checks[0][2])
+        self.assertNotIn("tk_not_admin", checks[0][2])
+        self.cfg.ha_logs_addons = ["core_nonsense"]
+        self._env(srv.url, TOKEN)
+        self.assertIn("no such add-on", doctor.check_ha_logs(self.cfg, now=now)[0][2])
+
+    def test_a_host_that_does_not_answer_is_a_warning_naming_the_host(self):
+        from tests.test_halogs import FakeSupervisor
+        srv = FakeSupervisor({})
+        url = srv.url
+        srv.close()
+        self._env(url, "tk_whatever_long")
+        self.cfg.ha_logs_addons = ["core_matter_server"]
+        checks = doctor.check_ha_logs(self.cfg)
+        self.assertEqual((checks[0][0], checks[0][1]), ("warn", "ha-logs"))
+        self.assertIn("not reachable", checks[0][2])
+        self.assertIn("127.0.0.1", checks[0][2])
+        self.assertNotIn("tk_whatever_long", checks[0][2])
+
+    def test_it_is_part_of_a_whole_run_and_the_disk_line_counts_the_logs(self):
+        self.cfg.ha_logs_enabled = True
+        checks = doctor.run_doctor(self.cfg, find_port=lambda: "/dev/x", now=time.time())
+        self.assertIn(("warn", "ha-logs"), [(c[0], c[1]) for c in checks])       # no token here
+        disk = next(c for c in checks if c[1] == "disk")
+        self.assertIn("a snapshot adds up to 24.0 MB of HA add-on logs", disk[2])
+
+
 class BlindSpansCheckTest(unittest.TestCase):
     """blind-spans.json is what every silence is measured against. It used
     to be discarded on any read failure with no journal line and no doctor

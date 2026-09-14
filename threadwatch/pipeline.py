@@ -2352,12 +2352,14 @@ class Pipeline:
         from .review import fmt_bytes, storage
         sto = storage(self.cfg)
         free, need = sto.get("disk_free"), sto["ring_needs_bytes"]
-        if free is None or free - sto["ring_bytes"] >= need:
+        copy = sto["ring_bytes"] + sto.get("snapshot_extra_bytes", 0)     # the ring, plus the HA logs when on
+        if free is None or free - copy >= need:
             return True
         self._last_auto_snapshot -= self.AUTO_SNAPSHOT_COOLDOWN_S - self.AUTO_SNAPSHOT_RETRY_S
         self.events.emit("snapshot_skipped", "warning", time.time(), label=label,
                          disk_free=free, ring_bytes=sto["ring_bytes"], ring_needs_bytes=need,
-                         note=(f"not saving {label}: a copy of the ring ({fmt_bytes(sto['ring_bytes'])}) "
+                         note=(f"not saving {label}: a copy of the ring ({fmt_bytes(copy)}"
+                               + (" with the HA logs" if copy != sto["ring_bytes"] else "") + ") "
                                f"would leave less than the {fmt_bytes(need)} the ring still needs out of "
                                f"{fmt_bytes(free)} free; delete snapshots or lower keep_hours"))
         return False

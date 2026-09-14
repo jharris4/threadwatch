@@ -79,6 +79,7 @@ KNOWN_EVENTS = frozenset((
     "border_router_rotation_unverified",
     "phase_locked_storm",
     "snapshot_saved", "snapshot_failed", "snapshot_skipped", "snapshots_pruned",
+    "snapshot_logs_saved", "snapshot_logs_failed",
     "daily_summary", "alert_test", "recorder_started",
     "address_flood",
 ))

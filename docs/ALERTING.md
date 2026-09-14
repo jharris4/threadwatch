@@ -96,6 +96,8 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `snapshot_failed` | warning | `label`, `note` |
 | `snapshot_skipped` | warning | `label`, `disk_free`, `ring_bytes`, `ring_needs_bytes`, `note` |
 | `snapshots_pruned` | info | `removed`, `note` |
+| `snapshot_logs_saved` | info | `label`, `path`, `addons`, `lines` (per add-on), `note`; the HA add-on logs joined an automatic snapshot, or a retry completed them (with `[ha_logs] enabled`) |
+| `snapshot_logs_failed` | notice | `label`, `addons`, `errors`, `status` (`failed`, `partial` or `skipped`), `note` (whether and when the recorder retries) |
 | `daily_summary` | `[summary] severity` (notice) | `frames_24h`, `devices_heard_24h`, `devices_tracked`, `quiet`, `unknown`, `marginal`, `degraded`, `storm_active`, `events_24h`, `key_generation` (the mesh's), `key_lag_1` and `key_lag_2plus` (device names one, and two or more, generations behind right now), `note` |
 | `alert_test` | as requested | `name`, `addr`, `note` (from `alert-test`) |
 

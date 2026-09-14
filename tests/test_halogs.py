@@ -493,5 +493,108 @@ class SnapshotLogsTest(unittest.TestCase):
         self.assertFalse((dest / "manifest.json").exists())
 
 
+class RecorderLogsTest(unittest.TestCase):
+    """The automatic path: the logs join the snapshot on the background
+    copy thread and are reported through events.emit, never _emit, and
+    the recorder's 15-minute pass retries what failed."""
+
+    def setUp(self):
+        from threadwatch.config import Config
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        (d / "devices.json").write_text("[]")
+        self.cfg = Config(data_dir=d / "data", config_dir=d, devices_path=d / "devices.json")
+        self.cfg.ha_logs_enabled = True
+        self.cfg.ha_logs_addons = [OTBR]
+        self.cfg.ring_dir.mkdir(parents=True)
+        hour = time.strftime("threadwatch-%Y%m%d-%H.pcap", time.localtime(time.time() - 3600))
+        (self.cfg.ring_dir / hour).write_bytes(b"ring")
+        self.srv = FakeSupervisor({OTBR: [(time.time() - 1800 + i, f"line {i}") for i in range(30)]})
+        (d / "ha.env").write_text(f"HA_URL={self.srv.url}\nHA_TOKEN={TOKEN}\n")
+
+    def tearDown(self):
+        self.srv.close()
+        self.tmp.cleanup()
+
+    def _pipe(self):
+        from threadwatch.crypto import Decryptor
+        from threadwatch.events import NullEventLog
+        from threadwatch.pipeline import Pipeline
+        pipe = Pipeline(self.cfg, NullEventLog(), Decryptor(network_key=bytes(16)))
+        pipe._emit = lambda *a, **kw: self.fail("a snapshot report went through _emit")
+        return pipe
+
+    @staticmethod
+    def _events(pipe, name):
+        return [r for r in pipe.events.records if r["event"] == name]
+
+    def test_the_automatic_snapshot_gets_its_logs_and_says_so_through_events_emit(self):
+        pipe = self._pipe()
+        pipe._save_snapshot_now("auto-phase_locked_storm", "phase_locked_storm")
+        saved = self._events(pipe, "snapshot_saved")
+        self.assertEqual(len(saved), 1)
+        logs = self._events(pipe, "snapshot_logs_saved")
+        self.assertEqual(len(logs), 1)
+        ev = logs[0]
+        self.assertEqual((ev["severity"], ev["label"], ev["addons"], ev["lines"]),
+                         ("info", "auto-phase_locked_storm", [OTBR], {OTBR: 30}))
+        self.assertIn("30 lines of HA add-on log kept beside the packets", ev["note"])
+        self.assertEqual(self._events(pipe, "snapshot_logs_failed"), [])
+        dest = Path(saved[0]["path"])
+        self.assertEqual(json.loads((dest / "ha-logs.json").read_text())["status"], "complete")
+        for text in json.dumps(pipe.events.records):
+            self.assertNotIn(TOKEN, text)
+
+    def test_a_failed_fetch_is_a_notice_and_the_retry_pass_completes_it_later(self):
+        self.srv.status = 503
+        pipe = self._pipe()
+        pipe._save_snapshot_now("auto-phase_locked_storm", "phase_locked_storm")
+        failed = self._events(pipe, "snapshot_logs_failed")
+        self.assertEqual(len(failed), 1)
+        self.assertEqual((failed[0]["severity"], failed[0]["status"], failed[0]["addons"]),
+                         ("notice", "failed", [OTBR]))
+        self.assertIn("HTTP 503", failed[0]["errors"][0])
+        self.assertIn("retries at 15 min, 1 h and 4 h", failed[0]["note"])
+        dest = Path(self._events(pipe, "snapshot_saved")[0]["path"])
+        # Fifteen minutes on: the pass runs on a thread and reports at the
+        # next periodic pass.
+        status = json.loads((dest / "ha-logs.json").read_text())
+        status["saved_at"] = time.time() - 1000
+        (dest / "ha-logs.json").write_text(json.dumps(status))
+        self.srv.status = 200
+        now = time.time()
+        pipe._poll_ha_logs(now)
+        self.assertIsNotNone(pipe._halogs_thread)
+        pipe._halogs_thread.join(5)
+        pipe._poll_ha_logs(now + 30)
+        logs = self._events(pipe, "snapshot_logs_saved")
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(logs[0]["label"], "auto-phase_locked_storm")
+        self.assertIn("attempt 2", logs[0]["note"])
+        self.assertEqual(json.loads((dest / "ha-logs.json").read_text())["status"], "complete")
+        # Not before another HA_LOGS_RETRY_S.
+        pipe._poll_ha_logs(now + 60)
+        self.assertIsNone(pipe._halogs_thread)
+
+    def test_a_fetch_cut_short_by_a_stop_is_recovered_at_the_next_start(self):
+        pipe = self._pipe()
+        pipe._save_snapshot_now("auto-phase_locked_storm", "phase_locked_storm")
+        dest = Path(self._events(pipe, "snapshot_saved")[0]["path"])
+        status = json.loads((dest / "ha-logs.json").read_text())
+        status["status"] = "fetching"
+        (dest / "ha-logs.json").write_text(json.dumps(status))
+        self._pipe()                                                            # a start
+        self.assertEqual(json.loads((dest / "ha-logs.json").read_text())["status"], "complete")
+
+    def test_off_means_no_fetch_no_thread_and_no_report(self):
+        self.cfg.ha_logs_enabled = False
+        pipe = self._pipe()
+        pipe._save_snapshot_now("auto-phase_locked_storm", "phase_locked_storm")
+        self.assertEqual(self._events(pipe, "snapshot_logs_saved") + self._events(pipe, "snapshot_logs_failed"), [])
+        self.assertEqual(self.srv.requests, [])
+        pipe.periodic(time.time())
+        self.assertIsNone(pipe._halogs_thread)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -269,6 +269,18 @@ class Pipeline:
                 self.events.emit("snapshot_failed", "warning", time.time(), label=label,
                                  note=(f"the copy for {label} was cut short when the recorder last stopped; "
                                        "the half copy was discarded, and the next storm event tries again"))
+            # A log fetch the last run died in: what arrived is kept as a
+            # partial log, and the retry pass takes it from there.
+            from .halogs import recover_interrupted
+            for name in recover_interrupted(cfg.snapshots_dir):
+                print(f"[threadwatch] {name}: the HA log fetch was cut short when the recorder last stopped; "
+                      "what arrived is kept as partial, and the retry pass tries again", file=sys.stderr, flush=True)
+        # The HA log retry pass (halogs.retry_pending) runs on a thread
+        # every HA_LOGS_RETRY_S and reports on the capture thread, as the
+        # border-router browse does.
+        self._halogs_thread = None
+        self._halogs_result: list | None = None
+        self._next_halogs = 0.0
         self._last_auto_snapshot = 0.0 if ephemeral else self._last_auto_snapshot_on_disk()
         if not ephemeral and cfg.border_router_browse_s > 0:
             # Imported here rather than at the first browse, minutes in. A
@@ -888,7 +900,7 @@ class Pipeline:
         # configured_pan_silent; join-scan, stale-credential and storm
         # notices all held back.
         for attr in ("_retrans_since", "_retrans_alerted", "_retrans_paged", "_retrans_up", "_retrans_closed",
-                     "_win_start", "_next_browse", "_join_scan_evt", "_stale_evt", "_pan_silent_evt",
+                     "_win_start", "_next_browse", "_next_halogs", "_join_scan_evt", "_stale_evt", "_pan_silent_evt",
                      "_pan_window_start", "_last_auto_snapshot", "_storm_evt"):
             t = getattr(self, attr)
             if t and before(t):
@@ -2049,6 +2061,8 @@ class Pipeline:
         self._check_configured_pan(now)
         if not self.ephemeral and self.cfg.border_router_browse_s > 0:
             self._poll_border_routers(now)
+        if not self.ephemeral and self.cfg.ha_logs_enabled and self.cfg.ha_logs_retry:
+            self._poll_ha_logs(now)
         # Devices on another PAN (a neighbour's mesh, an unpaired device
         # announcing itself) are tracked for the report but never alerted on:
         # their absence says nothing about this network.
@@ -2249,6 +2263,86 @@ class Pipeline:
             return
         self.events.emit("snapshot_saved", "info", time.time(), label=label, path=str(dest),
                          ring_files=count, note=f"{count} ring files kept as {dest.name}")
+        # The HA add-on logs join the snapshot now that it is final, on
+        # this same background thread: a slow fetch costs capture nothing,
+        # and the ring copy is already whole whatever happens here.
+        if self.cfg.ha_logs_enabled:
+            from .halogs import attach_logs
+            try:
+                status = attach_logs(self.cfg, dest, secrets=self._halogs_secrets())
+            except Exception as exc:
+                self.events.emit("snapshot_logs_failed", "notice", time.time(), label=label, addons=[],
+                                 errors=[f"{type(exc).__name__}: {exc}"],
+                                 note=f"the HA log fetch for {label} raised {type(exc).__name__}: {exc}")
+                return
+            self._report_ha_logs(label, dest, status, final=False)
+
+    def _halogs_secrets(self, token: str | None = None) -> tuple:
+        from .halogs import known_secrets
+        return known_secrets(self.cfg, network_key=getattr(self.decryptor, "network_key", None), token=token)
+
+    def _report_ha_logs(self, label: str, dest: Path, status: dict | None, final: bool) -> None:
+        """snapshot_logs_saved / snapshot_logs_failed for one fetch round,
+        through events.emit: a report on a snapshot must never start
+        another. ``final`` says no retry remains, so a failure is the last
+        word on it."""
+        if status is None:
+            return
+        addons = sorted(status.get("addons", {}))
+        lines = {slug: r.get("lines") for slug, r in status.get("addons", {}).items()}
+        if status.get("status") == "complete":
+            total = sum(n for n in lines.values() if isinstance(n, int))
+            self.events.emit("snapshot_logs_saved", "info", time.time(), label=label, path=str(dest),
+                             addons=addons, lines=lines,
+                             note=(f"{total:,} lines of HA add-on log kept beside the packets of {dest.name} "
+                                   f"({', '.join(addons)})" + (f", attempt {status['attempts']}"
+                                                                if status.get("attempts", 1) > 1 else "")))
+            return
+        errors = [r["error"] for r in status.get("addons", {}).values() if r.get("error")] or \
+            [status.get("reason") or "nothing arrived"]
+        kept = [slug for slug, r in status.get("addons", {}).items() if r.get("file")]
+        how = ("the fetch is not retried: [ha_logs] retry is off" if not self.cfg.ha_logs_retry
+               else "no retry remains" if final
+               else "the recorder retries at 15 min, 1 h and 4 h after the snapshot while the journal "
+                    "can still have the window")
+        self.events.emit("snapshot_logs_failed", "notice", time.time(), label=label, addons=addons,
+                         errors=errors, status=status.get("status"),
+                         note=(f"the HA add-on logs for {dest.name} are {status.get('status')}"
+                               + (f" ({', '.join(kept)} kept)" if kept else "")
+                               + f": {'; '.join(errors)}; {how}"))
+
+    HA_LOGS_RETRY_S = 15 * 60
+
+    def _poll_ha_logs(self, now: float) -> None:
+        """Every HA_LOGS_RETRY_S, on a thread, retry the failed or partial
+        log fetches of recent snapshots (halogs.retry_pending); the next
+        pass reports what the last one did, on the capture thread."""
+        if self._halogs_thread is not None:
+            if self._halogs_thread.is_alive():
+                return
+            self._halogs_thread.join()
+            self._halogs_thread = None
+            result, self._halogs_result = self._halogs_result, None
+            for dest, status, final in result or []:
+                self._report_ha_logs(status.get("label") or dest.name.partition("_")[2] or dest.name,
+                                     dest, status, final)
+            return
+        if now < self._next_halogs:
+            return
+        self._next_halogs = now + self.HA_LOGS_RETRY_S
+        secrets = self._halogs_secrets()
+
+        def run():
+            from .halogs import retry_pending
+            try:
+                self._halogs_result = retry_pending(self.cfg, secrets=secrets)
+            except Exception as exc:
+                print(f"[threadwatch] HA log retry pass failed: {type(exc).__name__}: {exc}",
+                      file=sys.stderr, flush=True)
+                self._halogs_result = None
+
+        self._halogs_thread = threading.Thread(target=run, name="ha-logs-retry", daemon=True)
+        self._halogs_thread.start()
 
     def _room_for_snapshot(self, label: str) -> bool:
         """A snapshot is a second copy of the ring. Taking one that leaves

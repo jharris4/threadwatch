@@ -72,6 +72,7 @@ KNOWN_EVENTS = frozenset((
     "device_first_seen", "device_returned", "join_scan_activity", "possible_foreign_pan",
     "dominant_pan_changed", "configured_pan_silent", "mle_rejoin_attempt", "device_quiet",
     "poll_starvation", "poll_answered", "rssi_degradation", "rssi_recovered",
+    "key_sequence_advanced", "key_lag_census", "key_lag", "key_lag_cleared",
     "retransmission_elevation", "partition_or_leader_change", "credentials_stale", "clock_step",
     "border_router_address_changed", "border_router_unlisted", "border_router_address_conflict",
     "border_router_rotation_unverified",

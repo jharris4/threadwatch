@@ -37,7 +37,7 @@ from .config import repo_commit, running_commit
 # router on the very day it rebooted, the device most worth reading.
 STATE_FILES = ("status.json", "last-seen.json", "observed-names.json", "frames-by-hour.json",
                "border-routers.json", "blind-spans.json", "retransmissions.json",
-               "storm.json")
+               "storm.json", "key-generations.json")
 # The configuration goes along with its secrets blanked: it is parsed as
 # TOML and written back out, and a value whose key contains one of these
 # words - at any depth, written as a plain key, a dotted one, an inline

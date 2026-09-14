@@ -78,6 +78,10 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `poll_answered` | notice | `addr`, `name`, `note` |
 | `rssi_degradation` | notice | `addr`, `name`, `rssi_dbm`, `reference_dbm`, `drop_db`, `since`, `low_for_s`, `note` |
 | `rssi_recovered` | info | `addr`, `name`, `rssi_dbm`, `reference_dbm`, `note` |
+| `key_sequence_advanced` | info | `sequence` (the new key generation), `previous` (null the first time a generation is ever heard), `first_sender`, `name`, `rloc16`, `role`, `frame` (`mac_data`, `mac_poll` or `mle:<command>`, whichever was accepted first under it), `since_previous_s`, `note` (says "early" when `[keys] rotation_hours` is set and the rotation came under 90% of it) |
+| `key_lag_census` | info | `sequence`, `mesh_generation`, `counts` (devices per generation, fresh ones only), `behind_parent_1`, `behind_parent_2plus`, `routers_behind` (each: `name`, `addr`, `generation`, `lag`, and `parent` / `parent_generation` or `mesh_generation`), `unknown` (no fresh frame: not judged), `note`; `[keys] census_delay_s` after each rotation |
+| `key_lag` | warning for a child, critical for a router; notice when `episode` > 1 (reopened within `[keys] rearm_s`) | `addr`, `name`, `role`, `generation`, `parent`, `parent_addr`, `parent_generation` (a child) or `mesh_generation` (a router), `lag`, `since`, `lagged_for_s`, `rssi_dbm`, `reception`, `polls_acked`, `episode`, `since_previous_s`, `note` |
+| `key_lag_cleared` | info | `addr`, `name`, `role`, `generation`, `parent`, `parent_addr`, `parent_generation` or `mesh_generation`, `since`, `lagged_for_s`, `rejoined`, `rejoin_ts`, `note`; only after a `key_lag` went out |
 | `retransmission_elevation` | notice for the first elevated minute, warning once the rate has stayed up for `[retransmissions] confirm_s` (`confirmed`); notice regardless when one sender-target pair is `top_share` >= 0.5 of the retries (a chronic bad link, not a storm precursor) | `rate`, `baseline`, `addr`, `name`, `top_sender`, `top_target`, `top_share`, `confirmed`, `sustained_s`, `note` |
 | `partition_or_leader_change` | warning | `previous`, `current`, each with `partition`, `leader_router` and `leader` (the router id with the device's name once the MLE layer has matched it) |
 | `credentials_stale` | warning | `failed`, `note` |
@@ -92,7 +96,7 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `snapshot_failed` | warning | `label`, `note` |
 | `snapshot_skipped` | warning | `label`, `disk_free`, `ring_bytes`, `ring_needs_bytes`, `note` |
 | `snapshots_pruned` | info | `removed`, `note` |
-| `daily_summary` | `[summary] severity` (notice) | `frames_24h`, `devices_heard_24h`, `devices_tracked`, `quiet`, `unknown`, `marginal`, `degraded`, `storm_active`, `events_24h`, `note` |
+| `daily_summary` | `[summary] severity` (notice) | `frames_24h`, `devices_heard_24h`, `devices_tracked`, `quiet`, `unknown`, `marginal`, `degraded`, `storm_active`, `events_24h`, `key_generation` (the mesh's), `key_lag_1` and `key_lag_2plus` (device names one, and two or more, generations behind right now), `note` |
 | `alert_test` | as requested | `name`, `addr`, `note` (from `alert-test`) |
 
 `name` is null for addresses not in `devices.json`.

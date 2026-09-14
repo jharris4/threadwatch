@@ -28,22 +28,23 @@ STRANGER = "72d035122fdf06f6"
 OWN_PAN, OTHER_PAN = 0x4e21, 0x58bc
 
 
-def frame(ts, src, pan=OWN_PAN, rssi=-60.0, seq=None, dst="0000", counter=None):
+def frame(ts, src, pan=OWN_PAN, rssi=-60.0, seq=None, dst="0000", counter=None, sequence=0):
     """A secured data frame from ``src`` (a MIC under the test key and a
-    fresh counter, so the pipeline takes it as a sighting: tests/frames.py)."""
+    fresh counter, so the pipeline takes it as a sighting: tests/frames.py),
+    under key generation ``sequence``."""
     seq = int(ts) & 0xFF if seq is None else seq
-    return Frame(ts=ts, raw=b"", psdu=psdu_for(src, seq=seq, pan=pan, dst=dst, counter=counter),
+    return Frame(ts=ts, raw=b"", psdu=psdu_for(src, seq=seq, pan=pan, dst=dst, counter=counter, sequence=sequence),
                  rssi=rssi, channel=None, lqi=None,
                  ftype=1, seq=seq, dst_pan=pan, dst=dst, src_pan=pan, src=src)
 
 
-def short_frame(ts, short, ext, pan=OWN_PAN, rssi=-60.0):
+def short_frame(ts, short, ext, pan=OWN_PAN, rssi=-60.0, sequence=0):
     """A secured data frame whose header carries the sender's short address,
     as most traffic does. The MIC is still the sender's own (the nonce is its
     extended address), so the pipeline vouches for it once the decryptor maps
     the short address -- which is how a device's router id is learned."""
     seq = int(ts) & 0xFF
-    return Frame(ts=ts, raw=b"", psdu=psdu_for(ext, seq=seq, pan=pan, dst="0000"),
+    return Frame(ts=ts, raw=b"", psdu=psdu_for(ext, seq=seq, pan=pan, dst="0000", sequence=sequence),
                  rssi=rssi, channel=None, lqi=None, ftype=1, seq=seq,
                  dst_pan=pan, dst="0000", src_pan=pan, src=short)
 
@@ -1191,12 +1192,18 @@ class QuietPolicyTest(unittest.TestCase):
         live.ingest(frame(now - 2 * 3600, ROUTER))
         live.seen.save()
         before = (self.cfg.state_dir / "last-seen.json").read_text()
+        before_keys = (self.cfg.state_dir / "key-generations.json").read_text()
         replay = Pipeline(self.cfg, NullEventLog(), stub_decryptor(), ephemeral=True)
         replay.ingest(frame(100.0, ROUTER))
         replay.periodic(100.0)
         replay.seen.save()
-        self.assertEqual([r["event"] for r in replay.events.records], ["device_first_seen"])
+        # A replay starts with no key generation on record, so the first
+        # one it meets is announced (previous None), and nothing is written.
+        self.assertEqual([r["event"] for r in replay.events.records],
+                         ["key_sequence_advanced", "device_first_seen"])
+        self.assertIsNone(replay.events.records[0]["previous"])
         self.assertEqual((self.cfg.state_dir / "last-seen.json").read_text(), before)
+        self.assertEqual((self.cfg.state_dir / "key-generations.json").read_text(), before_keys)
 
     def test_restart_closes_a_silence_that_ended_while_it_was_down(self):
         now = time.time()
@@ -1553,10 +1560,10 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual(events, ["device_first_seen", "device_quiet", "device_returned", "device_quiet"])
 
 
-def poll(ts, src, seq, dst="0000", counter=None):
+def poll(ts, src, seq, dst="0000", counter=None, sequence=0):
     """A secured data request from ``src``: the command id is authenticated
     and unreadable, as a Thread poll's is (cmd None; is_poll takes it)."""
-    return Frame(ts=ts, raw=b"", psdu=psdu_for(src, ftype=3, seq=seq, dst=dst, counter=counter),
+    return Frame(ts=ts, raw=b"", psdu=psdu_for(src, ftype=3, seq=seq, dst=dst, counter=counter, sequence=sequence),
                  rssi=-60.0, channel=None, lqi=None,
                  ftype=3, cmd=None, seq=seq, dst_pan=OWN_PAN, dst=dst, src_pan=OWN_PAN, src=src)
 
@@ -2042,6 +2049,374 @@ class PollStarvationTest(unittest.TestCase):
         self.assertEqual(len(evs), 1)
         self.assertEqual((evs[0]["severity"], evs[0]["reception"], evs[0]["episode"]), ("notice", "marginal", 1))
         self.assertIn("edge of its range", evs[0]["note"])
+
+
+ROUTER2 = "a2a2a2a2a2a2a2a2"
+ROUTER3 = "a3a3a3a3a3a3a3a3"
+SENSOR2 = "c2c2c2c2c2c2c2c2"
+
+
+def rejoin_frame(ts, src_ext, sequence):
+    """A MAC-secured frame from ``src_ext`` carrying an MLE Parent Request
+    under the same key generation: what a device sends when it has lost
+    its parent. Both layers vouch for the sender, and _apply_mle stamps
+    the row's rejoin_ts."""
+    import struct
+
+    from cryptography.hazmat.primitives.ciphers.aead import AESCCM
+
+    from tests.frames import KEY, next_counter, secured_psdu
+    from tests.test_identity import ALL_NODES, LINK_LOCAL, lowpan_udp
+    from threadwatch.crypto import derive_keys
+    from threadwatch.pcap import parse_frame
+    counter = next_counter(src_ext)
+    src_ip = LINK_LOCAL + Decryptor._iid_from_ext(src_ext)
+    aux = bytes([5 | (2 << 3)]) + struct.pack("<L", counter) + struct.pack(">L", sequence) \
+        + bytes([(sequence & 0x7f) + 1])
+    mle_key, _mac = derive_keys(KEY, sequence)
+    nonce = bytes.fromhex(src_ext) + struct.pack(">L", counter) + bytes([5])
+    msg = bytes([0]) + aux + AESCCM(mle_key, tag_length=4).encrypt(nonce, bytes([9]), src_ip + ALL_NODES + aux)
+    psdu = secured_psdu(src_ext, counter, dst="ffff", seq=int(ts) & 0xFF,
+                        payload=lowpan_udp(19788, 19788, msg), sequence=sequence)
+    return parse_frame(ts, psdu, 230)
+
+
+class KeyGenerationTest(unittest.TestCase):
+    """The key-generation detectors: every rotation recorded once, a
+    census of who followed, and a page for a device left two or more
+    generations behind (docs/ALERTING.md, key_lag). Routers hold router
+    ids 1, 2 and 3 (RLOC16 0400, 0800, 0c00); the sensors are children of
+    router 1 (0401, 0402)."""
+
+    T0 = 1_700_000_000.0
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        (d / "devices.json").write_text(json.dumps([
+            {"name": "Hall Router", "extendedAddress": ROUTER},
+            {"name": "Attic Router", "extendedAddress": ROUTER2},
+            {"name": "Shed Router", "extendedAddress": ROUTER3},
+            {"name": "Porch Sensor", "extendedAddress": SENSOR},
+            {"name": "Garage Sensor", "extendedAddress": SENSOR2}]))
+        self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _pipe(self):
+        return Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+
+    @staticmethod
+    def _events(pipe, name):
+        return [r for r in pipe.events.records if r["event"] == name]
+
+    def _heard(self, pipe, ts, ext, rloc16, sequence):
+        """One extended-source frame (the sighting) and one from the short
+        address (the role) under ``sequence``."""
+        pipe.ingest(frame(ts, ext, sequence=sequence))
+        pipe.ingest(short_frame(ts + 0.5, rloc16, ext, sequence=sequence))
+
+    def _mesh(self, pipe, t, sequence, routers=(ROUTER, ROUTER2), children=(SENSOR,)):
+        """Routers on ``sequence`` and children too, at ``t``."""
+        for i, r in enumerate(routers):
+            self._heard(pipe, t + i, r, {ROUTER: "0400", ROUTER2: "0800", ROUTER3: "0c00"}[r], sequence)
+        for i, c in enumerate(children):
+            self._heard(pipe, t + 10 + i, c, {SENSOR: "0401", SENSOR2: "0402"}[c], sequence)
+        return t + 20
+
+    def test_a_rotation_is_announced_once_and_never_again_after_a_restart(self):
+        pipe = self._pipe()
+        t = self._mesh(pipe, self.T0, 5)
+        first = self._events(pipe, "key_sequence_advanced")
+        self.assertEqual(len(first), 1)
+        self.assertEqual((first[0]["sequence"], first[0]["previous"], first[0]["first_sender"], first[0]["frame"]),
+                         (5, None, ROUTER, "mac_data"))
+        self.assertIn("first key generation heard: 5", first[0]["note"])
+        pipe.ingest(frame(t + 100, ROUTER, sequence=6))
+        pipe.ingest(frame(t + 101, ROUTER, sequence=6))
+        pipe.ingest(frame(t + 102, SENSOR, sequence=5))            # a straggler on the old key: nothing
+        evs = self._events(pipe, "key_sequence_advanced")
+        self.assertEqual(len(evs), 2)
+        ev = evs[1]
+        self.assertEqual((ev["sequence"], ev["previous"], ev["first_sender"], ev["name"], ev["rloc16"],
+                          ev["role"], ev["frame"], ev["since_previous_s"], ev["severity"]),
+                         (6, 5, ROUTER, "Hall Router", "0400", "router", "mac_data", 120, "info"))
+        self.assertIn("generation 5 -> 6, first heard from Hall Router (mac_data)", ev["note"])
+        self.assertNotIn("early", ev["note"])
+        state = json.loads((self.cfg.state_dir / "key-generations.json").read_text())
+        self.assertEqual((state["highest"], state["previous"], state["first_sender"], state["highest_first_ts"]),
+                         (6, 5, ROUTER, t + 100))
+        pipe.seen.save()
+        pipe2 = self._pipe()
+        pipe2.ingest(frame(t + 200, ROUTER, sequence=6))
+        pipe2.ingest(frame(t + 201, SENSOR, sequence=5))
+        pipe2.ingest(poll(t + 202, SENSOR, 7, sequence=6))
+        self.assertEqual(self._events(pipe2, "key_sequence_advanced"), [])
+        # A poll is named as the frame kind when it is what moves the record.
+        pipe2.ingest(poll(t + 300, SENSOR, 8, sequence=7))
+        ev = self._events(pipe2, "key_sequence_advanced")[0]
+        self.assertEqual((ev["sequence"], ev["previous"], ev["frame"], ev["role"]), (7, 6, "mac_poll", "child"))
+
+    def test_an_early_rotation_says_so_when_the_rotation_time_is_configured(self):
+        self.cfg.key_rotation_hours = 24
+        pipe = self._pipe()
+        t = self._mesh(pipe, self.T0, 5)
+        pipe.ingest(frame(t + 3600, ROUTER, sequence=6))                 # an hour after: early
+        pipe.ingest(frame(t + 3600 + 23 * 3600, ROUTER, sequence=7))      # 23 h: over 90% of 24, not early
+        notes = [e["note"] for e in self._events(pipe, "key_sequence_advanced")[1:]]
+        self.assertIn("early: the configured rotation time is 24 h", notes[0])
+        self.assertNotIn("early", notes[1])
+
+    def test_a_following_child_is_not_reported_and_a_stranded_one_is_paged_once(self):
+        pipe = self._pipe()
+        t = self._mesh(pipe, self.T0, 5)
+        t = self._mesh(pipe, t, 6, children=())                          # routers move to 6
+        pipe.ingest(frame(t, SENSOR, sequence=5))                        # the child has not followed: normal
+        pipe.periodic(t + 1)
+        self.assertEqual(self._events(pipe, "key_lag"), [])
+        self.assertNotIn("keylag_since", pipe.seen.table[SENSOR])
+        t = self._mesh(pipe, t + 100, 7, children=())                    # ...and to 7: the child is cut off
+        pipe.ingest(frame(t, SENSOR, sequence=5))
+        pipe.periodic(t + 1)
+        row = pipe.seen.table[SENSOR]
+        self.assertEqual((row["keylag_since"], row["keylag_confirm_at"], row["keylag_parent"], row["keylag_gens"]),
+                         (t + 1, t + 901, ROUTER, [5, 7]))
+        self.assertEqual(self._events(pipe, "key_lag"), [])              # opened silently
+        pipe.ingest(frame(t + 400, SENSOR, sequence=5))
+        pipe.periodic(t + 401)
+        pipe.periodic(t + 902)                                           # past the mark, but no frame since
+        self.assertEqual(self._events(pipe, "key_lag"), [])
+        pipe.ingest(frame(t + 950, SENSOR, sequence=5))                  # fresh evidence past the mark
+        pipe.ingest(frame(t + 951, ROUTER, sequence=7))
+        pipe.periodic(t + 960)
+        evs = self._events(pipe, "key_lag")
+        self.assertEqual(len(evs), 1)
+        ev = evs[0]
+        self.assertEqual((ev["severity"], ev["name"], ev["role"], ev["generation"], ev["parent"],
+                          ev["parent_addr"], ev["parent_generation"], ev["lag"], ev["since"], ev["lagged_for_s"],
+                          ev["episode"], ev["reception"], ev["polls_acked"]),
+                         ("warning", "Porch Sensor", "child", 5, "Hall Router", ROUTER, 7, 2, t + 1, 959, 1,
+                          "good", False))
+        self.assertNotIn("mesh_generation", ev)
+        self.assertIn("2 generations behind", ev["note"])
+        self.assertIn("A battery pull or power cycle forces a rejoin", ev["note"])
+        self.assertEqual(row["keylag_sent"], "warning")
+        self.assertNotIn("keylag_confirm_at", row)
+        for i in range(5):                                               # it persists: nothing more
+            pipe.ingest(frame(t + 1000 + i * 100, SENSOR, sequence=5))
+            pipe.periodic(t + 1001 + i * 100)
+        self.assertEqual(len(self._events(pipe, "key_lag")), 1)
+        self.assertEqual(self._events(pipe, "key_lag_cleared"), [])
+
+    def test_a_rejoin_that_catches_up_clears_the_page(self):
+        pipe = self._pipe()
+        t = self._mesh(pipe, self.T0, 5)
+        t = self._mesh(pipe, t, 7, children=())
+        pipe.ingest(frame(t, SENSOR, sequence=5))
+        pipe.periodic(t + 1)
+        pipe.ingest(frame(t + 950, SENSOR, sequence=5))
+        pipe.periodic(t + 960)
+        self.assertEqual(len(self._events(pipe, "key_lag")), 1)
+        pipe.ingest(rejoin_frame(t + 1000, SENSOR, 5))
+        self.assertEqual(pipe.seen.table[SENSOR]["rejoin_ts"], t + 1000)
+        self.assertEqual(len(self._events(pipe, "mle_rejoin_attempt")), 1)
+        pipe.ingest(frame(t + 1010, SENSOR, sequence=7))
+        pipe.ingest(short_frame(t + 1011, "0401", SENSOR, sequence=7))
+        pipe.periodic(t + 1020)
+        cleared = self._events(pipe, "key_lag_cleared")
+        self.assertEqual(len(cleared), 1)
+        ev = cleared[0]
+        self.assertEqual((ev["severity"], ev["name"], ev["generation"], ev["parent_generation"], ev["since"],
+                          ev["lagged_for_s"], ev["rejoined"], ev["rejoin_ts"]),
+                         ("info", "Porch Sensor", 7, 7, t + 1, 1019, True, t + 1000))
+        self.assertIn("heard again under key generation 7, within one of its parent's 7; it rejoined at",
+                      ev["note"])
+        row = pipe.seen.table[SENSOR]
+        for key in Pipeline.KEYLAG_KEYS:
+            self.assertNotIn(key, row)
+        self.assertEqual(row["keylag_closed"], t + 1020)
+
+    def test_a_child_that_catches_up_inside_the_window_is_neither_paged_nor_cleared(self):
+        pipe = self._pipe()
+        t = self._mesh(pipe, self.T0, 5)
+        t = self._mesh(pipe, t, 7, children=())
+        pipe.ingest(frame(t, SENSOR, sequence=5))
+        pipe.periodic(t + 1)
+        self.assertIn("keylag_since", pipe.seen.table[SENSOR])
+        pipe.ingest(frame(t + 300, SENSOR, sequence=7))
+        pipe.periodic(t + 301)
+        self.assertEqual(self._events(pipe, "key_lag"), [])
+        self.assertEqual(self._events(pipe, "key_lag_cleared"), [])
+        self.assertNotIn("keylag_since", pipe.seen.table[SENSOR])
+        self.assertNotIn("keylag_closed", pipe.seen.table[SENSOR])     # nothing was sent: no hold-down
+
+    def test_stale_readings_are_not_judged_and_a_new_parent_on_the_same_generation_closes_silently(self):
+        pipe = self._pipe()
+        t = self._mesh(pipe, self.T0, 5)
+        # The parent moved to 7 but its reading is now older than fresh_s.
+        pipe.ingest(frame(t, ROUTER, sequence=7))
+        pipe.ingest(frame(t + 2000, SENSOR, sequence=5))
+        pipe.periodic(t + 2001)
+        self.assertNotIn("keylag_since", pipe.seen.table[SENSOR])
+        # The child's own reading is stale: not judged either.
+        pipe.ingest(frame(t + 2010, ROUTER, sequence=7))
+        pipe.periodic(t + 2000 + 1801)
+        self.assertNotIn("keylag_since", pipe.seen.table[SENSOR])
+        # Both fresh: opened. Then the child re-attaches under router 2,
+        # which is still on 5: closed without a word.
+        pipe.ingest(frame(t + 4000, ROUTER, sequence=7))
+        pipe.ingest(frame(t + 4000, ROUTER2, sequence=5))
+        pipe.ingest(frame(t + 4001, SENSOR, sequence=5))
+        pipe.periodic(t + 4002)
+        self.assertEqual(pipe.seen.table[SENSOR]["keylag_parent"], ROUTER)
+        pipe.ingest(short_frame(t + 4100, "0801", SENSOR, sequence=5))
+        pipe.periodic(t + 4101)
+        self.assertNotIn("keylag_since", pipe.seen.table[SENSOR])
+        self.assertEqual([r["event"] for r in pipe.events.records if r["event"] in ("key_lag", "key_lag_cleared")],
+                         [])
+
+    def test_a_router_behind_the_mesh_is_critical_and_one_straggler_frame_is_not_the_mesh(self):
+        pipe = self._pipe()
+        t = self._mesh(pipe, self.T0, 5, routers=(ROUTER, ROUTER2, ROUTER3))
+        # One frame from the sensor under 7 raises the decryptor's mesh
+        # value; no router is on it, so nobody is judged behind it.
+        pipe.ingest(frame(t, SENSOR, sequence=7))
+        self.assertEqual(pipe.decryptor.key_sequence, 7)
+        pipe.periodic(t + 1)
+        for r in (ROUTER, ROUTER2, ROUTER3):
+            self.assertNotIn("keylag_since", pipe.seen.table[r])
+        # Two routers fresh on 7 make it the mesh's generation; the third,
+        # still on 5, is two behind.
+        t = self._mesh(pipe, t + 10, 7, routers=(ROUTER, ROUTER2), children=())
+        pipe.ingest(frame(t, ROUTER3, sequence=5))
+        pipe.periodic(t + 1)
+        self.assertEqual(pipe.seen.table[ROUTER3]["keylag_gens"], [5, 7])
+        self.assertEqual(self._events(pipe, "key_lag"), [])
+        pipe.ingest(frame(t + 950, ROUTER3, sequence=5))
+        pipe.periodic(t + 960)
+        evs = self._events(pipe, "key_lag")
+        self.assertEqual(len(evs), 1)
+        ev = evs[0]
+        self.assertEqual((ev["severity"], ev["name"], ev["role"], ev["generation"], ev["mesh_generation"],
+                          ev["lag"], ev["parent"], ev["auto_snapshot"]),
+                         ("critical", "Shed Router", "router", 5, 7, 2, None, None))
+        self.assertNotIn("parent_generation", ev)
+        self.assertIn("while the mesh is on 7", ev["note"])
+        self.assertIn("cuts off every child that follows it", ev["note"])
+
+    def test_confirm_zero_pages_on_the_frame_that_opens_the_episode(self):
+        self.cfg.key_confirm_s = 0
+        pipe = self._pipe()
+        t = self._mesh(pipe, self.T0, 5)
+        t = self._mesh(pipe, t, 7, children=())
+        pipe.ingest(frame(t, SENSOR, sequence=5))
+        pipe.periodic(t + 1)
+        evs = self._events(pipe, "key_lag")
+        self.assertEqual([(e["severity"], e["lagged_for_s"]) for e in evs], [("warning", 0)])
+
+    def test_the_open_episode_and_its_page_survive_a_restart(self):
+        pipe = self._pipe()
+        t = self._mesh(pipe, self.T0, 5)
+        t = self._mesh(pipe, t, 7, children=())
+        pipe.ingest(frame(t, SENSOR, sequence=5))
+        pipe.periodic(t + 1)
+        pipe.seen.save()
+        pipe2 = self._pipe()                                             # restarted inside the window
+        pipe2.ingest(frame(t + 500, ROUTER, sequence=7))
+        pipe2.ingest(frame(t + 500, ROUTER2, sequence=7))
+        pipe2.ingest(frame(t + 950, SENSOR, sequence=5))
+        pipe2.periodic(t + 960)
+        self.assertEqual(len(self._events(pipe2, "key_lag")), 1)
+        self.assertEqual(self._events(pipe2, "key_lag")[0]["since"], t + 1)
+        pipe3 = self._pipe()                                             # restarted after the page: not again
+        pipe3.ingest(frame(t + 1500, ROUTER, sequence=7))
+        pipe3.ingest(frame(t + 1500, ROUTER2, sequence=7))
+        pipe3.ingest(frame(t + 1600, SENSOR, sequence=5))
+        pipe3.periodic(t + 1601)
+        self.assertEqual(self._events(pipe3, "key_lag"), [])
+        pipe3.ingest(frame(t + 1700, SENSOR, sequence=7))
+        pipe3.periodic(t + 1701)
+        self.assertEqual(len(self._events(pipe3, "key_lag_cleared")), 1)
+        self.assertFalse(self._events(pipe3, "key_lag_cleared")[0]["rejoined"])
+
+    def test_an_episode_reopening_within_rearm_s_is_a_notice(self):
+        pipe = self._pipe()
+        t = self._mesh(pipe, self.T0, 5)
+        t = self._mesh(pipe, t, 7, children=())
+        pipe.ingest(frame(t, SENSOR, sequence=5))
+        pipe.periodic(t + 1)
+        pipe.ingest(frame(t + 950, SENSOR, sequence=5))
+        pipe.periodic(t + 960)
+        pipe.ingest(frame(t + 1000, SENSOR, sequence=7))                 # caught up: cleared
+        pipe.periodic(t + 1001)
+        self.assertEqual(len(self._events(pipe, "key_lag_cleared")), 1)
+        t = self._mesh(pipe, t + 1100, 9, children=())                   # two more rotations, minutes later
+        pipe.ingest(frame(t, SENSOR, sequence=7))
+        pipe.periodic(t + 1)
+        pipe.ingest(frame(t + 950, SENSOR, sequence=7))
+        pipe.periodic(t + 960)
+        evs = self._events(pipe, "key_lag")
+        self.assertEqual([(e["severity"], e["episode"]) for e in evs], [("warning", 1), ("notice", 2)])
+        self.assertEqual(evs[1]["since_previous_s"], (t + 1) - (self.T0 + 40 + 1001))
+        self.assertIn("Episode 2 since the last page", evs[1]["note"])
+        self.assertIn("logged, not paged", evs[1]["note"])
+
+    def test_the_census_lists_who_followed_and_who_could_not_be_judged(self):
+        self.cfg.key_census_delay_s = 600
+        pipe = self._pipe()
+        t = self._mesh(pipe, self.T0, 4, routers=(ROUTER, ROUTER2, ROUTER3), children=(SENSOR, SENSOR2))
+        pipe.ingest(frame(t, "d4d4d4d4d4d4d4d4", sequence=4))          # heard once, long ago: unknown
+        t += 3600
+        t = self._mesh(pipe, t, 5, routers=(ROUTER, ROUTER2, ROUTER3), children=(SENSOR,))
+        pipe.ingest(frame(t, SENSOR2, sequence=4))                       # the garage sensor never followed
+        pipe.periodic(t)                                                 # the census for 5 is not yet due
+        self.assertEqual(self._events(pipe, "key_lag_census"), [])
+        t = self._mesh(pipe, t, 6, routers=(ROUTER, ROUTER2), children=())    # rotation to 6
+        due = self._events(pipe, "key_sequence_advanced")[-1]["ts"] + 600
+        pipe.ingest(frame(t, ROUTER3, sequence=5))                      # a router one behind
+        pipe.ingest(frame(t + 1, SENSOR, sequence=5))                    # a child one behind its parent
+        pipe.ingest(frame(t + 2, SENSOR2, sequence=4))                   # a child two behind: cut off
+        pipe.periodic(due - 1)
+        self.assertEqual(self._events(pipe, "key_lag_census"), [])
+        pipe.periodic(due)
+        evs = self._events(pipe, "key_lag_census")
+        self.assertEqual(len(evs), 1)
+        ev = evs[0]
+        self.assertEqual((ev["severity"], ev["sequence"], ev["mesh_generation"], ev["counts"]),
+                         ("info", 6, 6, {"6": 2, "5": 2, "4": 1}))
+        self.assertEqual([(i["name"], i["generation"], i["parent"], i["parent_generation"], i["lag"])
+                          for i in ev["behind_parent_1"]], [("Porch Sensor", 5, "Hall Router", 6, 1)])
+        self.assertEqual([(i["name"], i["generation"], i["lag"]) for i in ev["behind_parent_2plus"]],
+                         [("Garage Sensor", 4, 2)])
+        self.assertEqual([(i["name"], i["generation"], i["mesh_generation"], i["lag"]) for i in ev["routers_behind"]],
+                         [("Shed Router", 5, 6, 1)])
+        self.assertEqual(ev["unknown"], ["d4d4d4d4d4d4d4d4"])
+        self.assertIn("one behind: Porch Sensor", ev["note"])
+        self.assertIn("cut off (2+ behind): Garage Sensor", ev["note"])
+        self.assertIn("routers behind the mesh: Shed Router", ev["note"])
+        self.assertIn("1 not judged", ev["note"])
+        pipe.periodic(due + 3600)                                        # once per rotation
+        self.assertEqual(len(self._events(pipe, "key_lag_census")), 1)
+        # The daily summary carries the same reading.
+        summary = pipe.summary(due + 10)
+        self.assertEqual((summary["key_generation"], summary["key_lag_1"], summary["key_lag_2plus"]),
+                         (6, ["Porch Sensor", "Shed Router"], ["Garage Sensor"]))
+        self.assertIn("key generation 6: 2 one behind, cut off: Garage Sensor", summary["note"])
+
+    def test_the_census_survives_a_restart_and_the_state_file_is_in_snapshots(self):
+        from threadwatch.snapshot import STATE_FILES
+        self.assertIn("key-generations.json", STATE_FILES)
+        self.cfg.key_census_delay_s = 600
+        pipe = self._pipe()
+        t = self._mesh(pipe, self.T0, 5)
+        pipe.seen.save()
+        pipe2 = self._pipe()
+        self.assertEqual(pipe2._keys["census_at"], self.T0 + 600)
+        pipe2.ingest(frame(t + 700, ROUTER, sequence=5))
+        pipe2.periodic(t + 700)
+        self.assertEqual(len(self._events(pipe2, "key_lag_census")), 1)
+        self.assertIsNone(json.loads((self.cfg.state_dir / "key-generations.json").read_text())["census_at"])
 
 
 class RetransmissionConfirmTest(unittest.TestCase):

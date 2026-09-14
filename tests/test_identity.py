@@ -67,6 +67,18 @@ class KeySequenceTest(unittest.TestCase):
     def _decrypts(self, d, sequence, counter=1):
         return d.decrypt_frame(secured_frame(SED, "c829", counter, sequence=sequence), SED, None) is not None
 
+    def test_a_device_three_or_more_generations_behind_the_mesh_still_decrypts(self):
+        # The 2026-09-13 rotation left children on 83 with the mesh on 86,
+        # and those children were still being read. The search spans
+        # NEARBY_GENERATIONS full cycles of the key index, not that many
+        # generations, so a straggler well behind the mesh is decoded and
+        # the key-lag detector can see how far behind it is.
+        d = Decryptor(network_key=KEY)
+        d.note_key_sequence(86)
+        for behind in (2, 3, 4, 10):
+            self.assertTrue(self._decrypts(d, 86 - behind), behind)
+        self.assertEqual(d.key_sequence, 86)             # a straggler never pulls the mesh value back
+
     def test_a_high_sequence_decrypts_once_the_sequence_is_known(self):
         d = Decryptor(network_key=KEY)
         for seq in (0, 84, 1015):                        # the first eight generations: found cold

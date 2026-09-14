@@ -22,6 +22,11 @@ With Thread credentials (optional):
   - sleepy-device starvation: a child polling its parent with no
     acknowledgement, after its polls used to be answered (its parent died
     or the link to it broke, and it has not noticed yet)
+  - key generations: every rotation of the network key is recorded, with
+    a census of who followed it, and a device left two or more
+    generations behind its parent (or the mesh, for a router) is paged:
+    its frames are dropped while its polls are still acknowledged, so
+    nothing else notices
 """
 
 from __future__ import annotations
@@ -37,7 +42,16 @@ from pathlib import Path
 from .detect import Detector
 from .events import EventLog, day_of, prune_days, read_day
 from .link import assess as assess_link
-from .names import _EXT_ADDR, DeviceNames, LastSeen, load_border_routers, reception
+from .names import (
+    _EXT_ADDR,
+    DeviceNames,
+    LastSeen,
+    load_border_routers,
+    parent_address,
+    reception,
+    rloc16_role,
+    router_holders,
+)
 from .pcap import BROADCAST_PAN, Frame, is_poll
 
 MLE_REJOIN_COMMANDS = {"Parent Request", "Child ID Request", "Announce"}
@@ -225,6 +239,18 @@ class Pipeline:
         if not ephemeral:
             self._load_storm()
         self.quiet_reported: set[str] = set()
+        # The key generations the mesh has been heard under: the highest
+        # (persisted, so a restart never announces a rotation twice), who
+        # was heard first under it and when, and the census still owed for
+        # it. Replay starts from nothing and announces the first generation
+        # it meets. See _note_generation.
+        self.keys_path = cfg.state_dir / "key-generations.json"
+        self._keys: dict = {} if ephemeral else self._load_keys()
+        # The key generation the last frame ingested was accepted under
+        # (None when it vouched for nobody): `device` reads it to print a
+        # generation history without decoding anything twice.
+        self.last_generation: int | None = None
+        self._last_mac_sequence: int | None = None
         # Hour bucket -> frames, last ~25 h, for the daily summary's frame
         # count. Persisted (frames-by-hour.json) so a summary sent soon
         # after a restart still counts the whole day, not just this run.
@@ -619,6 +645,42 @@ class Pipeline:
         tmp.write_text(json.dumps({str(b): n for b, n in self._frames_by_hour.items()}))
         tmp.replace(self.frames_by_hour_path)
 
+    KEYS_STAMPS = ("highest_first_ts", "previous_first_ts", "census_at")
+
+    def _load_keys(self) -> dict:
+        """key-generations.json: {highest, previous, highest_first_ts,
+        previous_first_ts, first_sender, census_at}. Unreadable or
+        shapeless: start afresh, which costs one repeated
+        key_sequence_advanced (info) and nothing else."""
+        try:
+            data = json.loads(self.keys_path.read_text())
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError) as exc:
+            print(f"[threadwatch] {self.keys_path.name} is unreadable ({exc}): the highest key generation heard "
+                  "is forgotten, so the current one is announced again", file=sys.stderr, flush=True)
+            return {}
+        if not isinstance(data, dict) or _whole(data.get("highest")) is None:
+            return {}
+        keys = {"highest": _whole(data["highest"]), "previous": _whole(data.get("previous")),
+                "first_sender": data.get("first_sender") if isinstance(data.get("first_sender"), str) else None}
+        for key in self.KEYS_STAMPS:
+            value = data.get(key)
+            keys[key] = float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+        return keys
+
+    def _save_keys(self) -> None:
+        if self.ephemeral:
+            return
+        tmp = self.keys_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self._keys, indent=1))
+        tmp.replace(self.keys_path)
+
+    def keys_status(self) -> dict:
+        """The 'keys' entry of status.json: the highest generation heard,
+        when and from whom, and when the census for it is due."""
+        return dict(self._keys)
+
     def _last_auto_snapshot_on_disk(self) -> float:
         """When the newest automatic snapshot was saved, so the cooldown holds
         across a restart: a daemon that comes back mid-storm must not copy
@@ -784,7 +846,8 @@ class Pipeline:
     # the pointer alone makes the start-up reconciliation miss the record,
     # discard the flag, and page the same unbroken silence a second time.
     ROW_STAMPS = ("first_seen", "last_seen", "rloc16_ts", "rssi_heard_ts", "rssi_ref_ts",
-                  "starve_confirm_at", "resumed_ts", "vouched_ts")
+                  "starve_confirm_at", "resumed_ts", "vouched_ts", "rejoin_ts",
+                  "keylag_since", "keylag_confirm_at", "keylag_closed")
     STATS_STAMPS = ("last_poll_ts", "ack_pending_ts", "poll_pending_ts", "unanswered_since", "confirm_at")
 
     def _rewind(self, now: float, back: float, since_check: float) -> None:
@@ -841,6 +904,10 @@ class Pipeline:
         # up, and a host cut in that window loses everything since.
         if before(self.seen._last_save):
             self.seen._last_save -= back
+        for key in self.KEYS_STAMPS:
+            t = self._keys.get(key)
+            if t and before(t):
+                self._keys[key] = t - back
         # The duplicate window is two seconds wide, so there is nothing in
         # it worth moving: dropping it costs at most one window of genuine
         # retransmission detection, and keeps stamps from before the step
@@ -1000,12 +1067,16 @@ class Pipeline:
         unsecured frame vouches for nothing here; a secured MLE message
         inside one may (ingest asks _deep_inspect)."""
         self._counter_was_retry = False      # cleared here too: _verify has early returns
+        self._last_mac_sequence = None
         if not who or not f.psdu:
             return None, False
         plain, counter, sequence = self.decryptor.decrypt_frame_counter(f.psdu, who, None)
         if counter is None:
             return plain, False
-        return plain, self._counter_advances(self._mac_counter, who, counter, f.ts, "frame", sequence)
+        live = self._counter_advances(self._mac_counter, who, counter, f.ts, "frame", sequence)
+        if live:
+            self._last_mac_sequence = sequence
+        return plain, live
 
     # A frame counter only means anything within the key generation it was
     # authenticated under: the network rotates its key and every device
@@ -1330,6 +1401,15 @@ class Pipeline:
                     row[key + "_prev"] = [*gens[older[0]], older[0]]
                 else:
                     row.pop(key + "_prev", None)
+            # The generation this frame was accepted under, MAC or MLE,
+            # the newer of the two when both vouched. It is what
+            # _note_generation judges against the highest on record.
+            generation, kind = self._last_mac_sequence, "mac_poll" if is_poll(f) else "mac_data"
+            if fresh_mle and info.key_sequence is not None and (generation is None or info.key_sequence > generation):
+                generation, kind = info.key_sequence, f"mle:{info.command_name}"
+            self.last_generation = generation
+            if generation is not None:
+                self._note_generation(who, row, generation, kind, ts)
             if is_poll(f):
                 # Polls by name for the review pages: the row's count of
                 # type-3 frames takes in every MAC command, beacon requests
@@ -1479,6 +1559,8 @@ class Pipeline:
 
         self.last_frame = f
         self.last_sighting = who if (who and live) else None
+        if not (who and live):
+            self.last_generation = None
         self.last_mle = (info, fresh_mle) if info is not None else None
         return who
 
@@ -1899,6 +1981,13 @@ class Pipeline:
             # addr is the extended address (the review pages key on it);
             # src is whatever the frame carried, often a short address.
             name = self.names.name(src_for_mle) if src_for_mle else None
+            row = self.seen.table.get(src_for_mle) if src_for_mle else None
+            if row is not None:
+                # When the device last tried to get back: the key-lag
+                # detector reads it to say a cleared lag followed a rejoin,
+                # and the HA availability check reads it the same way.
+                row["rejoin_ts"] = f.ts
+                self.seen._dirty = True
             self._emit("mle_rejoin_attempt", "notice", f.ts,
                        command=info.command_name, src=f.src, addr=src_for_mle, name=name,
                        note=f"{info.command_name} from {name or src_for_mle or f.src}: "
@@ -1972,6 +2061,8 @@ class Pipeline:
             if self._is_quiet(addr, row, now):
                 self._report_quiet(addr, row, now)
         self._check_links(now, dominant)
+        self._check_key_lag(now, dominant)
+        self._maybe_census(now, dominant)
         if not self.ephemeral:
             self._maybe_summarize(now, dominant)
             self._maybe_prune_events(now)
@@ -2232,6 +2323,9 @@ class Pipeline:
         # filtered by quiet_reported, and the degraded set needs the same.
         degraded = sorted(label(a) for a, r in ours.items()
                           if r.get("rssi_degraded") and not r.get("rotated_to"))
+        lags = self._key_lags(now, dominant)
+        lag_1 = sorted(e["name"] or e["addr"] for e in lags if e["lag"] == 1)
+        lag_2plus = sorted(e["name"] or e["addr"] for e in lags if e["lag"] is not None and e["lag"] >= 2)
         counts = {"critical": 0, "warning": 0, "notice": 0, "info": 0}
         # Every local day the window touches: after the spring clock change
         # 24 hours can span three of them, and reading the first and last
@@ -2252,12 +2346,267 @@ class Pipeline:
             parts.append("signal down: " + ", ".join(degraded))
         if self.detector.storm_active:
             parts.append("STORM ACTIVE")
+        mesh = self.decryptor.key_sequence
+        if mesh is not None and (lag_1 or lag_2plus):
+            parts.append(f"key generation {mesh}: "
+                         + ", ".join(p for p in (f"{len(lag_1)} one behind" if lag_1 else "",
+                                                 "cut off: " + ", ".join(lag_2plus) if lag_2plus else "") if p))
         logged = ", ".join(f"{n} {sev}" for sev, n in counts.items() if n and sev != "info")
         parts.append("events: " + (logged or "none above info"))
         return {"frames_24h": frames, "devices_heard_24h": len(heard), "devices_tracked": len(ours),
                 "quiet": quiet, "unknown": unknown, "marginal": marginal, "degraded": degraded,
                 "storm_active": bool(self.detector.storm_active), "events_24h": counts,
+                "key_generation": mesh, "key_lag_1": lag_1, "key_lag_2plus": lag_2plus,
                 "note": "last 24 h: " + "; ".join(parts)}
+
+    # ------------------------------------------------ key generations
+
+    def _note_generation(self, who: str, row: dict, generation: int, frame: str, ts: float) -> None:
+        """A frame accepted under a key generation above the highest on
+        record: the network rotated its key (or this is the first
+        generation ever heard). Announced once per generation, ever; the
+        record is persisted before the event so a restart never repeats
+        it. Nothing pages: a rotation is routine, and the devices it
+        strands are found by _check_key_lag."""
+        highest = self._keys.get("highest")
+        if highest is not None and generation <= highest:
+            return
+        previous_ts = self._keys.get("highest_first_ts")
+        since = ts - previous_ts if previous_ts is not None else None
+        self._keys = {"highest": generation, "previous": highest, "highest_first_ts": ts,
+                      "previous_first_ts": previous_ts, "first_sender": who,
+                      "census_at": ts + self.cfg.key_census_delay_s}
+        self._save_keys()
+        name = self.names.name(who)
+        role = rloc16_role(row.get("rloc16"))
+        label = name or who
+        if highest is None:
+            note = (f"first key generation heard: {generation}, from {label} ({frame}); the mesh's rotations "
+                    "are recorded from here on")
+        else:
+            note = (f"the mesh rotated its key: generation {highest} -> {generation}, first heard from {label} "
+                    f"({frame})")
+            if since is not None:
+                note += f", {since / 86400:.1f} days after the previous rotation"
+            expected = self.cfg.key_rotation_hours
+            if expected is not None and since is not None and since < 0.9 * expected * 3600:
+                note += f" -- early: the configured rotation time is {expected:g} h"
+            note += ("; a device that does not follow within one more rotation is cut off (key_lag); the "
+                     f"census of who followed comes in {self.cfg.key_census_delay_s / 60:.0f} min")
+        self._emit("key_sequence_advanced", "info", ts, sequence=generation, previous=highest,
+                   first_sender=who, name=name, rloc16=row.get("rloc16"), role=role["role"] if role else None,
+                   frame=frame, since_previous_s=round(since) if since is not None else None, note=note)
+
+    def _generation(self, row: dict, now: float) -> tuple[int | None, float | None]:
+        """The newest key generation a device's authenticated frames were
+        accepted under within [keys] fresh_s, MAC or MLE, and when: (None,
+        None) when nothing fresh says. A reading older than that is not
+        judged either way."""
+        best: tuple[int | None, float | None] = (None, None)
+        for key in ("counter", "mle_counter"):
+            seq, ts = _whole(row.get(key + "_seq")), row.get(key + "_ts")
+            if seq is None or not isinstance(ts, (int, float)) or isinstance(ts, bool):
+                continue
+            if now - ts > self.cfg.key_fresh_s:
+                continue
+            if best[0] is None or seq > best[0] or (seq == best[0] and ts > best[1]):
+                best = (seq, float(ts))
+        return best
+
+    def _key_lags(self, now: float, dominant: int | None) -> list[dict]:
+        """Every device on our PAN judged against its reference generation:
+        a child against its live parent's, a router against the mesh's
+        (decryptor.key_sequence, and only once two routers are fresh on
+        it, so one straggler frame cannot raise the bar for everyone).
+        lag is None when nothing fresh says: a device or parent unheard for
+        [keys] fresh_s, no key generation on record, no role known."""
+        mesh = self.decryptor.key_sequence
+        holders = router_holders(self.seen.table)
+        gens: dict[str, tuple] = {}
+        for addr, row in self.seen.table.items():
+            if row.get("rotated_to"):
+                continue
+            pan = row.get("pan")
+            if dominant is not None and pan is not None and pan != dominant:
+                continue
+            gens[addr] = self._generation(row, now)
+        on_mesh = sum(1 for addr, (seq, _ts) in gens.items() if seq is not None and seq == mesh
+                      and (rloc16_role(self.seen.table[addr].get("rloc16")) or {}).get("role") == "router")
+        out = []
+        for addr, (seq, ts) in gens.items():
+            row = self.seen.table[addr]
+            live = rloc16_role(row.get("rloc16")) or {}
+            parent = parent_address(row, holders)
+            entry = {"addr": addr, "name": self.names.name(addr), "role": live.get("role"),
+                     "generation": seq, "generation_ts": ts, "parent_addr": parent,
+                     "parent": (self.names.name(parent) or parent) if parent else None,
+                     "parent_generation": None, "mesh_generation": mesh, "lag": None}
+            if parent is not None and parent in gens:
+                entry["parent_generation"] = gens[parent][0]
+            if seq is None:
+                out.append(entry)
+                continue
+            if entry["role"] == "child":
+                if entry["parent_generation"] is not None:
+                    entry["lag"] = entry["parent_generation"] - seq
+            elif entry["role"] == "router" and mesh is not None and on_mesh >= 2:
+                entry["lag"] = mesh - seq
+            out.append(entry)
+        return out
+
+    KEYLAG_KEYS = ("keylag_since", "keylag_confirm_at", "keylag_parent", "keylag_role", "keylag_gens",
+                   "keylag_sent")
+
+    def _check_key_lag(self, now: float, dominant: int | None) -> None:
+        """The key_lag episodes, once per periodic pass. A device two or
+        more generations below its reference opens an episode on its row
+        (silently), and is paged at the first pass after [keys] confirm_s
+        in which it has sent a frame past that mark and is still that far
+        behind: evidence, not a timer. A fresh frame within
+        one generation closes it, with key_lag_cleared only if the page
+        went out. A child whose parent changed closes its episode and is
+        judged against the new parent."""
+        for entry in self._key_lags(now, dominant):
+            addr = entry["addr"]
+            row = self.seen.table[addr]
+            is_open = row.get("keylag_since") is not None
+            if is_open and (row.get("keylag_role"), row.get("keylag_parent")) != (entry["role"], entry["parent_addr"]):
+                self._close_key_lag(addr, row, now, entry, "its parent changed")
+                is_open = False
+            lag = entry["lag"]
+            if lag is None:
+                continue
+            if lag <= 1:
+                if is_open:
+                    self._close_key_lag(addr, row, now, entry)
+                continue
+            if not is_open:
+                row["keylag_since"] = now
+                row["keylag_confirm_at"] = now + self.cfg.key_confirm_s
+                row["keylag_parent"] = entry["parent_addr"]
+                row["keylag_role"] = entry["role"]
+                row["keylag_gens"] = [entry["generation"], entry["parent_generation"] if entry["role"] == "child"
+                                      else entry["mesh_generation"]]
+                self.seen._dirty = True
+                if self.cfg.key_confirm_s > 0:
+                    continue
+                # confirm_s = 0: page at once, on the frame that opened it.
+            if row.get("keylag_sent"):
+                continue
+            mark = row.get("keylag_confirm_at", now)
+            if now >= mark and (self.cfg.key_confirm_s == 0 or entry["generation_ts"] >= mark):
+                self._page_key_lag(addr, row, entry, now)
+
+    def _page_key_lag(self, addr: str, row: dict, entry: dict, now: float) -> None:
+        since = row["keylag_since"]
+        closed = row.get("keylag_closed")
+        gap = since - closed if closed is not None else None
+        flapping = gap is not None and self.cfg.key_rearm_s > 0 and gap < self.cfg.key_rearm_s
+        episode = ((row.get("keylag_episodes") or 0) + 1) if flapping else 1
+        router = entry["role"] == "router"
+        severity = "notice" if flapping else ("critical" if router else "warning")
+        row["keylag_episodes"] = episode
+        row["keylag_sent"] = severity
+        row.pop("keylag_confirm_at", None)
+        self.seen._dirty = True
+        self.seen.save()          # rare, and the flag is what stops a restart paging it again
+        generation, lag = entry["generation"], entry["lag"]
+        reference = entry["mesh_generation"] if router else entry["parent_generation"]
+        rssi = row.get("rssi")
+        what = (f"the mesh is on {reference}" if router
+                else f"its parent {entry['parent']} is on {reference}")
+        note = (f"still transmitting under key generation {generation} while {what}: {lag} generations behind, "
+                "so every frame it sends is dropped (OpenThread accepts frames only within one generation of its "
+                "own) while the radio still acknowledges its polls, so it looks alive and neither device_quiet "
+                f"nor poll_starvation will follow; held {round((now - since) / 60)} min with fresh frames before "
+                "this record. A battery pull or power cycle forces a rejoin, which fetches the current key")
+        if router:
+            note += "; a router this far behind cuts off every child that follows it"
+        if flapping:
+            note += (f". Episode {episode} since the last page, {gap / 60:.0f} min after the previous one "
+                     "closed: logged, not paged, until it has stayed within a generation for "
+                     f"{self.cfg.key_rearm_s / 60:.0f} min")
+        self._emit("key_lag", severity, now, addr=addr, name=entry["name"], role=entry["role"],
+                   generation=generation, parent=entry["parent"], parent_addr=entry["parent_addr"],
+                   **({"mesh_generation": reference} if router else {"parent_generation": reference}),
+                   lag=lag, since=since, lagged_for_s=round(now - since), rssi_dbm=rssi,
+                   reception=reception(rssi, self.cfg.quiet_min_rssi_dbm), polls_acked=bool(row.get("polls_acked")),
+                   episode=episode, since_previous_s=round(gap) if gap is not None else None, note=note)
+
+    def _close_key_lag(self, addr: str, row: dict, now: float, entry: dict, reason: str | None = None) -> None:
+        sent = row.get("keylag_sent")
+        since = row.get("keylag_since")
+        rejoin = row.get("rejoin_ts")
+        rejoined = isinstance(rejoin, (int, float)) and since is not None and rejoin >= since
+        router = row.get("keylag_role") == "router"
+        for key in self.KEYLAG_KEYS:
+            row.pop(key, None)
+        if sent:
+            row["keylag_closed"] = now
+        self.seen._dirty = True
+        if not sent:
+            return
+        generation = entry["generation"]
+        reference = entry["mesh_generation"] if router else entry["parent_generation"]
+        if reason:
+            note = f"the episode is closed: {reason}"
+        elif generation is None:
+            note = "the episode is closed"
+        else:
+            note = (f"heard again under key generation {generation}, within one of "
+                    + (f"the mesh's {reference}" if router else f"its parent's {reference}"))
+        if rejoined:
+            note += f"; it rejoined at {time.strftime('%H:%M:%S', time.localtime(rejoin))}"
+        self._emit("key_lag_cleared", "info", now, addr=addr, name=entry["name"], role=entry["role"],
+                   generation=generation, parent=entry["parent"], parent_addr=entry["parent_addr"],
+                   **({"mesh_generation": reference} if router else {"parent_generation": reference}),
+                   since=since, lagged_for_s=round(now - since) if since is not None else None,
+                   rejoined=rejoined, rejoin_ts=rejoin if rejoined else None, note=note)
+
+    def _maybe_census(self, now: float, dominant: int | None) -> None:
+        """key_lag_census, [keys] census_delay_s after a rotation: how many
+        devices are on each generation, who is one behind (normal, and
+        never paged), who is two or more behind (cut off), which routers
+        trail the mesh, and who could not be judged."""
+        due = self._keys.get("census_at")
+        if due is None or now < due:
+            return
+        self._keys["census_at"] = None
+        self._save_keys()
+        counts: dict[str, int] = {}
+        behind_1, behind_2plus, routers_behind, unknown = [], [], [], []
+        for e in self._key_lags(now, dominant):
+            label = e["name"] or e["addr"]
+            if e["generation"] is None:
+                unknown.append(label)
+                continue
+            counts[str(e["generation"])] = counts.get(str(e["generation"]), 0) + 1
+            if e["lag"] is None or e["lag"] < 1:
+                continue
+            item = {"name": e["name"], "addr": e["addr"], "generation": e["generation"], "lag": e["lag"]}
+            if e["role"] == "child":
+                item.update(parent=e["parent"], parent_generation=e["parent_generation"])
+                (behind_1 if e["lag"] == 1 else behind_2plus).append(item)
+            else:
+                item["mesh_generation"] = e["mesh_generation"]
+                routers_behind.append(item)
+        for group in (behind_1, behind_2plus, routers_behind):
+            group.sort(key=lambda i: (i["name"] or i["addr"]).lower())
+        unknown.sort(key=str.lower)
+        highest = self._keys.get("highest")
+        tally = ", ".join(f"{n} on {g}" for g, n in sorted(counts.items(), key=lambda kv: -int(kv[0])))
+        names = lambda group: ", ".join(i["name"] or i["addr"] for i in group)
+        parts = [f"generation {highest}: {tally or 'nobody judged'}"]
+        parts.append(f"one behind: {names(behind_1)}" if behind_1 else "nobody one behind")
+        parts.append(f"cut off (2+ behind): {names(behind_2plus)}" if behind_2plus else "nobody cut off")
+        if routers_behind:
+            parts.append(f"routers behind the mesh: {names(routers_behind)}")
+        if unknown:
+            parts.append(f"{len(unknown)} not judged (no fresh frame)")
+        self._emit("key_lag_census", "info", now, sequence=highest, mesh_generation=self.decryptor.key_sequence,
+                   counts=counts, behind_parent_1=behind_1, behind_parent_2plus=behind_2plus,
+                   routers_behind=routers_behind, unknown=unknown,
+                   note=f"census {self.cfg.key_census_delay_s / 60:.0f} min after the rotation; " + "; ".join(parts))
 
     # ------------------------------------------------- border routers
 

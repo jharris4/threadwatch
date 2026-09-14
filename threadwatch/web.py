@@ -92,8 +92,12 @@ td.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 details{margin:1em 0}summary{cursor:pointer;color:var(--muted)}
 pre{font-size:.8em;overflow-x:auto;background:var(--card);padding:.6em;border-radius:6px}
 .empty{color:var(--muted);padding:1em 0}
-@media(max-width:640px){td.detail{display:block;padding-top:0;border-top:none;color:var(--muted)}
- th.detail{display:none}}
+@media(max-width:640px){table.events{display:block}
+ table.events tbody{display:grid;grid-template-columns:auto auto minmax(0,1fr)}
+ table.events tr{display:grid;grid-column:1/-1;grid-template-columns:subgrid;border-bottom:1px solid var(--line)}
+ table.events th,table.events td{border-bottom:none}
+ table.events td.detail{grid-column:1/-1;padding-top:0;color:var(--muted)}
+ table.events th.detail,table.events td.detail:empty{display:none}}
 """
 
 
@@ -506,7 +510,7 @@ class Site:
                         f'<td><span class="sev {esc(ep["severity"])}">{esc(ep["severity"])}</span></td>'
                         f'<td>{esc(ep["title"])}{span}{who}</td>'
                         f'<td class="detail muted">{esc(ep["detail"])}</td></tr>')
-        table = (f'<table><tr><th>time</th><th></th><th>what</th><th class="detail">detail</th></tr>'
+        table = (f'<table class="events"><tr><th>time</th><th></th><th>what</th><th class="detail">detail</th></tr>'
                  f'{"".join(rows)}</table>' if rows else
                  f'<p class="empty">nothing at {esc(min_severity)} or above this day</p>' if floor and total else
                  '<p class="empty">nothing logged this day</p>' if day >= first else
@@ -648,7 +652,7 @@ class Site:
             trs.append(f'<tr><td class="t"><a href="/day/{day}">{day}</a> {hm(ep["start"])}</td>'
                        f'<td><span class="sev {esc(ep["severity"])}">{esc(ep["severity"])}</span></td>'
                        f'<td>{esc(ep["title"])}{span}</td><td class="detail muted">{esc(ep["detail"])}</td></tr>')
-        table = (f'<table><tr><th>when</th><th></th><th>what</th>'
+        table = (f'<table class="events"><tr><th>when</th><th></th><th>what</th>'
                  f'<th class="detail">detail</th></tr>{"".join(trs)}</table>'
                  if trs else '<p class="empty">no events for this device</p>')
         window = f'<p class="muted">the last {DEVICE_HISTORY_DAYS} days; anything earlier is on its day page</p>'

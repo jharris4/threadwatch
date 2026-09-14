@@ -218,8 +218,10 @@ class BundleTest(unittest.TestCase):
             d = Path(d)
             (d / "config.toml").write_text('[network]\nchannel = 15\n[[alerts.sinks]]\nurl = "https://s"\n')
             (d / "devices.json").write_text("[]")
+            # config_dir too: the copy looks there for the HA availability
+            # settings file, and the default is this checkout's config/.
             cfg = Config(data_dir=d / "data", devices_path=d / "devices.json", config_path=d / "config.toml",
-                         channel=15, pan_id=0x4e21)
+                         config_dir=d, channel=15, pan_id=0x4e21)
             cfg.ring_dir.mkdir(parents=True)
             (cfg.ring_dir / "threadwatch-20260903-01.pcap").write_bytes(b"x" * 10)
             dest, count = snapshot.save_snapshot(cfg, "auto-storm", now=1_756_900_000.0, trigger="phase_locked_storm")
@@ -233,7 +235,7 @@ class BundleTest(unittest.TestCase):
             self.assertNotIn("https://s", (dest / "config.toml").read_text())
             self.assertIn("read_with", m)
             # Nothing to copy: the manifest says so instead of failing.
-            bare = Config(data_dir=d / "data2")
+            bare = Config(data_dir=d / "data2", config_dir=d / "nothing-here")
             bare.ring_dir.mkdir(parents=True)
             dest, _ = snapshot.save_snapshot(bare, "bare")
             m = json.loads((dest / "manifest.json").read_text())

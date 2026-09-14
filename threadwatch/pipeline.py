@@ -289,6 +289,18 @@ class Pipeline:
         self._archive_result: dict | None = None
         self._next_archive = 0.0
         self._archive_status: dict | None = None
+        # Home Assistant availability ([ha_availability]): a worker polls
+        # /api/states every poll_s (and rebuilds the device map over the
+        # websocket every registry_refresh_s); the next periodic pass
+        # applies the result on this thread, where the device table lives.
+        self._haavail = None
+        self._haavail_reason: str | None = None
+        self._haavail_thread = None
+        self._haavail_result: dict | None = None
+        self._next_haavail = 0.0
+        self._haavail_map_ts: float | None = None
+        if not ephemeral and cfg.ha_availability_enabled:
+            self._init_ha_availability()
         self._last_auto_snapshot = 0.0 if ephemeral else self._last_auto_snapshot_on_disk()
         if not ephemeral and cfg.border_router_browse_s > 0:
             # Imported here rather than at the first browse, minutes in. A
@@ -908,7 +920,8 @@ class Pipeline:
         # configured_pan_silent; join-scan, stale-credential and storm
         # notices all held back.
         for attr in ("_retrans_since", "_retrans_alerted", "_retrans_paged", "_retrans_up", "_retrans_closed",
-                     "_win_start", "_next_browse", "_next_halogs", "_next_archive", "_join_scan_evt", "_stale_evt",
+                     "_win_start", "_next_browse", "_next_halogs", "_next_archive", "_next_haavail",
+                     "_join_scan_evt", "_stale_evt",
                      "_pan_silent_evt",
                      "_pan_window_start", "_last_auto_snapshot", "_storm_evt"):
             t = getattr(self, attr)
@@ -2074,6 +2087,8 @@ class Pipeline:
             self._poll_ha_logs(now)
         if not self.ephemeral and self.cfg.ha_logs_enabled and self.cfg.ha_logs_archive:
             self._poll_ha_archive(now)
+        if not self.ephemeral and self.cfg.ha_availability_enabled:
+            self._poll_ha_availability(now)
         # Devices on another PAN (a neighbour's mesh, an unpaired device
         # announcing itself) are tracked for the report but never alerted on:
         # their absence says nothing about this network.
@@ -2323,6 +2338,71 @@ class Pipeline:
                                + f": {'; '.join(errors)}; {how}"))
 
     HA_LOGS_RETRY_S = 15 * 60
+
+    # ------------------------------------------- Home Assistant availability
+
+    def _init_ha_availability(self) -> None:
+        from .haavail import MAP_FILE, STATE_FILE, SettingsError, Tracker, load_map, load_settings, settings_path
+        try:
+            settings = load_settings(settings_path(self.cfg))
+        except SettingsError as exc:
+            # The file is the person's; a bad one stops this feature, not
+            # the recorder, and doctor says FAIL.
+            self._haavail_reason = f"{exc}; the HA availability check is off until it is fixed"
+            print(f"[threadwatch] {self._haavail_reason}", file=sys.stderr, flush=True)
+            return
+        mapping = load_map(self.cfg.state_dir)
+        try:
+            self._haavail_map_ts = (self.cfg.state_dir / MAP_FILE).stat().st_mtime if mapping else None
+        except OSError:
+            self._haavail_map_ts = None
+        self._haavail = Tracker(self.cfg, self.cfg.state_dir / STATE_FILE, settings, emit=self._emit,
+                                rows=self.seen.table, names=self.names, mapping=mapping)
+
+    def _poll_ha_availability(self, now: float) -> None:
+        """Every [ha_availability] poll_s: the worker's result from last
+        time is applied (Tracker.apply), then the next poll starts."""
+        if self._haavail is None:
+            return
+        if self._haavail_thread is not None:
+            if self._haavail_thread.is_alive():
+                return
+            self._haavail_thread.join()
+            self._haavail_thread = None
+            result, self._haavail_result = self._haavail_result, None
+            if result is not None:
+                if isinstance(result.get("map"), dict):
+                    self._haavail_map_ts = now
+                self._haavail.apply(result, now)
+            return
+        if now < self._next_haavail:
+            return
+        self._next_haavail = now + self.cfg.ha_availability_poll_s
+        mapping = dict(self._haavail.mapping)
+        entries = list(self.names.entries)
+        map_age = now - self._haavail_map_ts if self._haavail_map_ts is not None else None
+
+        def run():
+            from .haavail import poll_once
+            try:
+                self._haavail_result = poll_once(self.cfg, mapping, entries, map_age_s=map_age, now=now,
+                                                 log=lambda m: print(f"[threadwatch] ha-availability: {m}",
+                                                                     file=sys.stderr, flush=True))
+            except Exception as exc:
+                self._haavail_result = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "polled_ts": now}
+
+        self._haavail_thread = threading.Thread(target=run, name="ha-availability", daemon=True)
+        self._haavail_thread.start()
+
+    def ha_availability_status(self) -> dict | None:
+        """The 'ha_availability' entry of status.json: reachability, the
+        last poll, the open episodes; or why the feature is off. None
+        with [ha_availability] disabled."""
+        if not self.cfg.ha_availability_enabled or self.ephemeral:
+            return None
+        if self._haavail is None:
+            return {"enabled": False, "reason": self._haavail_reason}
+        return {"enabled": True, **self._haavail.status()}
 
     def _poll_ha_archive(self, now: float) -> None:
         """The hourly archive pass (halogs.archive_pass) on a thread: due

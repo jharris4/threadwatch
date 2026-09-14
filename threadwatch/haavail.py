@@ -670,3 +670,45 @@ def availability_by_addr(state_dir: Path) -> dict[str, dict]:
             out[addr] = {"name": info.get("name") or info.get("ha_name"), "since": ep.get("since"),
                          "paged": bool(ep.get("paged")), "burst_id": ep.get("burst_id")}
     return out
+
+
+# ------------------------------------------------------------ the worker
+
+def refresh_map(url: str, token: str, entries: list[dict], log=lambda m: None) -> dict[str, dict]:
+    """Rebuild the HA map over the websocket. Raises HAError."""
+    from .ha import HomeAssistant
+    with HomeAssistant(url, token) as ha:
+        return build_map(ha, entries, log)
+
+
+def poll_once(cfg, mapping: dict[str, dict], entries: list[dict], *, map_age_s: float | None,
+              now: float | None = None, log=lambda m: None) -> dict:
+    """One worker pass: refresh the map when it is missing or older than
+    [ha_availability] registry_refresh_s (the only websocket use), then
+    the REST poll. Returns fetch_availability's result, with ``map`` set
+    when it was rebuilt and cached. A refresh that fails keeps the cached
+    map; with no map at all there is nothing to poll for."""
+    from .ha import HAError
+    now = now if now is not None else time.time()
+    settings = None
+    try:
+        from .ha import connection_settings
+        settings = connection_settings(cfg.config_dir / "ha.env")
+    except HAError as exc:
+        return {"ok": False, "error": str(exc).split(":")[0], "polled_ts": now}
+    url, token = settings
+    refreshed = None
+    if not mapping or map_age_s is None or map_age_s >= cfg.ha_availability_registry_refresh_s:
+        try:
+            refreshed = refresh_map(url, token, entries, log)
+            save_map(cfg.state_dir, refreshed)
+            mapping = refreshed
+        except HAError as exc:
+            if not mapping:
+                from .httpclient import redact_text
+                return {"ok": False, "error": redact_text(f"device registry: {exc}", (token,)), "polled_ts": now}
+            log(f"HA device map not refreshed ({exc}); polling with the cached map")
+    result = fetch_availability(url, token, mapping, now)
+    if refreshed is not None:
+        result["map"] = refreshed
+    return result

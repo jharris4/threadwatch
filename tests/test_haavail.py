@@ -481,5 +481,141 @@ class TrackerTest(unittest.TestCase):
         self.assertEqual(by_addr, {ADDRS[0]: {"name": "Device 0", "since": T0 + 50, "paged": False, "burst_id": None}})
 
 
+class RecorderAvailabilityTest(unittest.TestCase):
+    """The recorder's side: the worker polls on a thread, the capture
+    thread applies, the status entry and the snapshot copies follow, and
+    a bad settings file stops the feature and nothing else."""
+
+    def setUp(self):
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        from threadwatch.config import Config
+        self.tmp = tempfile.TemporaryDirectory()
+        self.d = Path(self.tmp.name)
+        (self.d / "devices.json").write_text(json.dumps(ENTRIES))
+        self.cfg = Config(data_dir=self.d / "data", config_dir=self.d, devices_path=self.d / "devices.json")
+        self.cfg.ha_availability_enabled = True
+        self.cfg.ha_availability_hold_s = 0
+        self.states = [{"entity_id": "binary_sensor.motion", "state": "on",
+                        "last_changed": "2026-09-13T20:00:00+00:00"}]
+        outer = self
+
+        class H(BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = json.dumps(outer.states).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        self.httpd = HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=self.httpd.serve_forever, args=(0.005,), daemon=True).start()
+        (self.d / "ha.env").write_text(f"HA_URL=http://127.0.0.1:{self.httpd.server_port}\nHA_TOKEN=tk_SECRET_TOKEN\n")
+        # The websocket registry is faked at the module boundary.
+        self.mapping = {MOTION: {"addr": "C233A4A5BF8391C9", "node_id": 7, "ha_name": "Motion HA Name",
+                                 "name": "Front Path Motion", "matched": True, "entities": ["binary_sensor.motion"]}}
+        self.refreshes = []
+        self._real = haavail.refresh_map
+        haavail.refresh_map = lambda url, token, entries, log=None: (self.refreshes.append(url), self.mapping)[1]
+
+    def tearDown(self):
+        haavail.refresh_map = self._real
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.tmp.cleanup()
+
+    def _pipe(self):
+        from threadwatch.crypto import Decryptor
+        from threadwatch.events import NullEventLog
+        from threadwatch.pipeline import Pipeline
+        return Pipeline(self.cfg, NullEventLog(), Decryptor(network_key=bytes(16)))
+
+    def _cycle(self, pipe, now):
+        pipe._poll_ha_availability(now)
+        self.assertIsNotNone(pipe._haavail_thread)
+        pipe._haavail_thread.join(10)
+        pipe._poll_ha_availability(now + 1)
+
+    def test_the_worker_builds_the_map_once_polls_rest_and_the_capture_thread_applies(self):
+        pipe = self._pipe()
+        now = 1_800_000_000.0
+        self._cycle(pipe, now)
+        self.assertEqual(len(self.refreshes), 1)
+        self.assertEqual(haavail.load_map(self.cfg.state_dir), self.mapping)             # cached
+        st = pipe.ha_availability_status()
+        self.assertEqual((st["enabled"], st["reachable"], st["devices_mapped"], st["open"]), (True, True, 1, []))
+        # The device drops: the next cycle opens the episode and, with a
+        # zero hold, says so at once, through _emit.
+        self.states[0].update(state="unavailable", last_changed="2026-09-13T21:00:00+00:00")
+        pipe._next_haavail = 0.0
+        self._cycle(pipe, now + 60)
+        evs = [r for r in pipe.events.records if r["event"] == "ha_unavailable"]
+        self.assertEqual(len(evs), 1)
+        self.assertEqual((evs[0]["name"], evs[0]["addr"], evs[0]["severity"]),
+                         ("Front Path Motion", "c233a4a5bf8391c9", "warning"))
+        self.assertEqual(len(self.refreshes), 1)                        # the map is not rebuilt at every poll
+        self.assertEqual([o["name"] for o in pipe.ha_availability_status()["open"]], ["Front Path Motion"])
+        state = json.loads((self.cfg.state_dir / "ha-availability.json").read_text())
+        self.assertIn(MOTION, state["episodes"])
+        for text in json.dumps(pipe.events.records):
+            self.assertNotIn("tk_SECRET_TOKEN", text)
+        # Not before poll_s.
+        pipe._poll_ha_availability(now + 90)
+        self.assertIsNone(pipe._haavail_thread)
+
+    def test_a_restart_polls_from_the_cached_map_and_a_stale_map_is_rebuilt(self):
+        pipe = self._pipe()
+        self._cycle(pipe, 1_800_000_000.0)
+        pipe2 = self._pipe()
+        self.assertEqual(pipe2._haavail.mapping, self.mapping)
+        pipe2._haavail_map_ts = 1_800_000_000.0 - 7200                  # older than registry_refresh_s
+        self._cycle(pipe2, 1_800_000_000.0)
+        self.assertEqual(len(self.refreshes), 2)
+
+    def test_a_bad_settings_file_stops_the_feature_not_the_recorder(self):
+        (self.d / "ha-availability.json").write_text('{"x": {"mute": "yes"}}')
+        pipe = self._pipe()
+        self.assertIsNone(pipe._haavail)
+        st = pipe.ha_availability_status()
+        self.assertFalse(st["enabled"])
+        self.assertIn("mute must be true or false", st["reason"])
+        pipe.periodic(1_800_000_000.0)
+        self.assertIsNone(pipe._haavail_thread)
+
+    def test_the_state_files_and_the_settings_copy_travel_with_a_snapshot(self):
+        from threadwatch.snapshot import STATE_FILES, save_snapshot
+        self.assertIn("ha-availability.json", STATE_FILES)
+        self.assertIn("ha-map.json", STATE_FILES)
+        (self.d / "ha-availability.json").write_text(json.dumps({MOTION: {"hold_s": 7200}}))
+        pipe = self._pipe()
+        self._cycle(pipe, 1_800_000_000.0)
+        self.cfg.ring_dir.mkdir(parents=True, exist_ok=True)
+        dest, _n = save_snapshot(self.cfg, "x")
+        self.assertTrue((dest / "ha-map.json").exists())
+        self.assertTrue((dest / "ha-availability.json").exists())                          # the episodes
+        self.assertEqual(json.loads((dest / "ha-availability-settings.json").read_text()), {MOTION: {"hold_s": 7200}})
+        self.assertEqual(json.loads((dest / "devices.json").read_text()), ENTRIES)           # untouched by all this
+        self.assertNotIn("tk_SECRET_TOKEN", "".join(p.read_text() for p in dest.glob("*.json")))
+
+    def test_off_or_replay_runs_nothing(self):
+        from threadwatch.crypto import Decryptor
+        from threadwatch.events import NullEventLog
+        from threadwatch.pipeline import Pipeline
+        replay = Pipeline(self.cfg, NullEventLog(), Decryptor(network_key=bytes(16)), ephemeral=True)
+        replay.periodic(1_800_000_000.0)
+        self.assertIsNone(replay._haavail)
+        self.assertIsNone(replay.ha_availability_status())
+        self.cfg.ha_availability_enabled = False
+        pipe = self._pipe()
+        pipe.periodic(1_800_000_000.0)
+        self.assertIsNone(pipe._haavail_thread)
+        self.assertIsNone(pipe.ha_availability_status())
+        self.assertEqual(self.refreshes, [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -231,10 +231,11 @@ class StatusConsumersTest(unittest.TestCase):
         st = json.loads((self.cfg.state_dir / "status.json").read_text())
         self.assertEqual(sorted(st), ["alerts", "channel", "commit", "crypto", "current_file", "detector",
                                       "devices_tracked", "dominant_pan", "dropped_lines", "frames_total",
-                                      "ha_logs_archive", "keys", "last_frame_age_s", "last_frame_ts", "partition",
-                                      "port", "updated", "uptime_s", "version"])
+                                      "ha_availability", "ha_logs_archive", "keys", "last_frame_age_s",
+                                      "last_frame_ts", "partition", "port", "updated", "uptime_s", "version"])
         self.assertEqual(st["keys"], {})                  # nothing heard yet: no generation on record
         self.assertIsNone(st["ha_logs_archive"])          # [ha_logs] archive off
+        self.assertIsNone(st["ha_availability"])          # [ha_availability] off
         # Which code is recording: the one thing that tells a restart that
         # happened from one that did not.
         from threadwatch import __version__

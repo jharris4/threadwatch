@@ -637,6 +637,9 @@ def _write_status(cfg, port, total, started, pipe: Pipeline, ring, decryptor,
         # With [ha_logs] archive on: per add-on the last hour archived, the
         # hours pending and lost; null otherwise.
         "ha_logs_archive": pipe.ha_logs_archive_status(),
+        # With [ha_availability] on: HA reachability, the last poll and
+        # the open episodes; null otherwise.
+        "ha_availability": pipe.ha_availability_status(),
     }
     status["crypto"] = {**decryptor.stats, "key_sequence": decryptor.key_sequence}
     tmp = cfg.state_dir / "status.tmp"

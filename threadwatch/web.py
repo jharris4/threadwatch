@@ -693,6 +693,21 @@ class Site:
                                       + (f' {ago(when, now)}' if when else "")
                                       + (f', previously {esc(keys["previous"])}' if keys.get("previous") is not None
                                          else "") + '</span>')
+            avail = st.get("ha_availability")
+            if isinstance(avail, dict):
+                if not avail.get("enabled"):
+                    row("HA availability", f'<span class="bad">off: {esc(avail.get("reason") or "?")}</span>')
+                else:
+                    reach = ('<span class="ok">reachable</span>' if avail.get("reachable")
+                             else '<span class="bad">unreachable</span>')
+                    open_ = avail.get("open") or []
+                    down = ", ".join(f'<a href="/device/{esc(o["addr"])}">{esc(o["name"])}</a> since '
+                                     f'{hm(o["since"])}' + (" (burst)" if o.get("burst_id") else "")
+                                     for o in open_ if o.get("addr"))
+                    row("HA availability", f'{reach}, {avail.get("devices_mapped", 0)} devices mapped, last poll '
+                                           f'{ago(avail.get("last_poll_ts"), now)}; '
+                                           + (f'<span class="warn">{len(open_)} unavailable</span>: {down}' if open_
+                                              else '<span class="ok">all available</span>'))
             archive = st.get("ha_logs_archive")
             if isinstance(archive, dict):
                 parts = []

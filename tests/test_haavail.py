@@ -238,5 +238,248 @@ class MapAndPollTest(unittest.TestCase):
         self.assertIn("refused", down["error"].lower())
 
 
+T0 = 1_700_000_000.0
+IDS = [f"dev{i:02d}" + "0" * 27 for i in range(6)]
+ADDRS = [f"{i:016x}" for i in range(1, 7)]
+
+
+class TrackerTest(unittest.TestCase):
+    """The episode rules, one poll result at a time."""
+
+    def setUp(self):
+        from threadwatch.config import Config
+        self.tmp = tempfile.TemporaryDirectory()
+        self.d = Path(self.tmp.name)
+        self.cfg = Config(data_dir=self.d / "data")
+        self.cfg.ha_availability_enabled = True
+        self.records = []
+        self.rows = {a: {"first_seen": T0 - 86400, "last_seen": T0 - 30, "frames": 100, "rssi": -60.0,
+                         "rloc16": f"{0x0401 + i:04x}", "rloc16_ts": T0 - 30} for i, a in enumerate(ADDRS)}
+        self.rows["a" * 16] = {"first_seen": T0 - 86400, "last_seen": T0 - 5, "frames": 900, "rssi": -55.0,
+                               "rloc16": "0400", "rloc16_ts": T0 - 5, "counter_seq": 86, "counter_ts": T0 - 5}
+        self.mapping = {IDS[i]: {"addr": ADDRS[i].upper(), "node_id": i, "ha_name": f"HA {i}", "name": f"Device {i}",
+                                 "matched": True, "entities": [f"sensor.d{i}"]} for i in range(6)}
+        self.settings = {}
+
+        class Names:
+            def name(self, addr):
+                return {"a" * 16: "Hall Router"}.get(addr)
+        self.names = Names()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _tracker(self, state=True):
+        from threadwatch.haavail import Tracker
+        return Tracker(self.cfg, self.d / "ha-availability.json" if state else None, self.settings,
+                       emit=lambda event, severity, ts, **f: self.records.append({"event": event, "severity": severity,
+                                                                                    "ts": ts, **f}),
+                       rows=self.rows, names=self.names, mapping=self.mapping)
+
+    def _poll(self, tracker, now, down: dict | None = None, ok=True, error=None):
+        """A poll result: ``down`` maps device id -> HA's last_changed."""
+        down = down or {}
+        devices = {d: ((True, down[d]) if d in down else (False, None)) for d in self.mapping}
+        tracker.apply({"ok": ok, "devices": devices, "error": error} if ok else {"ok": False, "error": error}, now)
+
+    def _events(self, name):
+        return [r for r in self.records if r["event"] == name]
+
+    def test_a_device_back_inside_the_hold_is_nothing_and_past_it_is_one_warning_then_available(self):
+        tr = self._tracker()
+        self._poll(tr, T0)                                                      # baseline: all available
+        self._poll(tr, T0 + 60, {IDS[0]: T0 + 30})
+        self._poll(tr, T0 + 540, {IDS[0]: T0 + 30})                             # 8.5 min down
+        self._poll(tr, T0 + 600)                                                # back inside the hold
+        self.assertEqual(self.records, [])
+        self._poll(tr, T0 + 1000, {IDS[1]: T0 + 990})
+        for t in range(1060, 1650, 60):
+            self._poll(tr, T0 + t, {IDS[1]: T0 + 990})
+        evs = self._events("ha_unavailable")
+        self.assertEqual(len(evs), 1)
+        ev = evs[0]
+        self.assertEqual((ev["severity"], ev["name"], ev["ha_device_id"], ev["addr"], ev["since"], ev["hold_s"],
+                          ev["muted"], ev["burst_id"], ev["episode"], ev["entities"]),
+                         ("warning", "Device 1", IDS[1], ADDRS[1], T0 + 990, 600, False, None, 1, ["sensor.d1"]))
+        self.assertEqual(ev["unavailable_for_s"], round(ev["ts"] - (T0 + 990)))
+        self.assertGreaterEqual(ev["unavailable_for_s"], 600)
+        self.assertNotIn("already_unavailable_at_start", ev)
+        self.assertEqual((ev["cause"], ev["role"], ev["parent"]), ("unheard", "child", "Hall Router"))
+        self.assertIn("unavailable in Home Assistant for", ev["note"])
+        self._poll(tr, T0 + 1700, {IDS[1]: T0 + 990})                          # still down: nothing more
+        self.assertEqual(len(self._events("ha_unavailable")), 1)
+        self._poll(tr, T0 + 1760)
+        back = self._events("ha_available")
+        self.assertEqual(len(back), 1)
+        self.assertEqual((back[0]["severity"], back[0]["name"], back[0]["down_for_s"], back[0]["rejoined"]),
+                         ("info", "Device 1", 770, False))
+        state = json.loads((self.d / "ha-availability.json").read_text())
+        self.assertEqual(state["episodes"], {})
+        self.assertEqual(state["closed"][IDS[1]]["episodes"], 1)
+
+    def test_the_cause_comes_from_the_radio_evidence(self):
+        self.rows[ADDRS[0]].update(counter_seq=84, counter_ts=T0 + 1000, last_seen=T0 + 1000)
+        tr = self._tracker()
+        self._poll(tr, T0)
+        for t in range(60, 700, 60):
+            self._poll(tr, T0 + t, {IDS[0]: T0 + 10})
+        ev = self._events("ha_unavailable")[0]
+        self.assertEqual((ev["cause"], ev["generation"], ev["parent_generation"]), ("key_lag", 84, 86))
+        self.assertIn("Cut off by a key change", ev["note"])
+
+    def test_per_device_hold_and_mute(self):
+        self.settings = {IDS[0]: {"hold_s": 7200}, IDS[1]: {"mute": True}, IDS[2]: {"mute": True}}
+        tr = self._tracker()
+        self._poll(tr, T0)
+        for t in range(60, 3700, 60):
+            self._poll(tr, T0 + t, {IDS[0]: T0 + 10, IDS[1]: T0 + 10, IDS[2]: T0 + 15, IDS[3]: T0 + 20})
+        evs = self._events("ha_unavailable")
+        self.assertEqual(sorted((e["name"], e["severity"], e["muted"]) for e in evs),
+                         [("Device 1", "notice", True), ("Device 2", "notice", True), ("Device 3", "warning", False)])
+        self.assertEqual(self._events("ha_unavailable_burst"), [])                # two muted: only one counts
+        for t in range(3720, 7300, 60):
+            self._poll(tr, T0 + t, {IDS[0]: T0 + 10})
+        evs = self._events("ha_unavailable")
+        self.assertEqual([e["name"] for e in evs if e["name"] == "Device 0"], ["Device 0"])
+        self.assertEqual(next(e for e in evs if e["name"] == "Device 0")["hold_s"], 7200)
+
+    def test_three_devices_in_eight_minutes_are_one_critical_burst_and_a_fourth_joins_it(self):
+        tr = self._tracker()
+        self._poll(tr, T0)
+        self._poll(tr, T0 + 60, {IDS[0]: T0 + 50})
+        self._poll(tr, T0 + 300, {IDS[0]: T0 + 50, IDS[1]: T0 + 290})
+        self._poll(tr, T0 + 480, {IDS[0]: T0 + 50, IDS[1]: T0 + 290, IDS[2]: T0 + 470})
+        self.assertEqual(self._events("ha_unavailable_burst"), [])              # the newest not yet 2 min down
+        self._poll(tr, T0 + 600, {IDS[0]: T0 + 50, IDS[1]: T0 + 290, IDS[2]: T0 + 470})
+        bursts = self._events("ha_unavailable_burst")
+        self.assertEqual(len(bursts), 1)
+        b = bursts[0]
+        self.assertEqual((b["severity"], b["count"], b["window_s"], b["first_since"], b["ha_side"]),
+                         ("critical", 3, 600, T0 + 50, False))
+        self.assertEqual([m["name"] for m in b["devices"]], ["Device 0", "Device 1", "Device 2"])
+        self.assertEqual(b["devices"][0]["cause"], "unheard")
+        self.assertIn("3 devices went unavailable in Home Assistant within 10 min", b["note"])
+        # The individual records are notices with the burst id; a fourth
+        # device inside the window joins rather than starting another.
+        self._poll(tr, T0 + 700, {IDS[0]: T0 + 50, IDS[1]: T0 + 290, IDS[2]: T0 + 470, IDS[3]: T0 + 690})
+        for t in range(760, 1400, 60):
+            self._poll(tr, T0 + t, {IDS[0]: T0 + 50, IDS[1]: T0 + 290, IDS[2]: T0 + 470, IDS[3]: T0 + 690})
+        evs = self._events("ha_unavailable")
+        self.assertEqual(sorted((e["name"], e["severity"], e["burst_id"] == b["burst_id"]) for e in evs),
+                         [(f"Device {i}", "notice", True) for i in range(4)])
+        self.assertEqual(len(self._events("ha_unavailable_burst")), 1)
+
+    def test_two_devices_are_two_warnings_not_a_burst(self):
+        tr = self._tracker()
+        self._poll(tr, T0)
+        for t in range(60, 800, 60):
+            self._poll(tr, T0 + t, {IDS[0]: T0 + 10, IDS[1]: T0 + 20})
+        self.assertEqual(self._events("ha_unavailable_burst"), [])
+        self.assertEqual([e["severity"] for e in self._events("ha_unavailable")], ["warning", "warning"])
+
+    def test_a_restart_blip_of_five_devices_for_a_minute_is_nothing(self):
+        tr = self._tracker()
+        self._poll(tr, T0)
+        self._poll(tr, T0 + 60, {i: T0 + 55 for i in IDS[:5]})
+        self._poll(tr, T0 + 120)
+        self.assertEqual(self.records, [])
+
+    def test_a_burst_ends_and_a_device_stuck_for_hours_does_not_suppress_the_next_one(self):
+        tr = self._tracker()
+        self._poll(tr, T0)
+        down = {IDS[0]: T0 + 10, IDS[1]: T0 + 20, IDS[2]: T0 + 30}
+        for t in range(60, 300, 60):
+            self._poll(tr, T0 + t, down)
+        self.assertEqual(len(self._events("ha_unavailable_burst")), 1)
+        # Two recover; one stays down for a day.
+        for t in range(300, 86400, 600):
+            self._poll(tr, T0 + t, {IDS[0]: T0 + 10})
+        # Three others drop the next day: a new burst.
+        down = {IDS[0]: T0 + 10, IDS[3]: T0 + 86400 + 10, IDS[4]: T0 + 86400 + 20, IDS[5]: T0 + 86400 + 30}
+        for t in range(86400 + 60, 86400 + 400, 60):
+            self._poll(tr, T0 + t, down)
+        bursts = self._events("ha_unavailable_burst")
+        self.assertEqual(len(bursts), 2)
+        self.assertEqual([m["name"] for m in bursts[1]["devices"]], ["Device 3", "Device 4", "Device 5"])
+        self.assertNotEqual(bursts[0]["burst_id"], bursts[1]["burst_id"])
+
+    def test_a_mesh_wide_drop_while_the_recorder_still_hears_the_devices_names_the_ha_side(self):
+        for a in ADDRS:
+            self.rows[a]["last_seen"] = T0 + 550
+        tr = self._tracker()
+        self._poll(tr, T0)
+        down = {i: T0 + 300 for i in IDS[:5]}                                   # 5 of 6 mapped
+        for t in range(360, 700, 60):
+            self._poll(tr, T0 + t, down)
+        b = self._events("ha_unavailable_burst")[0]
+        self.assertTrue(b["ha_side"])
+        self.assertIn("HA or Matter Server side", b["note"])
+
+    def test_ten_minutes_of_refused_polls_is_one_unreachable_and_no_episode_changes(self):
+        tr = self._tracker()
+        self._poll(tr, T0)
+        self._poll(tr, T0 + 60, {IDS[0]: T0 + 50})
+        for t in range(120, 800, 60):
+            self._poll(tr, T0 + t, ok=False, error="connection refused")
+        unreachable = self._events("ha_unreachable")
+        self.assertEqual(len(unreachable), 1)
+        self.assertEqual((unreachable[0]["severity"], unreachable[0]["error"]), ("notice", "connection refused"))
+        self.assertGreaterEqual(unreachable[0]["failing_for_s"], 300)
+        self.assertEqual(self._events("ha_unavailable"), [])                  # the hold clock did not fire blind
+        self.assertIn(IDS[0], tr.state["episodes"])
+        # Recovery: ha_reachable, and the next poll is a baseline, not
+        # transitions: the device that came back meanwhile closes without
+        # a word, and one found down is said at notice as already down
+        # (its hold has long passed), never paged.
+        self._poll(tr, T0 + 900, {IDS[1]: T0 + 200})
+        self.assertEqual([r["event"] for r in self.records], ["ha_unreachable", "ha_reachable", "ha_unavailable"])
+        self.assertEqual(sorted(tr.state["episodes"]), [IDS[1]])
+        ev = self._events("ha_unavailable")[0]
+        self.assertEqual((ev["name"], ev["severity"], ev["already_unavailable_at_start"]), ("Device 1", "notice", True))
+        self.assertIn("already unavailable when the recorder started", ev["note"])
+        self.assertEqual(self._events("ha_available"), [])
+
+    def test_a_restart_keeps_a_paged_episode_and_says_an_unpaged_one_at_notice(self):
+        tr = self._tracker()
+        self._poll(tr, T0)
+        for t in range(60, 700, 60):
+            self._poll(tr, T0 + t, {IDS[0]: T0 + 10})
+        self.assertEqual(len(self._events("ha_unavailable")), 1)
+        self.records.clear()
+        tr2 = self._tracker()                                                   # restarted with the state file
+        self._poll(tr2, T0 + 800, {IDS[0]: T0 + 10, IDS[1]: T0 + 100})
+        self._poll(tr2, T0 + 860, {IDS[0]: T0 + 10, IDS[1]: T0 + 100})
+        evs = self._events("ha_unavailable")
+        self.assertEqual([(e["name"], e["severity"], e.get("already_unavailable_at_start")) for e in evs],
+                         [("Device 1", "notice", True)])                       # Device 0 was paged before: kept
+        self._poll(tr2, T0 + 920)
+        self.assertEqual([e["name"] for e in self._events("ha_available")], ["Device 0", "Device 1"])
+
+    def test_an_episode_reopening_within_rearm_s_is_a_notice(self):
+        tr = self._tracker()
+        self._poll(tr, T0)
+        for t in range(60, 700, 60):
+            self._poll(tr, T0 + t, {IDS[0]: T0 + 10})
+        self._poll(tr, T0 + 720)
+        for t in range(780, 1500, 60):
+            self._poll(tr, T0 + t, {IDS[0]: T0 + 770})
+        evs = self._events("ha_unavailable")
+        self.assertEqual([(e["severity"], e["episode"]) for e in evs], [("warning", 1), ("notice", 2)])
+        self.assertIn("Episode 2 since the last page", evs[1]["note"])
+
+    def test_status_and_the_pages_view(self):
+        from threadwatch.haavail import availability_by_addr, save_map
+        tr = self._tracker()
+        self._poll(tr, T0)
+        self._poll(tr, T0 + 60, {IDS[0]: T0 + 50})
+        st = tr.status()
+        self.assertEqual((st["reachable"], st["last_poll_ts"], st["devices_mapped"], st["burst"]),
+                         (True, T0 + 60, 6, None))
+        self.assertEqual([(o["name"], o["since"], o["paged"]) for o in st["open"]], [("Device 0", T0 + 50, False)])
+        save_map(self.d, self.mapping)
+        by_addr = availability_by_addr(self.d)
+        self.assertEqual(by_addr, {ADDRS[0]: {"name": "Device 0", "since": T0 + 50, "paged": False, "burst_id": None}})
+
+
 if __name__ == "__main__":
     unittest.main()

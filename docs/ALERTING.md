@@ -100,6 +100,11 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `snapshot_logs_failed` | notice | `label`, `addons`, `errors`, `status` (`failed`, `partial` or `skipped`), `note` (whether and when the recorder retries) |
 | `ha_logs_archive_stalled` | notice | `addons`, `pending_hours` (`<slug>/<YYYYMMDD-HH>`, UTC), `since`, `last_error`, `note`; once per outage, when the hourly archive (`[ha_logs] archive`) has had hours pending for an hour |
 | `ha_logs_archive_resumed` | info | `archived`, `lost` (hour names), `since`, `note`; once, when the catch-up after an outage completes |
+| `ha_unavailable` | warning once a device has been unavailable in Home Assistant for its hold; notice when `muted`, part of a burst (`burst_id`), reopened within `[ha_availability] rearm_s` (`episode` > 1) or `already_unavailable_at_start` | `addr`, `name`, `ha_device_id`, `entities`, `since`, `unavailable_for_s`, `hold_s`, `muted`, `burst_id`, `episode`, `cause` (`key_lag`, `lost_parent`, `silent`, `radio_ok`, `unheard`), the radio evidence (`last_seen`, `silent_for_s`, `rssi_dbm`, `reception`, `starved`, `role`, `parent`, `generation`, `parent_generation`, `rejoin_ts`), `note` (with `[ha_availability] enabled`) |
+| `ha_unavailable_burst` | critical | `burst_id`, `devices` (each `name`, `addr`, `since`, `cause`), `count`, `window_s`, `first_since`, `note` (the causes, and "HA or Matter Server side" when most mapped devices dropped at once while the recorder still heard them); once per burst, with the automatic snapshot |
+| `ha_available` | info | `addr`, `name`, `ha_device_id`, `since`, `down_for_s`, `rejoined`, `generation`, `note`; only after an `ha_unavailable` went out |
+| `ha_unreachable` | notice | `failing_for_s`, `error`, `note`; once, after five minutes of failed polls |
+| `ha_reachable` | info | `unreachable_for_s`, `note`; the next poll is a baseline, not transitions |
 | `daily_summary` | `[summary] severity` (notice) | `frames_24h`, `devices_heard_24h`, `devices_tracked`, `quiet`, `unknown`, `marginal`, `degraded`, `storm_active`, `events_24h`, `key_generation` (the mesh's), `key_lag_1` and `key_lag_2plus` (device names one, and two or more, generations behind right now), `note` |
 | `alert_test` | as requested | `name`, `addr`, `note` (from `alert-test`) |
 

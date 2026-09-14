@@ -28,6 +28,8 @@ from __future__ import annotations
 import calendar
 import gzip
 import http.client
+import json
+import os
 import re
 import time
 import urllib.error
@@ -36,10 +38,17 @@ from pathlib import Path
 from typing import Callable
 
 from .httpclient import SCRUB_MIN, redact_text, redact_url, urlopen
+from .snapshot import MANIFEST, STAGING_DIR, _take_lock, rewrite_manifest, saved_at
 
 LOG_DIR = "ha-logs"                  # inside a snapshot: ha-logs/<slug>.log.gz
 STATUS_FILE = "ha-logs.json"
+LOCK_FILE = "ha-logs.lock"           # held while a fetch into the snapshot runs (recover_interrupted asks)
 PART_SUFFIX = ".part"
+# A failed or partial fetch is tried again this long after the snapshot
+# was saved: HA may have been down, or the recorder's own retry may not
+# have had the window yet. Each retry asks for the same window; the
+# journal returns whatever it still holds.
+RETRY_AFTER_S = (15 * 60, 60 * 60, 4 * 60 * 60)
 # The journal prefix ?verbose puts before each line, UTC:
 #   2026-09-13 22:09:43.197 homeassistant app_core_openthread_border_router[697]: 4d.06:59:10.452 [I] ...
 JOURNAL_PREFIX = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3}) (\S+) ([^\[]+)\[(\d+)\]: ")
@@ -206,3 +215,217 @@ def fetch_addon_log(url: str, token: str, slug: str, since: float, until: float,
     if progress is not None and lines:
         progress(slug, lines, raw_bytes, time.monotonic() - started)
     return result
+
+
+# ------------------------------------------------------- in a snapshot
+
+def credentials(cfg) -> tuple[str, str] | None:
+    """(url, token) from config/ha.env, or None when there is no token."""
+    from .ha import HAError, connection_settings
+    try:
+        return connection_settings(cfg.config_dir / "ha.env")
+    except HAError:
+        return None
+
+
+def window(snapshot_dir: Path, now: float, max_hours: float, saved: float | None = None) -> tuple[float, float]:
+    """The journal window a snapshot asks for: from the start of its oldest
+    ring file's hour (a local hour, as ring files are named), never further
+    back than ``max_hours`` before now, up to when it was saved (an until
+    in the future was never tested against the realtime range)."""
+    saved = saved if saved is not None else now
+    until = min(saved, now)
+    floor = now - max_hours * 3600.0
+    since = floor
+    for pcap in sorted(snapshot_dir.glob("threadwatch-*.pcap")):
+        try:
+            since = max(floor, time.mktime(time.strptime(pcap.name[12:23], "%Y%m%d-%H")))
+        except ValueError:
+            since = floor
+        break
+    if since >= until:
+        since = until - 3600.0
+    return since, until
+
+
+def read_status(snapshot_dir: Path) -> dict | None:
+    try:
+        status = json.loads((snapshot_dir / STATUS_FILE).read_text())
+    except (OSError, ValueError):
+        return None
+    return status if isinstance(status, dict) and isinstance(status.get("addons"), dict) else None
+
+
+def _write_status(snapshot_dir: Path, status: dict) -> None:
+    status["updated"] = time.time()
+    path = snapshot_dir / STATUS_FILE
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(status, indent=1))
+    os.replace(tmp, path)
+
+
+def summary(status: dict) -> dict:
+    """The manifest's ha_logs key: ha-logs.json without the noise."""
+    keep = ("file", "lines", "complete", "received", "gap_before_s", "error", "http_status", "source")
+    return {"status": status.get("status"), "reason": status.get("reason"), "requested": status.get("requested"),
+            "attempts": status.get("attempts"),
+            "addons": {slug: {k: r.get(k) for k in keep if k in r} for slug, r in status["addons"].items()}}
+
+
+def _settle(status: dict, interrupted: bool = False) -> dict:
+    """status from the add-on results: complete when every add-on's log
+    is whole, partial when any file exists, failed when none does."""
+    results = list(status["addons"].values())
+    if results and all(r.get("complete") for r in results) and not interrupted:
+        status["status"], status["reason"] = "complete", None
+    elif any(r.get("file") for r in results):
+        status["status"] = "partial"
+        status["reason"] = "interrupted" if interrupted else "; ".join(
+            r["error"] for r in results if r.get("error")) or None
+    else:
+        status["status"] = "failed"
+        status["reason"] = "; ".join(r["error"] for r in results if r.get("error")) or "nothing arrived"
+    return status
+
+
+def attach_logs(cfg, snapshot_dir: Path, *, now: float | None = None, settings: tuple | None = None,
+                secrets=None, progress: Callable | None = None) -> dict | None:
+    """Add the add-on logs to a snapshot that is already final, and say
+    so in ha-logs.json and the manifest. Returns the status written, or
+    None when [ha_logs] is off (nothing is written then, and the manifest
+    gets no ha_logs key). Called again on a snapshot that has a
+    ha-logs.json, it is the retry: the same window is asked for, only the
+    add-ons whose log is not yet whole are fetched, and ``attempts``
+    counts the rounds.
+
+    The order is the point: the ring copy is never delayed, invalidated
+    or removed by anything here. A lock beside the status file says a
+    fetch is live, so a recorder starting meanwhile leaves it alone."""
+    if not cfg.ha_logs_enabled:
+        return None
+    now = now if now is not None else time.time()
+    saved = saved_at(snapshot_dir)
+    status = read_status(snapshot_dir) or {"status": "fetching", "reason": None, "saved_at": saved,
+                                           "requested": None, "attempts": 0, "addons": {}}
+    status["attempts"] = int(status.get("attempts") or 0) + 1
+    settings = settings if settings is not None else credentials(cfg)
+    if settings is None:
+        status["status"], status["reason"] = "skipped", "no token: put an admin user's HA_TOKEN in config/ha.env"
+        _write_status(snapshot_dir, status)
+        rewrite_manifest(snapshot_dir, ha_logs=summary(status))
+        return status
+    url, token = settings
+    if secrets is None:
+        secrets = known_secrets(cfg, token=token)
+    if not (isinstance(status.get("requested"), list) and len(status["requested"]) == 2):
+        status["requested"] = list(window(snapshot_dir, now, cfg.ha_logs_max_hours, saved))
+    since, until = status["requested"]
+    for slug in cfg.ha_logs_addons:
+        status["addons"].setdefault(slug, {"slug": slug, "file": None, "complete": False, "error": None})
+    lock = snapshot_dir / LOCK_FILE
+    fd = _take_lock(lock, wait=True)
+    try:
+        status["status"], status["reason"] = "fetching", None
+        _write_status(snapshot_dir, status)
+        interrupted = False
+        for slug in cfg.ha_logs_addons:
+            if status["addons"][slug].get("complete"):
+                continue
+            dest = snapshot_dir / LOG_DIR / f"{slug}.log.gz"
+            result = fetch_addon_log(url, token, slug, since, until, dest, read_timeout_s=cfg.ha_logs_read_timeout_s,
+                                     deadline_s=cfg.ha_logs_deadline_s, secrets=secrets, progress=progress)
+            if result["file"]:
+                result["file"] = f"{LOG_DIR}/{result['file']}"
+            result.pop("requested", None)
+            result["source"] = "live"
+            status["addons"][slug] = result
+            if result.pop("interrupted", False):
+                interrupted = True
+                break
+        _settle(status, interrupted)
+        _write_status(snapshot_dir, status)
+        rewrite_manifest(snapshot_dir, ha_logs=summary(status))
+    finally:
+        lock.unlink(missing_ok=True)
+        os.close(fd)
+    return status
+
+
+def recover_interrupted(snapshots_dir: Path) -> list[str]:
+    """At start: a snapshot whose ha-logs.json still says "fetching" with
+    no fetch holding its lock was cut short by a stop. Any .part file is
+    renamed into place (what arrived is evidence), the status becomes
+    partial or failed, and the manifest is rewritten. Returns the
+    snapshot names touched; the retry pass takes them from there."""
+    if not snapshots_dir.is_dir():
+        return []
+    touched = []
+    for d in sorted(snapshots_dir.iterdir()):
+        if not d.is_dir() or d.name == STAGING_DIR:
+            continue
+        status = read_status(d)
+        if status is None or status.get("status") != "fetching":
+            continue
+        fd = _take_lock(d / LOCK_FILE, wait=False)
+        if fd is None:
+            continue                       # a fetch by hand, still running
+        try:
+            for part in sorted((d / LOG_DIR).glob("*" + PART_SUFFIX)) if (d / LOG_DIR).is_dir() else []:
+                final = part.with_suffix(".gz")
+                part.replace(final)
+                slug = final.name[:-len(".log.gz")]
+                entry = status["addons"].setdefault(slug, {"slug": slug})
+                entry.update(file=f"{LOG_DIR}/{final.name}", complete=False, bytes_gz=final.stat().st_size,
+                             error="the recorder stopped during the fetch; what arrived is kept", source="live")
+            for entry in status["addons"].values():
+                if not entry.get("complete") and not entry.get("error"):
+                    entry["error"] = "the recorder stopped before this add-on's log was fetched"
+            _settle(status)
+            _write_status(d, status)
+            rewrite_manifest(d, ha_logs=summary(status))
+            touched.append(d.name)
+            (d / LOCK_FILE).unlink(missing_ok=True)
+        finally:
+            os.close(fd)
+    return touched
+
+
+def retries_due(cfg, now: float) -> list[Path]:
+    """The snapshots whose logs are failed or partial and due another try:
+    fewer than len(RETRY_AFTER_S) retries so far, the next one's time
+    reached, and the snapshot still inside [ha_logs] max_hours (past
+    that the journal has nothing left to give)."""
+    if not cfg.snapshots_dir.is_dir():
+        return []
+    due = []
+    for d in sorted(cfg.snapshots_dir.iterdir()):
+        if not d.is_dir() or d.name == STAGING_DIR or not (d / MANIFEST).exists():
+            continue
+        status = read_status(d)
+        if status is None or status.get("status") not in ("failed", "partial"):
+            continue
+        attempts = int(status.get("attempts") or 1)
+        retries = attempts - 1
+        if retries >= len(RETRY_AFTER_S):
+            continue
+        saved = status.get("saved_at") if isinstance(status.get("saved_at"), (int, float)) else saved_at(d)
+        if saved is None or now - saved > cfg.ha_logs_max_hours * 3600.0:
+            continue
+        if now >= saved + RETRY_AFTER_S[retries]:
+            due.append(d)
+    return due
+
+
+def retry_pending(cfg, now: float | None = None, secrets=None) -> list[tuple[Path, dict, bool]]:
+    """One pass of the retry schedule: every snapshot due is fetched again
+    (attach_logs on its own ha-logs.json). Returns (snapshot, status,
+    final) per snapshot tried, ``final`` meaning no retry remains."""
+    now = now if now is not None else time.time()
+    out = []
+    for d in retries_due(cfg, now):
+        status = attach_logs(cfg, d, now=now, secrets=secrets)
+        if status is None:
+            continue
+        final = status.get("status") == "complete" or int(status.get("attempts") or 1) - 1 >= len(RETRY_AFTER_S)
+        out.append((d, status, final))
+    return out

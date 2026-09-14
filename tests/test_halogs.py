@@ -6,6 +6,7 @@ retention, an admin-only refusal, a redirect, a refused connection, and
 a stream too slow for the deadline."""
 
 import gzip
+import json
 import sys
 import tempfile
 import threading
@@ -287,6 +288,209 @@ class KnownSecretsTest(unittest.TestCase):
             # Without a credentials file the key is simply not among them.
             (d / "credentials.toml").unlink()
             self.assertNotIn(KEY.hex(), halogs.known_secrets(cfg))
+
+
+class SnapshotLogsTest(unittest.TestCase):
+    """The logs join a snapshot only after the ring copy is final, and
+    nothing that goes wrong with them touches it."""
+
+    def setUp(self):
+        from threadwatch.config import Config
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        (d / "config.toml").write_text("[network]\nchannel = 25\n")
+        self.cfg = Config(data_dir=d / "data", config_dir=d, devices_path=d / "devices.json")
+        self.cfg.ha_logs_enabled = True
+        self.cfg.ha_logs_addons = [OTBR, MATTER]
+        self.cfg.ring_dir.mkdir(parents=True)
+        # Ring files named by local hour: the window starts at the oldest one.
+        self.hour = time.mktime(time.strptime("2025-09-13 15:00", "%Y-%m-%d %H:%M"))
+        for h in ("2025-09-13 15", "2025-09-13 16"):
+            name = time.strftime("threadwatch-%Y%m%d-%H.pcap", time.strptime(h, "%Y-%m-%d %H"))
+            (self.cfg.ring_dir / name).write_bytes(b"ring bytes")
+        self.now = self.hour + 3600 + 1800                                    # 16:30 local
+        self.lines = {OTBR: [(self.hour + i * 60, f"otbr line {i}") for i in range(90)],
+                      MATTER: [(self.hour + i * 300, f"matter line {i}") for i in range(18)]}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _env(self, url, token=TOKEN):
+        (self.cfg.config_dir / "ha.env").write_text(f"HA_URL={url}\nHA_TOKEN={token}\n")
+
+    def _snapshot(self):
+        from threadwatch.snapshot import save_snapshot
+        dest, _n = save_snapshot(self.cfg, "storm", now=self.now)
+        return dest
+
+    def _bytes(self, dest):
+        return {p.name: p.read_bytes() for p in dest.glob("*.pcap")}
+
+    def test_logs_join_a_final_snapshot_and_the_manifest_lists_them(self):
+        srv = FakeSupervisor(self.lines)
+        self._env(srv.url)
+        dest = self._snapshot()
+        before = self._bytes(dest)
+        try:
+            status = halogs.attach_logs(self.cfg, dest, now=self.now + 5)
+        finally:
+            srv.close()
+        self.assertEqual(status["status"], "complete")
+        self.assertEqual(status["requested"], [self.hour, self.now])           # oldest hour's start .. saved_at
+        self.assertEqual(status["attempts"], 1)
+        self.assertEqual(sorted(status["addons"]), [MATTER, OTBR])
+        self.assertEqual((status["addons"][OTBR]["file"], status["addons"][OTBR]["lines"],
+                          status["addons"][OTBR]["source"]), (f"ha-logs/{OTBR}.log.gz", 90, "live"))
+        self.assertEqual(json.loads((dest / "ha-logs.json").read_text())["status"], "complete")
+        manifest = json.loads((dest / "manifest.json").read_text())
+        self.assertIn(f"ha-logs/{OTBR}.log.gz", manifest["files"])
+        self.assertIn("ha-logs.json", manifest["files"])
+        self.assertNotIn("manifest.json", manifest["files"])
+        self.assertEqual(manifest["ha_logs"]["status"], "complete")
+        self.assertEqual(manifest["ha_logs"]["addons"][MATTER]["lines"], 18)
+        self.assertNotIn("slug", manifest["ha_logs"]["addons"][MATTER])
+        self.assertEqual(self._bytes(dest), before)                             # the ring copy is untouched
+        self.assertFalse((dest / "ha-logs.lock").exists())
+        for text in ((dest / "ha-logs.json").read_text(), json.dumps(manifest)):
+            self.assertNotIn(TOKEN, text)
+            self.assertNotIn(srv.url, text)
+
+    def test_the_window_is_clamped_to_max_hours(self):
+        self.cfg.ha_logs_max_hours = 1
+        since, until = halogs.window(self._snapshot(), self.now + 100, self.cfg.ha_logs_max_hours, self.now)
+        self.assertEqual((since, until), (self.now + 100 - 3600, self.now))
+
+    def test_a_failed_fetch_leaves_the_snapshot_whole_and_the_retry_completes_it(self):
+        srv = FakeSupervisor(self.lines, status=503)
+        self._env(srv.url)
+        dest = self._snapshot()
+        before = self._bytes(dest)
+        try:
+            status = halogs.attach_logs(self.cfg, dest, now=self.now + 5)
+            self.assertEqual((status["status"], status["attempts"]), ("failed", 1))
+            self.assertIn("HTTP 503", status["reason"])
+            self.assertFalse((dest / "ha-logs").exists() and any((dest / "ha-logs").iterdir()))
+            manifest = json.loads((dest / "manifest.json").read_text())
+            self.assertEqual(manifest["ha_logs"]["status"], "failed")
+            self.assertEqual(manifest["ring_files"], 2)
+            self.assertEqual(self._bytes(dest), before)
+            # Not due yet, then due at 15 min: the pass re-requests the same window.
+            self.assertEqual(halogs.retries_due(self.cfg, self.now + 600), [])
+            self.assertEqual(halogs.retries_due(self.cfg, self.now + 900), [dest])
+            srv.status = 200
+            tried = halogs.retry_pending(self.cfg, self.now + 900)
+        finally:
+            srv.close()
+        self.assertEqual([(d.name, st["status"], final) for d, st, final in tried], [(dest.name, "complete", True)])
+        self.assertEqual(srv.requests[-1]["headers"]["range"], f"realtime={int(self.hour)}:{int(self.now)}")
+        status = json.loads((dest / "ha-logs.json").read_text())
+        self.assertEqual((status["status"], status["attempts"]), ("complete", 2))
+        manifest = json.loads((dest / "manifest.json").read_text())
+        self.assertEqual(manifest["ha_logs"]["attempts"], 2)
+        self.assertIn(f"ha-logs/{OTBR}.log.gz", manifest["files"])
+        self.assertEqual(halogs.retries_due(self.cfg, self.now + 3600), [])
+
+    def test_retries_stop_after_three_or_once_the_journal_cannot_have_the_window(self):
+        srv = FakeSupervisor({}, status=503)
+        self._env(srv.url)
+        dest = self._snapshot()
+        try:
+            halogs.attach_logs(self.cfg, dest, now=self.now)
+            for at, expect in ((899, []), (900, [dest]), (3599, []), (3600, [dest]), (14399, []), (14400, [dest])):
+                with self.subTest(at=at):
+                    self.assertEqual(halogs.retries_due(self.cfg, self.now + at), expect)
+                if expect:
+                    _d, st, final = halogs.retry_pending(self.cfg, self.now + at)[0]
+                    self.assertEqual(final, at == 14400)
+            self.assertEqual(json.loads((dest / "ha-logs.json").read_text())["attempts"], 4)
+            self.assertEqual(halogs.retries_due(self.cfg, self.now + 20000), [])
+            # A younger snapshot that failed, but the journal window has gone.
+            self.cfg.ha_logs_max_hours = 0.1
+            (dest / "ha-logs.json").write_text(json.dumps({**halogs.read_status(dest), "attempts": 1}))
+            self.assertEqual(halogs.retries_due(self.cfg, self.now + 900), [])
+        finally:
+            srv.close()
+
+    def test_a_partial_fetch_retries_only_the_addons_that_are_not_whole(self):
+        srv = FakeSupervisor({OTBR: self.lines[OTBR]})                          # the Matter slug is unknown: 404
+        self._env(srv.url)
+        dest = self._snapshot()
+        try:
+            status = halogs.attach_logs(self.cfg, dest, now=self.now)
+            self.assertEqual(status["status"], "partial")
+            self.assertTrue(status["addons"][OTBR]["complete"])
+            self.assertEqual(status["addons"][MATTER]["http_status"], 404)
+            srv.lines[MATTER] = self.lines[MATTER]
+            n = len(srv.requests)
+            halogs.retry_pending(self.cfg, self.now + 900)
+        finally:
+            srv.close()
+        self.assertEqual([r["path"].split("/addons/")[1].split("/")[0] for r in srv.requests[n:]], [MATTER])
+        self.assertEqual(json.loads((dest / "ha-logs.json").read_text())["status"], "complete")
+
+    def test_a_fetch_the_recorder_died_in_is_recovered_as_partial_at_the_next_start(self):
+        dest = self._snapshot()
+        logs = dest / "ha-logs"
+        logs.mkdir()
+        with gzip.open(logs / f"{OTBR}.log.part", "wb") as gz:
+            gz.write(journal_line(self.hour, "arrived before the stop").encode())
+        (dest / "ha-logs.json").write_text(json.dumps({
+            "status": "fetching", "reason": None, "saved_at": self.now, "requested": [self.hour, self.now],
+            "attempts": 1, "addons": {OTBR: {"slug": OTBR, "file": None, "complete": False, "error": None},
+                                      MATTER: {"slug": MATTER, "file": None, "complete": False, "error": None}}}))
+        self.assertEqual(halogs.recover_interrupted(self.cfg.snapshots_dir), [dest.name])
+        status = json.loads((dest / "ha-logs.json").read_text())
+        self.assertEqual(status["status"], "partial")
+        self.assertEqual((status["addons"][OTBR]["file"], status["addons"][OTBR]["complete"]),
+                         (f"ha-logs/{OTBR}.log.gz", False))
+        self.assertIn("stopped during the fetch", status["addons"][OTBR]["error"])
+        self.assertIn("stopped before", status["addons"][MATTER]["error"])
+        self.assertTrue((logs / f"{OTBR}.log.gz").exists())
+        self.assertFalse((logs / f"{OTBR}.log.part").exists())
+        manifest = json.loads((dest / "manifest.json").read_text())
+        self.assertEqual(manifest["ha_logs"]["status"], "partial")
+        self.assertIn(f"ha-logs/{OTBR}.log.gz", manifest["files"])
+        self.assertEqual(halogs.recover_interrupted(self.cfg.snapshots_dir), [])      # once
+        self.assertEqual(halogs.retries_due(self.cfg, self.now + 900), [dest])          # and the retry takes it
+
+    def test_a_fetch_still_running_by_hand_is_left_alone_at_start(self):
+        import os
+
+        from threadwatch.snapshot import _take_lock
+        dest = self._snapshot()
+        (dest / "ha-logs.json").write_text(json.dumps({"status": "fetching", "addons": {}}))
+        fd = _take_lock(dest / "ha-logs.lock", wait=True)
+        try:
+            self.assertEqual(halogs.recover_interrupted(self.cfg.snapshots_dir), [])
+        finally:
+            os.close(fd)
+        self.assertEqual(json.loads((dest / "ha-logs.json").read_text())["status"], "fetching")
+
+    def test_disabled_writes_nothing_and_no_token_is_skipped(self):
+        dest = self._snapshot()
+        self.cfg.ha_logs_enabled = False
+        self.assertIsNone(halogs.attach_logs(self.cfg, dest, now=self.now))
+        self.assertFalse((dest / "ha-logs.json").exists())
+        self.assertNotIn("ha_logs", json.loads((dest / "manifest.json").read_text()))
+        self.cfg.ha_logs_enabled = True                                          # no ha.env at all
+        status = halogs.attach_logs(self.cfg, dest, now=self.now)
+        self.assertEqual(status["status"], "skipped")
+        self.assertIn("no token", status["reason"])
+        manifest = json.loads((dest / "manifest.json").read_text())
+        self.assertEqual(manifest["ha_logs"]["status"], "skipped")
+        self.assertEqual(halogs.retries_due(self.cfg, self.now + 900), [])      # nothing to retry without a token
+
+    def test_the_manifest_rewrite_never_lists_itself_and_survives_a_missing_manifest(self):
+        from threadwatch.snapshot import rewrite_manifest
+        dest = self._snapshot()
+        (dest / "extra.txt").write_text("x")
+        manifest = rewrite_manifest(dest, ha_logs={"status": "complete"})
+        self.assertIn("extra.txt", manifest["files"])
+        self.assertNotIn("manifest.json", manifest["files"])
+        self.assertEqual(json.loads((dest / "manifest.json").read_text())["ha_logs"], {"status": "complete"})
+        (dest / "manifest.json").unlink()
+        self.assertIsNone(rewrite_manifest(dest, ha_logs={}))
+        self.assertFalse((dest / "manifest.json").exists())
 
 
 if __name__ == "__main__":

@@ -177,11 +177,42 @@ def capture_provenance(cfg) -> dict | None:
     return None
 
 
+def list_files(dest: Path) -> dict[str, int]:
+    """Every file in the bundle with its size, as the manifest lists them.
+    The manifest itself and the temporary it is written through are not
+    files the bundle holds."""
+    skip = {MANIFEST, MANIFEST + ".tmp"}
+    return {str(p.relative_to(dest)): p.stat().st_size for p in sorted(dest.rglob("*"))
+            if p.is_file() and str(p.relative_to(dest)) not in skip}
+
+
+def rewrite_manifest(dest: Path, **extra) -> dict | None:
+    """Refresh a final snapshot's manifest after files were added beside
+    the packets (the HA logs): the ``files`` listing is taken again and
+    ``extra`` keys are set. Written to a temporary and renamed, so a
+    reader never sees half a manifest. None, and nothing written, when
+    the bundle has no readable manifest: a copy cut short is not made
+    whole by listing it."""
+    path = dest / MANIFEST
+    try:
+        manifest = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(manifest, dict):
+        return None
+    manifest["files"] = list_files(dest)
+    manifest.update(extra)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(manifest, indent=1))
+    os.replace(tmp, path)
+    return manifest
+
+
 def write_manifest(cfg, dest: Path, label: str, now: float, trigger: str | None,
                    provenance: dict | None = None) -> dict:
     """manifest.json: what the bundle holds and the recorder that made it.
     Written last, so a bundle without one was cut short."""
-    files = {str(p.relative_to(dest)): p.stat().st_size for p in sorted(dest.rglob("*")) if p.is_file()}
+    files = list_files(dest)
     pcaps = sorted(n for n in files if n.endswith(".pcap"))
     hours = sorted(n[12:23] for n in pcaps if n.startswith("threadwatch-") and len(n) == 28)
     manifest = {

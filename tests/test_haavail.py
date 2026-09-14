@@ -478,7 +478,9 @@ class TrackerTest(unittest.TestCase):
         self.assertEqual([(o["name"], o["since"], o["paged"]) for o in st["open"]], [("Device 0", T0 + 50, False)])
         save_map(self.d, self.mapping)
         by_addr = availability_by_addr(self.d)
-        self.assertEqual(by_addr, {ADDRS[0]: {"name": "Device 0", "since": T0 + 50, "paged": False, "burst_id": None}})
+        self.assertEqual(len(by_addr), 6)                                         # every mapped device
+        self.assertEqual(by_addr[ADDRS[0]], {"name": "Device 0", "since": T0 + 50, "paged": False, "burst_id": None})
+        self.assertIsNone(by_addr[ADDRS[1]]["since"])                               # available
 
 
 class RecorderAvailabilityTest(unittest.TestCase):
@@ -600,6 +602,24 @@ class RecorderAvailabilityTest(unittest.TestCase):
         self.assertEqual(json.loads((dest / "ha-availability-settings.json").read_text()), {MOTION: {"hold_s": 7200}})
         self.assertEqual(json.loads((dest / "devices.json").read_text()), ENTRIES)           # untouched by all this
         self.assertNotIn("tk_SECRET_TOKEN", "".join(p.read_text() for p in dest.glob("*.json")))
+
+    def test_the_daily_summary_lists_the_days_unavailabilities(self):
+        pipe = self._pipe()
+        now = 1_800_000_000.0
+        self._cycle(pipe, now)
+        self.states[0].update(state="unavailable", last_changed="2026-09-13T21:00:00+00:00")
+        pipe._next_haavail = 0.0
+        self._cycle(pipe, now + 60)
+        summary = pipe.summary(now + 120)
+        self.assertEqual([(d["name"], d["open"]) for d in summary["ha_unavailable_24h"]], [("Front Path Motion", True)])
+        self.assertIn("HA unavailable: Front Path Motion", summary["note"])
+        self.assertIn("still", summary["note"])
+        self.states[0].update(state="on")
+        pipe._next_haavail = 0.0
+        self._cycle(pipe, now + 120)
+        summary = pipe.summary(now + 200)
+        self.assertEqual([(d["name"], d["open"], d["down_for_s"] > 0) for d in summary["ha_unavailable_24h"]],
+                         [("Front Path Motion", False, True)])
 
     def test_off_or_replay_runs_nothing(self):
         from threadwatch.crypto import Decryptor

@@ -302,6 +302,33 @@ class PageBranchTest(unittest.TestCase):
                       status)
         self.assertIn("previously 85", status)
 
+    def test_the_pages_show_home_assistant_availability_only_when_the_recorder_polls_it(self):
+        self.status(updated=self.now, last_frame_age_s=3)
+        self.seen({
+            TV2: {"first_seen": self.now - 8000, "last_seen": self.now - 30, "frames": 500, "rssi": -55.0,
+                  "pan": 0x4e21, "types": {}},
+            AQ: {"first_seen": self.now - 7200, "last_seen": self.now - 60, "frames": 900, "rssi": -60.0,
+                 "pan": 0x4e21, "types": {}},
+        })
+        _st, body = self.get("/devices")
+        self.assertNotIn("<th>HA</th>", body)                                          # feature off: no column
+        (self.cfg.state_dir / "ha-map.json").write_text(json.dumps({
+            "id-aq": {"addr": AQ.upper(), "ha_name": "AQ", "name": "Office AQ", "matched": True, "entities": ["s.aq"]},
+            "id-tv": {"addr": TV2.upper(), "ha_name": "TV", "name": "Living Room Apple TV", "matched": True,
+                      "entities": ["s.tv"]}}))
+        (self.cfg.state_dir / "ha-availability.json").write_text(json.dumps({
+            "episodes": {"id-aq": {"since": self.now - 900, "opened_ts": self.now - 840, "paged": True,
+                                   "severity": "warning", "burst_id": None, "episode": 1}}}))
+        _st, body = self.get("/devices")
+        self.assertIn("<th>HA</th>", body)
+        self.assertIn('<span class="bad">unavailable</span>', body)
+        self.assertIn('<span class="ok">available</span>', body)
+        _st, page = self.get(f"/device/{AQ}")
+        self.assertIn('HA: <span class="bad">unavailable</span>', page)
+        live = json.loads(self.get(f"/api/device/{AQ}")[1])["live"]
+        self.assertEqual((live["ha_state"], live["ha_since"]), ("unavailable", self.now - 900))
+        self.assertEqual(json.loads(self.get(f"/api/device/{TV2}")[1])["live"]["ha_state"], "available")
+
     def test_todays_card_names_what_is_quiet_and_what_is_fading_or_says_all_is_well(self):
         self.status(updated=self.now, last_frame_age_s=3)
         _st, body = self.get("/")

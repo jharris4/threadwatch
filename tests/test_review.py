@@ -498,6 +498,45 @@ class DayViewTest(unittest.TestCase):
             ("key_census", "key generation census: generation 6", "1 one behind"),
             ("key_census", "key generation census: generation 7", "everyone on the current generation")])
 
+    def test_device_rows_carry_home_assistant_availability_when_the_recorder_polls_it(self):
+        from threadwatch.names import DeviceNames, LastSeen
+        from threadwatch.review import device_rows
+        seen = LastSeen(self.cfg.state_dir / "last-seen.json")
+        ha = {AQ: {"name": "Basement AQ", "since": T0 + 100, "paged": True, "burst_id": "burst-1"},
+              PLUG: {"name": "Irrigation", "since": None, "paged": False, "burst_id": None}}
+        rows = device_rows(seen, DeviceNames(self.cfg.devices_path), self.cfg.quiet_min_rssi_dbm, T0 + 7200, ha=ha)
+        by = {r["addr"]: r for r in rows}
+        self.assertEqual((by[AQ]["ha_state"], by[AQ]["ha_since"], by[AQ]["ha_burst_id"]),
+                         ("unavailable", T0 + 100, "burst-1"))
+        self.assertEqual((by[PLUG]["ha_state"], by[PLUG]["ha_since"]), ("available", None))
+        self.assertIsNone(by[TV1]["ha_state"])                                            # HA does not know it
+        self.assertIsNone(device_rows(seen, DeviceNames(self.cfg.devices_path), self.cfg.quiet_min_rssi_dbm,
+                                      T0 + 7200)[0]["ha_state"])                          # feature off
+
+    def test_ha_availability_records_are_one_row_per_episode_and_bursts_and_links_stand_alone(self):
+        down = rec("ha_unavailable", "warning", T0 + 600, addr=PLUG, name="Irrigation", ha_device_id="id-1",
+                   since=T0, cause="key_lag", note="...")
+        eps = group_episodes([down], now=T0 + 3600)
+        self.assertEqual([(e["kind"], e["title"], e["detail"], e["end"]) for e in eps],
+                         [("ha_unavailable", "Irrigation unavailable in Home Assistant for 60m (still unavailable)",
+                           "cause: key_lag", None)])
+        back = rec("ha_available", "info", T0 + 1500, addr=PLUG, name="Irrigation", ha_device_id="id-1",
+                   since=T0, down_for_s=1500)
+        eps = group_episodes([down, back], now=T0 + 3600)
+        self.assertEqual([(e["title"], e["end"]) for e in eps],
+                         [("Irrigation unavailable in Home Assistant for 25m", T0 + 1500)])
+        eps = group_episodes([
+            rec("ha_unavailable_burst", "critical", T0, burst_id="burst-1", count=3,
+                devices=[{"name": "A", "cause": "key_lag"}, {"name": "B", "cause": "radio_ok"},
+                         {"name": "C", "cause": "unheard"}]),
+            rec("ha_unreachable", "notice", T0 + 100, note="HA down"),
+            rec("ha_reachable", "info", T0 + 400, note="HA back"),
+        ])
+        self.assertEqual([(e["kind"], e["title"], e["detail"]) for e in eps], [
+            ("ha_burst", "3 devices unavailable in Home Assistant together", "A (key_lag), B (radio_ok), C (unheard)"),
+            ("ha_link", "Home Assistant unreachable", "HA down"),
+            ("ha_link", "Home Assistant reachable again", "HA back")])
+
     def test_resolver_and_merged_history(self):
         from threadwatch.names import DeviceNames
         from threadwatch.review import devices_history

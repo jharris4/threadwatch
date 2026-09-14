@@ -69,6 +69,7 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
     open_link: dict[str, dict] = {}
     open_starved: dict[str, dict] = {}
     open_keylag: dict[str, dict] = {}
+    open_ha: dict[str, dict] = {}
     first_seen: dict | None = None
     join_scan: dict | None = None
     recorder: dict | None = None
@@ -169,6 +170,33 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
                 ep["detail"] = rec.get("note", "")
             else:
                 new("key_lag", rec, f"{_label(rec)} key lag cleared", rec.get("note", ""))
+        elif ev == "ha_unavailable":
+            key = rec.get("ha_device_id") or _addr(rec) or ""
+            ep = open_ha.get(key)
+            if ep is not None:
+                bump(ep, rec)
+                continue
+            cause = rec.get("cause") or "?"
+            open_ha[key] = new("ha_unavailable", rec, f"{_label(rec)} unavailable in Home Assistant",
+                               f"cause: {cause}" + (f" ({rec.get('burst_id')})" if rec.get("burst_id") else ""),
+                               end=None, down_since=rec.get("since", rec["ts"]))
+        elif ev == "ha_available":
+            key = rec.get("ha_device_id") or _addr(rec) or ""
+            ep = open_ha.pop(key, None)
+            if ep is not None:
+                ep["end"] = rec["ts"]
+                ep["events"].append(rec)
+                ep["title"] += f" for {fmt_duration(rec['ts'] - ep['down_since'])}"
+            else:
+                new("ha_unavailable", rec, f"{_label(rec)} available in Home Assistant again", rec.get("note", ""))
+        elif ev == "ha_unavailable_burst":
+            devs = rec.get("devices") or []
+            new("ha_burst", rec, f"{rec.get('count') or len(devs)} devices unavailable in Home Assistant together",
+                ", ".join(f"{d.get('name') or d.get('addr')} ({d.get('cause')})" for d in devs[:8])
+                + (" ..." if len(devs) > 8 else ""))
+        elif ev in ("ha_unreachable", "ha_reachable"):
+            new("ha_link", rec, "Home Assistant unreachable" if ev == "ha_unreachable"
+                else "Home Assistant reachable again", rec.get("note", ""))
         elif ev == "key_sequence_advanced":
             seq, prev = rec.get("sequence"), rec.get("previous")
             title = (f"key rotated to generation {seq}" if prev is not None
@@ -301,6 +329,8 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
             ep["title"] += f" for {fmt_duration(now - ep['starved_since'])} (still unanswered)"
         elif ep["kind"] == "key_lag" and ep["end"] is None:
             ep["title"] += f" for {fmt_duration(now - ep['lag_since'])} (still behind)"
+        elif ep["kind"] == "ha_unavailable" and ep["end"] is None:
+            ep["title"] += f" for {fmt_duration(now - ep['down_since'])} (still unavailable)"
     return sorted(episodes, key=lambda e: e["start"])
 
 
@@ -614,7 +644,7 @@ def day_index(events_dir: Path) -> list[dict]:
 
 def device_rows(seen: LastSeen, names: DeviceNames, min_rssi_dbm: float,
                 now: float | None = None, leader_router: int | None = None,
-                mesh_generation: int | None = None) -> list[dict]:
+                mesh_generation: int | None = None, ha: dict | None = None) -> list[dict]:
     """One dict per tracked address. The live role comes from the RLOC16 the
     recorder last saw the device use: router or child, which router it is
     or hangs off, and whether it holds the partition's leader id. The key
@@ -622,8 +652,13 @@ def device_rows(seen: LastSeen, names: DeviceNames, min_rssi_dbm: float,
     how far behind its parent's (a child) or ``mesh_generation`` (a
     router, from status.json's crypto.key_sequence) that is, whatever the
     age of either reading: the recorder judges only fresh ones, and
-    ``key_lagging`` says whether it has an episode open."""
+    ``key_lagging`` says whether it has an episode open. ``ha`` is
+    haavail.availability_by_addr's view: for every device Home Assistant
+    knows, whether it is available there and since when it is not
+    (``ha_state`` available / unavailable, or None for a device HA does
+    not know or with the feature off)."""
     now = now or time.time()
+    ha = ha or {}
     holders = router_holders(seen.table)
     generations = {addr: newest_generation(row) for addr, row in seen.table.items()}
     rows = []
@@ -635,7 +670,12 @@ def device_rows(seen: LastSeen, names: DeviceNames, min_rssi_dbm: float,
         generation, generation_ts = generations[addr]
         parent_generation = generations[parent_addr][0] if parent_addr else None
         reference = mesh_generation if live.get("role") == "router" else parent_generation
+        ha_info = ha.get(addr)
         rows.append({
+            "ha_state": (None if ha_info is None else "unavailable" if ha_info.get("since") is not None
+                         else "available"),
+            "ha_since": ha_info.get("since") if ha_info else None,
+            "ha_burst_id": ha_info.get("burst_id") if ha_info else None,
             "generation": generation,
             "generation_ts": generation_ts,
             "parent_generation": parent_generation,

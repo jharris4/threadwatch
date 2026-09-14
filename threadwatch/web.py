@@ -120,6 +120,22 @@ LEGEND = [
      "if the polls are still unanswered ten minutes later ([polls] confirm_s). If the device just moved to a "
      "parent the sniffer cannot hear, the acknowledgements are missing at the sniffer, not on air: "
      "a rejoin row just before this one says so."),
+    ("ha_unavailable", "Unavailable in Home Assistant / available again",
+     "Home Assistant marked the device unavailable and it stayed so for its hold (10 min by default, "
+     "[ha_availability] hold_s, or the device's own hold in config/ha-availability.json). The row "
+     "carries the recorder's radio evidence for why: cut off by a key change, polling a parent that "
+     "no longer answers, gone silent before HA lost it, or radio fine and the fault on the Matter or "
+     "HA side. A warning, or a notice when the device is muted, part of a burst, flapping, or was "
+     "already down when the recorder started. Only Matter-over-Thread devices HA knows are covered."),
+    ("ha_burst", "Several devices unavailable together",
+     "Three or more devices ([ha_availability] burst_devices) went unavailable in Home Assistant within "
+     "ten minutes and the newest stayed so for two: a network problem, not one device. Critical, with "
+     "the automatic snapshot; the members' own rows are notices. When most mapped devices drop at once "
+     "while the recorder still hears them, the row says HA or the Matter Server, not the mesh."),
+    ("ha_link", "Home Assistant unreachable / reachable",
+     "The availability poll has failed for five minutes (Home Assistant down or restarting), or "
+     "succeeds again. No device episode opens or closes meanwhile, and the first poll after is a "
+     "baseline, not transitions. Notice, logged only."),
     ("key_lag", "Key generation lag / cleared",
      "The device is still transmitting under a network key two or more generations older than its "
      "parent's (or, for a router, the mesh's). OpenThread accepts frames only within one generation of "
@@ -257,6 +273,19 @@ class Site:
     def leader_router(self) -> int | None:
         part = self.status().get("partition") or {}
         return part.get("leader_router")
+
+    def ha_availability(self) -> dict:
+        from .haavail import availability_by_addr
+        return availability_by_addr(self.cfg.state_dir)
+
+    @staticmethod
+    def ha_html(r: dict, now: float) -> str:
+        if not r.get("ha_state"):
+            return '<span class="muted">-</span>'
+        if r["ha_state"] == "available":
+            return '<span class="ok">available</span>'
+        return (f'<span class="bad">unavailable</span> <span class="muted">since {hm(r.get("ha_since"))}'
+                + (", burst" if r.get("ha_burst_id") else "") + '</span>')
 
     def mesh_generation(self) -> int | None:
         """The mesh's key generation as the recorder last wrote it: the
@@ -493,9 +522,10 @@ class Site:
         names = self.names()
         seen = self.seen()
         every = device_rows(seen, names, self.cfg.quiet_min_rssi_dbm, now, leader_router=self.leader_router(),
-                            mesh_generation=self.mesh_generation())
+                            mesh_generation=self.mesh_generation(), ha=self.ha_availability())
         dominant = dominant_pan(seen, self.cfg.pan_id, self.cfg.state_dir)
         rows = select_devices(every, dominant, only, sort)
+        show_ha = any(r.get("ha_state") for r in every)
         only = only if only in DEVICE_FILTERS else ""
         sort = sort if sort in DEVICE_SORTS else "name"
 
@@ -532,7 +562,8 @@ class Site:
             trs.append(f'<tr><td><a href="/device/{esc(r["addr"])}">{nm}</a></td>'
                        f'<td>{self.role_html(r, now)}</td>'
                        f'<td>{self.generation_html(r)}</td>'
-                       f'<td>{seen_html}</td>'
+                       + (f'<td>{self.ha_html(r, now)}</td>' if show_ha else "")
+                       + f'<td>{seen_html}</td>'
                        f'<td class="n">{esc(r["rssi_dbm"])}</td><td>{rec_html}</td>'
                        f'<td class="n">{r["frames"]:,}</td><td>{pan_html}</td>'
                        f'<td class="muted"><code>{esc(r["addr"])}</code></td></tr>')
@@ -540,7 +571,8 @@ class Site:
         note = (f'<p class="muted">{len(every)} addresses tracked'
                 + (f', <span class="warn">{unknown} not in devices.json</span>' if unknown else "")
                 + (f'; showing {len(rows)} ({DEVICE_FILTERS[only][0]})' if only else "") + '.</p>')
-        table = (f'<table><tr><th>device</th><th>role (live)</th><th>key gen</th><th>last heard</th><th>rssi</th>'
+        table = ('<table><tr><th>device</th><th>role (live)</th><th>key gen</th>'
+                 + ('<th>HA</th>' if show_ha else "") + '<th>last heard</th><th>rssi</th>'
                  f'<th>reception</th><th>frames</th><th>pan</th><th>address</th></tr>{"".join(trs)}</table>'
                  if trs else f'<p class="empty">no devices {DEVICE_FILTERS[only][0] if only else "tracked"}</p>')
         return self.page("devices", f'<h1>devices</h1>{note}{filters}{table}')
@@ -573,10 +605,12 @@ class Site:
             head.append(f'{len(addrs)} addresses (rotates)')
         live = next((r for r in device_rows(seen, names, self.cfg.quiet_min_rssi_dbm, now,
                                             leader_router=self.leader_router(),
-                                            mesh_generation=self.mesh_generation())
+                                            mesh_generation=self.mesh_generation(), ha=self.ha_availability())
                      if r["addr"] == primary), None)
         if live and live["role"]:
             head.append(self.role_html(live, now))
+        if live and live.get("ha_state"):
+            head.append(f'HA: {self.ha_html(live, now)}')
         if live and live.get("generation") is not None:
             head.append(f'key generation {self.generation_html(live)}'
                         f' <span class="muted">as of {ago(live.get("generation_ts"), now)}</span>')
@@ -819,7 +853,7 @@ class Site:
         if path == "/api/devices":
             seen = self.seen()
             rows = device_rows(seen, self.names(), self.cfg.quiet_min_rssi_dbm, leader_router=self.leader_router(),
-                               mesh_generation=self.mesh_generation())
+                               mesh_generation=self.mesh_generation(), ha=self.ha_availability())
             return {"devices": select_devices(rows, dominant_pan(seen, self.cfg.pan_id, self.cfg.state_dir),
                                               query.get("only", ""),
                                               query.get("sort", "name"))}
@@ -840,14 +874,14 @@ class Site:
             primary = live_address(addrs, table)
             live = next((r for r in device_rows(seen, names, self.cfg.quiet_min_rssi_dbm,
                                                 leader_router=self.leader_router(),
-                                                mesh_generation=self.mesh_generation())
+                                                mesh_generation=self.mesh_generation(), ha=self.ha_availability())
                          if r["addr"] == primary), {})
             return {"addr": primary, "addresses": addrs, "name": name if name != addrs[0] else None,
                     "live": {k: live.get(k) for k in ("role", "rloc16", "rloc16_ts", "router_id",
                                                       "leader", "parent", "parent_addr", "border_router",
                                                       "rotated_to", "generation", "generation_ts",
                                                       "parent_generation", "mesh_generation", "lag",
-                                                      "key_lagging")},
+                                                      "key_lagging", "ha_state", "ha_since", "ha_burst_id")},
                     "last_seen": table.get(primary),
                     "addresses_seen": {a: table.get(a) for a in addrs},
                     "episode_days": DEVICE_HISTORY_DAYS, "episodes": eps}

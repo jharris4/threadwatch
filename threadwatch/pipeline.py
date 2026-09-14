@@ -2568,6 +2568,10 @@ class Pipeline:
         # filtered by quiet_reported, and the degraded set needs the same.
         degraded = sorted(label(a) for a, r in ours.items()
                           if r.get("rssi_degraded") and not r.get("rotated_to"))
+        # Home Assistant unavailabilities in the window: closed ones from
+        # the log (ha_available carries the duration), open ones from the
+        # tracker.
+        ha_down: list[dict] = []
         lags = self._key_lags(now, dominant)
         lag_1 = sorted(e["name"] or e["addr"] for e in lags if e["lag"] == 1)
         lag_2plus = sorted(e["name"] or e["addr"] for e in lags if e["lag"] is not None and e["lag"] >= 2)
@@ -2580,6 +2584,12 @@ class Pipeline:
             for r in self._records_of(day):
                 if r["ts"] >= since and r.get("event") != "daily_summary":
                     counts[r.get("severity", "info")] = counts.get(r.get("severity", "info"), 0) + 1
+                if r["ts"] >= since and r.get("event") == "ha_available":
+                    ha_down.append({"name": r.get("name") or r.get("addr"), "down_for_s": r.get("down_for_s"),
+                                    "open": False})
+        if self._haavail is not None:
+            ha_down.extend({"name": o["name"], "down_for_s": round(now - o["since"]), "open": True}
+                           for o in self._haavail.status()["open"])
         frames = sum(n for b, n in self._frames_by_hour.items() if (b + 1) * 3600 > since)
         parts = [f"{frames:,} frames from {len(heard)} of {len(ours)} devices"]
         parts.append("quiet: " + ", ".join(quiet) if quiet else "nothing quiet")
@@ -2591,6 +2601,10 @@ class Pipeline:
             parts.append("signal down: " + ", ".join(degraded))
         if self.detector.storm_active:
             parts.append("STORM ACTIVE")
+        if ha_down:
+            parts.append("HA unavailable: " + ", ".join(
+                f"{d['name']} ({round((d['down_for_s'] or 0) / 60)} min{', still' if d['open'] else ''})"
+                for d in ha_down[:8]) + (" ..." if len(ha_down) > 8 else ""))
         mesh = self.decryptor.key_sequence
         if mesh is not None and (lag_1 or lag_2plus):
             parts.append(f"key generation {mesh}: "
@@ -2602,6 +2616,7 @@ class Pipeline:
                 "quiet": quiet, "unknown": unknown, "marginal": marginal, "degraded": degraded,
                 "storm_active": bool(self.detector.storm_active), "events_24h": counts,
                 "key_generation": mesh, "key_lag_1": lag_1, "key_lag_2plus": lag_2plus,
+                "ha_unavailable_24h": ha_down,
                 "note": "last 24 h: " + "; ".join(parts)}
 
     # ------------------------------------------------ key generations

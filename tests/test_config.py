@@ -578,6 +578,15 @@ class RevisionTest(unittest.TestCase):
         (self.root / config_mod.REVISION_FILE).write_text("\n")
         self.assertIsNone(config_mod.repo_commit())
 
+    def test_a_revision_file_wins_over_a_stale_git_directory(self):
+        # The Pi was cloned once and rsynced ever since: its .git is the
+        # original clone's, git is not installed there, and the REVISION
+        # each push writes was ignored because .git existed.
+        (self.root / ".git").mkdir()
+        self.assertIsNone(config_mod.repo_commit())                # a .git nothing can read
+        (self.root / config_mod.REVISION_FILE).write_text("93248a7\n")
+        self.assertEqual(config_mod.repo_commit(), "93248a7")
+
     def test_uncommitted_edits_are_marked_on_the_checkout_commit(self):
         # push-to-host.sh ships an uncommitted edit to a tracked file, so
         # the commit alone does not describe what is running.

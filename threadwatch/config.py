@@ -40,17 +40,27 @@ def _git(*args: str) -> str | None:
 def repo_commit() -> str | None:
     """The revision of the code at REPO_ROOT as it stands on disk now.
 
-    The checkout's HEAD, marked "+" when the working tree holds edits that
-    are not in it (push-to-host.sh rsyncs the working tree, edits and
-    all), or what a deploy without a .git recorded in REVISION. What tells
-    a host running the code you pushed from one running a six-month-old
-    copy. A process that has been running has to ask running_commit()
-    instead: this answer moves under it."""
+    What a deploy recorded in REVISION when there is one, else the
+    checkout's HEAD, marked "+" when the working tree holds edits that are
+    not in it (push-to-host.sh rsyncs the working tree, edits and all).
+    What tells a host running the code you pushed from one running a
+    six-month-old copy. A process that has been running has to ask
+    running_commit() instead: this answer moves under it.
+
+    REVISION wins over .git: the file is only ever written by a deploy
+    (push-to-host.sh, a Docker build), never in a checkout, and a host
+    that was cloned once and rsynced ever since keeps its original .git,
+    which the deploys neither update nor remove. Read by git that names a
+    commit from months ago; on a host without git it names nothing, and
+    the answer was "no .git and no REVISION" beside a REVISION file."""
+    try:
+        recorded = (REPO_ROOT / REVISION_FILE).read_text().strip().splitlines()[0][:64]
+    except (OSError, IndexError):
+        recorded = ""
+    if recorded:
+        return recorded
     if not (REPO_ROOT / ".git").exists():
-        try:
-            return (REPO_ROOT / REVISION_FILE).read_text().strip().splitlines()[0][:64] or None
-        except (OSError, IndexError):
-            return None
+        return None
     head = (_git("rev-parse", "--short", "HEAD") or "").strip()
     if not head:
         return None

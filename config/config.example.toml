@@ -119,6 +119,41 @@ rearm_s = 3600             # 60 min
 # (phase 2, docs/OPERATIONS.md). Retention follows [record] keep_hours.
 # archive = false
 
+[ha_availability]
+# Alert when Home Assistant marks a Thread device unavailable, joined with
+# the recorder's radio evidence for why (docs/ALERTING.md, ha_unavailable):
+# cut off by a key change, polling a dead parent, gone silent, or radio
+# fine and the fault on the Matter/HA side. Several devices dropping
+# together is one critical ha_unavailable_burst with an automatic
+# snapshot. Needs config/ha.env; devices are linked to devices.json at
+# runtime by extended address, and devices.json stays HA-agnostic. Only
+# Matter-over-Thread devices HA knows are covered. Off by default.
+# enabled = true
+# Per-device hold and mute, keyed by HA device id (stable across renames):
+# config/ha-availability.json, docs/HOME-ASSISTANT.md. threadwatch
+# ha-availability set / list edit it; import --write refreshes its names.
+# settings = "ha-availability.json"
+# One small GET /api/states this often.
+# poll_s = 60
+# A device unavailable this long is a warning (once per episode); a device
+# that recovers inside the hold produces nothing. A flapping sensor gets a
+# longer hold of its own in the settings file, or mute.
+# hold_s = 600
+# This many non-muted devices going unavailable within burst_window_s is
+# one critical ha_unavailable_burst (plus the automatic snapshot); their
+# individual records are notices. The newest must have stayed unavailable
+# burst_hold_s, which filters the blip of a Home Assistant or Matter
+# Server restart.
+# burst_devices = 3
+# burst_window_s = 600
+# burst_hold_s = 120
+# An episode reopening this soon after closing is logged at notice, not
+# paged, as for [polls] rearm_s.
+# rearm_s = 3600
+# How often the HA device map (device ids, addresses, entities) is rebuilt
+# over the websocket; the availability poll itself is plain REST.
+# registry_refresh_s = 3600
+
 [retransmissions]
 # A minute in which more than 20% of frames were repeats, at over twice the
 # recent baseline, is logged at notice; the warning waits until the rate has

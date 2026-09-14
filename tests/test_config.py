@@ -313,6 +313,35 @@ class EventsKeepDaysTest(unittest.TestCase):
                 self._load(f"[ha_logs]\n{body}\n")
             self.assertIn(want, str(cm.exception))
 
+    def test_the_ha_availability_settings_are_off_by_default_and_checked(self):
+        cfg = self._load("[network]\nchannel = 25\n")
+        self.assertEqual((cfg.ha_availability_enabled, cfg.ha_availability_settings, cfg.ha_availability_poll_s,
+                          cfg.ha_availability_hold_s, cfg.ha_availability_burst_devices,
+                          cfg.ha_availability_burst_window_s, cfg.ha_availability_burst_hold_s,
+                          cfg.ha_availability_rearm_s, cfg.ha_availability_registry_refresh_s),
+                         (False, "ha-availability.json", 60, 600, 3, 600, 120, 3600, 3600))
+        cfg = self._load("[ha_availability]\nenabled = true\nhold_s = 0\nrearm_s = 0\nburst_devices = 2\n")
+        self.assertEqual((cfg.ha_availability_enabled, cfg.ha_availability_hold_s, cfg.ha_availability_rearm_s,
+                          cfg.ha_availability_burst_devices), (True, 0, 0, 2))
+        for body, want in (('enabled = "on"', "must be true or false"),
+                           ('settings = 3', "must be a file name"),
+                           ('settings = ""', "must be a file name"),
+                           ('poll_s = 0', "must be more than 0"),
+                           ('poll_s = nan', "must be a finite number"),
+                           ('hold_s = -1', "must be 0 or more"),
+                           ('hold_s = inf', "must be a finite number"),
+                           ('burst_window_s = 0', "must be more than 0"),
+                           ('burst_hold_s = -5', "must be 0 or more"),
+                           ('rearm_s = -1', "must be 0 or more"),
+                           ('registry_refresh_s = 0', "must be more than 0"),
+                           ('burst_devices = 1', "2 or more"),
+                           ('burst_devices = 2.5', "2 or more"),
+                           ('burst_devices = true', "2 or more"),
+                           ('mute = true', "unknown key 'mute' in [ha_availability]")):
+            with self.subTest(body=body), self.assertRaises(ValueError) as cm:
+                self._load(f"[ha_availability]\n{body}\n")
+            self.assertIn(want, str(cm.exception))
+
     def test_retransmission_confirm_s_defaults_to_five_minutes_zero_at_once_negative_refused(self):
         self.assertEqual(self._load("[network]\nchannel = 25\n").retrans_confirm_s, 300)
         self.assertEqual(self._load("[retransmissions]\nconfirm_s = 0\n").retrans_confirm_s, 0)
@@ -391,6 +420,15 @@ class ExampleConfigTest(unittest.TestCase):
         ("ha_logs", "deadline_s"): ("ha_logs_deadline_s", 900, 60),
         ("ha_logs", "retry"): ("ha_logs_retry", True, False),
         ("ha_logs", "archive"): ("ha_logs_archive", False, True),
+        ("ha_availability", "enabled"): ("ha_availability_enabled", True, False),
+        ("ha_availability", "settings"): ("ha_availability_settings", "ha-availability.json", "holds.json"),
+        ("ha_availability", "poll_s"): ("ha_availability_poll_s", 60, 30),
+        ("ha_availability", "hold_s"): ("ha_availability_hold_s", 600, 120),
+        ("ha_availability", "burst_devices"): ("ha_availability_burst_devices", 3, 4),
+        ("ha_availability", "burst_window_s"): ("ha_availability_burst_window_s", 600, 300),
+        ("ha_availability", "burst_hold_s"): ("ha_availability_burst_hold_s", 120, 60),
+        ("ha_availability", "rearm_s"): ("ha_availability_rearm_s", 3600, 120),
+        ("ha_availability", "registry_refresh_s"): ("ha_availability_registry_refresh_s", 3600, 600),
         ("retransmissions", "confirm_s"): ("retrans_confirm_s", 300, 60),
         ("link", "drop_db"): ("link_drop_db", 8, 3),
         ("link", "hold_s"): ("link_hold_s", 1800, 120),

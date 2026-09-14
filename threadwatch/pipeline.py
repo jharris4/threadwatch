@@ -3300,6 +3300,14 @@ class Pipeline:
                          "rejoin, starvation, partition and sleepy-device tracking have stopped until "
                          "the file is updated and the recorder restarted."))
 
+    # An address not in the inventory heard for less than this before its
+    # silence is logged, not paged. Phones and tablets with a Thread radio
+    # join the mesh for seconds to reach a HomeKit accessory, under a new
+    # extended address each time: on 2026-09-14 one attached, opened a
+    # session with a lock, and left 17 s later, and its silence paged a
+    # warning half an hour on.
+    BRIEF_VISIT_S = 5 * 60
+
     def _report_quiet(self, addr: str, row: dict, now: float, persist: bool = True) -> None:
         """Emit device_quiet once and remember, in memory and in the row
         (persisted with last-seen.json), that it has been announced.
@@ -3329,10 +3337,22 @@ class Pipeline:
         # fades; log it, but do not page for it.
         rssi = row.get("rssi")
         marginal = reception(rssi, self.cfg.quiet_min_rssi_dbm) == "marginal"
-        note = ("sniffer hears this device at the edge of its range; "
-                "silence is more likely reception than failure" if marginal else
-                "no frames heard; if no mle_rejoin_attempt follows, "
-                "suspect device-internal failure rather than RF")
+        # Nor for an address nobody named that came and went within minutes:
+        # a visitor, not a device that failed.
+        first = row.get("first_seen")
+        heard_for = row["last_seen"] - first if first is not None else None
+        brief = (self.names.name(addr) is None and heard_for is not None
+                 and heard_for < self.BRIEF_VISIT_S)
+        if marginal:
+            note = ("sniffer hears this device at the edge of its range; "
+                    "silence is more likely reception than failure")
+        elif brief:
+            note = (f"an address not in the inventory, heard for only {round(heard_for)} s before it "
+                    "went silent: more likely a visitor (a phone or tablet joining the mesh briefly "
+                    "to reach a HomeKit accessory) than a device that failed")
+        else:
+            note = ("no frames heard; if no mle_rejoin_attempt follows, "
+                    "suspect device-internal failure rather than RF")
         if blind >= 60:
             note += (f" (the recorder itself was not listening for {round(blind / 60)} min of the "
                      f"{round(wall / 60)} min: a restart, a stalled dongle or a clock step)")
@@ -3351,7 +3371,7 @@ class Pipeline:
                      f"{round((vouched - row['last_seen']) / 60)} min after its last frame heard here, "
                      "so it was alive then, out of the recorder's earshot")
         self._emit(
-            "device_quiet", "notice" if marginal else "warning", now, addr=addr,
+            "device_quiet", "notice" if (marginal or brief) else "warning", now, addr=addr,
             name=self.names.name(addr), silent_for_s=round(wall), unheard_s=round(unheard),
             blind_s=round(blind), last_seen=row["last_seen"],
             rssi_dbm=rssi, reception="marginal" if marginal else "good", note=note, **proxy)

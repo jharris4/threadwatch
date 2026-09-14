@@ -105,7 +105,9 @@ LEGEND = [
      "default, [quiet] silence_s in config.toml), then later heard it again. One row, with the real duration "
      "measured from the device's last frame. 'Still quiet' means it has not come back. A warning "
      "when the sniffer hears the device well; only a notice when its signal is marginal, because "
-     "a device at the edge of the sniffer's range fades in and out without anything being wrong."),
+     "a device at the edge of the sniffer's range fades in and out without anything being wrong, "
+     "and when an address nobody named was heard for under 5 minutes, because a phone or tablet "
+     "joins the mesh for seconds to reach a HomeKit accessory and leaves."),
     ("link", "Signal down / recovered",
      "The device is still talking, but the sniffer hears it well below its usual level: more "
      "than 8 dB under its daily reference for 30 minutes (set in [link] in config.toml). A "

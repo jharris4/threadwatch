@@ -431,6 +431,28 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual(by_addr[SENSOR]["severity"], "warning")
         self.assertEqual(by_addr[SENSOR]["reception"], "good")
 
+    def test_an_unnamed_address_heard_only_briefly_is_logged_at_notice_not_warning(self):
+        """A phone joining the mesh for seconds to reach a HomeKit accessory
+        takes an address nobody named and leaves: its silence is logged, not
+        paged. A named device heard as briefly, and an unnamed address heard
+        for longer, still page."""
+        lingerer = "5a5a5a5a5a5a5a5a"
+        pipe = self._pipe()
+        t0 = 1_700_000_000.0
+        for i in range(17):
+            pipe.ingest(frame(t0 + i, STRANGER))
+            pipe.ingest(frame(t0 + i, SENSOR))
+        for i in range(0, 6 * 60, 20):
+            pipe.ingest(frame(t0 + i, lingerer))
+        pipe.periodic(t0 + 40 * 60)
+        by_addr = {r["addr"]: r for r in pipe.events.records if r["event"] == "device_quiet"}
+        self.assertEqual(by_addr[STRANGER]["severity"], "notice")
+        self.assertEqual(by_addr[STRANGER]["reception"], "good")
+        self.assertIn("heard for only 16 s", by_addr[STRANGER]["note"])
+        self.assertEqual(by_addr[SENSOR]["severity"], "warning")
+        self.assertEqual(by_addr[lingerer]["severity"], "warning")
+        self.assertIn("suspect device-internal failure", by_addr[lingerer]["note"])
+
     def _vouched_pipe(self):
         """A pipeline holding the identity tests' key, so their MLE builder
         produces messages this one decrypts."""

@@ -189,7 +189,13 @@ Each snapshot is one directory:
       ha-logs.json           what arrived: status (complete, partial, failed, skipped, or fetching
                              while a copy runs), the window requested, and per add-on the file,
                              lines, the received window, gap_before_s (how far the journal had
-                             already rolled past the start), any error, and attempts
+                             already rolled past the start), any error, and attempts. With
+                             [ha_logs] archive on the logs are one file per UTC hour instead,
+                             ha-logs/<slug>/<YYYYMMDD-HH>.log.gz, and each hour says where it
+                             came from: archive (copied from data/ha-logs/, no HA needed), live
+                             (fetched for this snapshot: the current partial hour, or an hour the
+                             archive was still missing) or lost (it rolled out of HA's journal
+                             before anything could fetch it)
 
 The manifest lists the logs among its `files` and summarises `ha-logs.json`
 under `ha_logs`; a snapshot that never asked for logs (`[ha_logs]` off) has
@@ -222,6 +228,19 @@ one:
 - The token, the network key in any spelling and the values in
   `alerts.env` are scrubbed from the text before it is written; a
   `<redacted>` marks where one stood.
+- **The archive** (`[ha_logs] archive = true`) is how a snapshot taken a day
+  after an incident still has the border router's log for it: the
+  recorder fetches every whole UTC hour into `data/ha-logs/` two minutes
+  after it ends, keeps as many hours as the ring does, and a snapshot
+  copies the hours covering its whole ring span from there, instantly and
+  without HA, fetching live only the current partial hour and any hour the
+  archive still lacks. Hours HA was down for are retried every 15 minutes
+  (one request per pass while it stays down) and recorded as lost once the
+  journal cannot have them; `ha-logs-archive.json` under `data/state/` and
+  the `ha_logs_archive` entry of `threadwatch status` say where the archive
+  stands. Whether a full HA host reboot keeps the journal from before the
+  reboot is not yet verified; until it is, treat hours not archived before
+  a reboot as possibly unrecoverable.
 
 ```bash
 SNAP=data/snapshots/20260901T031500_storm-at-noon

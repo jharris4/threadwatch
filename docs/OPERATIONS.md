@@ -185,6 +185,8 @@ non-`ok` line means and what to do about it:
 | `ha-logs` HTTP 404: no such add-on | an `[ha_logs] addons` slug HA does not know | `ha addons` on the HA host lists the slugs; the defaults are `core_openthread_border_router` and `core_matter_server` |
 | `ha-logs` not reachable | HA did not answer at `HA_URL` within 10 s | check `HA_URL` in `config/ha.env` and that HA is up; the recorder retries snapshot fetches by itself |
 | `ha-logs` newest line N min ago: the add-on looks stopped | the add-on's log has not moved in over ten minutes | start the add-on in HA; a stopped OTBR is a mesh with no border router |
+| `ha-logs` the hourly archive has nothing yet | `[ha_logs] archive` is on and no hour has been archived | it fills two minutes after the next hour while the recorder runs; check the recorder is up |
+| `ha-logs` archive up to H UTC (N min behind): the archive has not kept up | the newest archived hour ended more than two hours ago | the recorder is down, or HA has not answered (the `ha_logs_archive_stalled` event says since when); the pending hours are retried every 15 min while the journal can still have them |
 | `alerts` alert sink 'x' disabled: environment variable(s) not set | a `${NAME}` the sink references is not in `config/alerts.env`; the daemon runs without that sink | add it to alerts.env, restart |
 | `alerts` the recorder refuses to start on this table | a sink or heartbeat with no url, an unknown type, or two sharing a name | fix `[alerts]` / `[[heartbeats]]` in config.toml (docs/ALERTING.md) |
 | `alerts` no sinks / `heartbeats` none | nothing pages you, or nothing pages when the recorder dies | optional; docs/ALERTING.md |
@@ -253,6 +255,7 @@ file.) The fields:
 | `partition` | null until the MLE layer has seen an advertisement, then `id`, `leader_router` (the leader's router id), `leader_rloc16`, and `leader_addr` / `leader_name` once that router id has been matched to a device |
 | `detector` | the storm detector: `baseline_frames_per_window` (calm frames per 10 s), `recent_windows` (the last six counts), `storm_active`, `flood_onsets_recent`, `alerts_sent` |
 | `crypto` | the decryption counters, below, and `key_sequence`, the highest Thread key sequence a frame has decrypted under (null until one has) |
+| `ha_logs_archive` | null unless `[ha_logs] archive` is on; then per add-on `last_archived` (the newest hour in `data/ha-logs/`, a UTC hour name), `hours_on_disk`, `pending` (hours a fetch has failed for and will be retried) and `lost` (hours that rolled out of HA's journal before they could be fetched) |
 | `keys` | the key generations as the recorder records them (docs/ALERTING.md, `key_sequence_advanced`): `highest` and `previous`, `highest_first_ts` and `previous_first_ts` (when each was first heard), `first_sender` (which address was heard first under the highest) and `census_at` (when the census for it is due, null once sent). Empty until a frame has been accepted under any generation. `highest` can trail `crypto.key_sequence` for a moment: the decryptor's value moves on any frame that decrypts, this one on a frame the pipeline accepted as a sighting |
 | `alerts` | this run's deliveries: `delivered`, `queued` (held for a send or a retry), `retrying` (failed at least once), `given_up` (too old to retry), `resumed` (taken from the spool the last run left; docs/ALERTING.md) |
 
@@ -288,6 +291,11 @@ it up if you care about the history; nothing else holds it.
     data/
       ring/threadwatch-YYYYMMDD-HH.pcap   hourly captures, the oldest pruned past keep_hours / keep_gb
       snapshots/<stamp>_<label>/          saved copies of the ring (docs/ANALYSIS.md)
+      ha-logs/<slug>/YYYYMMDD-HH.log.gz   with [ha_logs] archive: one gzip per UTC hour of each Home Assistant
+                                          add-on's log (core_openthread_border_router, core_matter_server),
+                                          fetched two minutes after the hour ends; as many hours as the ring
+                                          keeps ([record] keep_hours), the oldest pruned. UTC because the
+                                          journal stamps are, where ring files are named by local hour
       state/
         status.json          the daemon's status, rewritten every 30 s (below)
         last-seen.json       one row per extended address: first and last heard, frame count,
@@ -316,6 +324,9 @@ it up if you care about the history; nothing else holds it.
                              first heard and from whom, and when the census for it is due: a
                              restart never announces a rotation twice (docs/ALERTING.md,
                              key_sequence_advanced)
+        ha-logs-archive.json with [ha_logs] archive: per add-on the last hour archived, the hours
+                             still pending (attempts, last error) and the hours lost, plus the
+                             outage in progress, so a restart carries on where the archive stopped
         blind-spans.json     when the recorder was not listening (its own outages, clock steps),
                              kept while a device's silence still reaches back over one
         last-exit.json       how the last run ended (stopped, stalled, crashed, ...) and when; the
@@ -342,7 +353,12 @@ at start. `observed-names.json` is re-learned as devices re-register
 accurate frame count. `storm.json` costs the next start about five minutes of
 blindness to a storm already running, and one repeat page for it.
 `key-generations.json` costs one repeated `key_sequence_advanced` (info) for
-the generation the mesh is on, and the census that follows it. `border-routers.json` is rebuilt at the next mDNS
+the generation the mesh is on, and the census that follows it.
+`ha-logs-archive.json` costs the memory of which hours were lost and how
+often a pending one was tried; the next pass starts the catch-up at the
+edge of `[ha_logs] max_hours`, and every hour the archive already holds is
+left alone. `ha-logs/` is the archive itself: delete it and the hours it
+held are gone for good, since HA's journal has long since let them go. `border-routers.json` is rebuilt at the next mDNS
 browse, but the retired addresses in it are forgotten, so an Apple hub's
 history from before its last reboot loses its name. `last-seen.json` is
 the expensive one, below. The event log and the ring are your history and

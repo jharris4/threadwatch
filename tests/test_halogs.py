@@ -857,7 +857,11 @@ class RecorderArchiveTest(unittest.TestCase):
         self.cfg.ha_logs_archive = True
         self.cfg.ha_logs_addons = [OTBR]
         self.cfg.ha_logs_max_hours = 3
-        now = time.time()
+        # A fixed clock, half past a UTC hour: the archive judges hours by
+        # the wall clock, and a run inside the two-minute grace after a
+        # boundary sees one whole hour fewer than a run outside it.
+        self.now = T0 + 1800
+        now = self.now
         self.srv = FakeSupervisor({OTBR: [(now - 3 * 3600 + i * 600, f"line {i}") for i in range(19)]})
         (d / "ha.env").write_text(f"HA_URL={self.srv.url}\nHA_TOKEN={TOKEN}\n")
 
@@ -882,7 +886,7 @@ class RecorderArchiveTest(unittest.TestCase):
     def test_the_pass_runs_on_a_thread_and_the_status_entry_follows_it(self):
         pipe = self._pipe()
         self.assertEqual(pipe.ha_logs_archive_status()[OTBR]["last_archived"], None)
-        now = time.time()
+        now = self.now
         self._run_pass(pipe, now)
         status = pipe.ha_logs_archive_status()[OTBR]
         self.assertEqual(status["last_archived"], halogs.hour_name(now - 3600 - 120))
@@ -898,7 +902,7 @@ class RecorderArchiveTest(unittest.TestCase):
 
     def test_an_outage_is_said_once_and_its_end_once_through_events_emit(self):
         pipe = self._pipe()
-        now = time.time()
+        now = self.now
         self._run_pass(pipe, now)
         self.srv.status = 503
         pipe._next_archive = 0.0
@@ -924,7 +928,7 @@ class RecorderArchiveTest(unittest.TestCase):
     def test_doctor_warns_when_the_archive_is_behind_and_the_status_page_shows_it(self):
         from threadwatch import doctor
         from threadwatch.web import Site
-        now = time.time()
+        now = self.now
         checks = doctor.check_ha_logs(self.cfg, now=now)
         self.assertEqual([c[0] for c in checks], ["ok", "warn"])             # the probe, then the empty archive
         self.assertIn("nothing yet", checks[1][2])
@@ -949,7 +953,7 @@ class RecorderArchiveTest(unittest.TestCase):
     def test_with_the_archive_off_nothing_runs_and_status_is_null(self):
         self.cfg.ha_logs_archive = False
         pipe = self._pipe()
-        pipe.periodic(time.time())
+        pipe.periodic(self.now)
         self.assertIsNone(pipe._archive_thread)
         self.assertIsNone(pipe.ha_logs_archive_status())
         self.assertEqual(self.srv.requests, [])

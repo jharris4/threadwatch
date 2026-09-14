@@ -376,7 +376,10 @@ class DispatchTest(CliCase):
         (self.d / "ha.env").write_text(f"HA_URL={srv.url}\nHA_TOKEN={TOKEN}\n")
         cfg = load(Path(self.cfg))
         cfg.ring_dir.mkdir(parents=True)
-        (cfg.ring_dir / time.strftime("threadwatch-%Y%m%d-%H.pcap", time.localtime())).write_bytes(b"a")
+        # Named by the hour the journal lines fall in, so the snapshot's
+        # window (from that hour's start) holds them whatever the minute.
+        hour = time.strftime("threadwatch-%Y%m%d-%H.pcap", time.localtime(time.time() - 600))
+        (cfg.ring_dir / hour).write_bytes(b"a")
         code, out, _ = self.run_cli("snapshot", "with-logs")
         self.assertEqual(code, 0)
         self.assertIn("saved 1 ring files", out)

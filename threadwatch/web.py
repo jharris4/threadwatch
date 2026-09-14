@@ -721,11 +721,18 @@ class Site:
         trs = []
         for i in items:
             span = f'{i["span"][0]} to {i["span"][1]}' if i["span"] else '<span class="muted">no ring files</span>'
+            extras = ["events included"] if i["events"] else []
+            for f in i.get("ha_log_files") or []:
+                lines = f"{f['lines']:,} lines" if isinstance(f.get("lines"), int) else "?"
+                extras.append(f'<code>{esc(f["file"])}</code> {lines}'
+                              + ("" if f["complete"] else ' <span class="warn">partial</span>'))
+            if i.get("ha_logs") and not i.get("ha_log_files"):
+                extras.append(f'<span class="warn">HA logs {esc(i["ha_logs"])}</span>')
             trs.append(f'<tr id="{esc(i["name"])}"><td class="t">'
                        f'<a href="/day/{i["day"]}">{i["day"]}</a> {hm(i["saved"])}</td>'
                        f'<td><b>{esc(i["label"])}</b></td><td>{i["pcaps"]} pcaps, {span}</td>'
                        f'<td class="n">{fmt_bytes(i["bytes"])}</td>'
-                       f'<td class="muted">{"events included" if i["events"] else ""}</td></tr>')
+                       f'<td class="muted">{"; ".join(extras)}</td></tr>')
         table = (f'<table><tr><th>saved</th><th>label</th><th>packets</th>'
                  f'<th>size</th><th></th></tr>{"".join(trs)}</table>'
                  if trs else '<p class="empty">no snapshots</p>')

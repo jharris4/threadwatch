@@ -366,6 +366,44 @@ class DispatchTest(CliCase):
     driven only through their inner functions, so a mis-wired argument or
     a wrong parser.exit code was invisible to the suite."""
 
+    def test_snapshot_copies_the_ha_logs_unless_told_not_to_and_the_listing_says_so(self):
+        from tests.test_halogs import OTBR, TOKEN, FakeSupervisor
+        from threadwatch.config import load
+        srv = FakeSupervisor({OTBR: [(time.time() - 600 + i, f"line {i}") for i in range(20)]})
+        self.addCleanup(srv.close)
+        (self.d / "config.toml").write_text(
+            f'[record]\ndata_dir = "{self.d / "data"}"\n[ha_logs]\nenabled = true\naddons = ["{OTBR}"]\n')
+        (self.d / "ha.env").write_text(f"HA_URL={srv.url}\nHA_TOKEN={TOKEN}\n")
+        cfg = load(Path(self.cfg))
+        cfg.ring_dir.mkdir(parents=True)
+        (cfg.ring_dir / time.strftime("threadwatch-%Y%m%d-%H.pcap", time.localtime())).write_bytes(b"a")
+        code, out, _ = self.run_cli("snapshot", "with-logs")
+        self.assertEqual(code, 0)
+        self.assertIn("saved 1 ring files", out)
+        self.assertIn(f"  {OTBR}: 20 lines", out)
+        self.assertIn("ha-logs: complete", out)
+        self.assertNotIn(TOKEN, out)
+        inc = next(p for p in cfg.snapshots_dir.iterdir() if p.name.endswith("_with-logs"))
+        self.assertEqual(json.loads((inc / "ha-logs.json").read_text())["status"], "complete")
+        self.assertTrue((inc / "ha-logs" / f"{OTBR}.log.gz").exists())
+        code, out, _ = self.run_cli("snapshot", "--no-ha-logs", "without")
+        self.assertEqual(code, 0)
+        self.assertNotIn("ha-logs", out)
+        skipped = next(p for p in cfg.snapshots_dir.iterdir() if p.name.endswith("_without"))
+        self.assertFalse((skipped / "ha-logs.json").exists())
+        # HA down: the snapshot is whole, the outcome is said, the recorder retries.
+        srv.status = 503
+        code, out, _ = self.run_cli("snapshot", "ha-down")
+        self.assertEqual(code, 0)
+        self.assertIn("ha-logs: failed", out)
+        self.assertIn("the recorder retries", out)
+        code, out, _ = self.run_cli("snapshots")
+        self.assertEqual(code, 0)
+        rows = {line.split()[2]: line for line in out.splitlines()}
+        self.assertTrue(next(v for k, v in rows.items() if k.endswith("_with-logs")).endswith("+ha-logs"))
+        self.assertTrue(next(v for k, v in rows.items() if k.endswith("_ha-down")).endswith("+ha-logs failed"))
+        self.assertNotIn("ha-logs", next(v for k, v in rows.items() if k.endswith("_without")))
+
     def test_deleting_a_snapshot_outside_the_snapshots_directory_is_refused(self):
         # _find_snapshot takes a path to a directory as given, so a path
         # anywhere on the box reaches shutil.rmtree without this check.

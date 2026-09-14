@@ -232,6 +232,23 @@ class PageBranchTest(unittest.TestCase):
         _st, body = self.get("/snapshots")
         self.assertIn("not kept at all", body)
 
+    def test_the_snapshots_page_lists_the_ha_logs_a_snapshot_carries(self):
+        inc = self.cfg.snapshots_dir / "20260902T141500_storm"
+        inc.mkdir(parents=True)
+        (inc / "threadwatch-20260902-12.pcap").write_bytes(b"x")
+        (inc / "ha-logs.json").write_text(json.dumps({
+            "status": "partial", "addons": {
+                "core_openthread_border_router": {"file": "ha-logs/core_openthread_border_router.log.gz",
+                                                  "lines": 4100, "complete": True},
+                "core_matter_server": {"file": "ha-logs/core_matter_server.log.gz", "lines": 12, "complete": False}}}))
+        failed = self.cfg.snapshots_dir / "20260901T080000_older"
+        failed.mkdir()
+        (failed / "ha-logs.json").write_text(json.dumps({"status": "failed", "addons": {}}))
+        _st, body = self.get("/snapshots")
+        self.assertIn("<code>ha-logs/core_openthread_border_router.log.gz</code> 4,100 lines", body)
+        self.assertIn('<code>ha-logs/core_matter_server.log.gz</code> 12 lines <span class="warn">partial</span>', body)
+        self.assertIn('<span class="warn">HA logs failed</span>', body)
+
     def test_the_devices_page_marks_a_retired_address_a_foreign_pan_and_a_fading_link(self):
         self.status(updated=self.now, last_frame_age_s=3)
         self.seen({

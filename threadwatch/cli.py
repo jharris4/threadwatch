@@ -23,6 +23,45 @@ def _inventory_path(cfg) -> Path:
     return cfg.devices_path or cfg.config_dir / "devices.json"
 
 
+def _snapshot_ha_logs(cfg, dest: Path) -> None:
+    """The HA add-on logs for a snapshot saved by hand: one progress line
+    per add-on (lines, MB, elapsed) refreshed every 5 s on a tty, then the
+    outcome. The snapshot is already whole; Ctrl-C stops the copy and
+    leaves ha-logs.json saying partial."""
+    import sys
+
+    from .halogs import attach_logs
+    tty = sys.stdout.isatty()
+
+    def progress(slug, lines, raw_bytes, elapsed):
+        if tty:
+            print(f"\r  {slug}: {lines:,} lines, {raw_bytes / 1e6:.1f} MB, {elapsed:.0f} s", end="", flush=True)
+
+    print("copying the HA add-on logs (Ctrl-C keeps the snapshot and what has arrived):")
+    status = attach_logs(cfg, dest, progress=progress)
+    if tty:
+        print("\r", end="")
+    if status is None:
+        return
+    for slug, r in status.get("addons", {}).items():
+        if r.get("file"):
+            got = r.get("received") or [None, None]
+            span = (f", {time.strftime('%H:%M', time.gmtime(got[0]))}-{time.strftime('%H:%M', time.gmtime(got[1]))} UTC"
+                    if got[0] is not None and got[1] is not None else "")
+            print(f"  {slug}: {r.get('lines', 0):,} lines, {r.get('bytes_gz', 0) / 1e6:.1f} MB gzipped, "
+                  f"{r.get('elapsed_s', 0):.0f} s{span}" + ("" if r.get("complete") else " (partial)"))
+        else:
+            print(f"  {slug}: nothing kept ({r.get('error') or status.get('reason') or 'no log'})")
+    verdict = status.get("status")
+    if verdict == "complete":
+        print(f"ha-logs: complete -> {dest / 'ha-logs'}")
+    else:
+        why = f": {status['reason']}" if status.get("reason") else ""
+        retry = (" (the recorder retries at 15 min, 1 h and 4 h)" if cfg.ha_logs_retry and verdict != "skipped"
+                 else "")
+        print(f"ha-logs: {verdict}{why}{retry}")
+
+
 def _find_snapshot(cfg, want: str, parser, command: str) -> Path:
     """The snapshot directory a user named: by its directory name, its
     label as typed when it was saved, or that label's filename-safe form;
@@ -85,6 +124,10 @@ def main(argv=None) -> int:
 
     p_snapshot = sub.add_parser("snapshot", help="save the current ring buffer as a snapshot")
     p_snapshot.add_argument("label", nargs="?", default="snapshot")
+    p_snapshot.add_argument("--no-ha-logs", action="store_true",
+                            help="skip copying the Home Assistant add-on logs (OTBR, Matter Server) into "
+                                 "the snapshot when [ha_logs] enabled is on; Ctrl-C during the copy keeps "
+                                 "the snapshot and what arrived of the logs")
 
     p_devices = sub.add_parser("devices", help="device last-seen / quiet / unknown-address report")
     p_devices.add_argument("--quiet-minutes", type=float, default=None,
@@ -217,6 +260,8 @@ def main(argv=None) -> int:
         from .snapshot import save_snapshot
         dest, count = save_snapshot(cfg, args.label)
         print(f"saved {count} ring files -> {dest}")
+        if cfg.ha_logs_enabled and not args.no_ha_logs:
+            _snapshot_ha_logs(cfg, dest)
         return 0
 
     if args.cmd == "device":
@@ -355,9 +400,11 @@ def main(argv=None) -> int:
             return 0
         for i in items:
             span = f"{i['span'][0]} to {i['span'][1]}" if i["span"] else "no ring files"
+            logs = i.get("ha_logs")
             print(f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(i['saved']))}  {i['name']:36s} "
                   f"{fmt_bytes(i['bytes']):>9s}  {i['pcaps']:3d} pcaps  {span}"
-                  + ("  +events" if i["events"] else ""))
+                  + ("  +events" if i["events"] else "")
+                  + ("  +ha-logs" if logs == "complete" else f"  +ha-logs {logs}" if logs else ""))
         total = sum(i["bytes"] for i in items)
         print(f"{len(items)} snapshot(s), {fmt_bytes(total)} in {cfg.snapshots_dir}", file=sys.stderr)
         return 0

@@ -529,6 +529,20 @@ class DayViewTest(unittest.TestCase):
         self.assertEqual((items[0]["pcaps"], items[0]["span"], items[0]["bytes"], items[0]["events"], items[0]["day"]),
                          (2, ("20260902-12", "20260902-14"), 3072, True, "2026-09-02"))
         self.assertEqual((items[1]["pcaps"], items[1]["span"]), (0, None))
+        self.assertEqual((items[0]["ha_logs"], items[0]["ha_log_files"]), (None, []))    # never asked for
+        (inc / "ha-logs.json").write_text(json.dumps({
+            "status": "partial", "addons": {
+                "core_openthread_border_router": {"file": "ha-logs/core_openthread_border_router.log.gz",
+                                                  "lines": 4100, "complete": False},
+                "core_matter_server": {"file": None, "complete": False, "error": "HTTP 503"}}}))
+        items = snapshots(self.cfg.snapshots_dir)
+        self.assertEqual(items[0]["ha_logs"], "partial")
+        self.assertEqual(items[0]["ha_log_files"], [{"addon": "core_openthread_border_router",
+                                                     "file": "ha-logs/core_openthread_border_router.log.gz",
+                                                     "lines": 4100, "complete": False}])
+        (inc / "ha-logs.json").write_text("not json")
+        self.assertIsNone(snapshots(self.cfg.snapshots_dir)[0]["ha_logs"])
+        (inc / "ha-logs.json").unlink()                      # the sizes below count what the ring copy holds
         self.cfg.ring_dir.mkdir(parents=True)
         for h in ("20260903-08", "20260903-09"):
             (self.cfg.ring_dir / f"threadwatch-{h}.pcap").write_bytes(b"y" * 4096)

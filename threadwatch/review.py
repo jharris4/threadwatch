@@ -881,9 +881,27 @@ def snapshots(snapshots_dir: Path) -> list[dict]:
         pcaps = sorted(p.name for p in d.glob("*.pcap"))
         out.append({"name": d.name, "label": label or d.name, "saved": saved,
                     "pcaps": len(pcaps), "span": _span(pcaps), "bytes": _dir_size(d),
-                    "events": (d / "events").is_dir(), "day": day_of(saved)})
+                    "events": (d / "events").is_dir(), "day": day_of(saved),
+                    **_ha_logs_of(d)})
     out.sort(key=lambda i: -i["saved"])
     return out
+
+
+def _ha_logs_of(snapshot_dir: Path) -> dict:
+    """The HA add-on logs a snapshot carries (ha-logs.json, docs/ANALYSIS.md):
+    ha_logs is the status (complete, partial, failed, skipped, fetching) or
+    None when the snapshot never asked for them, and ha_log_files lists
+    each add-on's file with its line count and whether it is whole."""
+    try:
+        status = json.loads((snapshot_dir / "ha-logs.json").read_text())
+    except (OSError, ValueError):
+        return {"ha_logs": None, "ha_log_files": []}
+    if not isinstance(status, dict) or not isinstance(status.get("addons"), dict):
+        return {"ha_logs": None, "ha_log_files": []}
+    files = [{"addon": slug, "file": r.get("file"), "lines": r.get("lines"), "complete": bool(r.get("complete"))}
+             for slug, r in status["addons"].items() if isinstance(r, dict) and r.get("file")]
+    return {"ha_logs": status.get("status") if isinstance(status.get("status"), str) else None,
+            "ha_log_files": files}
 
 
 def fmt_bytes(n: int | None) -> str:

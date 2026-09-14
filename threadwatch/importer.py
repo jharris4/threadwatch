@@ -301,6 +301,16 @@ def _import(cfg, inventory_path: Path, *, write: bool, url: str | None, env_file
                     out(f"  network key: {'differs from' if cred.exists() else 'not in'} "
                         f"{cred.name}; --write stores it")
 
+    if use_ha and devices:
+        # The HA availability settings (config/ha-availability.json) keep
+        # each entry's name and address in step with the inventory and HA:
+        # refreshed here, never added to, never pruned.
+        from .haavail import refresh_settings, settings_path
+        try:
+            for line in refresh_settings(settings_path(cfg), found, planned, write):
+                out(f"  {line}")
+        except ValueError as exc:
+            out(f"  ! {exc}")
     if devices:
         out(f"{inventory_path.name}: {len(existing)} entries" + (":" if changes else ", nothing to change"))
         for line in changes:

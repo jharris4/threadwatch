@@ -721,6 +721,35 @@ class RunImportTest(unittest.TestCase):
         ha_mod.HomeAssistant, ha_mod.thread_devices, ha_mod.thread_dataset, mdns_mod.browse = self.saved
         self.tmp.cleanup()
 
+    def test_import_write_refreshes_the_availability_settings_links_and_nothing_else(self):
+        import threadwatch.ha as ha_mod
+        ha_mod.thread_devices = lambda ha, log=None: [
+            {"name": "Living Room Motion", "model": "Eve Motion", "addr": "F00D000000000001", "ha_device_id": "id-1"},
+            {"name": "Plug", "addr": "F00D000000000002", "ha_device_id": "id-2"}]
+        self.cfg.devices_path.write_text(json.dumps([{"name": "Living Room Motion",
+                                                      "extendedAddress": "F00D000000000001"}]))
+        settings = self.d / "ha-availability.json"
+        settings.write_text(json.dumps({
+            "id-1": {"name": "Old Name", "extendedAddress": "F00D000000000001", "hold_s": 7200},
+            "id-2": {"name": "Plug", "extendedAddress": "0000000000000000", "mute": True},
+            "id-gone": {"name": "Gone", "mute": True}}))
+        lines = []
+        run_import(self.cfg, self.cfg.devices_path, write=False, use_mdns=False, credentials=False, out=lines.append)
+        self.assertTrue(any("'Old Name' -> 'Living Room Motion'" in line for line in lines))
+        self.assertEqual(json.loads(settings.read_text())["id-1"]["name"], "Old Name")          # a dry run
+        run_import(self.cfg, self.cfg.devices_path, write=True, use_mdns=False, credentials=False, out=lines.append)
+        saved = json.loads(settings.read_text())
+        self.assertEqual(saved["id-1"], {"name": "Living Room Motion", "extendedAddress": "F00D000000000001",
+                                         "hold_s": 7200})
+        self.assertEqual(saved["id-2"], {"name": "Plug", "extendedAddress": "F00D000000000002", "mute": True})
+        self.assertEqual(saved["id-gone"], {"name": "Gone", "mute": True})                     # reported, kept
+        self.assertTrue(any("no longer a device Home Assistant knows" in line for line in lines))
+        # devices.json gained the plug (HA is the source of names) and nothing HA-specific.
+        entries = json.loads(self.cfg.devices_path.read_text())
+        self.assertEqual([e["name"] for e in entries], ["Living Room Motion", "Plug"])
+        self.assertFalse(any(k not in ("name", "extendedAddress", "extendedAddresses", "model", "note", "borderRouter")
+                             for e in entries for k in e))
+
     def test_conflict_does_not_write_inventory_or_credentials(self):
         import threadwatch.ha as ha_mod
         ha_mod.thread_devices = lambda ha, log=None: [

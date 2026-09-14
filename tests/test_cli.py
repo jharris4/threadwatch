@@ -407,6 +407,65 @@ class DispatchTest(CliCase):
         self.assertTrue(next(v for k, v in rows.items() if k.endswith("_ha-down")).endswith("+ha-logs failed"))
         self.assertNotIn("ha-logs", next(v for k, v in rows.items() if k.endswith("_without")))
 
+    def test_ha_availability_set_and_list_resolve_through_home_assistant(self):
+        import threadwatch.ha as ha_mod
+        (self.d / "ha.env").write_text("HA_URL=http://ha.test:8123\nHA_TOKEN=tok\n")
+        (self.d / "config.toml").write_text(f'[record]\ndata_dir = "{self.d / "data"}"\n[devices]\n'
+                                            'inventory = "devices.json"\n')
+        (self.d / "devices.json").write_text(json.dumps([{"name": "Front Path Motion",
+                                                          "extendedAddress": "C233A4A5BF8391C9"}]))
+        devices = [{"name": "Motion", "addr": "C233A4A5BF8391C9", "node_id": 7, "ha_device_id": "id-motion"},
+                   {"name": "Garden Sensor", "addr": "1669674DD15CF0FA", "node_id": 8, "ha_device_id": "id-garden"}]
+        saved = (ha_mod.HomeAssistant, ha_mod.thread_devices)
+
+        class FakeHA:
+            def __init__(s, url, token):
+                pass
+
+            def __enter__(s):
+                return s
+
+            def __exit__(s, *a):
+                pass
+
+        ha_mod.HomeAssistant = FakeHA
+        ha_mod.thread_devices = lambda ha, log=None: devices
+        try:
+            code, out, _ = self.run_cli("ha-availability", "set", "Front Path Motion", "--hold", "2h")
+            self.assertEqual(code, 0)
+            self.assertIn("Front Path Motion (id-motion): hold 7200 s", out)
+            self.assertIn("restart it to apply", out)
+            code, out, _ = self.run_cli("ha-availability", "set", "garden", "--mute")
+            self.assertEqual(code, 0)
+            self.assertIn("Garden Sensor (id-garden): muted", out)
+            saved_json = json.loads((self.d / "ha-availability.json").read_text())
+            self.assertEqual(saved_json["id-motion"], {"name": "Front Path Motion",
+                                                       "extendedAddress": "C233A4A5BF8391C9", "hold_s": 7200})
+            self.assertEqual(saved_json["id-garden"]["mute"], True)
+            code, out, _ = self.run_cli("ha-availability", "list")
+            self.assertEqual(code, 0)
+            self.assertIn("Front Path Motion", out)
+            self.assertIn("hold      2h", out)
+            self.assertIn("muted", out)
+            code, out, err = self.run_cli("ha-availability", "set", "nobody", "--hold", "1h")
+            self.assertEqual(code, 1)
+            self.assertIn("ha-availability list", err)
+            code, out, err = self.run_cli("ha-availability", "set", "garden", "--hold", "soon")
+            self.assertEqual(code, 1)
+            self.assertIn("not a duration", err)
+            code, out, _ = self.run_cli("ha-availability", "set", "id-garden", "--clear")
+            self.assertEqual(code, 0)
+            self.assertNotIn("id-garden", json.loads((self.d / "ha-availability.json").read_text()))
+            # A device gone from HA is listed as stale, not removed.
+            devices.pop(0)
+            code, out, _ = self.run_cli("ha-availability", "list")
+            self.assertIn("STALE", out)
+            self.assertIn("id-motion", json.loads((self.d / "ha-availability.json").read_text()))
+        finally:
+            ha_mod.HomeAssistant, ha_mod.thread_devices = saved
+        self.assertEqual(json.loads((self.d / "devices.json").read_text()),
+                         [{"name": "Front Path Motion", "extendedAddress": "C233A4A5BF8391C9"}])   # untouched
+
     def test_deleting_a_snapshot_outside_the_snapshots_directory_is_refused(self):
         # _find_snapshot takes a path to a directory as given, so a path
         # anywhere on the box reaches shutil.rmtree without this check.

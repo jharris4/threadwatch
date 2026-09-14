@@ -131,6 +131,27 @@ class Config:
     # inside eight minutes; a device that has really lost its parent stays
     # unanswered far longer. 0 pages at the threshold, as before.
     poll_confirm_s: float = 10 * 60
+    # [keys] the key-generation detectors (docs/ALERTING.md, key_lag). A
+    # device still transmitting two or more key generations below its live
+    # parent (or, for a router, the mesh) is cut off: OpenThread accepts
+    # frames only within one generation of its own, while the radio still
+    # acknowledges its polls, so nothing else notices. The episode is
+    # opened silently and paged only once it has held this long with fresh
+    # frames past the mark (0 pages at once).
+    key_confirm_s: float = 15 * 60
+    # A generation reading (the device's last authenticated frame) older
+    # than this is not judged: neither behind nor caught up.
+    key_fresh_s: float = 30 * 60
+    # How long after a rotation to log key_lag_census, the per-generation
+    # roll call that shows who followed.
+    key_census_delay_s: float = 60 * 60
+    # An episode reopening this soon after closing is logged at notice,
+    # not paged, as for [polls] rearm_s.
+    key_rearm_s: float = 60 * 60
+    # The mesh's rotation time in hours, when known: a rotation arriving
+    # under 90% of it after the previous one is called "early" in the
+    # key_sequence_advanced note. None says nothing about timing.
+    key_rotation_hours: float | None = None
     # [retransmissions] a minute of elevated retries is logged at notice and
     # paged only if the rate has stayed up this long. One minute of
     # elevation is a microwave; a storm building keeps the rate up. 0 pages
@@ -230,6 +251,7 @@ SECTIONS: dict[str, frozenset[str] | None] = {
     "quiet": frozenset(("silence_s", "min_rssi_dbm")),
     "link": frozenset(("drop_db", "hold_s")),
     "polls": frozenset(("rearm_s", "confirm_s")),
+    "keys": frozenset(("confirm_s", "fresh_s", "census_delay_s", "rearm_s", "rotation_hours")),
     "retransmissions": frozenset(("confirm_s",)),
     "border_routers": frozenset(("browse_s", "rotation")),
     "summary": frozenset(("hour", "severity")),
@@ -424,6 +446,21 @@ def load(path: Path | None) -> Config:
         cfg.poll_confirm_s = float(_finite("polls", "confirm_s", polls.get("confirm_s", cfg.poll_confirm_s)))
         if cfg.poll_confirm_s < 0:
             raise ValueError(f"[polls] confirm_s must be 0 (page at once) or more, not {cfg.poll_confirm_s:g}")
+        keys = raw.get("keys", {})
+        for name, attr, floor in (("confirm_s", "key_confirm_s", "0 (page at once)"),
+                                  ("census_delay_s", "key_census_delay_s", "0 (log at the rotation)"),
+                                  ("rearm_s", "key_rearm_s", "0 (page every episode)")):
+            value = float(_finite("keys", name, keys.get(name, getattr(cfg, attr))))
+            if value < 0:
+                raise ValueError(f"[keys] {name} must be {floor} or more, not {value:g}")
+            setattr(cfg, attr, value)
+        cfg.key_fresh_s = float(_finite("keys", "fresh_s", keys.get("fresh_s", cfg.key_fresh_s)))
+        if not cfg.key_fresh_s > 0:
+            raise ValueError(f"[keys] fresh_s must be more than 0 seconds, not {cfg.key_fresh_s:g}")
+        if keys.get("rotation_hours") is not None:
+            cfg.key_rotation_hours = float(_finite("keys", "rotation_hours", keys["rotation_hours"]))
+            if not cfg.key_rotation_hours > 0:
+                raise ValueError(f"[keys] rotation_hours must be more than 0, not {cfg.key_rotation_hours:g}")
         retrans = raw.get("retransmissions", {})
         cfg.retrans_confirm_s = float(_finite("retransmissions", "confirm_s",
                                              retrans.get("confirm_s", cfg.retrans_confirm_s)))

@@ -268,6 +268,29 @@ class EventsKeepDaysTest(unittest.TestCase):
             self._load("[polls]\nconfirm_s = -5\n")
         self.assertEqual(str(cm.exception), "[polls] confirm_s must be 0 (page at once) or more, not -5")
 
+    def test_the_key_generation_settings_take_finite_non_negative_values(self):
+        cfg = self._load("[network]\nchannel = 25\n")
+        self.assertEqual((cfg.key_confirm_s, cfg.key_fresh_s, cfg.key_census_delay_s, cfg.key_rearm_s,
+                          cfg.key_rotation_hours), (900, 1800, 3600, 3600, None))
+        cfg = self._load("[keys]\nconfirm_s = 0\ncensus_delay_s = 0\nrearm_s = 0\nrotation_hours = 672\n")
+        self.assertEqual((cfg.key_confirm_s, cfg.key_census_delay_s, cfg.key_rearm_s, cfg.key_rotation_hours),
+                         (0, 0, 0, 672))
+        for key in ("confirm_s", "census_delay_s", "rearm_s"):
+            for bad in ("-1", "nan", "inf"):
+                with self.subTest(key=key, bad=bad), self.assertRaises(ValueError) as cm:
+                    self._load(f"[keys]\n{key} = {bad}\n")
+                self.assertIn(f"[keys] {key} must be", str(cm.exception))
+        # A stale reading judged as current is a device wrongly behind, and
+        # a fresh_s of zero judges nothing at all; a rotation time of zero
+        # would call every rotation early.
+        for key, bad in (("fresh_s", "0"), ("fresh_s", "-5"), ("fresh_s", "nan"),
+                         ("rotation_hours", "0"), ("rotation_hours", "-1"), ("rotation_hours", "inf")):
+            with self.subTest(key=key, bad=bad), self.assertRaises(ValueError) as cm:
+                self._load(f"[keys]\n{key} = {bad}\n")
+            self.assertIn(f"[keys] {key} must be", str(cm.exception))
+            if bad not in ("nan", "inf"):
+                self.assertIn("more than 0", str(cm.exception))
+
     def test_retransmission_confirm_s_defaults_to_five_minutes_zero_at_once_negative_refused(self):
         self.assertEqual(self._load("[network]\nchannel = 25\n").retrans_confirm_s, 300)
         self.assertEqual(self._load("[retransmissions]\nconfirm_s = 0\n").retrans_confirm_s, 0)
@@ -333,6 +356,11 @@ class ExampleConfigTest(unittest.TestCase):
         ("quiet", "min_rssi_dbm"): ("quiet_min_rssi_dbm", -82, -70),
         ("polls", "rearm_s"): ("poll_rearm_s", 3600, 120),
         ("polls", "confirm_s"): ("poll_confirm_s", 600, 120),
+        ("keys", "confirm_s"): ("key_confirm_s", 900, 120),
+        ("keys", "fresh_s"): ("key_fresh_s", 1800, 600),
+        ("keys", "census_delay_s"): ("key_census_delay_s", 3600, 60),
+        ("keys", "rearm_s"): ("key_rearm_s", 3600, 120),
+        ("keys", "rotation_hours"): ("key_rotation_hours", 672, 24),
         ("retransmissions", "confirm_s"): ("retrans_confirm_s", 300, 60),
         ("link", "drop_db"): ("link_drop_db", 8, 3),
         ("link", "hold_s"): ("link_hold_s", 1800, 120),

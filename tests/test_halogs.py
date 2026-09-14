@@ -596,5 +596,251 @@ class RecorderLogsTest(unittest.TestCase):
         self.assertIsNone(pipe._halogs_thread)
 
 
+class ArchiveTest(unittest.TestCase):
+    """The hourly archive: each whole UTC hour fetched once, just after it
+    ends, catch-up after an outage with one request per pass while HA is
+    down, hours that roll out of the journal marked lost, retention like
+    the ring's, and snapshots built from archive hours plus a live
+    remainder."""
+
+    # 2025-09-13 22:00:00 UTC: the archive names hours in UTC.
+    H22 = T0
+
+    def setUp(self):
+        from threadwatch.config import Config
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        self.cfg = Config(data_dir=d / "data", config_dir=d, devices_path=d / "devices.json")
+        self.cfg.ha_logs_enabled = True
+        self.cfg.ha_logs_archive = True
+        self.cfg.ha_logs_addons = [OTBR, MATTER]
+        self.cfg.ha_logs_max_hours = 6
+        self.cfg.state_dir.mkdir(parents=True, exist_ok=True)
+        # Six hours of journal, 16:00 to 22:00 UTC, a line every ten minutes.
+        self.lines = {OTBR: [(self.H22 - 6 * 3600 + i * 600, f"otbr {i}") for i in range(37)],
+                      MATTER: [(self.H22 - 6 * 3600 + i * 600, f"matter {i}") for i in range(37)]}
+        self.srv = FakeSupervisor(self.lines)
+        (d / "ha.env").write_text(f"HA_URL={self.srv.url}\nHA_TOKEN={TOKEN}\n")
+        self.settings = (self.srv.url, TOKEN)
+
+    def tearDown(self):
+        self.srv.close()
+        self.tmp.cleanup()
+
+    def _pass(self, now, **kw):
+        return halogs.archive_pass(self.cfg, now, self.settings, **kw)
+
+    def _hours(self, slug=OTBR):
+        return halogs.archived_hours(self.cfg, slug)
+
+    def _requests(self, since=0):
+        return [(r["path"].split("/addons/")[1].split("/")[0], r["headers"]["range"])
+                for r in self.srv.requests[since:]]
+
+    def test_hour_names_are_utc_and_the_span_covers_every_hour_touched(self):
+        self.assertEqual(halogs.hour_name(self.H22 + 59), "20250913-22")
+        self.assertEqual(halogs.hour_start("20250913-22"), self.H22)
+        self.assertEqual(halogs.hours_between(self.H22 - 1800, self.H22 + 3601),
+                         ["20250913-21", "20250913-22", "20250913-23"])
+        self.assertEqual(halogs.hours_between(self.H22, self.H22), [])
+
+    def test_the_first_pass_archives_the_window_and_each_later_one_the_hour_just_ended(self):
+        # First pass at 22:02: the hours inside max_hours that have ended,
+        # 16:00 to 21:00, oldest first, for each add-on.
+        out = self._pass(self.H22 + 120)
+        self.assertEqual(out["archived"], [f"{OTBR}/20250913-{h}" for h in range(16, 22)]
+                         + [f"{MATTER}/20250913-{h}" for h in range(16, 22)])
+        self.assertEqual((out["lost"], out["pending"], out["failed"], out["events"]), ([], [], None, []))
+        self.assertEqual(self._hours(), [f"20250913-{h}" for h in range(16, 22)])
+        self.assertEqual(self._requests()[0], (OTBR, f"realtime={int(self.H22 - 6 * 3600)}:{int(self.H22 - 5 * 3600)}"))
+        state = json.loads((self.cfg.state_dir / "ha-logs-archive.json").read_text())
+        self.assertEqual(state["addons"][OTBR]["last_archived"], "20250913-21")
+        with gzip.open(self.cfg.data_dir / "ha-logs" / OTBR / "20250913-21.log.gz", "rt") as fh:
+            self.assertEqual(len(fh.read().splitlines()), 6)
+        # 22:00 is not whole until 23:02. A pass at 23:01 does nothing; at 23:02 it takes 22:00.
+        n = len(self.srv.requests)
+        self.assertEqual(self._pass(self.H22 + 3600 + 60)["archived"], [])
+        self.assertEqual(len(self.srv.requests), n)
+        out = self._pass(self.H22 + 3600 + 120)
+        self.assertEqual(out["archived"], [f"{OTBR}/20250913-22", f"{MATTER}/20250913-22"])
+        self.assertEqual(halogs.archive_status(self.cfg)[OTBR],
+                         {"last_archived": "20250913-22", "hours_on_disk": 7, "pending": [], "lost": []})
+
+    def test_while_ha_is_down_each_pass_sends_one_request_and_the_catch_up_is_oldest_first(self):
+        self._pass(self.H22 + 120)
+        self.srv.status = 503
+        n = len(self.srv.requests)
+        # Three hours go by with HA down: each 15-minute pass probes once.
+        t = self.H22 + 3600 + 120
+        for k in range(12):
+            out = self._pass(t + k * 900)
+            self.assertIsNotNone(out["failed"])
+            self.assertEqual(len(self.srv.requests), n + k + 1, k)
+        self.assertEqual(self._requests(n)[0], (OTBR, f"realtime={int(self.H22)}:{int(self.H22 + 3600)}"))
+        self.assertEqual(sorted(out["pending"]),
+                         sorted([f"{OTBR}/20250913-22", f"{OTBR}/20250913-23", f"{OTBR}/20250914-00",
+                                 f"{MATTER}/20250913-22", f"{MATTER}/20250913-23", f"{MATTER}/20250914-00"]))
+        state = halogs.load_archive_state(self.cfg)
+        self.assertEqual(state["addons"][OTBR]["pending"]["20250913-22"]["attempts"], 12)
+        self.assertIn("HTTP 503", state["addons"][OTBR]["pending"]["20250913-22"]["last_error"])
+        self.assertEqual(state["addons"][MATTER]["pending"], {})          # never asked while the first slug fails
+        # HA is back at 02:02: one pass catches every missed hour up (01:00
+        # has ended by now too), oldest first, then the other add-on.
+        self.srv.status = 200
+        n = len(self.srv.requests)
+        out = self._pass(t + 12 * 900)
+        self.assertEqual(out["archived"], [f"{OTBR}/20250913-{h}" for h in ("22", "23")]
+                         + [f"{OTBR}/20250914-0{h}" for h in (0, 1)]
+                         + [f"{MATTER}/20250913-{h}" for h in ("22", "23")]
+                         + [f"{MATTER}/20250914-0{h}" for h in (0, 1)])
+        self.assertEqual(out["pending"], [])
+        self.assertEqual(halogs.load_archive_state(self.cfg)["addons"][OTBR]["pending"], {})
+
+    def test_exactly_one_stalled_per_outage_and_one_resumed_at_its_end(self):
+        self._pass(self.H22 + 120)
+        self.srv.status = 503
+        t = self.H22 + 3600 + 120
+        events = []
+        for k in range(9):                                         # two hours of failures
+            events += self._pass(t + k * 900)["events"]
+        self.assertEqual([(e[0], e[1]) for e in events], [("ha_logs_archive_stalled", "notice")])
+        stalled = events[0][2]
+        self.assertEqual((stalled["addons"], stalled["since"]), (sorted([OTBR, MATTER]), t))
+        self.assertIn(f"{OTBR}/20250913-22", stalled["pending_hours"])
+        self.assertIn("HTTP 503", stalled["last_error"])
+        self.assertIn("pending for 60 min", stalled["note"])
+        self.srv.status = 200
+        out = self._pass(t + 9 * 900)
+        self.assertEqual([(e[0], e[1]) for e in out["events"]], [("ha_logs_archive_resumed", "info")])
+        resumed = out["events"][0][2]
+        self.assertEqual((len(resumed["archived"]), resumed["lost"], resumed["since"]), (6, [], t))   # 22, 23, 00 each
+        self.assertIn("caught up after 135 min", resumed["note"])
+        self.assertIn("nothing lost", resumed["note"])
+        self.assertEqual(self._pass(t + 10 * 900)["events"], [])     # and nothing more
+        self.assertEqual(halogs.load_archive_state(self.cfg)["outage"], {})
+
+    def test_an_hour_that_rolls_out_of_the_journal_while_pending_is_lost_not_retried(self):
+        self._pass(self.H22 + 120)
+        self.srv.status = 503
+        t = self.H22 + 3600 + 120
+        for k in range(24):                                        # six hours down
+            out = self._pass(t + k * 900)
+        self.srv.status = 200
+        self.srv.retained_from = self.H22 + 3600                   # the journal really has dropped 22:00
+        # 05:02: the window starts at 23:02, so the whole of 22:00 is
+        # beyond it and is lost; 23:00 onwards is fetched.
+        out = self._pass(t + 24 * 900)
+        self.assertEqual(out["lost"], [f"{OTBR}/20250913-22", f"{MATTER}/20250913-22"])
+        self.assertEqual([a for a in out["archived"] if a.startswith(OTBR)],
+                         [f"{OTBR}/20250913-23", f"{OTBR}/20250914-00", f"{OTBR}/20250914-01", f"{OTBR}/20250914-02",
+                          f"{OTBR}/20250914-03", f"{OTBR}/20250914-04"])
+        state = halogs.load_archive_state(self.cfg)
+        self.assertIn("rolled out of the journal", state["addons"][OTBR]["lost"]["20250913-22"]["reason"])
+        self.assertEqual(state["addons"][OTBR]["lost"]["20250913-22"]["attempts"], 24)
+        self.assertNotIn("20250913-22", state["addons"][OTBR]["pending"])
+        self.assertEqual(out["events"][0][2]["lost"], out["lost"])
+        self.assertEqual(halogs.archive_status(self.cfg)[OTBR]["lost"], ["20250913-22"])
+        # Gone is gone: the next pass asks for nothing about it.
+        n = len(self.srv.requests)
+        self._pass(t + 25 * 900)
+        self.assertFalse(any(rng.startswith(f"realtime={int(self.H22)}:") for _s, rng in self._requests(n)))
+
+    def test_a_recorder_that_was_off_for_longer_than_the_window_records_the_gap_as_lost(self):
+        self._pass(self.H22 + 120)
+        # Twelve hours later, first pass after the outage: the six hours the
+        # journal cannot have are lost, the six it can are fetched.
+        self.srv.lines = {s: [(self.H22 + 12 * 3600 - i * 600, f"{s} {i}") for i in range(37)] for s in (OTBR, MATTER)}
+        out = self._pass(self.H22 + 12 * 3600 + 120)
+        self.assertEqual([x for x in out["lost"] if x.startswith(OTBR)],
+                         [f"{OTBR}/20250913-22", f"{OTBR}/20250913-23"] + [f"{OTBR}/20250914-0{h}" for h in range(4)])
+        self.assertEqual([x for x in out["archived"] if x.startswith(OTBR)],
+                         [f"{OTBR}/20250914-0{h}" for h in range(4, 10)])
+
+    def test_retention_keeps_the_newest_keep_hours_per_addon_and_an_optional_byte_cap(self):
+        for slug in (OTBR, MATTER):
+            d = self.cfg.data_dir / "ha-logs" / slug
+            d.mkdir(parents=True)
+            for h in range(10):
+                (d / f"2025091{h // 24}-{h % 24:02d}.log.gz").write_bytes(b"z" * 100)
+        removed = halogs.prune_archive(self.cfg, keep_hours=4)
+        self.assertEqual(removed, [f"{OTBR}/20250910-0{h}" for h in range(6)]
+                         + [f"{MATTER}/20250910-0{h}" for h in range(6)])
+        self.assertEqual(self._hours(), [f"20250910-0{h}" for h in range(6, 10)])
+        removed = halogs.prune_archive(self.cfg, keep_hours=4, keep_bytes=500)
+        self.assertEqual(len(removed), 3)                                   # 8 files of 100 bytes down to 5
+        self.assertEqual(removed[0], f"{OTBR}/20250910-06")                # oldest hour first, whichever add-on
+        self.assertEqual(halogs.prune_archive(self.cfg), [])               # keep_hours is 168: nothing to do
+
+    def test_a_snapshot_with_the_archive_on_copies_its_hours_and_fetches_only_the_rest_live(self):
+        from threadwatch.snapshot import save_snapshot
+        self._pass(self.H22 + 120)                                          # 16:00-21:00 archived
+        # Two ring files, local hours covering 20:30 to 22:30 UTC. Force the
+        # pcap names from UTC so the test holds in any zone.
+        self.cfg.ring_dir.mkdir(parents=True)
+        for utc in (self.H22 - 3600 - 1800, self.H22 - 1800, self.H22 + 1800):
+            (self.cfg.ring_dir / time.strftime("threadwatch-%Y%m%d-%H.pcap", time.localtime(utc))).write_bytes(b"r")
+        saved = self.H22 + 1800
+        dest, _n = save_snapshot(self.cfg, "storm", now=saved)
+        n = len(self.srv.requests)
+        status = halogs.attach_logs(self.cfg, dest, now=saved + 5)
+        self.assertEqual(status["status"], "complete")
+        otbr = status["addons"][OTBR]
+        self.assertEqual(otbr["source"], "archive+live")
+        hours = otbr["hours"]
+        span_start = time.mktime(time.strptime(
+            sorted(dest.glob("threadwatch-*.pcap"))[0].name[12:23], "%Y%m%d-%H"))
+        expected = halogs.hours_between(span_start, saved)
+        self.assertEqual(list(hours), expected)
+        self.assertEqual([h for h, v in hours.items() if v["source"] == "live"], ["20250913-22"])
+        for h, v in hours.items():
+            if h != "20250913-22":
+                self.assertEqual((v["source"], v["complete"]), ("archive", True), h)
+                self.assertTrue((dest / v["file"]).exists())
+        live = hours["20250913-22"]
+        self.assertEqual((live["complete"], live["lines"], live["file"]),
+                         (True, 1, f"ha-logs/{OTBR}/20250913-22.log.gz"))      # the journal's one line at 22:00
+        # Live requests: one per add-on, for the partial hour only.
+        self.assertEqual(self._requests(n), [(OTBR, f"realtime={int(self.H22)}:{int(saved)}"),
+                                             (MATTER, f"realtime={int(self.H22)}:{int(saved)}")])
+        self.assertEqual((otbr["archived"], otbr["live"], otbr["lost"]), (len(expected) - 1, 1, []))
+        manifest = json.loads((dest / "manifest.json").read_text())
+        self.assertEqual(manifest["ha_logs"]["addons"][OTBR]["hours"]["20250913-21"]["source"], "archive")
+        self.assertIn(f"ha-logs/{OTBR}/20250913-21.log.gz", manifest["files"])
+
+    def test_a_snapshot_records_pending_and_lost_hours_and_the_retry_fetches_the_pending_one(self):
+        from threadwatch.snapshot import save_snapshot
+        self._pass(self.H22 + 120)
+        self.cfg.ring_dir.mkdir(parents=True)
+        for utc in (self.H22 - 3 * 3600, self.H22 + 1800):
+            (self.cfg.ring_dir / time.strftime("threadwatch-%Y%m%d-%H.pcap", time.localtime(utc))).write_bytes(b"r")
+        # 20:00 is pending (HA was down for it) and 19:00 lost.
+        (self.cfg.data_dir / "ha-logs" / OTBR / "20250913-20.log.gz").unlink()
+        (self.cfg.data_dir / "ha-logs" / OTBR / "20250913-19.log.gz").unlink()
+        state = halogs.load_archive_state(self.cfg)
+        state["addons"][OTBR]["pending"]["20250913-20"] = {"attempts": 3, "last_error": "HTTP 503"}
+        state["addons"][OTBR]["lost"]["20250913-19"] = {"reason": "rolled out of the journal", "ts": self.H22}
+        halogs.save_archive_state(self.cfg, state)
+        saved = self.H22 + 1800
+        dest, _n = save_snapshot(self.cfg, "storm", now=saved)
+        self.srv.status = 503
+        status = halogs.attach_logs(self.cfg, dest, now=saved + 5)
+        self.assertEqual(status["status"], "partial")
+        hours = status["addons"][OTBR]["hours"]
+        self.assertEqual((hours["20250913-19"]["source"], hours["20250913-19"]["complete"]), ("lost", True))
+        self.assertEqual((hours["20250913-20"]["source"], hours["20250913-20"]["complete"]), ("live", False))
+        self.assertEqual((hours["20250913-22"]["source"], hours["20250913-22"]["complete"]), ("live", False))
+        self.assertEqual(hours["20250913-21"]["source"], "archive")
+        self.srv.status = 200
+        n = len(self.srv.requests)
+        halogs.retry_pending(self.cfg, saved + 900)
+        self.assertEqual(sorted(self._requests(n)),
+                         sorted([(OTBR, f"realtime={int(self.H22 - 7200)}:{int(self.H22 - 3600)}"),
+                                 (OTBR, f"realtime={int(self.H22)}:{int(saved)}"),
+                                 (MATTER, f"realtime={int(self.H22)}:{int(saved)}")]))
+        status = halogs.read_status(dest)
+        self.assertEqual(status["status"], "complete")
+        self.assertEqual(status["addons"][OTBR]["hours"]["20250913-20"]["complete"], True)
+
+
 if __name__ == "__main__":
     unittest.main()

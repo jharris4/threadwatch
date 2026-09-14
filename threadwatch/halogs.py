@@ -31,6 +31,7 @@ import http.client
 import json
 import os
 import re
+import shutil
 import time
 import urllib.error
 import urllib.request
@@ -40,7 +41,12 @@ from typing import Callable
 from .httpclient import SCRUB_MIN, redact_text, redact_url, urlopen
 from .snapshot import MANIFEST, STAGING_DIR, _take_lock, rewrite_manifest, saved_at
 
-LOG_DIR = "ha-logs"                  # inside a snapshot: ha-logs/<slug>.log.gz
+LOG_DIR = "ha-logs"                  # inside a snapshot: ha-logs/<slug>.log.gz, or ha-logs/<slug>/<hour>.log.gz
+ARCHIVE_DIR = "ha-logs"              # under data/: ha-logs/<slug>/<YYYYMMDD-HH>.log.gz, UTC hours
+ARCHIVE_STATE = "ha-logs-archive.json"
+ARCHIVE_GRACE_S = 120.0              # an hour is fetched this long after it ends
+ARCHIVE_RETRY_S = 15 * 60            # while anything is pending, a pass this often, one request when HA is down
+ARCHIVE_STALLED_S = 3600.0           # an outage that leaves hours pending this long is said once
 STATUS_FILE = "ha-logs.json"
 LOCK_FILE = "ha-logs.lock"           # held while a fetch into the snapshot runs (recover_interrupted asks)
 PART_SUFFIX = ".part"
@@ -265,11 +271,23 @@ def _write_status(snapshot_dir: Path, status: dict) -> None:
 
 
 def summary(status: dict) -> dict:
-    """The manifest's ha_logs key: ha-logs.json without the noise."""
+    """The manifest's ha_logs key: ha-logs.json without the noise. With
+    the archive on, each add-on lists its hours and where each came from
+    (archive, live, lost, or missing)."""
     keep = ("file", "lines", "complete", "received", "gap_before_s", "error", "http_status", "source")
+    addons = {}
+    for slug, r in status["addons"].items():
+        entry = {k: r.get(k) for k in keep if k in r}
+        if isinstance(r.get("hours"), dict):
+            entry["hours"] = {h: {k: v.get(k) for k in ("source", "file", "lines", "complete", "error") if k in v}
+                              for h, v in r["hours"].items()}
+        addons[slug] = entry
     return {"status": status.get("status"), "reason": status.get("reason"), "requested": status.get("requested"),
-            "attempts": status.get("attempts"),
-            "addons": {slug: {k: r.get(k) for k in keep if k in r} for slug, r in status["addons"].items()}}
+            "attempts": status.get("attempts"), "addons": addons}
+
+
+def _has_file(result: dict) -> bool:
+    return bool(result.get("file")) or any(h.get("file") for h in (result.get("hours") or {}).values())
 
 
 def _settle(status: dict, interrupted: bool = False) -> dict:
@@ -278,7 +296,7 @@ def _settle(status: dict, interrupted: bool = False) -> dict:
     results = list(status["addons"].values())
     if results and all(r.get("complete") for r in results) and not interrupted:
         status["status"], status["reason"] = "complete", None
-    elif any(r.get("file") for r in results):
+    elif any(_has_file(r) for r in results):
         status["status"] = "partial"
         status["reason"] = "interrupted" if interrupted else "; ".join(
             r["error"] for r in results if r.get("error")) or None
@@ -331,13 +349,18 @@ def attach_logs(cfg, snapshot_dir: Path, *, now: float | None = None, settings: 
         for slug in cfg.ha_logs_addons:
             if status["addons"][slug].get("complete"):
                 continue
-            dest = snapshot_dir / LOG_DIR / f"{slug}.log.gz"
-            result = fetch_addon_log(url, token, slug, since, until, dest, read_timeout_s=cfg.ha_logs_read_timeout_s,
-                                     deadline_s=cfg.ha_logs_deadline_s, secrets=secrets, progress=progress)
-            if result["file"]:
-                result["file"] = f"{LOG_DIR}/{result['file']}"
-            result.pop("requested", None)
-            result["source"] = "live"
+            if cfg.ha_logs_archive:
+                result = _assemble_hours(cfg, snapshot_dir, slug, status["addons"][slug], url, token, now,
+                                         secrets, progress)
+            else:
+                dest = snapshot_dir / LOG_DIR / f"{slug}.log.gz"
+                result = fetch_addon_log(url, token, slug, since, until, dest,
+                                         read_timeout_s=cfg.ha_logs_read_timeout_s,
+                                         deadline_s=cfg.ha_logs_deadline_s, secrets=secrets, progress=progress)
+                if result["file"]:
+                    result["file"] = f"{LOG_DIR}/{result['file']}"
+                result.pop("requested", None)
+                result["source"] = "live"
             status["addons"][slug] = result
             if result.pop("interrupted", False):
                 interrupted = True
@@ -429,3 +452,287 @@ def retry_pending(cfg, now: float | None = None, secrets=None) -> list[tuple[Pat
         final = status.get("status") == "complete" or int(status.get("attempts") or 1) - 1 >= len(RETRY_AFTER_S)
         out.append((d, status, final))
     return out
+
+
+# ---------------------------------------------------------- the archive
+
+def hour_name(ts: float) -> str:
+    """The archive's name for the UTC hour holding ``ts``: YYYYMMDD-HH.
+    UTC because the journal's stamps are (ring files are named by local
+    hour, which the docs point out)."""
+    return time.strftime("%Y%m%d-%H", time.gmtime(ts))
+
+
+def hour_start(name: str) -> float:
+    return float(calendar.timegm(time.strptime(name, "%Y%m%d-%H")))
+
+
+def hours_between(since: float, until: float) -> list[str]:
+    """Every UTC hour whose span touches [since, until), oldest first."""
+    if until <= since:
+        return []
+    first = int(since // 3600) * 3600
+    return [hour_name(t) for t in range(int(first), int(until - 1e-9) + 1, 3600) if t < until]
+
+
+def archive_dir(cfg) -> Path:
+    return cfg.data_dir / ARCHIVE_DIR
+
+
+def archived_hours(cfg, slug: str) -> list[str]:
+    d = archive_dir(cfg) / slug
+    if not d.is_dir():
+        return []
+    return sorted(p.name[:-len(".log.gz")] for p in d.glob("????????-??.log.gz"))
+
+
+def load_archive_state(cfg) -> dict:
+    """ha-logs-archive.json: per add-on the last hour archived, the hours
+    still pending (with attempts and the last error) and the hours lost;
+    and the outage in progress, if any."""
+    path = cfg.state_dir / ARCHIVE_STATE
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    addons = data.get("addons") if isinstance(data.get("addons"), dict) else {}
+    state = {"addons": {}, "outage": data.get("outage") if isinstance(data.get("outage"), dict) else {}}
+    for slug, entry in addons.items():
+        if not isinstance(entry, dict):
+            continue
+        state["addons"][slug] = {
+            "last_archived": entry.get("last_archived") if isinstance(entry.get("last_archived"), str) else None,
+            "pending": {h: v for h, v in (entry.get("pending") or {}).items() if isinstance(v, dict)},
+            "lost": {h: v for h, v in (entry.get("lost") or {}).items() if isinstance(v, dict)},
+        }
+    return state
+
+
+def save_archive_state(cfg, state: dict) -> None:
+    path = cfg.state_dir / ARCHIVE_STATE
+    cfg.state_dir.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state, indent=1))
+    os.replace(tmp, path)
+
+
+def _slug_state(state: dict, slug: str) -> dict:
+    return state["addons"].setdefault(slug, {"last_archived": None, "pending": {}, "lost": {}})
+
+
+def hours_due(cfg, state: dict, slug: str, now: float) -> tuple[list[str], list[str]]:
+    """(due, lost): the whole hours not yet archived for ``slug`` that the
+    journal can still have (inside [ha_logs] max_hours, and ended at least
+    ARCHIVE_GRACE_S ago), oldest first; and the ones that have rolled out
+    of the journal since they were missed, which are recorded as lost
+    rather than asked for again. The catch-up starts at the hour after the
+    last archived one (the recorder was down, HA was down), or at the
+    window's edge on the very first pass."""
+    entry = _slug_state(state, slug)
+    have = set(archived_hours(cfg, slug))
+    floor = now - cfg.ha_logs_max_hours * 3600.0
+    newest_whole = hour_name(now - 3600.0 - ARCHIVE_GRACE_S)
+    if hour_start(newest_whole) + 3600.0 + ARCHIVE_GRACE_S > now:
+        newest_whole = hour_name(hour_start(newest_whole) - 3600.0)
+    if entry["last_archived"]:
+        start = hour_start(entry["last_archived"]) + 3600.0
+    else:
+        start = int(floor // 3600) * 3600
+    candidates = [h for h in hours_between(start, hour_start(newest_whole) + 3600.0)
+                  if h not in have and h not in entry["lost"]]
+    lost = [h for h in candidates if hour_start(h) + 3600.0 <= floor]
+    due = [h for h in candidates if h not in lost]
+    return due, lost
+
+
+def archive_pass(cfg, now: float, settings: tuple | None, secrets=(), state: dict | None = None,
+                 log: Callable[[str], None] | None = None) -> dict:
+    """One pass of the archive: fetch every hour due for each add-on,
+    oldest first, into data/ha-logs/<slug>/<hour>.log.gz, and keep the
+    state file current. When a fetch fails the pass stops there: while
+    HA is down the recorder sends one request per pass, whatever the
+    backlog, and the pass runs every ARCHIVE_RETRY_S until nothing is
+    pending. Hours that roll out of the journal while pending are marked
+    lost. Returns {archived, lost, pending, failed, events, state}: the
+    events are ha_logs_archive_stalled (once per outage, when hours have
+    been pending ARCHIVE_STALLED_S) and ha_logs_archive_resumed (once,
+    when the catch-up completes), for the caller to emit."""
+    state = state if state is not None else load_archive_state(cfg)
+    outage = state.setdefault("outage", {})
+    out = {"archived": [], "lost": [], "pending": [], "failed": None, "events": [], "state": state}
+    if settings is None:
+        return out
+    url, token = settings
+    stopped = False
+    for slug in cfg.ha_logs_addons:
+        entry = _slug_state(state, slug)
+        due, lost = hours_due(cfg, state, slug, now)
+        for h in lost:
+            was = entry["pending"].pop(h, None)
+            entry["lost"][h] = {"reason": "rolled out of the journal before it could be fetched",
+                                "ts": now, "attempts": (was or {}).get("attempts", 0)}
+            out["lost"].append(f"{slug}/{h}")
+        if stopped:
+            out["pending"].extend(f"{slug}/{h}" for h in due)
+            continue
+        for h in due:
+            dest = archive_dir(cfg) / slug / f"{h}.log.gz"
+            start = hour_start(h)
+            result = fetch_addon_log(url, token, slug, start, start + 3600.0, dest,
+                                     read_timeout_s=cfg.ha_logs_read_timeout_s, deadline_s=cfg.ha_logs_deadline_s,
+                                     secrets=secrets)
+            if result["complete"]:
+                entry["pending"].pop(h, None)
+                if entry["last_archived"] is None or h > entry["last_archived"]:
+                    entry["last_archived"] = h
+                out["archived"].append(f"{slug}/{h}")
+                continue
+            pend = entry["pending"].setdefault(h, {"attempts": 0, "first_failed_ts": now})
+            pend["attempts"] = int(pend.get("attempts") or 0) + 1
+            pend["last_error"] = result["error"]
+            pend["last_attempt_ts"] = now
+            out["failed"] = f"{slug}/{h}: {result['error']}"
+            out["pending"].extend(f"{slug}/{x}" for x in due[due.index(h):])
+            stopped = True
+            break
+    pending_total = sum(len(e["pending"]) for e in state["addons"].values())
+    if pending_total:
+        if not outage.get("since"):
+            outage["since"] = now
+            outage["stalled_reported"] = False
+        elif not outage.get("stalled_reported") and now - outage["since"] >= ARCHIVE_STALLED_S:
+            outage["stalled_reported"] = True
+            pending = sorted(p for p in out["pending"])
+            out["events"].append(("ha_logs_archive_stalled", "notice", {
+                "addons": sorted({p.split("/")[0] for p in pending}), "pending_hours": pending,
+                "since": outage["since"], "last_error": out["failed"],
+                "note": (f"the HA add-on log archive has had hours pending for "
+                         f"{(now - outage['since']) / 60:.0f} min ({len(pending)} hour(s), oldest "
+                         f"{pending[0].split('/')[1] if pending else '?'} UTC): "
+                         f"{out['failed'] or 'no fetch succeeded'}; the recorder retries every "
+                         f"{ARCHIVE_RETRY_S // 60} min with one request while HA is down, and an hour older "
+                         "than [ha_logs] max_hours is recorded as lost")}))
+    elif outage.get("since"):
+        archived_now = out["archived"]
+        lost_now = out["lost"]
+        out["events"].append(("ha_logs_archive_resumed", "info", {
+            "archived": archived_now, "lost": lost_now, "since": outage["since"],
+            "note": (f"the HA add-on log archive caught up after {(now - outage['since']) / 60:.0f} min: "
+                     f"{len(archived_now)} hour(s) archived"
+                     + (f", {len(lost_now)} lost (" + ", ".join(lost_now) + ")" if lost_now else ", nothing lost"))}))
+        state["outage"] = {}
+    save_archive_state(cfg, state)
+    if log is not None and (out["archived"] or out["lost"] or out["failed"]):
+        log(f"ha-logs archive: {len(out['archived'])} hour(s) archived"
+            + (f", lost {', '.join(out['lost'])}" if out["lost"] else "")
+            + (f", failed: {out['failed']}" if out["failed"] else ""))
+    return out
+
+
+def prune_archive(cfg, keep_hours: int | None = None, keep_bytes: int | None = None) -> list[str]:
+    """Keep the newest ``keep_hours`` archived hours per add-on ([record]
+    keep_hours by default), and no more than ``keep_bytes`` across the
+    archive when given, oldest going first, as RingWriter._prune keeps
+    the ring. Returns what was removed."""
+    keep = cfg.keep_hours if keep_hours is None else keep_hours
+    removed = []
+    files = []
+    for slug in cfg.ha_logs_addons:
+        d = archive_dir(cfg) / slug
+        hours = sorted(d.glob("????????-??.log.gz")) if d.is_dir() else []
+        for old in hours[:max(0, len(hours) - keep)]:
+            old.unlink(missing_ok=True)
+            removed.append(f"{slug}/{old.name[:-len('.log.gz')]}")
+        files.extend(hours[max(0, len(hours) - keep):])
+    if keep_bytes is not None:
+        files.sort(key=lambda p: p.name)
+        sizes = [p.stat().st_size if p.exists() else 0 for p in files]
+        total = sum(sizes)
+        i = 0
+        while total > keep_bytes and i < len(files):
+            files[i].unlink(missing_ok=True)
+            removed.append(f"{files[i].parent.name}/{files[i].name[:-len('.log.gz')]}")
+            total -= sizes[i]
+            i += 1
+    return removed
+
+
+def archive_status(cfg, state: dict | None = None) -> dict:
+    """The status.json entry: per add-on the last hour archived, the hours
+    on disk, the hours pending and the hours lost."""
+    state = state if state is not None else load_archive_state(cfg)
+    out = {}
+    for slug in cfg.ha_logs_addons:
+        entry = _slug_state(state, slug)
+        have = archived_hours(cfg, slug)
+        out[slug] = {"last_archived": entry["last_archived"] or (have[-1] if have else None),
+                     "hours_on_disk": len(have), "pending": sorted(entry["pending"]),
+                     "lost": sorted(entry["lost"])}
+    return out
+
+
+def _assemble_hours(cfg, snapshot_dir: Path, slug: str, previous: dict, url: str, token: str, now: float,
+                    secrets, progress) -> dict:
+    """With the archive on, a snapshot's log for one add-on is built by the
+    hour: every UTC hour the snapshot's ring spans (the whole ring, not
+    clamped) is copied from the archive when it is there, which is
+    instant and needs no HA; what the archive lacks (the current partial
+    hour, hours still pending) is fetched live, inside [ha_logs]
+    max_hours, one request per hour; a lost hour, or one past the window,
+    is recorded as such. Called again (a retry), it fetches only the
+    hours that are not yet whole."""
+    saved = saved_at(snapshot_dir) or now
+    until = min(saved, now)
+    pcaps = sorted(snapshot_dir.glob("threadwatch-*.pcap"))
+    try:
+        span_start = time.mktime(time.strptime(pcaps[0].name[12:23], "%Y%m%d-%H")) if pcaps else until - 3600.0
+    except ValueError:
+        span_start = until - 3600.0
+    floor = now - cfg.ha_logs_max_hours * 3600.0
+    state = load_archive_state(cfg)
+    entry = _slug_state(state, slug)
+    hours = previous.get("hours") if isinstance(previous.get("hours"), dict) else {}
+    out_dir = snapshot_dir / LOG_DIR / slug
+    interrupted = False
+    for h in hours_between(span_start, until):
+        got = hours.get(h) or {}
+        if got.get("complete"):
+            continue
+        start = hour_start(h)
+        src = archive_dir(cfg) / slug / f"{h}.log.gz"
+        if src.exists() and h not in entry["pending"]:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, out_dir / src.name)
+            with gzip.open(src, "rb") as fh:
+                lines = sum(1 for _ in fh)
+            hours[h] = {"source": "archive", "file": f"{LOG_DIR}/{slug}/{src.name}", "lines": lines,
+                        "bytes_gz": src.stat().st_size, "complete": True, "error": None}
+            continue
+        if h in entry["lost"]:
+            hours[h] = {"source": "lost", "file": None, "lines": 0, "complete": True,
+                        "error": entry["lost"][h].get("reason")}
+            continue
+        if start + 3600.0 <= floor:
+            hours[h] = {"source": "lost", "file": None, "lines": 0, "complete": True,
+                        "error": "older than [ha_logs] max_hours: the journal cannot have it"}
+            continue
+        result = fetch_addon_log(url, token, slug, max(start, floor), min(start + 3600.0, until),
+                                 out_dir / f"{h}.log.gz", read_timeout_s=cfg.ha_logs_read_timeout_s,
+                                 deadline_s=cfg.ha_logs_deadline_s, secrets=secrets, progress=progress)
+        hours[h] = {"source": "live", "file": f"{LOG_DIR}/{slug}/{result['file']}" if result["file"] else None,
+                    "lines": result["lines"], "bytes_gz": result["bytes_gz"], "complete": result["complete"],
+                    "received": result["received"], "gap_before_s": result["gap_before_s"],
+                    "error": result["error"], "http_status": result["http_status"]}
+        if result.get("interrupted"):
+            interrupted = True
+            break
+    lines = sum(v.get("lines") or 0 for v in hours.values())
+    errors = [f"{h}: {v['error']}" for h, v in sorted(hours.items()) if v.get("error") and v.get("source") != "lost"]
+    return {"slug": slug, "file": None, "hours": dict(sorted(hours.items())), "lines": lines,
+            "complete": bool(hours) and all(v.get("complete") for v in hours.values()) and not interrupted,
+            "error": "; ".join(errors) or None, "source": "archive+live", "interrupted": interrupted,
+            "archived": sum(1 for v in hours.values() if v.get("source") == "archive"),
+            "live": sum(1 for v in hours.values() if v.get("source") == "live"),
+            "lost": [h for h, v in hours.items() if v.get("source") == "lost"]}

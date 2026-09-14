@@ -163,6 +163,7 @@ def run_device(cfg: Config, target: str, pcap_file: Path | None = None,
     gaps = []
     prev_frame = None
     mle_events = []
+    generations: dict = {}     # key generation -> [first frame ts, last frame ts, frames], vouched frames only
 
     import time as _t
 
@@ -243,6 +244,15 @@ def run_device(cfg: Config, target: str, pcap_file: Path | None = None,
                         if last_ts is not None and f.ts - last_ts > cfg.quiet_s:
                             gaps.append((last_ts, f.ts))
                         last_ts = f.ts
+                        # The key generation the pipeline accepted this
+                        # frame under, as it judged it: which generations
+                        # the device has sent under and when, so a device
+                        # left behind by a rotation shows it here.
+                        gen = pipe.last_generation
+                        if gen is not None:
+                            span = generations.setdefault(gen, [f.ts, f.ts, 0])
+                            span[1] = f.ts
+                            span[2] += 1
                     else:
                         refused += 1
                     if f.ftype == 1:
@@ -336,6 +346,15 @@ def run_device(cfg: Config, target: str, pcap_file: Path | None = None,
         head = f"\n{a}:" if len(measured) > 1 else ""
         print(f"{head}\nrssi:  {rssi}\nacked: {acks}\npolls: {poll}")
 
+    if generations:
+        # A device that keeps sending under a generation the mesh has left
+        # behind is the key-lag story (docs/ALERTING.md): the last frame
+        # under each generation says when it last did.
+        print("\nkey generations (first -> last frame accepted under each):")
+        for gen in sorted(generations):
+            a, b, n = generations[gen]
+            print(f"  {gen}: {_t.strftime('%m-%d %H:%M', _t.localtime(a))} -> "
+                  f"{_t.strftime('%m-%d %H:%M', _t.localtime(b))}  ({n} frame{'s' if n != 1 else ''})")
     if gaps:
         print(f"\nsilences (>{fmt_duration(cfg.quiet_s)}, the configured [quiet] silence_s):")
         for a, b in gaps[-10:]:

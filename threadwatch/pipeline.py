@@ -47,6 +47,7 @@ from .names import (
     DeviceNames,
     LastSeen,
     load_border_routers,
+    newest_generation,
     parent_address,
     reception,
     rloc16_role,
@@ -2402,16 +2403,10 @@ class Pipeline:
         accepted under within [keys] fresh_s, MAC or MLE, and when: (None,
         None) when nothing fresh says. A reading older than that is not
         judged either way."""
-        best: tuple[int | None, float | None] = (None, None)
-        for key in ("counter", "mle_counter"):
-            seq, ts = _whole(row.get(key + "_seq")), row.get(key + "_ts")
-            if seq is None or not isinstance(ts, (int, float)) or isinstance(ts, bool):
-                continue
-            if now - ts > self.cfg.key_fresh_s:
-                continue
-            if best[0] is None or seq > best[0] or (seq == best[0] and ts > best[1]):
-                best = (seq, float(ts))
-        return best
+        seq, ts = newest_generation(row)
+        if seq is None or now - ts > self.cfg.key_fresh_s:
+            return None, None
+        return seq, ts
 
     def _key_lags(self, now: float, dominant: int | None) -> list[dict]:
         """Every device on our PAN judged against its reference generation:

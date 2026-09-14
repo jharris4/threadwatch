@@ -259,6 +259,32 @@ class PageBranchTest(unittest.TestCase):
         _st, page = self.get(f"/device/{AQ}")
         self.assertIn('<span class="warn">signal down</span>', page)
 
+    def test_the_pages_show_each_devices_key_generation_and_how_far_behind_it_is(self):
+        self.status(updated=self.now, last_frame_age_s=3, crypto={"key_sequence": 86},
+                    keys={"highest": 86, "previous": 85, "first_sender": TV2, "highest_first_ts": self.now - 7200})
+        self.seen({
+            TV2: {"first_seen": self.now - 8000, "last_seen": self.now - 30, "frames": 500, "rssi": -55.0,
+                  "pan": 0x4e21, "types": {}, "rloc16": "0400", "rloc16_ts": self.now - 30,
+                  "counter_seq": 86, "counter_ts": self.now - 30},
+            AQ: {"first_seen": self.now - 7200, "last_seen": self.now - 60, "frames": 900, "rssi": -60.0,
+                 "pan": 0x4e21, "types": {}, "rloc16": "0401", "rloc16_ts": self.now - 60,
+                 "counter_seq": 84, "counter_ts": self.now - 60, "keylag_since": self.now - 900},
+        })
+        _st, body = self.get("/devices")
+        self.assertIn("<th>key gen</th>", body)
+        self.assertIn('84 <span class="warn">2 behind 86</span> <span class="bad">cut off</span>', body)
+        _st, page = self.get(f"/device/{AQ}")
+        self.assertIn('key generation 84 <span class="warn">2 behind 86</span>', page)
+        _st, raw = self.get(f"/api/device/{AQ}")
+        live = json.loads(raw)["live"]
+        self.assertEqual((live["generation"], live["parent_generation"], live["mesh_generation"], live["lag"],
+                          live["key_lagging"]), (84, 86, 86, 2, True))
+        _st, status = self.get("/status")
+        self.assertIn("<th>key generation</th>", status)
+        self.assertIn(f'86 <span class="muted">first heard from <a href="/device/{TV2}">Living Room Apple TV</a>',
+                      status)
+        self.assertIn("previously 85", status)
+
     def test_todays_card_names_what_is_quiet_and_what_is_fading_or_says_all_is_well(self):
         self.status(updated=self.now, last_frame_age_s=3)
         _st, body = self.get("/")

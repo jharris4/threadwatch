@@ -630,6 +630,10 @@ def _write_status(cfg, port, total, started, pipe: Pipeline, ring, decryptor,
         "partition": pipe.partition_status(),
         "detector": pipe.detector.snapshot(),
         "alerts": pipe.events.dispatcher.stats(),
+        # The highest key generation heard, from whom and when (the
+        # status page reads it; crypto.key_sequence below is the
+        # decryptor's own, which a straggler frame can also raise).
+        "keys": pipe.keys_status(),
     }
     status["crypto"] = {**decryptor.stats, "key_sequence": decryptor.key_sequence}
     tmp = cfg.state_dir / "status.tmp"

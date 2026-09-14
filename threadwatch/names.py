@@ -519,6 +519,23 @@ def parent_address(row: dict, holders: dict[int, str]) -> str | None:
     return holders.get(live["router_id"])
 
 
+def newest_generation(row: dict) -> tuple[int | None, float | None]:
+    """The newest key generation a device's authenticated frames were
+    accepted under, MAC or MLE, and when: (None, None) for a row from
+    before generations were recorded. The recorder judges only readings
+    within [keys] fresh_s; the pages show whatever is on record."""
+    best: tuple[int | None, float | None] = (None, None)
+    for key in ("counter", "mle_counter"):
+        seq, ts = row.get(key + "_seq"), row.get(key + "_ts")
+        if isinstance(seq, bool) or not isinstance(seq, int):
+            continue
+        if isinstance(ts, bool) or not isinstance(ts, (int, float)):
+            continue
+        if best[0] is None or seq > best[0] or (seq == best[0] and ts > best[1]):
+            best = (seq, float(ts))
+    return best
+
+
 def reception(rssi: float | None, min_rssi_dbm: float) -> str:
     """How much a silence from this address means, given how well we hear it."""
     if rssi is None:

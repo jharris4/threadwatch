@@ -166,7 +166,7 @@ class RunDeviceTest(unittest.TestCase):
 
     KEY = bytes.fromhex("00112233445566778899aabbccddeeff")     # what _run's credentials hold
 
-    def _psdu(self, addr, seq, ftype=1, dst="0000", cmd=4):
+    def _psdu(self, addr, seq, ftype=1, dst="0000", cmd=4, sequence=0):
         """A data frame or a poll (ftype 3, command 4), secured under the
         test credentials as a device secures everything it sends once
         attached: those are the frames that vouch for the sender and count
@@ -176,7 +176,7 @@ class RunDeviceTest(unittest.TestCase):
         import struct
         if ftype in (1, 3) and cmd == 4:
             from tests.frames import secured_psdu
-            return secured_psdu(addr, seq, ftype=ftype, seq=seq, dst=dst, key=RunDeviceTest.KEY)
+            return secured_psdu(addr, seq, ftype=ftype, seq=seq, dst=dst, key=RunDeviceTest.KEY, sequence=sequence)
         fcf = ftype | 0x0040 | (2 << 10) | (1 << 12) | (3 << 14)   # pan compressed, short dst, ext src
         payload = bytes([cmd, 0x33]) if ftype == 3 else b"\x7f\x33"
         return (struct.pack("<HBH", fcf, seq, 0x4e21) + bytes.fromhex(dst)[::-1]
@@ -245,6 +245,19 @@ class RunDeviceTest(unittest.TestCase):
         self.assertIn("(90 min)", text)                       # ours only: 08:20 -> 09:50
         self.assertIn("no rejoin-related MLE seen from this device", text)
         self.assertIn("event log: nothing recorded for this device.", text)
+
+    def test_the_key_generations_the_device_sent_under_are_listed_with_their_spans(self):
+        # A device left behind by a rotation keeps sending under the old
+        # generation: the report says which generations it used and when.
+        frames = [(self._at("2026-09-03 08:10"), self._psdu(self.DEV, 10, sequence=5)),
+                  (self._at("2026-09-03 08:20"), self._psdu(self.DEV, 11, sequence=5)),
+                  (self._at("2026-09-03 09:05"), self._psdu(self.DEV, 12, sequence=6)),
+                  (self._at("2026-09-03 09:06"), self._psdu(self.DEV, 12, sequence=6)),    # a replay: not counted
+                  (self._at("2026-09-03 09:30"), self._psdu(self.OTHER, 40, sequence=7))]  # someone else's
+        text = self._run(frames)
+        section = text.split("key generations (first -> last frame accepted under each):")[1].split("\n\n")[0]
+        self.assertEqual(section.strip("\n").splitlines(),
+                         ["  5: 09-03 08:10 -> 09-03 08:20  (2 frames)", "  6: 09-03 09:05 -> 09-03 09:05  (1 frame)"])
 
     def test_an_ack_stamped_before_its_frame_is_not_counted(self):
         """The hour table's ACK window was one-sided -- under 50 ms later, with

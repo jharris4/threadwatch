@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 from .events import day_bounds, day_of, iter_days, list_days, next_day, prev_day, read_day
-from .names import DeviceNames, LastSeen, parent_address, reception, rloc16_role, router_holders
+from .names import DeviceNames, LastSeen, newest_generation, parent_address, reception, rloc16_role, router_holders
 from .snapshot import STAGING_DIR
 
 SEVERITY_RANK = {"info": 0, "notice": 1, "warning": 2, "critical": 3}
@@ -68,6 +68,7 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
     rejoin: dict[str, dict] = {}
     open_link: dict[str, dict] = {}
     open_starved: dict[str, dict] = {}
+    open_keylag: dict[str, dict] = {}
     first_seen: dict | None = None
     join_scan: dict | None = None
     recorder: dict | None = None
@@ -145,6 +146,47 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
                 ep["title"] += f" for {fmt_duration(rec['ts'] - ep['starved_since'])}"
             else:
                 new("starved", rec, f"{_label(rec)} polls answered again", rec.get("note", ""))
+        elif ev == "key_lag":
+            addr = _addr(rec) or ""
+            ep = open_keylag.get(addr)
+            if ep is not None:
+                bump(ep, rec)
+                continue
+            against = rec.get("parent") or ("the mesh" if rec.get("role") == "router" else "its parent")
+            reference = rec.get("mesh_generation") if rec.get("role") == "router" else rec.get("parent_generation")
+            open_keylag[addr] = new("key_lag", rec,
+                                    f"{_label(rec)} {rec.get('lag')} key generations behind {against}",
+                                    f"on generation {rec.get('generation')}, {against} on {reference}: cut off "
+                                    "while its polls are still acknowledged",
+                                    end=None, lag_since=rec.get("since", rec["ts"]))
+        elif ev == "key_lag_cleared":
+            addr = _addr(rec) or ""
+            ep = open_keylag.pop(addr, None)
+            if ep is not None:
+                ep["end"] = rec["ts"]
+                ep["events"].append(rec)
+                ep["title"] += f" for {fmt_duration(rec['ts'] - ep['lag_since'])}"
+                ep["detail"] = rec.get("note", "")
+            else:
+                new("key_lag", rec, f"{_label(rec)} key lag cleared", rec.get("note", ""))
+        elif ev == "key_sequence_advanced":
+            seq, prev = rec.get("sequence"), rec.get("previous")
+            title = (f"key rotated to generation {seq}" if prev is not None
+                     else f"first key generation heard: {seq}")
+            new("key_rotation", rec, title, f"first from {_label(rec)} ({rec.get('frame')})"
+                + (f", {fmt_duration(rec['since_previous_s'])} after the previous"
+                   if isinstance(rec.get("since_previous_s"), (int, float)) else "")
+                + (" (early)" if "early" in (rec.get("note") or "") else ""))
+        elif ev == "key_lag_census":
+            behind = rec.get("behind_parent_2plus") or []
+            one = rec.get("behind_parent_1") or []
+            routers = rec.get("routers_behind") or []
+            new("key_census", rec, f"key generation census: generation {rec.get('sequence')}",
+                ", ".join(p for p in (f"{len(one)} one behind" if one else "",
+                                      "cut off: " + ", ".join(i.get("name") or i.get("addr") for i in behind)
+                                      if behind else "",
+                                      "routers behind: " + ", ".join(i.get("name") or i.get("addr") for i in routers)
+                                      if routers else "") if p) or "everyone on the current generation")
         elif ev == "rssi_degradation":
             addr = _addr(rec) or ""
             ep = open_link.get(addr)
@@ -257,6 +299,8 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
             ep["title"] += f" for {fmt_duration(now - ep['low_since'])} (still down)"
         elif ep["kind"] == "starved" and ep["end"] is None:
             ep["title"] += f" for {fmt_duration(now - ep['starved_since'])} (still unanswered)"
+        elif ep["kind"] == "key_lag" and ep["end"] is None:
+            ep["title"] += f" for {fmt_duration(now - ep['lag_since'])} (still behind)"
     return sorted(episodes, key=lambda e: e["start"])
 
 
@@ -569,19 +613,35 @@ def day_index(events_dir: Path) -> list[dict]:
 
 
 def device_rows(seen: LastSeen, names: DeviceNames, min_rssi_dbm: float,
-                now: float | None = None, leader_router: int | None = None) -> list[dict]:
+                now: float | None = None, leader_router: int | None = None,
+                mesh_generation: int | None = None) -> list[dict]:
     """One dict per tracked address. The live role comes from the RLOC16 the
     recorder last saw the device use: router or child, which router it is
-    or hangs off, and whether it holds the partition's leader id."""
+    or hangs off, and whether it holds the partition's leader id. The key
+    generation is the newest its frames were accepted under; ``lag`` is
+    how far behind its parent's (a child) or ``mesh_generation`` (a
+    router, from status.json's crypto.key_sequence) that is, whatever the
+    age of either reading: the recorder judges only fresh ones, and
+    ``key_lagging`` says whether it has an episode open."""
     now = now or time.time()
     holders = router_holders(seen.table)
+    generations = {addr: newest_generation(row) for addr, row in seen.table.items()}
     rows = []
     for addr, row in seen.table.items():
         rssi = row.get("rssi")
         live = rloc16_role(row.get("rloc16")) or {}
         parent_addr = parent_address(row, holders)
         br = names.border_routers.get(addr)
+        generation, generation_ts = generations[addr]
+        parent_generation = generations[parent_addr][0] if parent_addr else None
+        reference = mesh_generation if live.get("role") == "router" else parent_generation
         rows.append({
+            "generation": generation,
+            "generation_ts": generation_ts,
+            "parent_generation": parent_generation,
+            "mesh_generation": mesh_generation,
+            "lag": reference - generation if generation is not None and reference is not None else None,
+            "key_lagging": row.get("keylag_since") is not None,
             "border_router": br["hostname"] if br else None,
             "border_router_label": (f'{br.get("instance") or br["hostname"]} ({br.get("vendor") or "?"} '
                                     f'{br.get("model") or ""})'.strip() if br else None),

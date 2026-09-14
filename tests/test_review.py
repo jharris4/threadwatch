@@ -445,6 +445,59 @@ class DayViewTest(unittest.TestCase):
                          ["Basement AQ", TV, "Irrigation", TV, "72d035122fdf06f6", "1afe3b8423f332de"])
         self.assertEqual(pick(only="nonsense", sort="nonsense"), pick())
 
+    def test_device_rows_carry_the_key_generation_and_the_lag_behind_parent_or_mesh(self):
+        from threadwatch.names import DeviceNames, LastSeen
+        from threadwatch.review import device_rows
+        seen = LastSeen(self.cfg.state_dir / "last-seen.json")
+        seen.table[AQ].update(counter_seq=86, counter_ts=T0 + 7000, mle_counter_seq=85, mle_counter_ts=T0 + 6000)
+        seen.table[PLUG].update(counter_seq=84, counter_ts=T0 + 7100, keylag_since=T0 + 7150)   # child of AQ
+        rows = device_rows(seen, DeviceNames(self.cfg.devices_path), self.cfg.quiet_min_rssi_dbm, T0 + 7200,
+                           mesh_generation=87)
+        by = {r["addr"]: r for r in rows}
+        self.assertEqual((by[AQ]["generation"], by[AQ]["generation_ts"], by[AQ]["parent_generation"],
+                          by[AQ]["mesh_generation"], by[AQ]["lag"], by[AQ]["key_lagging"]),
+                         (86, T0 + 7000, None, 87, 1, False))
+        self.assertEqual((by[PLUG]["generation"], by[PLUG]["parent_generation"], by[PLUG]["lag"],
+                          by[PLUG]["key_lagging"]), (84, 86, 2, True))
+        self.assertEqual((by[TV1]["generation"], by[TV1]["lag"]), (None, None))   # a row from before generations
+        without = device_rows(seen, DeviceNames(self.cfg.devices_path), self.cfg.quiet_min_rssi_dbm, T0 + 7200)
+        self.assertIsNone(next(r for r in without if r["addr"] == AQ)["lag"])      # no mesh value: no router lag
+
+    def test_key_lag_records_are_one_row_per_episode_and_rotations_and_censuses_stand_alone(self):
+        lag = rec("key_lag", "warning", T0, addr=PLUG, name="Irrigation", role="child", generation=84,
+                  parent="Basement AQ", parent_addr=AQ, parent_generation=86, lag=2, since=T0 - 900)
+        eps = group_episodes([lag], now=T0 + 3600)
+        self.assertEqual([(e["kind"], e["title"], e["end"]) for e in eps],
+                         [("key_lag", "Irrigation 2 key generations behind Basement AQ for 75m (still behind)",
+                           None)])
+        self.assertIn("on generation 84, Basement AQ on 86", eps[0]["detail"])
+        cleared = rec("key_lag_cleared", "info", T0 + 600, addr=PLUG, name="Irrigation", generation=86,
+                      note="heard again under key generation 86")
+        eps = group_episodes([lag, cleared], now=T0 + 3600)
+        self.assertEqual([(e["title"], e["end"], e["count"], e["detail"]) for e in eps],
+                         [("Irrigation 2 key generations behind Basement AQ for 25m", T0 + 600, 1,
+                           "heard again under key generation 86")])
+        router = rec("key_lag", "critical", T0, addr=AQ, name="Basement AQ", role="router", generation=84,
+                     parent=None, mesh_generation=86, lag=2, since=T0)
+        self.assertEqual(group_episodes([router], now=T0 + 120)[0]["title"],
+                         "Basement AQ 2 key generations behind the mesh for 2m (still behind)")
+        eps = group_episodes([
+            rec("key_sequence_advanced", "info", T0, sequence=5, previous=None, first_sender=AQ, name="Basement AQ",
+                frame="mac_data", since_previous_s=None, note="first key generation heard: 5"),
+            rec("key_sequence_advanced", "info", T0 + 100, sequence=6, previous=5, first_sender=AQ,
+                name="Basement AQ", frame="mac_poll", since_previous_s=100, note="rotated -- early: ..."),
+            rec("key_lag_census", "info", T0 + 200, sequence=6, counts={"6": 3, "5": 1},
+                behind_parent_1=[{"name": "Irrigation", "addr": PLUG}], behind_parent_2plus=[], routers_behind=[]),
+            rec("key_lag_census", "info", T0 + 300, sequence=7, counts={"7": 4},
+                behind_parent_1=[], behind_parent_2plus=[], routers_behind=[]),
+        ])
+        self.assertEqual([(e["kind"], e["title"], e["detail"]) for e in eps], [
+            ("key_rotation", "first key generation heard: 5", "first from Basement AQ (mac_data)"),
+            ("key_rotation", "key rotated to generation 6",
+             "first from Basement AQ (mac_poll), 1m after the previous (early)"),
+            ("key_census", "key generation census: generation 6", "1 one behind"),
+            ("key_census", "key generation census: generation 7", "everyone on the current generation")])
+
     def test_resolver_and_merged_history(self):
         from threadwatch.names import DeviceNames
         from threadwatch.review import devices_history

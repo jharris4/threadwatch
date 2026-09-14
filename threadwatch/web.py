@@ -120,6 +120,23 @@ LEGEND = [
      "if the polls are still unanswered ten minutes later ([polls] confirm_s). If the device just moved to a "
      "parent the sniffer cannot hear, the acknowledgements are missing at the sniffer, not on air: "
      "a rejoin row just before this one says so."),
+    ("key_lag", "Key generation lag / cleared",
+     "The device is still transmitting under a network key two or more generations older than its "
+     "parent's (or, for a router, the mesh's). OpenThread accepts frames only within one generation of "
+     "its own, so every frame it sends is dropped while the radio still acknowledges its polls: it looks "
+     "alive, never goes quiet and never starves, and delivers nothing. One generation behind is normal "
+     "after a rotation and is never reported. Warning for a child, critical for a router, once per "
+     "episode after [keys] confirm_s of fresh frames; a battery pull or power cycle forces a rejoin, which "
+     "fetches the current key, and the row closes when the device is heard within a generation again."),
+    ("key_rotation", "Key rotated",
+     "The mesh rotated its network key: the first frame accepted under a generation above any heard "
+     "before, and from whom. Routine (OpenThread rotates on a schedule, 28 days by default) and logged "
+     "once per generation, ever. The census an hour later says who followed; a device that misses two "
+     "rotations in a row is cut off (key lag)."),
+    ("key_census", "Key generation census",
+     "[keys] census_delay_s after a rotation: how many devices are on each generation, who is one "
+     "behind (normal, and never paged), who is two or more behind (cut off), which routers trail the "
+     "mesh, and who could not be judged for want of a fresh frame. Information only."),
     ("retransmissions", "Retransmissions elevated",
      "In one minute, more than 20% of data frames were repeats (same sender and sequence number "
      "within 2 s), and more than double the recent baseline. A repeat means the sender got no "
@@ -240,6 +257,29 @@ class Site:
     def leader_router(self) -> int | None:
         part = self.status().get("partition") or {}
         return part.get("leader_router")
+
+    def mesh_generation(self) -> int | None:
+        """The mesh's key generation as the recorder last wrote it: the
+        highest a frame has decrypted under (status.json, crypto.key_sequence)."""
+        value = (self.status().get("crypto") or {}).get("key_sequence")
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    @staticmethod
+    def generation_html(r: dict) -> str:
+        """'86', or '84 <2 behind 86>' for a device behind its reference,
+        with the recorder's open key-lag episode marked."""
+        if r.get("generation") is None:
+            return '<span class="muted">?</span>'
+        text = esc(r["generation"])
+        lag = r.get("lag")
+        against = r.get("mesh_generation") if r.get("role") == "router" else r.get("parent_generation")
+        if lag is not None and lag >= 2:
+            text += f' <span class="warn">{lag} behind {esc(against)}</span>'
+        elif lag == 1:
+            text += f' <span class="muted">1 behind {esc(against)}</span>'
+        if r.get("key_lagging"):
+            text += ' <span class="bad">cut off</span>'
+        return text
 
     @staticmethod
     def role_html(r: dict, now: float) -> str:
@@ -452,7 +492,8 @@ class Site:
         now = time.time()
         names = self.names()
         seen = self.seen()
-        every = device_rows(seen, names, self.cfg.quiet_min_rssi_dbm, now, leader_router=self.leader_router())
+        every = device_rows(seen, names, self.cfg.quiet_min_rssi_dbm, now, leader_router=self.leader_router(),
+                            mesh_generation=self.mesh_generation())
         dominant = dominant_pan(seen, self.cfg.pan_id, self.cfg.state_dir)
         rows = select_devices(every, dominant, only, sort)
         only = only if only in DEVICE_FILTERS else ""
@@ -490,6 +531,7 @@ class Site:
                              f'{esc(r["rotated_to"])}</a></span>')
             trs.append(f'<tr><td><a href="/device/{esc(r["addr"])}">{nm}</a></td>'
                        f'<td>{self.role_html(r, now)}</td>'
+                       f'<td>{self.generation_html(r)}</td>'
                        f'<td>{seen_html}</td>'
                        f'<td class="n">{esc(r["rssi_dbm"])}</td><td>{rec_html}</td>'
                        f'<td class="n">{r["frames"]:,}</td><td>{pan_html}</td>'
@@ -498,7 +540,7 @@ class Site:
         note = (f'<p class="muted">{len(every)} addresses tracked'
                 + (f', <span class="warn">{unknown} not in devices.json</span>' if unknown else "")
                 + (f'; showing {len(rows)} ({DEVICE_FILTERS[only][0]})' if only else "") + '.</p>')
-        table = (f'<table><tr><th>device</th><th>role (live)</th><th>last heard</th><th>rssi</th>'
+        table = (f'<table><tr><th>device</th><th>role (live)</th><th>key gen</th><th>last heard</th><th>rssi</th>'
                  f'<th>reception</th><th>frames</th><th>pan</th><th>address</th></tr>{"".join(trs)}</table>'
                  if trs else f'<p class="empty">no devices {DEVICE_FILTERS[only][0] if only else "tracked"}</p>')
         return self.page("devices", f'<h1>devices</h1>{note}{filters}{table}')
@@ -530,10 +572,14 @@ class Site:
         if len(addrs) > 1:
             head.append(f'{len(addrs)} addresses (rotates)')
         live = next((r for r in device_rows(seen, names, self.cfg.quiet_min_rssi_dbm, now,
-                                            leader_router=self.leader_router())
+                                            leader_router=self.leader_router(),
+                                            mesh_generation=self.mesh_generation())
                      if r["addr"] == primary), None)
         if live and live["role"]:
             head.append(self.role_html(live, now))
+        if live and live.get("generation") is not None:
+            head.append(f'key generation {self.generation_html(live)}'
+                        f' <span class="muted">as of {ago(live.get("generation_ts"), now)}</span>')
         if live and live.get("border_router_label"):
             head.append(f'border router {esc(live["border_router_label"])}, '
                         f'hostname <code>{esc(live["border_router"])}</code>'
@@ -637,6 +683,16 @@ class Site:
                 extra = ", ".join(f"{esc(k)} {esc(v)}" for k, v in det.items()
                                   if k != "storm_active" and not isinstance(v, (list, dict)))
                 row("storm detector", f'{storm} <span class="muted">{extra}</span>')
+            keys = st.get("keys") or {}
+            if keys.get("highest") is not None:
+                first = keys.get("first_sender")
+                who = (f'<a href="/device/{esc(first)}">{esc(self.names().name(first) or first)}</a>'
+                       if first else "?")
+                when = keys.get("highest_first_ts")
+                row("key generation", f'{esc(keys["highest"])} <span class="muted">first heard from {who}'
+                                      + (f' {ago(when, now)}' if when else "")
+                                      + (f', previously {esc(keys["previous"])}' if keys.get("previous") is not None
+                                         else "") + '</span>')
             cr = st.get("crypto")
             if cr:
                 row("crypto", '<span class="muted">'
@@ -727,7 +783,8 @@ class Site:
                     "coverage": coverage(self.cfg.events_dir, day, status=self.status())}
         if path == "/api/devices":
             seen = self.seen()
-            rows = device_rows(seen, self.names(), self.cfg.quiet_min_rssi_dbm, leader_router=self.leader_router())
+            rows = device_rows(seen, self.names(), self.cfg.quiet_min_rssi_dbm, leader_router=self.leader_router(),
+                               mesh_generation=self.mesh_generation())
             return {"devices": select_devices(rows, dominant_pan(seen, self.cfg.pan_id, self.cfg.state_dir),
                                               query.get("only", ""),
                                               query.get("sort", "name"))}
@@ -747,12 +804,15 @@ class Site:
             # device whose address rotates are beside it.
             primary = live_address(addrs, table)
             live = next((r for r in device_rows(seen, names, self.cfg.quiet_min_rssi_dbm,
-                                                leader_router=self.leader_router())
+                                                leader_router=self.leader_router(),
+                                                mesh_generation=self.mesh_generation())
                          if r["addr"] == primary), {})
             return {"addr": primary, "addresses": addrs, "name": name if name != addrs[0] else None,
                     "live": {k: live.get(k) for k in ("role", "rloc16", "rloc16_ts", "router_id",
                                                       "leader", "parent", "parent_addr", "border_router",
-                                                      "rotated_to")},
+                                                      "rotated_to", "generation", "generation_ts",
+                                                      "parent_generation", "mesh_generation", "lag",
+                                                      "key_lagging")},
                     "last_seen": table.get(primary),
                     "addresses_seen": {a: table.get(a) for a in addrs},
                     "episode_days": DEVICE_HISTORY_DAYS, "episodes": eps}

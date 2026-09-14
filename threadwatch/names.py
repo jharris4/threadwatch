@@ -497,6 +497,28 @@ def rloc16_role(rloc16: str | None) -> dict | None:
             "role": "router" if cid == 0 else "child"}
 
 
+def router_holders(table: dict[str, dict]) -> dict[int, str]:
+    """Which extended address holds each router id, from the RLOC16 each
+    row was last seen using, the newest confirmation winning. A child's
+    parent is the holder of the router id in its own RLOC16 (parent_address);
+    the review pages and the recorder's key-generation detector both ask."""
+    holders: dict[int, str] = {}
+    for addr, row in sorted(table.items(), key=lambda kv: kv[1].get("rloc16_ts") or 0):
+        r = rloc16_role(row.get("rloc16"))
+        if r and r["role"] == "router":
+            holders[r["router_id"]] = addr
+    return holders
+
+
+def parent_address(row: dict, holders: dict[int, str]) -> str | None:
+    """The extended address of a child's parent, or None for a router, an
+    address whose role is unknown, or a router id nobody is known to hold."""
+    live = rloc16_role(row.get("rloc16"))
+    if not live or live["role"] != "child":
+        return None
+    return holders.get(live["router_id"])
+
+
 def reception(rssi: float | None, min_rssi_dbm: float) -> str:
     """How much a silence from this address means, given how well we hear it."""
     if rssi is None:

@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 from .events import day_bounds, day_of, iter_days, list_days, next_day, prev_day, read_day
-from .names import DeviceNames, LastSeen, reception, rloc16_role
+from .names import DeviceNames, LastSeen, parent_address, reception, rloc16_role, router_holders
 from .snapshot import STAGING_DIR
 
 SEVERITY_RANK = {"info": 0, "notice": 1, "warning": 2, "critical": 3}
@@ -574,17 +574,12 @@ def device_rows(seen: LastSeen, names: DeviceNames, min_rssi_dbm: float,
     recorder last saw the device use: router or child, which router it is
     or hangs off, and whether it holds the partition's leader id."""
     now = now or time.time()
-    # Who holds each router address, newest confirmation winning.
-    holder: dict[int, str] = {}
-    for addr, row in sorted(seen.table.items(), key=lambda kv: kv[1].get("rloc16_ts") or 0):
-        r = rloc16_role(row.get("rloc16"))
-        if r and r["role"] == "router":
-            holder[r["router_id"]] = addr
+    holders = router_holders(seen.table)
     rows = []
     for addr, row in seen.table.items():
         rssi = row.get("rssi")
         live = rloc16_role(row.get("rloc16")) or {}
-        parent_addr = holder.get(live["router_id"]) if live.get("role") == "child" else None
+        parent_addr = parent_address(row, holders)
         br = names.border_routers.get(addr)
         rows.append({
             "border_router": br["hostname"] if br else None,

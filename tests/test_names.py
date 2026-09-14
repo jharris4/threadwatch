@@ -310,6 +310,22 @@ class Rloc16RoleTest(unittest.TestCase):
         self.assertIsNone(rloc16_role(None))
         self.assertIsNone(rloc16_role("zz"))
 
+    def test_the_router_holder_lookup_names_a_childs_parent_by_the_newest_claim(self):
+        from threadwatch.names import parent_address, router_holders
+        table = {
+            "a" * 16: {"rloc16": "c000", "rloc16_ts": 100.0},        # router 48, the older claim
+            "b" * 16: {"rloc16": "c000", "rloc16_ts": 200.0},        # router 48 now: it re-attached with the id
+            "c" * 16: {"rloc16": "c004", "rloc16_ts": 150.0},        # child 4 of router 48
+            "d" * 16: {"rloc16": "0801", "rloc16_ts": 150.0},        # child of router 2, whom nobody holds
+            "e" * 16: {},                                            # role unknown
+        }
+        holders = router_holders(table)
+        self.assertEqual(holders, {48: "b" * 16})
+        self.assertEqual(parent_address(table["c" * 16], holders), "b" * 16)
+        self.assertIsNone(parent_address(table["d" * 16], holders))
+        self.assertIsNone(parent_address(table["b" * 16], holders))
+        self.assertIsNone(parent_address(table["e" * 16], holders))
+
 
 class LearnedBorderRoutersTest(unittest.TestCase):
     def test_state_file_names_a_new_address_from_the_bound_entry(self):

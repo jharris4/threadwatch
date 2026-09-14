@@ -128,5 +128,115 @@ class SettingsFileTest(unittest.TestCase):
         self.assertEqual((by[GARDEN]["stale"], by[GARDEN]["mute"], by[GARDEN]["ha_name"]), (True, True, None))
 
 
+class MapAndPollTest(unittest.TestCase):
+    """The link from HA's devices to the inventory, and the reduction of
+    /api/states to per-device availability."""
+
+    REGISTRY = [
+        {"id": MOTION, "name": "Motion HA Name", "identifiers": [["matter", "x-1"]]},
+        {"id": GARDEN, "name": "Garden Sensor", "identifiers": [["matter", "x-2"]]},
+        {"id": "wifi", "name": "Wifi Plug", "identifiers": [["matter", "x-3"]]},
+    ]
+    DIAGS = {MOTION: {"node_id": 7, "network_type": "thread", "mac_address": "c2:33:a4:a5:bf:83:91:c9"},
+             GARDEN: {"node_id": 8, "network_type": "thread", "mac_address": "16:69:67:4d:d1:5c:f0:fa"},
+             "wifi": {"node_id": 9, "network_type": "wifi", "mac_address": "aa:bb:cc:dd:ee:ff"}}
+    ENTITIES = [
+        {"entity_id": "binary_sensor.motion", "device_id": MOTION, "entity_category": None, "disabled_by": None},
+        {"entity_id": "sensor.motion_battery", "device_id": MOTION, "entity_category": "diagnostic"},
+        {"entity_id": "switch.motion_led", "device_id": MOTION, "entity_category": "config"},
+        {"entity_id": "sensor.motion_old", "device_id": MOTION, "disabled_by": "user"},
+        {"entity_id": "sensor.garden_battery", "device_id": GARDEN, "entity_category": "diagnostic"},
+        {"entity_id": "sensor.garden_rssi", "device_id": GARDEN, "entity_category": "diagnostic",
+         "disabled_by": "integration"},
+        {"entity_id": "sensor.unrelated", "device_id": "other"},
+    ]
+
+    def _fake(self):
+        from tests.test_ha import FakeHA
+        return FakeHA({"config/device_registry/list": self.REGISTRY,
+                       "matter/node_diagnostics": lambda f: self.DIAGS[f["device_id"]],
+                       "config/entity_registry/list": self.ENTITIES})
+
+    def test_devices_are_matched_to_the_inventory_by_address_and_entities_filtered(self):
+        mapping = haavail.build_map(self._fake(), ENTRIES)
+        self.assertEqual(sorted(mapping), sorted([MOTION, GARDEN]))                  # the Wi-Fi plug is not Thread
+        self.assertEqual(mapping[MOTION], {"addr": "C233A4A5BF8391C9", "node_id": 7, "ha_name": "Motion HA Name",
+                                           "name": "Front Path Motion", "matched": True,
+                                           "entities": ["binary_sensor.motion"]})     # not diagnostic, config, disabled
+        self.assertEqual((mapping[GARDEN]["name"], mapping[GARDEN]["matched"], mapping[GARDEN]["entities"]),
+                         ("Garden Sensor", False, ["sensor.garden_battery"]))          # diagnostic only: it counts
+        # The map round-trips through the state file the recorder caches it in.
+        with tempfile.TemporaryDirectory() as d:
+            haavail.save_map(Path(d), mapping)
+            self.assertEqual(haavail.load_map(Path(d)), mapping)
+            (Path(d) / "ha-map.json").write_text("nope")
+            self.assertEqual(haavail.load_map(Path(d)), {})
+
+    def test_the_states_payload_reduces_to_per_device_availability(self):
+        mapping = {MOTION: {"entities": ["binary_sensor.motion", "sensor.motion_lux"]},
+                   GARDEN: {"entities": ["sensor.garden_battery"]},
+                   PLUG: {"entities": ["switch.plug"]},
+                   "empty": {"entities": []},
+                   "absent": {"entities": ["sensor.not_in_states"]}}
+        states = [
+            {"entity_id": "binary_sensor.motion", "state": "unavailable",
+             "last_changed": "2026-09-13T21:03:12.5+00:00"},
+            {"entity_id": "sensor.motion_lux", "state": "unavailable", "last_changed": "2026-09-13T21:04:00+00:00"},
+            {"entity_id": "sensor.garden_battery", "state": "unknown", "last_changed": "2026-09-13T20:00:00+00:00"},
+            {"entity_id": "switch.plug", "state": "unavailable", "last_changed": "2026-09-13T21:00:00Z"},
+            {"entity_id": "sensor.plug_power", "state": "on"},
+        ]
+        got = haavail.reduce_states(states, mapping)
+        from datetime import datetime, timezone
+        t = lambda s: datetime.fromisoformat(s).replace(tzinfo=timezone.utc).timestamp()
+        self.assertEqual(got[MOTION], (True, t("2026-09-13T21:04:00")))               # the newest last_changed
+        self.assertEqual(got[GARDEN], (False, None))                                   # unknown is not unavailable
+        self.assertEqual(got[PLUG], (True, t("2026-09-13T21:00:00")))
+        self.assertNotIn("empty", got)
+        self.assertNotIn("absent", got)
+        # Partly unavailable is available.
+        states[1]["state"] = "12"
+        self.assertEqual(haavail.reduce_states(states, mapping)[MOTION], (False, None))
+
+    def test_the_poll_is_one_get_with_the_token_and_failures_are_redacted(self):
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        seen = []
+        payload = json.dumps([{"entity_id": "switch.plug", "state": "unavailable",
+                               "last_changed": "2026-09-13T21:00:00+00:00"}]).encode()
+
+        class H(BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append((self.path, self.headers.get("Authorization")))
+                if self.path != "/api/states":
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *a):
+                pass
+
+        httpd = HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=httpd.serve_forever, args=(0.005,), daemon=True).start()
+        url = f"http://127.0.0.1:{httpd.server_port}"
+        try:
+            result = haavail.fetch_availability(url, "tk_SECRET_TOKEN", {PLUG: {"entities": ["switch.plug"]}})
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+        self.assertEqual(seen, [("/api/states", "Bearer tk_SECRET_TOKEN")])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["devices"][PLUG][0], True)
+        down = haavail.fetch_availability(url, "tk_SECRET_TOKEN", {})        # nothing listens any more
+        self.assertFalse(down["ok"])
+        self.assertNotIn("tk_SECRET_TOKEN", down["error"])
+        self.assertIn("refused", down["error"].lower())
+
+
 if __name__ == "__main__":
     unittest.main()

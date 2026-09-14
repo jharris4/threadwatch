@@ -449,7 +449,11 @@ def thread_devices(ha: HomeAssistant, log: Callable[[str], None] = lambda m: Non
             continue
         out.append({"name": name or addr, "model": dev.get("model") or None,
                     "manufacturer": dev.get("manufacturer") or None,
-                    "addr": addr, "node_id": diag.get("node_id"), "available": diag.get("available")})
+                    "addr": addr, "node_id": diag.get("node_id"), "available": diag.get("available"),
+                    # The registry id: stable across renames in HA and in
+                    # devices.json, which is what config/ha-availability.json
+                    # is keyed by (haavail).
+                    "ha_device_id": dev["id"]})
     out.sort(key=lambda d: d["name"].lower())
     if skipped:
         log(f"{skipped} Matter device(s) skipped")

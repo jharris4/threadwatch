@@ -28,6 +28,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
+from datetime import datetime
 from pathlib import Path
 
 from .names import _norm, inventory_lock
@@ -257,3 +259,122 @@ def fmt_hold(seconds: float | None) -> str:
         return f"{seconds // 60}m"
     return f"{seconds}s"
 
+
+
+# ------------------------------------------------------------ the HA map
+
+MAP_FILE = "ha-map.json"
+STATES_TIMEOUT_S = 10.0
+
+
+def usable_entities(entities: list[dict]) -> list[str]:
+    """The entity ids whose state says whether a device is available: not
+    disabled, and not the config or diagnostic ones when the device has
+    others (a diagnostic entity can stay 'unavailable' on its own)."""
+    live = [e for e in entities if isinstance(e, dict) and e.get("entity_id") and not e.get("disabled_by")]
+    primary = [e for e in live if e.get("entity_category") not in ("config", "diagnostic")]
+    return sorted(e["entity_id"] for e in (primary or live))
+
+
+def build_map(ha, entries: list[dict], log=lambda m: None) -> dict[str, dict]:
+    """The runtime link from HA's devices to the inventory: HA device id ->
+    extended address (from the Matter node diagnostics), node id, the HA
+    name, the inventory's name for that address when it has one, and the
+    entities to watch. Built over the websocket (the one client `import`
+    uses); the once-a-minute poll is REST and needs only this."""
+    from .ha import thread_devices
+    devices = thread_devices(ha, log)
+    registry = ha.call("config/entity_registry/list") or []
+    by_device: dict[str, list[dict]] = {}
+    for ent in registry:
+        if isinstance(ent, dict) and ent.get("device_id"):
+            by_device.setdefault(ent["device_id"], []).append(ent)
+    out = {}
+    for dev in devices:
+        device_id = dev.get("ha_device_id")
+        if not device_id:
+            continue
+        inventory = _inventory_name(dev.get("addr"), entries)
+        out[device_id] = {"addr": (dev.get("addr") or "").upper() or None, "node_id": dev.get("node_id"),
+                          "ha_name": dev.get("name"), "name": inventory or dev.get("name"),
+                          "matched": inventory is not None,
+                          "entities": usable_entities(by_device.get(device_id, []))}
+    return out
+
+
+def load_map(state_dir: Path) -> dict[str, dict]:
+    try:
+        data = json.loads((state_dir / MAP_FILE).read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: v for k, v in data.items() if isinstance(v, dict) and isinstance(v.get("entities"), list)}
+
+
+def save_map(state_dir: Path, mapping: dict[str, dict]) -> None:
+    state_dir.mkdir(parents=True, exist_ok=True)
+    tmp = (state_dir / MAP_FILE).with_suffix(".tmp")
+    tmp.write_text(json.dumps(mapping, indent=1))
+    os.replace(tmp, state_dir / MAP_FILE)
+
+
+def _iso(value) -> float | None:
+    """An ISO 8601 stamp as HA writes them ('2026-09-13T21:03:12.123456+00:00') to epoch seconds."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def poll_states(url: str, token: str, timeout_s: float = STATES_TIMEOUT_S) -> list[dict]:
+    """GET /api/states: every entity's state. Raises OSError-family or
+    urllib errors for the caller to report (redacted)."""
+    import urllib.request
+
+    from .httpclient import urlopen
+    req = urllib.request.Request(f"{url.rstrip('/')}/api/states",
+                                 headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
+    with urlopen(req, timeout=timeout_s) as resp:
+        data = json.loads(resp.read().decode("utf-8", "replace"))
+    if not isinstance(data, list):
+        raise ValueError("/api/states did not return a list")
+    return data
+
+
+def reduce_states(states: list[dict], mapping: dict[str, dict]) -> dict[str, tuple[bool, float | None]]:
+    """The 1.3 MB of states reduced, on the worker thread, to what the
+    capture thread judges: per HA device (all_unavailable, since), where
+    a device is unavailable only when every watched entity is
+    'unavailable' ('unknown' does not count) and ``since`` is the newest
+    last_changed among them. A device with no watched entity, or whose
+    entities are not in the states at all, is left out: nothing is known."""
+    by_entity = {s.get("entity_id"): s for s in states if isinstance(s, dict)}
+    out: dict[str, tuple[bool, float | None]] = {}
+    for device_id, info in mapping.items():
+        present = [by_entity[e] for e in (info.get("entities") or []) if e in by_entity]
+        if not present:
+            continue
+        down = all(s.get("state") == "unavailable" for s in present)
+        since = None
+        if down:
+            stamps = [t for t in (_iso(s.get("last_changed")) for s in present) if t is not None]
+            since = max(stamps) if stamps else None
+        out[device_id] = (down, since)
+    return out
+
+
+def fetch_availability(url: str, token: str, mapping: dict[str, dict], now: float | None = None) -> dict:
+    """One poll, for the worker thread: {ok, devices, polled_ts} or
+    {ok: False, error} with the error redacted of the URL and the token."""
+    from .httpclient import redact_text
+    now = now if now is not None else time.time()
+    try:
+        states = poll_states(url, token)
+    except Exception as exc:                 # a refused connection, a 5xx while HA restarts, bad JSON
+        reason = getattr(exc, "reason", None)
+        text = f"HTTP {exc.code}" if hasattr(exc, "code") else f"{type(exc).__name__}: {reason or exc}"
+        return {"ok": False, "error": redact_text(text, (token,)), "polled_ts": now}
+    return {"ok": True, "devices": reduce_states(states, mapping), "polled_ts": now}

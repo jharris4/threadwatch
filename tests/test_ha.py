@@ -370,7 +370,7 @@ class ThreadDevicesTest(unittest.TestCase):
         found = thread_devices(fake, log=notes.append)
         self.assertEqual(found,
                          [{"name": "Living Room Motion", "model": "Eve Motion 20EBY9901", "manufacturer": "Eve Systems",
-                                  "addr": "F00D000000000001", "node_id": 1, "available": True}])
+                                  "addr": "F00D000000000001", "node_id": 1, "available": True, "ha_device_id": "d1"}])
         self.assertEqual([t for t, _ in fake.calls].count("matter/node_diagnostics"), 4)   # not for the Hue bridge
         self.assertTrue(any("Odd" in n and "no extended address" in n for n in notes))
         self.assertTrue(any("Broken" in n for n in notes))

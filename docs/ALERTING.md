@@ -105,7 +105,7 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `ha_available` | info | `addr`, `name`, `ha_device_id`, `since`, `down_for_s`, `rejoined`, `generation`, `note`; only after an `ha_unavailable` went out |
 | `ha_unreachable` | notice | `failing_for_s`, `error`, `note`; once, after five minutes of failed polls |
 | `ha_reachable` | info | `unreachable_for_s`, `note`; the next poll is a baseline, not transitions |
-| `daily_summary` | `[summary] severity` (notice) | `frames_24h`, `devices_heard_24h`, `devices_tracked`, `quiet`, `unknown`, `marginal`, `degraded`, `storm_active`, `events_24h`, `key_generation` (the mesh's), `key_lag_1` and `key_lag_2plus` (device names one, and two or more, generations behind right now), `note` |
+| `daily_summary` | `[summary] severity` (notice) | `frames_24h`, `devices_heard_24h`, `devices_tracked`, `quiet`, `unknown`, `marginal`, `degraded`, `storm_active`, `events_24h`, `key_generation` (the mesh's), `key_lag_1` and `key_lag_2plus` (device names one, and two or more, generations behind right now), `ha_unavailable_24h` (with `[ha_availability]`: the day's Home Assistant unavailabilities, each `name`, `down_for_s`, `open`), `note` |
 | `alert_test` | as requested | `name`, `addr`, `note` (from `alert-test`) |
 
 `name` is null for addresses not in `devices.json`.
@@ -375,6 +375,59 @@ rotation the operator has vouched for is covered across the entry's
 addresses without any retirement. `[border_routers] rotation = "trusted"`
 restores the old behaviour, where the advertisement alone retires the old
 address.
+
+`ha_unavailable`, `ha_unavailable_burst`, `ha_available`, `ha_unreachable`
+and `ha_reachable` are the Home Assistant availability check
+(`[ha_availability] enabled`; docs/HOME-ASSISTANT.md). HA's "unavailable"
+is the outage a person actually notices, and the radio detectors can miss
+it: on 2026-09-13 five devices went unavailable while their radios looked
+healthy. So the recorder polls HA's states once a minute (one small
+`GET /api/states`; the device map behind it is rebuilt over the websocket
+once an hour) and, when a device has been unavailable for its hold, says
+so with the recorder's own evidence for why: `cause` is `key_lag` (cut off
+by a key change, radio alive on an old generation), `lost_parent` (polling
+a parent that no longer answers), `silent` (the radio went quiet before HA
+lost it: the device died, lost power or left the mesh), `radio_ok` (heard
+in the last five minutes, so the fault is the Matter, IP or HA side) or
+`unheard` (the sniffer cannot hear it). Only Matter-over-Thread devices HA
+knows are covered; HomeKit-only Thread devices stay with the radio
+detectors. `devices.json` learns nothing: the link from HA's device ids to
+the inventory is built at runtime by extended address, and a device with no
+inventory entry is watched under its HA name.
+
+The hold is `[ha_availability] hold_s` (default 10 min), or the device's
+own `hold_s` in `config/ha-availability.json`, keyed by HA device id so it
+survives renames: a sensor that goes unavailable for half an hour in the
+afternoon sun gets two hours there and still pages when it really fails. A
+device that recovers inside its hold produces nothing at all. `mute` makes
+every record for a device a notice and keeps it out of bursts. Several
+devices dropping together are a network problem, not a device:
+`burst_devices` (default 3) non-muted devices going unavailable within
+`burst_window_s` (10 min), the newest of them down for `burst_hold_s`
+(2 min, which filters the blip of a Home Assistant or Matter Server
+restart), is one critical `ha_unavailable_burst` with the automatic
+snapshot; the members' own `ha_unavailable` records are notices carrying
+the `burst_id`, a device dropping while the burst is live joins it rather
+than starting another, and the burst ends when fewer than `burst_devices`
+members are still down or the window passes without a new one, so one
+device stuck for hours never suppresses the next outage. When most of the
+mapped devices are down at once while the recorder heard most of them in
+the last five minutes, the burst's note says "HA or Matter Server side":
+still critical, because the devices really are down, but the cause points
+away from the mesh. A device already unavailable when the recorder starts
+opens an episode without paging (a notice with
+`already_unavailable_at_start`, unless a persisted episode says it was
+paged before the restart), and an episode reopening within `rearm_s` of
+its close is a notice with `episode` > 1, like a flapping starvation.
+
+Home Assistant being down is not a device being down: a failed poll (a
+refused connection, a 5xx while HA restarts) opens and closes nothing,
+five minutes of them are one `ha_unreachable` notice, recovery is
+`ha_reachable`, and the first poll after is a baseline, not transitions.
+If HA automations already notify on unavailability, keep `ha_unavailable`
+off the phone sink with `ignore_events = ["ha_unavailable"]` and let the
+burst through; the devices page shows `HA: available` or `unavailable
+since` either way.
 
 `snapshot_logs_saved` and `snapshot_logs_failed` report the Home Assistant
 add-on logs that join a snapshot with `[ha_logs] enabled` (docs/ANALYSIS.md,

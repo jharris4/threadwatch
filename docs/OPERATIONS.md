@@ -131,6 +131,12 @@ each of these too.
 | `record` | | the same, or a config value out of range |
 | `replay`, `device`, `snapshots --delete` | `--snapshot NAME` matches no snapshot, or more than one | |
 
+`ha-availability set <device> (--hold DURATION | --mute | --clear)` and
+`ha-availability list` edit and show `config/ha-availability.json`
+(docs/HOME-ASSISTANT.md), resolving `<device>` through Home Assistant by
+inventory name, extended address or HA device id; exit 1 when HA refuses,
+the device is unknown or ambiguous, or the duration does not parse.
+
 `snapshot [label]` exits 0 once the ring is copied, whatever became of the
 Home Assistant add-on logs it copies afterwards with `[ha_logs] enabled`
 (docs/ANALYSIS.md, "Snapshots"): it prints one progress line per add-on
@@ -185,6 +191,13 @@ non-`ok` line means and what to do about it:
 | `ha-logs` HTTP 404: no such add-on | an `[ha_logs] addons` slug HA does not know | `ha addons` on the HA host lists the slugs; the defaults are `core_openthread_border_router` and `core_matter_server` |
 | `ha-logs` not reachable | HA did not answer at `HA_URL` within 10 s | check `HA_URL` in `config/ha.env` and that HA is up; the recorder retries snapshot fetches by itself |
 | `ha-logs` newest line N min ago: the add-on looks stopped | the add-on's log has not moved in over ten minutes | start the add-on in HA; a stopped OTBR is a mesh with no border router |
+| `ha-avail` ha-availability.json ... : the availability check is off | the per-device settings file does not parse or has a wrong type; the recorder runs without the check | fix the entry named (`hold_s` a number, `mute` true/false), restart |
+| `ha-avail` enabled but config/ha.env has no HA_TOKEN | nothing is polled | put a token in `config/ha.env` (docs/HOME-ASSISTANT.md) |
+| `ha-avail` GET /api/states ... failed | HA did not answer the poll endpoint | check `HA_URL` and that HA is up; the recorder logs `ha_unreachable` after five minutes of this |
+| `ha-avail` N not in devices.json, watched under their HA names | HA has Thread devices the inventory does not | `threadwatch import --write` adds them |
+| `ha-avail` device(s) with no usable entity, so never judged | every entity of the device is disabled, or HA lists none | enable one in HA, or accept that the device is not judged |
+| `ha-avail` entries for device id(s) Home Assistant no longer has | stale settings for a removed device | delete them from `config/ha-availability.json`, or leave them: they do nothing |
+| `ha-avail` name or extendedAddress out of date | a device was renamed in HA or in devices.json | `threadwatch import --write` refreshes them |
 | `ha-logs` the hourly archive has nothing yet | `[ha_logs] archive` is on and no hour has been archived | it fills two minutes after the next hour while the recorder runs; check the recorder is up |
 | `ha-logs` archive up to H UTC (N min behind): the archive has not kept up | the newest archived hour ended more than two hours ago | the recorder is down, or HA has not answered (the `ha_logs_archive_stalled` event says since when); the pending hours are retried every 15 min while the journal can still have them |
 | `alerts` alert sink 'x' disabled: environment variable(s) not set | a `${NAME}` the sink references is not in `config/alerts.env`; the daemon runs without that sink | add it to alerts.env, restart |
@@ -255,6 +268,7 @@ file.) The fields:
 | `partition` | null until the MLE layer has seen an advertisement, then `id`, `leader_router` (the leader's router id), `leader_rloc16`, and `leader_addr` / `leader_name` once that router id has been matched to a device |
 | `detector` | the storm detector: `baseline_frames_per_window` (calm frames per 10 s), `recent_windows` (the last six counts), `storm_active`, `flood_onsets_recent`, `alerts_sent` |
 | `crypto` | the decryption counters, below, and `key_sequence`, the highest Thread key sequence a frame has decrypted under (null until one has) |
+| `ha_availability` | null unless `[ha_availability]` is on; then `enabled` (false with a `reason` when the settings file would not load), `reachable`, `last_poll_ts`, `last_ok_ts`, `devices_mapped`, `burst` (the live burst's id) and `open`: the devices unavailable in HA right now, each with `name`, `addr`, `since`, `paged`, `severity`, `burst_id` |
 | `ha_logs_archive` | null unless `[ha_logs] archive` is on; then per add-on `last_archived` (the newest hour in `data/ha-logs/`, a UTC hour name), `hours_on_disk`, `pending` (hours a fetch has failed for and will be retried) and `lost` (hours that rolled out of HA's journal before they could be fetched) |
 | `keys` | the key generations as the recorder records them (docs/ALERTING.md, `key_sequence_advanced`): `highest` and `previous`, `highest_first_ts` and `previous_first_ts` (when each was first heard), `first_sender` (which address was heard first under the highest) and `census_at` (when the census for it is due, null once sent). Empty until a frame has been accepted under any generation. `highest` can trail `crypto.key_sequence` for a moment: the decryptor's value moves on any frame that decrypts, this one on a frame the pipeline accepted as a sighting |
 | `alerts` | this run's deliveries: `delivered`, `queued` (held for a send or a retry), `retrying` (failed at least once), `given_up` (too old to retry), `resumed` (taken from the spool the last run left; docs/ALERTING.md) |
@@ -327,6 +341,12 @@ it up if you care about the history; nothing else holds it.
         ha-logs-archive.json with [ha_logs] archive: per add-on the last hour archived, the hours
                              still pending (attempts, last error) and the hours lost, plus the
                              outage in progress, so a restart carries on where the archive stopped
+        ha-map.json          with [ha_availability]: HA device id -> extended address, HA name, the
+                             inventory's name for it, and the entities whose state counts; rebuilt
+                             over the websocket once an hour and cached so a restart polls at once
+        ha-availability.json with [ha_availability]: the open episodes (since, paged, burst), the
+                             recent closes (for the flap guard), the live burst and whether HA is
+                             reachable, so a restart neither re-pages nor forgets an outage
         blind-spans.json     when the recorder was not listening (its own outages, clock steps),
                              kept while a device's silence still reaches back over one
         last-exit.json       how the last run ended (stopped, stalled, crashed, ...) and when; the
@@ -358,7 +378,10 @@ the generation the mesh is on, and the census that follows it.
 often a pending one was tried; the next pass starts the catch-up at the
 edge of `[ha_logs] max_hours`, and every hour the archive already holds is
 left alone. `ha-logs/` is the archive itself: delete it and the hours it
-held are gone for good, since HA's journal has long since let them go. `border-routers.json` is rebuilt at the next mDNS
+held are gone for good, since HA's journal has long since let them go.
+`ha-map.json` is rebuilt at the next poll; `ha-availability.json` costs
+one `already_unavailable_at_start` notice per device down at the time and
+one repeated page for an episode already paged. `border-routers.json` is rebuilt at the next mDNS
 browse, but the retired addresses in it are forgotten, so an Apple hub's
 history from before its last reboot loses its name. `last-seen.json` is
 the expensive one, below. The event log and the ring are your history and

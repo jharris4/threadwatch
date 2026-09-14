@@ -92,6 +92,71 @@ end devices such as locks never appear anywhere: name those with
 `threadwatch devices --suggest` and `threadwatch name`, or the
 power-cycle method in docs/ANALYSIS.md.
 
+## 0b. Alert when HA marks a Thread device unavailable
+
+The recorder can watch HA's own view of the devices and page with the
+radio evidence for why a device dropped (docs/ALERTING.md,
+`ha_unavailable`). It covers the Matter-over-Thread devices HA knows;
+HomeKit-only Thread devices stay with the radio detectors. Turn it on in
+`config/config.toml`:
+
+```toml
+[ha_availability]
+enabled = true
+```
+
+It needs the token in `config/ha.env` (any user's will do for this; the
+add-on log copy above needs an admin's) and polls `GET /api/states` once
+a minute, rebuilding the device map over the websocket once an hour.
+`devices.json` stays as it is: the link from HA's device ids to your
+names is made at runtime by extended address, cached in
+`data/state/ha-map.json`, and a device with no inventory entry is
+watched under its HA name (`threadwatch doctor` lists those).
+
+**Per-device hold and mute: `config/ha-availability.json`.** Some
+devices go unavailable for a while on their own: a motion sensor in the
+afternoon sun, a plug behind a cupboard door. The file is a JSON object
+keyed by HA device id, which is stable across renames in HA and in
+`devices.json` and changes only if the device is removed and re-added in
+HA (`config/ha-availability.example.json` shows the shape):
+
+```json
+{
+  "3f9c2e7a...": {"name": "Front Path Motion", "extendedAddress": "C233A4A5BF8391C9", "hold_s": 7200},
+  "a81b07d4...": {"name": "Garden Sensor", "extendedAddress": "1669674DD15CF0FA", "mute": true}
+}
+```
+
+`hold_s` and `mute` are yours: a hold in seconds that replaces the
+default `[ha_availability] hold_s` for that device, and `mute`, which
+makes every record for it a notice (never paged) and keeps it out of
+bursts. `name` and `extendedAddress` are kept by the tools for
+readability and the link to `devices.json`; they are the link, not the
+key. Edit the file by hand or with the command, which resolves the device
+through HA by inventory name, extended address or HA device id:
+
+```bash
+bin/threadwatch ha-availability set "Front Path Motion" --hold 2h    # a known flapper: warn after two hours
+bin/threadwatch ha-availability set "Garden Sensor" --mute           # log it, never page it
+bin/threadwatch ha-availability set "Garden Sensor" --clear          # back to the defaults
+bin/threadwatch ha-availability list                                  # every entry, marking stale ids
+```
+
+`threadwatch import --write` refreshes `name` and `extendedAddress` in
+the file for every existing entry when a device is renamed on either
+side, reporting the changes as it does for `devices.json`; it never
+touches `hold_s` or `mute`, adds no entries and removes none (a device HA
+no longer has is reported as stale, and stays until you delete it). The
+recorder only reads the file, at start, and `push-to-host.sh` ships it
+with the rest of `config/`; it is gitignored like `devices.json`. A file
+that does not parse, or a value of the wrong type, stops this check (not
+the recorder) with a journal line and a `FAIL` from `threadwatch doctor`.
+
+If your HA automations already notify on unavailability, keep
+`ha_unavailable` off the phone sink with `ignore_events` (docs/ALERTING.md,
+"Choosing events") and let `ha_unavailable_burst` through: the burst is
+the mesh-wide outage, with the snapshot.
+
 ## 1. Receive alerts in HA
 
 `config.toml` (full reference and other receivers: docs/ALERTING.md):

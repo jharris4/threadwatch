@@ -30,7 +30,10 @@ question: *why did this device go offline?*
     a census of who followed it, and a device left two or more
     generations behind its parent is paged, because its frames are being
     dropped while its polls are still acknowledged, so it looks alive to
-    everything else.
+    everything else;
+  - Home Assistant availability (opt-in): a device HA marks unavailable
+    is paged with the radio evidence for why, and several dropping
+    together are one critical burst with a snapshot.
   A daily summary event (frames, devices heard, quiet and unknown ones,
   who is behind on the key, event counts) says the recorder is still
   watching.
@@ -195,7 +198,10 @@ credentials.toml too (docs/HOME-ASSISTANT.md).
 Anything else is ignored, so a file produced by another tool loads as
 long as it has names and addresses. What a device is doing on the mesh
 (router, child, leader, parent) is learned from traffic and never read
-from here. The rules when the file is not quite right: an address that is
+from here. Nothing Home Assistant-specific lives here either: the
+availability check's per-device hold and mute are in
+`config/ha-availability.json`, keyed by HA device id and linked to these
+entries by address (docs/HOME-ASSISTANT.md). The rules when the file is not quite right: an address that is
 not 16 hex digits is dropped with a journal line and the rest of the
 entry stands; an entry that is not an object is skipped; a file that is
 not a list, or not valid JSON, is ignored whole, with a journal line and
@@ -285,6 +291,8 @@ default in them is checked against `--help` and the source).
       importer.py  threadwatch import: devices.json + credentials.toml from HA and mDNS
       snapshot.py  ring buffer -> snapshot (threadwatch snapshot, snapshot_on_critical)
       halogs.py    the Home Assistant add-on logs (OTBR, Matter Server) copied into each snapshot
+      haavail.py   the Home Assistant availability poll, its episodes, and the per-device settings file
+      hacause.py   why HA lost a device, from the radio evidence (one pure function)
       device.py    per-device history reconstruction (threadwatch device)
       doctor.py    preflight checks (threadwatch doctor)
       config.py    config.toml loading

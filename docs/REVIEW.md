@@ -56,7 +56,9 @@ proxy that authenticates.
   device's frames were accepted under, with how far behind its parent's
   (a router: the mesh's) that is: *1 behind* is normal after a rotation,
   *2 behind* is a device whose frames are being dropped, and *cut off*
-  marks the recorder's open `key_lag` episode (docs/ALERTING.md).
+  marks the recorder's open `key_lag` episode (docs/ALERTING.md). With
+  `[ha_availability]` on, an *HA* column says *available* or *unavailable
+  since HH:MM* for every device Home Assistant knows.
   `?only=unknown|quiet|marginal|down|foreign|routers|children` narrows
   it and `?sort=last|rssi|frames` orders it (longest unheard, weakest,
   busiest); the links at the top of the page set both. `/api/devices`
@@ -105,7 +107,9 @@ proxy that authenticates.
   `generation`, `generation_ts`, `parent_generation`, `mesh_generation`,
   `lag` and `key_lagging`: the key generation the device last sent under,
   how far behind its parent or the mesh that is, and whether the recorder
-  has a `key_lag` episode open on it; `/api/devices` rows carry the same),
+  has a `key_lag` episode open on it; and `ha_state` (`available`,
+  `unavailable`, or null when HA does not know the device or the check is
+  off), `ha_since` and `ha_burst_id`; `/api/devices` rows carry the same),
   `episode_days` (how far back `episodes` goes) and `episodes`. A name
   that matches nothing is a 404 with an `error` field, as is an ambiguous
   name. **A well-formed 16-hex address is not**: any of them resolves, so
@@ -127,6 +131,8 @@ The raw log is the wrong unit for people, so the pages group it:
 | `poll_starvation` ... `poll_answered` | one row: *X polls unanswered for 12m* (or *still unanswered*) |
 | `rssi_degradation` ... `rssi_recovered` | one row: *X signal down 9 dB for 2h10m* (or *still down*) |
 | `key_lag` ... `key_lag_cleared` | one row: *X 2 key generations behind Y for 40m* (or *still behind*) |
+| `ha_unavailable` ... `ha_available` | one row: *X unavailable in Home Assistant for 25m* (or *still unavailable*), with the cause |
+| `ha_unavailable_burst`, `ha_unreachable`, `ha_reachable` | one row each, always |
 | `key_sequence_advanced`, `key_lag_census` | one row each, always: *key rotated to generation 86*, *key generation census* |
 | `partition_or_leader_change`, `phase_locked_storm`, `daily_summary` | one row each, always |
 

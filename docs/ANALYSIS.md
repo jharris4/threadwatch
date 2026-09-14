@@ -183,6 +183,11 @@ Each snapshot is one directory:
       key-generations.json   the highest key generation heard, the one before, and who was heard
                              first under each (docs/ALERTING.md, key_sequence_advanced)
       events/                a copy of the whole event log, one file per day
+      ha-map.json            with [ha_availability]: HA device id -> address, names and entities (the link
+                             the availability check uses; devices.json itself carries nothing of HA's)
+      ha-availability.json   with [ha_availability]: the episodes open when the snapshot was saved
+      ha-availability-settings.json   a copy of config/ha-availability.json (per-device hold and mute), when
+                             the file exists; no secrets in it
       ha-logs/<slug>.log.gz  with [ha_logs] enabled: the Home Assistant add-on logs for the snapshot's
                              window, one gzip per add-on (core_openthread_border_router,
                              core_matter_server), journal lines with a UTC wall-clock stamp

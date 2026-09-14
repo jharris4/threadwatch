@@ -180,6 +180,8 @@ Each snapshot is one directory:
       blind-spans.json       when the recorder was not listening, as far as a silence still reached
       retransmissions.json   the retransmission detector's baseline and open elevation
       storm.json             the storm detector's windows, onsets and last page
+      key-generations.json   the highest key generation heard, the one before, and who was heard
+                             first under each (docs/ALERTING.md, key_sequence_advanced)
       events/                a copy of the whole event log, one file per day
 
 The name is the time it was saved (local, `YYYYMMDDTHHMMSS`) and the label

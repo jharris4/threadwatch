@@ -43,8 +43,8 @@ proxy that authenticates.
 - **/help**: what every episode kind and severity means; every row on a
   day page carries the same text as a tooltip.
 - **/devices**: every address the recorder tracks, with its inventory
-  name, its live role, how well the sniffer hears it, when it was last
-  heard, and whether it is on your PAN. The role comes from the RLOC16 the
+  name, its live role, its key generation, how well the sniffer hears it,
+  when it was last heard, and whether it is on your PAN. The role comes from the RLOC16 the
   device was last seen using (the top six bits are a router id; the low
   ten, when non-zero, a child id): *router 33*, *leader · router 60*, or
   *child of Mudroom Air Quality*, each with the address and how long ago
@@ -52,14 +52,19 @@ proxy that authenticates.
   refreshes it when it next talks.
   A border router carries its mDNS identity (instance, vendor, model),
   and an Apple hub's retired address, after a reboot gave it a new one,
-  says which address it became.
+  says which address it became. The key generation is the newest the
+  device's frames were accepted under, with how far behind its parent's
+  (a router: the mesh's) that is: *1 behind* is normal after a rotation,
+  *2 behind* is a device whose frames are being dropped, and *cut off*
+  marks the recorder's open `key_lag` episode (docs/ALERTING.md).
   `?only=unknown|quiet|marginal|down|foreign|routers|children` narrows
   it and `?sort=last|rssi|frames` orders it (longest unheard, weakest,
   busiest); the links at the top of the page set both. `/api/devices`
   takes the same parameters.
 - **/device/<addr>** or **/device/<name>**: one device's history over the
   last 90 days, as episodes, merged over every address it has used (a
-  rotating device is several addresses with one story), with a card per
+  rotating device is several addresses with one story), with its role
+  and key generation as on the devices page, and a card per
   address: last heard, signal level against its usual, frames. Part of a
   name works; a text that matches several names offers the choice.
   Retention is a year, so anything older is still on its day page; the
@@ -69,7 +74,8 @@ proxy that authenticates.
   channel and port, this run's frames, the threadwatch version and commit
   that is recording, partition and
   which device leads it (linked, once its RLOC16 has been matched),
-  storm detector, crypto counters) plus storage: ring size and hourly
+  the highest key generation heard and from whom, storm detector, crypto
+  counters) plus storage: ring size and hourly
   rate, snapshots and event log size, and free disk against what a full
   ring still needs (keep_hours hours at the measured rate, or keep_gb
   plus one hour when set, since the hour being written is never pruned;
@@ -93,7 +99,11 @@ proxy that authenticates.
   rotating device is described by the address it is using now), `addresses`
   (every address the name has had),
   `addresses_seen` (a last-seen row per address), `name`, `live` (`role`,
-  `rloc16`, `rloc16_ts`, `router_id`, `leader`, `parent`, `parent_addr`),
+  `rloc16`, `rloc16_ts`, `router_id`, `leader`, `parent`, `parent_addr`,
+  `generation`, `generation_ts`, `parent_generation`, `mesh_generation`,
+  `lag` and `key_lagging`: the key generation the device last sent under,
+  how far behind its parent or the mesh that is, and whether the recorder
+  has a `key_lag` episode open on it; `/api/devices` rows carry the same),
   `episode_days` (how far back `episodes` goes) and `episodes`. A name
   that matches nothing is a 404 with an `error` field, as is an ambiguous
   name. **A well-formed 16-hex address is not**: any of them resolves, so
@@ -114,6 +124,8 @@ The raw log is the wrong unit for people, so the pages group it:
 | `device_first_seen` burst (daemon start) | one row: *24 devices first seen* |
 | `poll_starvation` ... `poll_answered` | one row: *X polls unanswered for 12m* (or *still unanswered*) |
 | `rssi_degradation` ... `rssi_recovered` | one row: *X signal down 9 dB for 2h10m* (or *still down*) |
+| `key_lag` ... `key_lag_cleared` | one row: *X 2 key generations behind Y for 40m* (or *still behind*) |
+| `key_sequence_advanced`, `key_lag_census` | one row each, always: *key rotated to generation 86*, *key generation census* |
 | `partition_or_leader_change`, `phase_locked_storm`, `daily_summary` | one row each, always |
 
 A quiet spell that started yesterday and ended today appears on both days

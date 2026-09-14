@@ -240,6 +240,7 @@ file.) The fields:
 | `partition` | null until the MLE layer has seen an advertisement, then `id`, `leader_router` (the leader's router id), `leader_rloc16`, and `leader_addr` / `leader_name` once that router id has been matched to a device |
 | `detector` | the storm detector: `baseline_frames_per_window` (calm frames per 10 s), `recent_windows` (the last six counts), `storm_active`, `flood_onsets_recent`, `alerts_sent` |
 | `crypto` | the decryption counters, below, and `key_sequence`, the highest Thread key sequence a frame has decrypted under (null until one has) |
+| `keys` | the key generations as the recorder records them (docs/ALERTING.md, `key_sequence_advanced`): `highest` and `previous`, `highest_first_ts` and `previous_first_ts` (when each was first heard), `first_sender` (which address was heard first under the highest) and `census_at` (when the census for it is due, null once sent). Empty until a frame has been accepted under any generation. `highest` can trail `crypto.key_sequence` for a moment: the decryptor's value moves on any frame that decrypts, this one on a frame the pipeline accepted as a sighting |
 | `alerts` | this run's deliveries: `delivered`, `queued` (held for a send or a retry), `retrying` (failed at least once), `given_up` (too old to retry), `resumed` (taken from the spool the last run left; docs/ALERTING.md) |
 
 **The crypto counters** say whether the network key is right. Per MAC
@@ -281,7 +282,13 @@ it up if you care about the history; nothing else holds it.
                              or its poll starvation has been announced, and the highest frame
                              counter accepted under each of the last two key generations, so a
                              restart takes neither a replay for a sighting nor a key rotation
-                             for silence. A backward clock step
+                             for silence. counter_seq / counter_ts (and the mle_ pair) are the
+                             newest generation the device sent under and when, which the
+                             key-lag detector judges; an open key-lag episode lives on the row
+                             as keylag_since, keylag_confirm_at, keylag_parent, keylag_role,
+                             keylag_gens and keylag_sent, with keylag_closed and
+                             keylag_episodes for the hold-down; rejoin_ts is the device's last
+                             MLE rejoin attempt. A backward clock step
                              (clock_step with a negative step_s) moves every timestamp in this
                              file back with the clock: it is the one thing that rewrites history
                              here rather than adding to it
@@ -292,6 +299,10 @@ it up if you care about the history; nothing else holds it.
         storm.json           the storm detector's traffic windows, onsets and last page, so a
                              restart mid-storm is not blind for five minutes and does not page
                              the same storm again
+        key-generations.json the highest key generation heard, the one before, when each was
+                             first heard and from whom, and when the census for it is due: a
+                             restart never announces a rotation twice (docs/ALERTING.md,
+                             key_sequence_advanced)
         blind-spans.json     when the recorder was not listening (its own outages, clock steps),
                              kept while a device's silence still reaches back over one
         last-exit.json       how the last run ended (stopped, stalled, crashed, ...) and when; the
@@ -316,7 +327,9 @@ price. `status.json` comes back within 30 s. `capture.fifo` is recreated
 at start. `observed-names.json` is re-learned as devices re-register
 (hours to a day). `frames-by-hour.json` costs the next daily summary an
 accurate frame count. `storm.json` costs the next start about five minutes of
-blindness to a storm already running, and one repeat page for it. `border-routers.json` is rebuilt at the next mDNS
+blindness to a storm already running, and one repeat page for it.
+`key-generations.json` costs one repeated `key_sequence_advanced` (info) for
+the generation the mesh is on, and the census that follows it. `border-routers.json` is rebuilt at the next mDNS
 browse, but the retired addresses in it are forgotten, so an Apple hub's
 history from before its last reboot loses its name. `last-seen.json` is
 the expensive one, below. The event log and the ring are your history and

@@ -25,9 +25,15 @@ question: *why did this device go offline?*
   - slow link degradation: a device still talking but heard well below
     its usual level, the precursor of a silence with no rejoin;
   - sleepy-device starvation: a child polling a parent that no longer
-    answers, which never shows up as a silence.
+    answers, which never shows up as a silence;
+  - key generations: every rotation of the network key is recorded, with
+    a census of who followed it, and a device left two or more
+    generations behind its parent is paged, because its frames are being
+    dropped while its polls are still acknowledged, so it looks alive to
+    everything else.
   A daily summary event (frames, devices heard, quiet and unknown ones,
-  event counts) says the recorder is still watching.
+  who is behind on the key, event counts) says the recorder is still
+  watching.
   Per-device RSSI trend, ACK-success rate and poll cadence are tracked too
   and printed by `threadwatch device`, not logged as events.
   Warning/critical events go to any number of alert sinks (plain HTTP with
@@ -37,7 +43,9 @@ question: *why did this device go offline?*
   (docs/ALERTING.md).
 - **`threadwatch device <device>`** — reconstructs one device's story from
   the ring: hour-by-hour cadence, RSSI, ACKs, the recorder's own RSSI
-  range, ACK rate and median poll interval for the device, silences, and
+  range, ACK rate and median poll interval for the device, the key
+  generations it sent under (first and last frame under each, so a device
+  stranded by a rotation shows it), silences, and
   rejoin attempts. This is the "why did X go offline"
   command; `--hours 6` reads only the recent ring files, which on a Pi is
   the difference between seconds and minutes, `--pcap file` reads one

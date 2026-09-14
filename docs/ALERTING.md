@@ -180,6 +180,93 @@ thing to look at: is it the parent that died, or a link the sniffer
 cannot hear? The close time is kept with the last-seen rows,
 so a restart does not re-page a flapping device.
 
+`key_sequence_advanced`, `key_lag_census`, `key_lag` and `key_lag_cleared`
+are the key-generation detectors, for the failure neither of the two above
+can see. The mesh rotates its network key on a schedule (OpenThread's
+default is 28 days; this mesh has been doing it about every 5.4 days), and
+every device follows the rotation the next time it hears the new key in
+use. OpenThread accepts a MAC frame only under its own generation, the one
+before and the one after. One generation behind is therefore normal: a
+device that has not yet followed still hears its parent and is still
+heard, and that state can last weeks (a device ignores the next +1 for
+most of a rotation period after it last followed). Two behind is a cut-off:
+every frame the device sends is dropped by its parent, while the parent's
+radio still acknowledges its polls, because the ACK goes out before the
+security check. So the device looks alive to the sniffer: it is not quiet,
+it is not starving, and it delivers nothing. On 2026-09-13 four devices
+went unavailable in Home Assistant this way and nothing alerted.
+
+The recorder reads the generation off every authenticated frame (the
+last-seen rows carry it as `counter_seq` and `mle_counter_seq`, with when
+it was read). Four records follow from it, and the budget is that a normal
+week pages nothing:
+
+- `key_sequence_advanced` (info) is the rotation itself: the first frame
+  accepted under a generation above any on record, who sent it and under
+  what (`mac_data`, `mac_poll`, `mle:<command>`), and how long after the
+  previous rotation. Once per generation, ever: the highest generation is
+  kept in `data/state/key-generations.json`, so a restart does not announce
+  it again, and a replay (which starts with no record) announces the first
+  generation it meets with `previous` null. With `[keys] rotation_hours`
+  set, a rotation under 90% of it after the previous one says "early" in
+  the note, which is how a rotation the operator did not schedule shows.
+- `key_lag_census` (info) comes `[keys] census_delay_s` (default 60 min)
+  after each rotation: how many devices are on each generation, the
+  children one behind their parent (normal), the children two or more
+  behind (cut off), the routers behind the mesh, and the devices with no
+  frame fresh enough to judge. It is the roll call to read after a
+  rotation; nothing in it pages.
+- `key_lag` is the page, once per device per episode. A device whose
+  freshest reading is within `[keys] fresh_s` (default 30 min) is judged
+  against its live parent's reading, when that is fresh too: the parent is
+  the holder of the router id in the device's own RLOC16, as the devices
+  page shows it. A router is judged against the mesh's generation (the
+  highest any frame has decrypted under, `crypto.key_sequence` in status),
+  and only once two routers are fresh on that generation, so one straggler
+  frame cannot raise the bar for everyone. A lag of two or more opens an
+  episode on the row without a word, and the page waits, as
+  `poll_starvation`'s does: it goes out at the first pass after
+  `[keys] confirm_s` (default 15 min) in which the device has sent a
+  frame past that mark and is still two or more behind. The evidence is a
+  frame, not a clock. Warning for a child; critical for a router, which
+  also reserves the automatic snapshot, because a router this far behind
+  cuts off every child that follows it. The record carries both
+  generations, the lag, how long the episode has been open, the parent,
+  and `polls_acked`, which is the point: the device still looks alive.
+  `confirm_s = 0` pages on the pass that opens the episode.
+- `key_lag_cleared` (info) closes an episode that paged: the device was
+  heard within one generation of its reference again. `rejoined` says a
+  `mle_rejoin_attempt` fell inside the episode, which is what a battery
+  pull or a power cycle produces and what the `key_lag` note asks for. An
+  episode that closes before its page is dropped silently, so a device
+  that catches up inside the window costs nothing.
+
+What is deliberately not judged: a device or a parent with no reading
+within `fresh_s` (a silence is `device_quiet`'s story), a device whose role
+is not known, a router while fewer than two are on the mesh generation. A
+child whose parent changed (a new RLOC16, or the router id taken over by
+another device) closes its episode and is judged against the new parent
+from the next pass; in practice a re-attach fetches the current key, so the
+new reading is within a generation and the episode simply ends. Reception
+does not demote the page: the reading is the device's own authenticated
+frame, so a marginal signal cannot make it wrong, and a cut-off smoke
+detector at -85 dBm still matters; the record carries `reception` all the
+same. An episode that reopens within `[keys] rearm_s` (default 60 min) of
+its close is logged at notice with `episode` > 1, like a flapping
+starvation. Nothing is ever emitted for one generation behind: that would
+fire after every rotation. It shows on the devices page, in the census and
+in `daily_summary`'s `key_lag_1` instead.
+
+The budget, then: a normal week is about two info records per rotation and
+no page. A rotation like 2026-09-13's is one `key_lag` per stranded device
+(several devices within a sink's cooldown fold into one digest), one
+critical if a router is among them, and info closures as each is power
+cycled. If only the critical should reach the phone, give the phone sink
+`min_severity = "critical"` or leave `key_lag` out of its `events` list;
+the devices page and `threadwatch device` (which prints the generations a
+device has sent under, with the first and last frame under each) carry the
+rest.
+
 `retransmission_elevation` is the storm precursor: in one minute more than
 20% of frames were repeats (same sender and sequence number within 2 s, a
 frame whose ACK never came) and that is over twice the baseline, the median

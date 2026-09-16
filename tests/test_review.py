@@ -89,6 +89,23 @@ class EpisodeTest(unittest.TestCase):
         self.assertEqual(eps[0]["title"], "Basement AQ quiet for 42m")   # 30 min before noticed + 12 after
         self.assertEqual((eps[0]["start"], eps[0]["end"]), (T0, T0 + 12 * 60))
 
+    def test_a_visit_is_one_closed_row_spanning_the_visit_itself(self):
+        # Filed when the silence crossed the window, an hour after the
+        # visitor left; the row covers the 17 s it was here.
+        visit = rec("visitor_left", "info", T0 + 3600, addr=AQ, name=None, first_seen=T0,
+                    last_seen=T0 + 17, heard_for_s=17, note="a visitor")
+        eps = group_episodes([visit], now=T0 + 7200)
+        self.assertEqual([(e["kind"], e["start"], e["end"], e["severity"], e["title"], e["detail"])
+                          for e in eps],
+                         [("visit", T0, T0 + 17, "info", f"{AQ} visited for 17s", "a visitor")])
+        # Announced quiet by a run from before visits were filed, then filed
+        # at the next start: the visit, and no still-quiet row beside it.
+        eps = group_episodes([
+            rec("device_quiet", "notice", T0 + 1800, addr=AQ, reception="good", last_seen=T0 + 17),
+            visit], now=T0 + 7200)
+        self.assertEqual([(e["kind"], e["end"], e["count"], len(e["events"])) for e in eps],
+                         [("visit", T0 + 17, 1, 2)])
+
     def test_repeated_quiet_before_a_return_is_one_row(self):
         recs = [
             {"ts": T0, "event": "device_quiet", "severity": "warning", "addr": AQ, "name": "AQ", "silent_for_s": 1800},

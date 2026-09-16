@@ -129,6 +129,22 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
             else:
                 new("returned", rec, f"{_label(rec)} returned",
                     "was quiet before this day's log starts")
+        elif ev == "visitor_left":
+            # Filed when its silence crossed the window; the row spans the
+            # visit itself. A quiet announced for the address by a run from
+            # before visits were filed was this same leaving: it folds in,
+            # so no still-quiet row stands beside the visit.
+            addr = _addr(rec) or ""
+            first, last = rec.get("first_seen"), rec.get("last_seen")
+            start = float(first) if isinstance(first, (int, float)) else rec["ts"]
+            end = float(last) if isinstance(last, (int, float)) else rec["ts"]
+            heard = rec.get("heard_for_s") if isinstance(rec.get("heard_for_s"), (int, float)) else end - start
+            ep = new("visit", rec, f"{_label(rec)} visited for {fmt_duration(heard)}", rec.get("note", ""),
+                     start=start, end=end)
+            quiet = open_quiet.pop(addr, None)
+            if quiet is not None:
+                episodes.remove(quiet)
+                ep["events"] = quiet["events"] + ep["events"]
         elif ev == "poll_starvation":
             addr = _addr(rec) or ""
             ep = open_starved.get(addr)

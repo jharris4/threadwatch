@@ -739,6 +739,14 @@ class ReplayTest(CliCase):
         return secured_psdu(addr, seq + 1 if counter is None else counter, seq=seq,
                             key=bytes.fromhex("00112233445566778899aabbccddeeff"))
 
+    def _named_dev(self):
+        """A short quiet window, and DEV in the inventory: heard once and
+        then silent, an unnamed address would be a visitor, not a device."""
+        (self.d / "config.toml").write_text(
+            f'[record]\ndata_dir = "{self.d / "data"}"\n[quiet]\nsilence_s = 60\n'
+            '[devices]\ninventory = "devices.json"\n')
+        (self.d / "devices.json").write_text(json.dumps([{"name": "Office AQ", "extendedAddress": self.DEV}]))
+
     def _pcap(self):
         from threadwatch.pcap import DLT_NOFCS, Frame, PcapWriter
         pcap = self.d / "storm.pcap"
@@ -811,7 +819,7 @@ class ReplayTest(CliCase):
         # BUG-03: replay ran the periodic checks once, at EOF, so a device
         # that fell silent and came back inside the file was never quiet.
         from threadwatch.pcap import DLT_NOFCS
-        (self.d / "config.toml").write_text(f'[record]\ndata_dir = "{self.d / "data"}"\n[quiet]\nsilence_s = 60\n')
+        self._named_dev()
         (self.d / "credentials.toml").write_text('[credentials]\nnetwork_key = "00112233445566778899aabbccddeeff"\n')
         frames = [(self.T, self._psdu(self.DEV, 0))]
         frames += [(self.T + 30 * i, self._psdu(self.OTHER, i)) for i in range(1, 7)]     # T+30 .. T+180
@@ -827,7 +835,7 @@ class ReplayTest(CliCase):
         # one silence: judged once, across the boundary, as the recorder
         # judged it, whether the files are named or the directory is.
         from threadwatch.pcap import DLT_NOFCS
-        (self.d / "config.toml").write_text(f'[record]\ndata_dir = "{self.d / "data"}"\n[quiet]\nsilence_s = 60\n')
+        self._named_dev()
         (self.d / "credentials.toml").write_text('[credentials]\nnetwork_key = "00112233445566778899aabbccddeeff"\n')
         ring = self.d / "ring"
         ring.mkdir()

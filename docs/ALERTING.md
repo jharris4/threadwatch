@@ -73,7 +73,8 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `dominant_pan_changed` | notice when first guessed, warning when the guess changes | `pan`, `previous`, `frames`, `note` |
 | `configured_pan_silent` | warning | `pan`, `heard_frames`, `window_s`, `busiest_pan`, `note` |
 | `mle_rejoin_attempt` | notice | `command`, `src`, `name` |
-| `device_quiet` | warning, or notice when `reception` is `marginal` or when the address is not in `devices.json` and was heard for under 5 min | `addr`, `name`, `silent_for_s` (wall clock since the device's last frame, as the pages show it), `unheard_s` (the part the recorder was listening for, the figure judged against `[quiet] silence_s`), `blind_s` (the difference: the recorder's own outage or clock step), `last_seen`, `rssi_dbm`, `reception`, `note`; when something proved the device alive after its last frame, `vouched_ts` and `vouched_by` (`parent`: its parent answered its keep-alive; `ack`: its radio acknowledged a frame) |
+| `device_quiet` | warning, or notice when `reception` is `marginal` | `addr`, `name`, `silent_for_s` (wall clock since the device's last frame, as the pages show it), `unheard_s` (the part the recorder was listening for, the figure judged against `[quiet] silence_s`), `blind_s` (the difference: the recorder's own outage or clock step), `last_seen`, `rssi_dbm`, `reception`, `note`; when something proved the device alive after its last frame, `vouched_ts` and `vouched_by` (`parent`: its parent answered its keep-alive; `ack`: its radio acknowledged a frame) |
+| `visitor_left` | info | `addr` (never in `devices.json`; `name` is null), `first_seen`, `last_seen`, `heard_for_s`, `silent_for_s`, `frames`, `rloc16`, `parent`, `parent_addr`, `rssi_dbm`, `generations` (each key generation the address sent under, with the highest MAC `counter` and `mle_counter` heard), `note`. An address not in the inventory, heard for under 5 min as a child, then silent for `[quiet] silence_s`: a phone or tablet reaching a HomeKit accessory. Filed instead of `device_quiet`; the address is dropped from the device table at the same time, so it is never counted quiet or unnamed, and a return under the same address is a `device_first_seen` again |
 | `poll_starvation` | notice when first logged, warning once `[polls] confirm_s` later the polls are still unanswered (`confirmed`); notice only when `reception` is `marginal` or `episode` > 1 | `addr`, `name`, `unanswered_polls`, `since`, `starved_for_s`, `acked_polls`, `rssi_dbm`, `reception`, `episode`, `since_previous_s`, `confirmed`, `parent`, `parent_rloc16`, `parent_addr`, `note` |
 | `poll_answered` | notice | `addr`, `name`, `note` |
 | `rssi_degradation` | notice | `addr`, `name`, `rssi_dbm`, `reference_dbm`, `drop_db`, `since`, `low_for_s`, `note` |
@@ -129,10 +130,16 @@ are deliberately not paged: addresses whose frames carry a foreign PAN id
 at the sniffer is below `[quiet] min_rssi_dbm` (default -82) are logged at
 notice severity, because a device at the edge of the sniffer's range drops
 out for tens of minutes whenever the link fades; and an address not in
-`devices.json` that was heard for less than 5 minutes before going silent
-is logged at notice severity too, because a phone or tablet with a Thread
-radio joins the mesh for seconds to reach a HomeKit accessory, under a new
-address each time, and leaves.
+`devices.json` that was heard for less than 5 minutes, as a child, before
+going silent is not quiet at all but a visitor that left (a phone or tablet
+with a Thread radio joins the mesh for seconds to reach a HomeKit accessory,
+and leaves): its visit is logged as `visitor_left` at info, with what was
+known about it, and the address is dropped from the device table, so it is
+never listed quiet or unnamed and does not grow the table by one row per
+visit. An unnamed address that held a router id is a device missing from
+the inventory, however briefly it was heard, and still pages. A start-up
+finds any visit an earlier run announced as `device_quiet` and files it
+the same way, closing that row on the day pages.
 
 Which PAN is yours comes from `[network] pan_id` in config.toml (`threadwatch
 import` prints it). Without it the recorder guesses: the PAN it has heard

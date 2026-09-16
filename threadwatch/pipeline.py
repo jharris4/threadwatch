@@ -426,7 +426,7 @@ class Pipeline:
             self._announce_start(now, last_alive)
             dominant = self.dominant_pan()       # best guess before any frame arrives
             announced = 0
-            for addr, row in self.seen.table.items():
+            for addr, row in list(self.seen.table.items()):     # a filed visit drops its row
                 if row.get("rotated_to"):
                     continue          # an Apple hub's old address: retired, not quiet
                 if not self._is_quiet(addr, row, now):
@@ -441,6 +441,14 @@ class Pipeline:
                                    addr=addr, name=self.names.name(addr))
                         announced += 1
                     continue
+                ours = dominant is None or row.get("pan") in (None, dominant)
+                if ours and self._brief_visit(addr, row) is not None:
+                    # A visitor, announced or not: a run from before visits
+                    # were filed flagged its silence as device_quiet and
+                    # left the row to show "still quiet" for a month.
+                    self._file_visit(addr, row, now, persist=False)
+                    announced += 1
+                    continue
                 if row.get("quiet_reported"):
                     # The flag is saved before the event is appended, so a
                     # run killed between the two left a silence flagged as
@@ -453,7 +461,7 @@ class Pipeline:
                         continue
                     row.pop("quiet_reported", None)
                     row.pop("quiet_reported_ts", None)
-                if dominant is None or row.get("pan") in (None, dominant):
+                if ours:
                     self._report_quiet(addr, row, now, persist=False)
                     announced += 1
             if announced:
@@ -2093,7 +2101,7 @@ class Pipeline:
         # announcing itself) are tracked for the report but never alerted on:
         # their absence says nothing about this network.
         dominant = self.dominant_pan()
-        for addr, row in self.seen.table.items():
+        for addr, row in list(self.seen.table.items()):      # a filed visit drops its row
             if addr in self.quiet_reported or row.get("rotated_to"):
                 continue
             pan = row.get("pan")
@@ -2572,6 +2580,7 @@ class Pipeline:
         # the log (ha_available carries the duration), open ones from the
         # tracker.
         ha_down: list[dict] = []
+        visits: list[dict] = []
         lags = self._key_lags(now, dominant)
         lag_1 = sorted(e["name"] or e["addr"] for e in lags if e["lag"] == 1)
         lag_2plus = sorted(e["name"] or e["addr"] for e in lags if e["lag"] is not None and e["lag"] >= 2)
@@ -2587,6 +2596,9 @@ class Pipeline:
                 if r["ts"] >= since and r.get("event") == "ha_available":
                     ha_down.append({"name": r.get("name") or r.get("addr"), "down_for_s": r.get("down_for_s"),
                                     "open": False})
+                if r["ts"] >= since and r.get("event") == "visitor_left":
+                    visits.append({"addr": r.get("addr"), "first_seen": r.get("first_seen"),
+                                   "heard_for_s": r.get("heard_for_s")})
         if self._haavail is not None:
             ha_down.extend({"name": o["name"], "down_for_s": round(now - o["since"]), "open": True}
                            for o in self._haavail.status()["open"])
@@ -2599,6 +2611,8 @@ class Pipeline:
             parts.append(f"{len(marginal)} heard marginally")
         if degraded:
             parts.append("signal down: " + ", ".join(degraded))
+        if visits:
+            parts.append(f"{len(visits)} visit{'s' if len(visits) != 1 else ''} by unnamed addresses")
         if self.detector.storm_active:
             parts.append("STORM ACTIVE")
         if ha_down:
@@ -2616,7 +2630,7 @@ class Pipeline:
                 "quiet": quiet, "unknown": unknown, "marginal": marginal, "degraded": degraded,
                 "storm_active": bool(self.detector.storm_active), "events_24h": counts,
                 "key_generation": mesh, "key_lag_1": lag_1, "key_lag_2plus": lag_2plus,
-                "ha_unavailable_24h": ha_down,
+                "ha_unavailable_24h": ha_down, "visits_24h": visits,
                 "note": "last 24 h: " + "; ".join(parts)}
 
     # ------------------------------------------------ key generations
@@ -3301,12 +3315,60 @@ class Pipeline:
                          "the file is updated and the recorder restarted."))
 
     # An address not in the inventory heard for less than this before its
-    # silence is logged, not paged. Phones and tablets with a Thread radio
-    # join the mesh for seconds to reach a HomeKit accessory, under a new
-    # extended address each time: on 2026-09-14 one attached, opened a
-    # session with a lock, and left 17 s later, and its silence paged a
-    # warning half an hour on.
+    # silence is a visit, not a failure. Phones and tablets with a Thread
+    # radio join the mesh for seconds to reach a HomeKit accessory: on
+    # 2026-09-14 one attached, opened a session with a lock, and left 17 s
+    # later, and its silence paged a warning half an hour on.
     BRIEF_VISIT_S = 5 * 60
+
+    def _brief_visit(self, addr: str, row: dict) -> float | None:
+        """How long a visitor was heard, or None for a device. A visitor is
+        an address nobody named, heard for under BRIEF_VISIT_S, that was a
+        child: a router that appeared and died within minutes is a device
+        missing from the inventory, and its silence is still a silence."""
+        first = row.get("first_seen")
+        if first is None or self.names.name(addr) is not None:
+            return None
+        heard_for = row["last_seen"] - first
+        if heard_for >= self.BRIEF_VISIT_S:
+            return None
+        if (rloc16_role(row.get("rloc16")) or {}).get("role") == "router":
+            return None
+        return heard_for
+
+    def _file_visit(self, addr: str, row: dict, now: float, persist: bool = True) -> None:
+        """A visitor left: log the visit, with everything the row knew about
+        it, and drop the row. Nothing about a visit is current once it is
+        over, so nothing stays for the pages to show as quiet or unnamed, and
+        an address that visits under a new address each time does not grow
+        the device table. The record keeps the evidence a later visit can
+        be compared against: which key generation it sent under and how
+        far its MLE counter had run."""
+        heard_for = row["last_seen"] - row["first_seen"]
+        holders = router_holders(self.seen.table)
+        parent_addr = parent_address(row, holders)
+        live = rloc16_role(row.get("rloc16")) or {}
+        parent = ((self.names.name(parent_addr) or parent_addr) if parent_addr
+                  else (f"router {live['router_id']}" if live else None))
+        generations = []
+        for seq in sorted({*self._mle_counter.get(addr, {}), *self._mac_counter.get(addr, {})},
+                          key=lambda x: (x is not None, x or 0)):
+            mle = self._mle_counter.get(addr, {}).get(seq)
+            mac = self._mac_counter.get(addr, {}).get(seq)
+            generations.append({"sequence": seq, "mle_counter": mle[0] if mle else None,
+                                "counter": mac[0] if mac else None})
+        self._emit("visitor_left", "info", now, addr=addr, name=None,
+                   first_seen=row["first_seen"], last_seen=row["last_seen"],
+                   heard_for_s=round(heard_for), silent_for_s=round(now - row["last_seen"]),
+                   frames=row.get("frames"), rloc16=row.get("rloc16"),
+                   parent=parent, parent_addr=parent_addr, rssi_dbm=row.get("rssi"),
+                   generations=generations,
+                   note=(f"an address not in the inventory, heard for {round(heard_for)} s and then no "
+                         "more: a visitor (a phone or tablet joining the mesh briefly to reach a HomeKit "
+                         "accessory), not a device that failed"))
+        self._forget(addr)
+        if persist:
+            self.seen.save()
 
     def _report_quiet(self, addr: str, row: dict, now: float, persist: bool = True) -> None:
         """Emit device_quiet once and remember, in memory and in the row
@@ -3316,7 +3378,13 @@ class Pipeline:
         announcing this silence a second time, and waiting for the next 30 s
         save leaves a window where the outage that follows costs the flag but
         not the silence. Quiets are rare, saves are cheap. The startup pass
-        passes persist=False and saves once for the batch it announces."""
+        passes persist=False and saves once for the batch it announces.
+
+        An address that was only ever a brief visitor is not quiet, it has
+        left: its visit is filed instead and its row goes."""
+        if self._brief_visit(addr, row) is not None:
+            self._file_visit(addr, row, now, persist)
+            return
         self.quiet_reported.add(addr)
         row["quiet_reported"] = True
         row["quiet_reported_ts"] = now      # the record this flag stands for (checked at the next start)
@@ -3337,19 +3405,9 @@ class Pipeline:
         # fades; log it, but do not page for it.
         rssi = row.get("rssi")
         marginal = reception(rssi, self.cfg.quiet_min_rssi_dbm) == "marginal"
-        # Nor for an address nobody named that came and went within minutes:
-        # a visitor, not a device that failed.
-        first = row.get("first_seen")
-        heard_for = row["last_seen"] - first if first is not None else None
-        brief = (self.names.name(addr) is None and heard_for is not None
-                 and heard_for < self.BRIEF_VISIT_S)
         if marginal:
             note = ("sniffer hears this device at the edge of its range; "
                     "silence is more likely reception than failure")
-        elif brief:
-            note = (f"an address not in the inventory, heard for only {round(heard_for)} s before it "
-                    "went silent: more likely a visitor (a phone or tablet joining the mesh briefly "
-                    "to reach a HomeKit accessory) than a device that failed")
         else:
             note = ("no frames heard; if no mle_rejoin_attempt follows, "
                     "suspect device-internal failure rather than RF")
@@ -3371,7 +3429,7 @@ class Pipeline:
                      f"{round((vouched - row['last_seen']) / 60)} min after its last frame heard here, "
                      "so it was alive then, out of the recorder's earshot")
         self._emit(
-            "device_quiet", "notice" if (marginal or brief) else "warning", now, addr=addr,
+            "device_quiet", "notice" if marginal else "warning", now, addr=addr,
             name=self.names.name(addr), silent_for_s=round(wall), unheard_s=round(unheard),
             blind_s=round(blind), last_seen=row["last_seen"],
             rssi_dbm=rssi, reception="marginal" if marginal else "good", note=note, **proxy)

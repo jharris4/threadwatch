@@ -185,6 +185,12 @@ LEGEND = [
      "heard for the first time."),
     ("returned", "Returned (without a matching quiet)",
      "A device came back but its quiet record predates the log."),
+    ("visit", "Visitor",
+     "An address not in devices.json that joined the mesh, was heard for under five minutes, and "
+     "went silent: a phone or tablet with a Thread radio reaching a HomeKit accessory, not a device "
+     "that failed. The row spans the visit. The address is dropped from the device table when the "
+     "visit is filed, so it is never counted quiet or unnamed; the record keeps what was known "
+     "(parent, frames, key generation, counters) so a later visit can be compared with it."),
     ("foreign_pan", "Foreign PAN",
      "Frames on this channel carrying a PAN id that is not this network's, seen repeatedly. "
      "Another Thread mesh, or a Zigbee network on the same channel. Harmless, but it competes "

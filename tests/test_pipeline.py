@@ -431,27 +431,93 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual(by_addr[SENSOR]["severity"], "warning")
         self.assertEqual(by_addr[SENSOR]["reception"], "good")
 
-    def test_an_unnamed_address_heard_only_briefly_is_logged_at_notice_not_warning(self):
+    def test_an_unnamed_address_heard_only_briefly_is_a_visitor_not_a_quiet_device(self):
         """A phone joining the mesh for seconds to reach a HomeKit accessory
-        takes an address nobody named and leaves: its silence is logged, not
-        paged. A named device heard as briefly, and an unnamed address heard
-        for longer, still page."""
-        lingerer = "5a5a5a5a5a5a5a5a"
+        takes an address nobody named and leaves: its visit is filed, with
+        what the row knew, and the row goes, so nothing shows it as quiet or
+        unnamed afterwards. A named device heard as briefly, an unnamed
+        address heard for longer, and an unnamed router still page."""
+        lingerer, new_router = "5a5a5a5a5a5a5a5a", "6b6b6b6b6b6b6b6b"
         pipe = self._pipe()
         t0 = 1_700_000_000.0
         for i in range(17):
             pipe.ingest(frame(t0 + i, STRANGER))
             pipe.ingest(frame(t0 + i, SENSOR))
+            pipe.ingest(frame(t0 + i, new_router))
         for i in range(0, 6 * 60, 20):
             pipe.ingest(frame(t0 + i, lingerer))
+        for i in range(0, 40 * 60, 60):
+            pipe.ingest(frame(t0 + i, ROUTER))
+        pipe.seen.table[ROUTER]["rloc16"] = "4400"          # router 17
+        pipe.seen.table[STRANGER]["rloc16"] = "4403"        # its child 3
+        pipe.seen.table[new_router]["rloc16"] = "4800"      # router 18, unnamed: a device, not a visitor
         pipe.periodic(t0 + 40 * 60)
         by_addr = {r["addr"]: r for r in pipe.events.records if r["event"] == "device_quiet"}
-        self.assertEqual(by_addr[STRANGER]["severity"], "notice")
-        self.assertEqual(by_addr[STRANGER]["reception"], "good")
-        self.assertIn("heard for only 16 s", by_addr[STRANGER]["note"])
-        self.assertEqual(by_addr[SENSOR]["severity"], "warning")
-        self.assertEqual(by_addr[lingerer]["severity"], "warning")
+        self.assertEqual(sorted(by_addr), sorted([SENSOR, lingerer, new_router]))
+        self.assertEqual({r["severity"] for r in by_addr.values()}, {"warning"})
         self.assertIn("suspect device-internal failure", by_addr[lingerer]["note"])
+        visits = [r for r in pipe.events.records if r["event"] == "visitor_left"]
+        self.assertEqual([(v["addr"], v["severity"], v["name"], v["heard_for_s"], v["frames"],
+                           v["parent"], v["parent_addr"], v["rloc16"]) for v in visits],
+                         [(STRANGER, "info", None, 16, 17, "Living Room Apple TV", ROUTER, "4403")])
+        visit = visits[0]
+        self.assertEqual((visit["first_seen"], visit["last_seen"], visit["silent_for_s"]),
+                         (t0, t0 + 16, 40 * 60 - 16))
+        self.assertEqual([g["sequence"] for g in visit["generations"]], [0])
+        self.assertIsInstance(visit["generations"][0]["counter"], int)
+        self.assertIn("heard for 16 s and then no more", visit["note"])
+        # Nothing of it stays for the pages, the summary or the next start.
+        self.assertNotIn(STRANGER, pipe.seen.table)
+        self.assertNotIn(STRANGER, pipe.quiet_reported)
+        self.assertNotIn(STRANGER, pipe.devices)
+        s = pipe.summary(t0 + 40 * 60)
+        self.assertEqual(s["unknown"], sorted([lingerer, new_router]))
+        self.assertNotIn(STRANGER, s["quiet"])
+        self.assertEqual(s["visits_24h"], [{"addr": STRANGER, "first_seen": t0, "heard_for_s": 16}])
+        self.assertIn("1 visit by unnamed addresses", s["note"])
+
+    def test_a_visitor_back_under_the_same_address_is_a_new_visit(self):
+        """Its row was dropped with the visit, so a return is a first
+        sighting again and a second brief silence a second visit: two rows
+        on the day page, one address, no device_returned."""
+        pipe = self._pipe()
+        t0 = 1_700_000_000.0
+        for i in range(10):
+            pipe.ingest(frame(t0 + i, STRANGER))
+        pipe.periodic(t0 + 40 * 60)
+        for i in range(10):
+            pipe.ingest(frame(t0 + 3 * 3600 + i, STRANGER))
+        pipe.periodic(t0 + 3 * 3600 + 40 * 60)
+        self.assertEqual([r["event"] for r in pipe.events.records if r.get("addr") == STRANGER],
+                         ["device_first_seen", "visitor_left", "device_first_seen", "visitor_left"])
+        self.assertEqual([r["first_seen"] for r in pipe.events.records if r["event"] == "visitor_left"],
+                         [t0, t0 + 3 * 3600])
+
+    def test_a_visit_a_previous_run_announced_as_quiet_is_filed_at_the_next_start(self):
+        # Before visits were filed, the 2026-09-14 visitor's silence was
+        # announced as device_quiet and its row flagged. Only a return
+        # clears the flag and a visitor never returns, so the row stayed,
+        # and the pages showed it quiet and unnamed for a month.
+        now = time.time()
+        pipe = self._pipe()
+        for i in range(17):
+            pipe.ingest(frame(now - 3 * 3600 + i, STRANGER))
+        pipe.ingest(frame(now - 60, ROUTER))
+        row = pipe.seen.table[STRANGER]
+        row["quiet_reported"], row["quiet_reported_ts"] = True, now - 2 * 3600
+        pipe.seen.save()
+        self._status(updated=now, last_frame_ts=now - 60)
+        pipe2 = self._pipe()
+        visits = [r for r in pipe2.events.records if r["event"] == "visitor_left"]
+        self.assertEqual([(v["addr"], v["heard_for_s"], v["first_seen"]) for v in visits],
+                         [(STRANGER, 16, now - 3 * 3600)])
+        self.assertEqual(self._quiet(pipe2), [])
+        self.assertNotIn(STRANGER, pipe2.seen.table)
+        self.assertNotIn(STRANGER, pipe2.quiet_reported)
+        # The drop is saved with the start's batch: the next start has
+        # nothing to file.
+        pipe3 = self._pipe()
+        self.assertEqual([r["event"] for r in pipe3.events.records if r.get("addr") == STRANGER], [])
 
     def _vouched_pipe(self):
         """A pipeline holding the identity tests' key, so their MLE builder
@@ -967,6 +1033,7 @@ class QuietPolicyTest(unittest.TestCase):
         clock = {"wall": boot, "mono": 0.0}
         pipe2._wall, pipe2._mono, pipe2._clock = (lambda: clock["wall"]), (lambda: clock["mono"]), (boot, 0.0)
         pipe2.ingest(frame(boot + 30, STRANGER))          # heard after boot, before the step
+        pipe2.seen.table[STRANGER]["rloc16"] = "4400"     # a router: a device unnamed, not a visitor
         clock.update(wall=boot + 60 + outage, mono=60.0)  # NTP: the wall clock jumps, monotonic does not
         pipe2.periodic(boot + 60 + outage)
         self.assertEqual(self._quiet(pipe2), [])
@@ -2388,7 +2455,8 @@ class KeyGenerationTest(unittest.TestCase):
         self.cfg.key_census_delay_s = 600
         pipe = self._pipe()
         t = self._mesh(pipe, self.T0, 4, routers=(ROUTER, ROUTER2, ROUTER3), children=(SENSOR, SENSOR2))
-        pipe.ingest(frame(t, "d4d4d4d4d4d4d4d4", sequence=4))          # heard once, long ago: unknown
+        pipe.ingest(frame(t, "d4d4d4d4d4d4d4d4", sequence=4))          # heard briefly, long ago: unknown
+        pipe.ingest(frame(t + 400, "d4d4d4d4d4d4d4d4", sequence=4))    # (past the visit limit: a device)
         t += 3600
         t = self._mesh(pipe, t, 5, routers=(ROUTER, ROUTER2, ROUTER3), children=(SENSOR,))
         pipe.ingest(frame(t, SENSOR2, sequence=4))                       # the garage sensor never followed
@@ -3821,7 +3889,7 @@ class DailySummaryTest(unittest.TestCase):
         t = self.DAY + 7 * 3600
         for i in range(100):
             pipe.ingest(frame(t + i, ROUTER, rssi=-60.0))
-            pipe.ingest(frame(t + i, SENSOR, rssi=-88.0))
+            pipe.ingest(frame(t + 4 * i, SENSOR, rssi=-88.0))     # unnamed: heard past the visit limit
             pipe.ingest(frame(t + i, STRANGER, pan=OTHER_PAN))
         pipe.periodic(self.DAY + 7 * 3600 + 200)            # 07:03
         self.assertEqual(self._summaries(pipe.events), [])

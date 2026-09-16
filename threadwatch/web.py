@@ -190,7 +190,9 @@ LEGEND = [
      "went silent: a phone or tablet with a Thread radio reaching a HomeKit accessory, not a device "
      "that failed. The row spans the visit. The address is dropped from the device table when the "
      "visit is filed, so it is never counted quiet or unnamed; the record keeps what was known "
-     "(parent, frames, key generation, counters) so a later visit can be compared with it."),
+     "(parent, frames, key generation, counters). Phones keep their address, so a later visit by "
+     "the same one is counted ('visit 3'), and shows as 'visiting' until it is filed, half an hour "
+     "after it leaves. A starvation or signal drop still open for the address ends with the visit."),
     ("foreign_pan", "Foreign PAN",
      "Frames on this channel carrying a PAN id that is not this network's, seen repeatedly. "
      "Another Thread mesh, or a Zigbee network on the same channel. Harmless, but it competes "

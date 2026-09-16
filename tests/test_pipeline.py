@@ -476,10 +476,12 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual(s["visits_24h"], [{"addr": STRANGER, "first_seen": t0, "heard_for_s": 16}])
         self.assertIn("1 visit by unnamed addresses", s["note"])
 
-    def test_a_visitor_back_under_the_same_address_is_a_new_visit(self):
-        """Its row was dropped with the visit, so a return is a first
-        sighting again and a second brief silence a second visit: two rows
-        on the day page, one address, no device_returned."""
+    def test_a_visitor_back_under_the_same_address_is_a_return_visit_not_first_seen(self):
+        """Its row was dropped with the visit, but the recorder keeps a
+        count per address (phones keep theirs, even across a reboot): a
+        return is visitor_returned, numbered, and the next silence a second
+        visit; never device_first_seen or device_returned again. The count
+        survives a restart."""
         pipe = self._pipe()
         t0 = 1_700_000_000.0
         for i in range(10):
@@ -488,10 +490,18 @@ class QuietPolicyTest(unittest.TestCase):
         for i in range(10):
             pipe.ingest(frame(t0 + 3 * 3600 + i, STRANGER))
         pipe.periodic(t0 + 3 * 3600 + 40 * 60)
-        self.assertEqual([r["event"] for r in pipe.events.records if r.get("addr") == STRANGER],
-                         ["device_first_seen", "visitor_left", "device_first_seen", "visitor_left"])
+        about = lambda p: [(r["event"], r.get("visit")) for r in p.events.records if r.get("addr") == STRANGER]
+        self.assertEqual(about(pipe), [("device_first_seen", None), ("visitor_left", 1),
+                                       ("visitor_returned", 2), ("visitor_left", 2)])
         self.assertEqual([r["first_seen"] for r in pipe.events.records if r["event"] == "visitor_left"],
                          [t0, t0 + 3 * 3600])
+        back = [r for r in pipe.events.records if r["event"] == "visitor_returned"][0]
+        self.assertEqual(back["last_visit"], t0 + 9)
+        self.assertIn("visited 1 time before", back["note"])
+        pipe2 = self._pipe()
+        self.assertEqual(pipe2._visitors[STRANGER]["visits"], 2)
+        pipe2.ingest(frame(t0 + 6 * 3600, STRANGER))
+        self.assertEqual(about(pipe2), [("visitor_returned", 3)])
 
     def test_a_visitor_back_within_the_quiet_window_is_judged_by_its_latest_stretch(self):
         """The lock opened twice ten minutes apart: the phone attached twice,

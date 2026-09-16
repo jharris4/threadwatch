@@ -106,6 +106,21 @@ class EpisodeTest(unittest.TestCase):
         self.assertEqual([(e["kind"], e["end"], e["count"], len(e["events"])) for e in eps],
                          [("visit", T0 + 17, 1, 2)])
 
+    def test_a_return_visit_is_one_row_that_opens_on_arrival_and_closes_when_filed(self):
+        back = rec("visitor_returned", "info", T0, addr=AQ, name=None, visit=3, note="back")
+        eps = group_episodes([back], now=T0 + 60)
+        self.assertEqual([(e["kind"], e["end"], e["title"]) for e in eps],
+                         [("visit", None, f"{AQ} visiting (visit 3) (not yet over)")])
+        starved = rec("poll_starvation", "notice", T0 + 100, addr=AQ, unanswered_polls=10, acked_polls=300,
+                      since=T0 + 95)
+        left = rec("visitor_left", "info", T0 + 2000, addr=AQ, name=None, visit=3, first_seen=T0,
+                   last_seen=T0 + 150, heard_for_s=150, note="a visitor")
+        eps = group_episodes([back, starved, left], now=T0 + 7200)
+        self.assertEqual([(e["kind"], e["start"], e["end"], e["title"]) for e in eps],
+                         [("visit", T0, T0 + 150, f"{AQ} visited for 2m (visit 3)"),
+                          ("starved", T0 + 100, T0 + 150, f"{AQ} polls unanswered for 55s, then it left")])
+        self.assertEqual(len(eps[0]["events"]), 2)
+
     def test_repeated_quiet_before_a_return_is_one_row(self):
         recs = [
             {"ts": T0, "event": "device_quiet", "severity": "warning", "addr": AQ, "name": "AQ", "silent_for_s": 1800},

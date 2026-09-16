@@ -124,7 +124,7 @@ The raw log is the wrong unit for people, so the pages group it:
 | records | episode |
 | --- | --- |
 | `device_quiet` ... `device_returned` | one row: *X quiet for 42m* (or *still quiet*) |
-| `visitor_left` | one row spanning the visit: *4f2a… visited for 17s*, on the day of the visit; a `device_quiet` an earlier run announced for the same address folds into it |
+| `visitor_returned` ... `visitor_left` | one row spanning the visit: *4f2a… visited for 17s (visit 3)*, on the day of the visit (*visiting (not yet over)* until it is filed); a `device_quiet` an earlier run announced for the same address folds into it, and an open starvation or signal drop for the address ends with the visit |
 | `retransmission_elevation` x N, same sender and target | one row with the count and the worst rate |
 | `possible_foreign_pan` x N, same PAN and source | one row with the count |
 | `mle_rejoin_attempt` x N, same device | one row listing the MLE commands seen |

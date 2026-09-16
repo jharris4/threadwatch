@@ -70,6 +70,7 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
     open_starved: dict[str, dict] = {}
     open_keylag: dict[str, dict] = {}
     open_ha: dict[str, dict] = {}
+    open_visit: dict[str, dict] = {}
     first_seen: dict | None = None
     join_scan: dict | None = None
     recorder: dict | None = None
@@ -129,22 +130,43 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
             else:
                 new("returned", rec, f"{_label(rec)} returned",
                     "was quiet before this day's log starts")
+        elif ev == "visitor_returned":
+            # Back for another visit: the row opens now and closes when the
+            # visit is filed, half an hour after it leaves.
+            addr = _addr(rec) or ""
+            open_visit[addr] = new("visit", rec, f"{_label(rec)} visiting{_nth(rec)}", rec.get("note", ""),
+                                   end=None)
         elif ev == "visitor_left":
             # Filed when its silence crossed the window; the row spans the
             # visit itself. A quiet announced for the address by a run from
             # before visits were filed was this same leaving: it folds in,
-            # so no still-quiet row stands beside the visit.
+            # so no still-quiet row stands beside the visit. Anything else
+            # left open for the address (its parent stopped answering its
+            # polls as it went) ends when the visit does, since the visitor
+            # is not coming back to close it.
             addr = _addr(rec) or ""
             first, last = rec.get("first_seen"), rec.get("last_seen")
             start = float(first) if isinstance(first, (int, float)) else rec["ts"]
             end = float(last) if isinstance(last, (int, float)) else rec["ts"]
             heard = rec.get("heard_for_s") if isinstance(rec.get("heard_for_s"), (int, float)) else end - start
-            ep = new("visit", rec, f"{_label(rec)} visited for {fmt_duration(heard)}", rec.get("note", ""),
-                     start=start, end=end)
+            title = f"{_label(rec)} visited for {fmt_duration(heard)}{_nth(rec)}"
+            ep = open_visit.pop(addr, None)
+            if ep is not None:
+                ep.update(start=min(ep["start"], start), end=end, title=title, detail=rec.get("note", ""))
+                ep["events"].append(rec)
+            else:
+                ep = new("visit", rec, title, rec.get("note", ""), start=start, end=end)
             quiet = open_quiet.pop(addr, None)
             if quiet is not None:
                 episodes.remove(quiet)
                 ep["events"] = quiet["events"] + ep["events"]
+            for table, since_key in ((open_starved, "starved_since"), (open_link, "low_since"),
+                                     (open_keylag, "lag_since")):
+                left = table.pop(addr, None)
+                if left is not None:
+                    left["end"] = end
+                    left["events"].append(rec)
+                    left["title"] += f" for {fmt_duration(end - left[since_key])}, then it left"
         elif ev == "poll_starvation":
             addr = _addr(rec) or ""
             ep = open_starved.get(addr)
@@ -347,7 +369,14 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
             ep["title"] += f" for {fmt_duration(now - ep['lag_since'])} (still behind)"
         elif ep["kind"] == "ha_unavailable" and ep["end"] is None:
             ep["title"] += f" for {fmt_duration(now - ep['down_since'])} (still unavailable)"
+        elif ep["kind"] == "visit" and ep["end"] is None:
+            ep["title"] += " (not yet over)"
     return sorted(episodes, key=lambda e: e["start"])
+
+
+def _nth(rec: dict) -> str:
+    n = rec.get("visit")
+    return f" (visit {n})" if isinstance(n, int) and not isinstance(n, bool) and n > 1 else ""
 
 
 def fmt_episode(ep: dict, stamp_fmt: str = "%m-%d %H:%M") -> str:

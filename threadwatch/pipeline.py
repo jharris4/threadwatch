@@ -247,6 +247,12 @@ class Pipeline:
         # it meets. See _note_generation.
         self.keys_path = cfg.state_dir / "key-generations.json"
         self._keys: dict = {} if ephemeral else self._load_keys()
+        # Addresses that have visited: how many times, first and last. A
+        # visit drops the address's row, so without this a phone back
+        # under the same address (they keep it, even across a reboot) was
+        # "first seen" again on every visit.
+        self.visitors_path = cfg.state_dir / "visitors.json"
+        self._visitors: dict[str, dict] = {} if ephemeral else self._load_visitors()
         # The key generation the last frame ingested was accepted under
         # (None when it vouched for nobody): `device` reads it to print a
         # generation history without decoding anything twice.
@@ -689,6 +695,32 @@ class Pipeline:
         tmp.replace(self.frames_by_hour_path)
 
     KEYS_STAMPS = ("highest_first_ts", "previous_first_ts", "census_at")
+
+    def _load_visitors(self) -> dict[str, dict]:
+        """visitors.json: {addr: {visits, first_visit, last_visit, ...}}.
+        Unreadable or shapeless: start afresh, which costs one
+        device_first_seen where a visitor_returned was due and nothing
+        else. Keys the recorder does not know (a label someone added by
+        hand) are kept as they are."""
+        try:
+            data = json.loads(self.visitors_path.read_text())
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError) as exc:
+            print(f"[threadwatch] {self.visitors_path.name} is unreadable ({exc}): earlier visits are "
+                  "forgotten, so the next visit by each address is first seen again", file=sys.stderr, flush=True)
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {a: v for a, v in data.items() if isinstance(a, str) and isinstance(v, dict)}
+
+    def _save_visitors(self) -> None:
+        if self.ephemeral:
+            return
+        self.visitors_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.visitors_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self._visitors, indent=1))
+        tmp.replace(self.visitors_path)
 
     def _load_keys(self) -> dict:
         """key-generations.json: {highest, previous, highest_first_ts,
@@ -1489,8 +1521,18 @@ class Pipeline:
                 # bind it, so the first_seen below already carries its name.
                 self._apply_border_routers([pending], ts)
             if was_new and not self._flooded(ts):
-                self._emit("device_first_seen", "info", ts, addr=who,
-                           name=self.names.name(who))
+                known = self._visitors.get(who)
+                if known:
+                    # Back for another visit: its row went with the last
+                    # one, but the recorder has not forgotten it.
+                    self._emit("visitor_returned", "info", ts, addr=who, name=None,
+                               visit=int(known.get("visits") or 0) + 1, last_visit=known.get("last_visit"),
+                               note=f"an address that has visited {known.get('visits')} time"
+                                    f"{'s' if known.get('visits') != 1 else ''} before, last "
+                                    f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(known.get('last_visit') or ts))}")
+                else:
+                    self._emit("device_first_seen", "info", ts, addr=who,
+                               name=self.names.name(who))
             returned = False
             for addr in self.names.entry_addresses_of(who):
                 if addr not in self.quiet_reported:
@@ -3384,6 +3426,12 @@ class Pipeline:
         far its MLE counter had run."""
         since = row.get("heard_since", row["first_seen"])
         heard_for = row["last_seen"] - since
+        known = dict(self._visitors.get(addr) or {})
+        visit = int(known.get("visits") or 0) + 1
+        known.update(visits=visit, last_visit=row["last_seen"], last_heard_for_s=round(heard_for),
+                     first_visit=min(since, known.get("first_visit") or since))
+        self._visitors[addr] = known
+        self._save_visitors()
         holders = router_holders(self.seen.table)
         parent_addr = parent_address(row, holders)
         live = rloc16_role(row.get("rloc16")) or {}
@@ -3396,7 +3444,7 @@ class Pipeline:
             mac = self._mac_counter.get(addr, {}).get(seq)
             generations.append({"sequence": seq, "mle_counter": mle[0] if mle else None,
                                 "counter": mac[0] if mac else None})
-        self._emit("visitor_left", "info", now, addr=addr, name=None,
+        self._emit("visitor_left", "info", now, addr=addr, name=None, visit=visit,
                    first_seen=since, last_seen=row["last_seen"],
                    heard_for_s=round(heard_for), silent_for_s=round(now - row["last_seen"]),
                    frames=row.get("frames"), rloc16=row.get("rloc16"),

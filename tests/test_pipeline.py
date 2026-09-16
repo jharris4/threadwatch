@@ -493,6 +493,53 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual([r["first_seen"] for r in pipe.events.records if r["event"] == "visitor_left"],
                          [t0, t0 + 3 * 3600])
 
+    def test_a_visitor_back_within_the_quiet_window_is_judged_by_its_latest_stretch(self):
+        """The lock opened twice ten minutes apart: the phone attached twice,
+        with no silence announced between. Measured from the row's first
+        frame it was a device heard for ten minutes; a visit is its own
+        stretch, begun by the first frame after a gap over the limit."""
+        pipe = self._pipe()
+        t0 = 1_700_000_000.0
+        for i in range(20):
+            pipe.ingest(frame(t0 + i, STRANGER))
+        for i in range(20):
+            pipe.ingest(frame(t0 + 10 * 60 + i, STRANGER))
+        pipe.periodic(t0 + 50 * 60)
+        self.assertEqual(self._quiet(pipe), [])
+        self.assertEqual([(v["first_seen"], v["heard_for_s"]) for v in pipe.events.records
+                          if v["event"] == "visitor_left"], [(t0 + 10 * 60, 19)])
+
+    def test_a_row_from_before_stretches_were_marked_takes_its_last_return_as_the_visit_start(self):
+        # The Pi on 2026-09-15: the 09-14 visitor's row, first_seen 09-14
+        # and flagged quiet, was still there when the phone came back under
+        # the same address 44 h later for 18 s. Measured from first_seen it
+        # was a device heard for 44 h, and its silence paged a warning.
+        # The row carries no heard_since; the log knows when it returned.
+        from threadwatch.events import EventLog, read_all
+        now = time.time()
+        events = self.cfg.state_dir / "events"
+        log = EventLog(events)
+        pipe = Pipeline(self.cfg, log, stub_decryptor())
+        for i in range(17):
+            pipe.ingest(frame(now - 44 * 3600 + i, STRANGER))
+        for i in range(18):
+            pipe.ingest(frame(now - 3600 + i, STRANGER))
+        pipe.ingest(frame(now - 60, ROUTER))
+        row = pipe.seen.table[STRANGER]
+        del row["heard_since"]                       # saved by a run from before the field existed
+        row["quiet_reported"], row["quiet_reported_ts"] = True, now - 30 * 60
+        log.emit("device_quiet", "warning", now - 44 * 3600 + 1800, addr=STRANGER, name=None)
+        log.emit("device_returned", "notice", now - 3600, addr=STRANGER, name=None)
+        log.emit("device_quiet", "warning", now - 30 * 60, addr=STRANGER, name=None)
+        pipe.seen.save()
+        self._status(updated=now, last_frame_ts=now - 60)
+        pipe2 = Pipeline(self.cfg, EventLog(events), stub_decryptor())
+        visits = [r for r in read_all(events) if r["event"] == "visitor_left"]
+        self.assertEqual([(v["addr"], v["first_seen"], v["heard_for_s"]) for v in visits],
+                         [(STRANGER, now - 3600, 17)])
+        self.assertNotIn(STRANGER, pipe2.seen.table)
+        self.assertNotIn(STRANGER, pipe2.quiet_reported)
+
     def test_a_visit_a_previous_run_announced_as_quiet_is_filed_at_the_next_start(self):
         # Before visits were filed, the 2026-09-14 visitor's silence was
         # announced as device_quiet and its row flagged. Only a return
@@ -2455,8 +2502,8 @@ class KeyGenerationTest(unittest.TestCase):
         self.cfg.key_census_delay_s = 600
         pipe = self._pipe()
         t = self._mesh(pipe, self.T0, 4, routers=(ROUTER, ROUTER2, ROUTER3), children=(SENSOR, SENSOR2))
-        pipe.ingest(frame(t, "d4d4d4d4d4d4d4d4", sequence=4))          # heard briefly, long ago: unknown
-        pipe.ingest(frame(t + 400, "d4d4d4d4d4d4d4d4", sequence=4))    # (past the visit limit: a device)
+        for dt in (0, 200, 400):                                         # heard for 400 s, long ago: unknown
+            pipe.ingest(frame(t + dt, "d4d4d4d4d4d4d4d4", sequence=4))  # (past the visit limit: a device)
         t += 3600
         t = self._mesh(pipe, t, 5, routers=(ROUTER, ROUTER2, ROUTER3), children=(SENSOR,))
         pipe.ingest(frame(t, SENSOR2, sequence=4))                       # the garage sensor never followed

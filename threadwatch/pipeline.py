@@ -442,6 +442,8 @@ class Pipeline:
                         announced += 1
                     continue
                 ours = dominant is None or row.get("pan") in (None, dominant)
+                if ours and "heard_since" not in row:
+                    self._mark_stretch_from_log(addr, row)
                 if ours and self._brief_visit(addr, row) is not None:
                     # A visitor, announced or not: a run from before visits
                     # were filed flagged its silence as device_quiet and
@@ -1422,8 +1424,16 @@ class Pipeline:
             for name in names:
                 self._note_observed_name(who, name, repeat=retry)
             was_new = who not in self.seen.table
+            prev_seen = None if was_new else self.seen.table[who].get("last_seen")
             self.seen.touch(who, ts, f.ftype, pan=pan, rssi=f.rssi)
             row = self.seen.table[who]
+            if prev_seen is None or ts - prev_seen > self.BRIEF_VISIT_S:
+                # A new stretch of presence: the first frame ever, or the
+                # first after a gap. A visit is judged by its own stretch,
+                # not by the row's whole life: the 09-14 visitor came back
+                # under the same address 44 h later, for 18 s, and was
+                # read as a device heard for 44 h.
+                row["heard_since"] = ts
             for key, table in (("counter", self._mac_counter), ("mle_counter", self._mle_counter)):
                 gens = table.get(who)
                 if not gens:
@@ -3323,10 +3333,12 @@ class Pipeline:
 
     def _brief_visit(self, addr: str, row: dict) -> float | None:
         """How long a visitor was heard, or None for a device. A visitor is
-        an address nobody named, heard for under BRIEF_VISIT_S, that was a
-        child: a router that appeared and died within minutes is a device
-        missing from the inventory, and its silence is still a silence."""
-        first = row.get("first_seen")
+        an address nobody named, heard for under BRIEF_VISIT_S in its
+        latest stretch of presence (heard_since; first_seen for a row from
+        before stretches were marked), that was a child: a router that
+        appeared and died within minutes is a device missing from the
+        inventory, and its silence is still a silence."""
+        first = row.get("heard_since", row.get("first_seen"))
         if first is None or self.names.name(addr) is not None:
             return None
         heard_for = row["last_seen"] - first
@@ -3336,6 +3348,32 @@ class Pipeline:
             return None
         return heard_for
 
+    def _mark_stretch_from_log(self, addr: str, row: dict) -> None:
+        """A row saved before heard_since existed: its latest stretch began
+        at its last device_returned on record, if the log has one after
+        first_seen. Only rows the visitor check could take are worth the
+        read (unnamed children heard over the limit since first_seen); the
+        day files are read newest first and the search stops at the first
+        return found."""
+        first, last = row.get("first_seen"), row.get("last_seen")
+        events_dir = getattr(self.events, "dir", None)
+        if events_dir is None or first is None or last is None or last - first < self.BRIEF_VISIT_S:
+            return
+        if self.names.name(addr) is not None or (rloc16_role(row.get("rloc16")) or {}).get("role") == "router":
+            return
+        day, stop = day_of(last), day_of(first)
+        while True:
+            returns = [r["ts"] for r in read_day(events_dir, day)
+                       if r.get("event") == "device_returned" and r.get("addr") == addr
+                       and isinstance(r.get("ts"), (int, float)) and first < r["ts"] <= last]
+            if returns:
+                row["heard_since"] = max(returns)
+                self.seen._dirty = True
+                return
+            if day <= stop:
+                return
+            day = day_of(time.mktime(time.strptime(day, "%Y-%m-%d")) - 43200)   # the day before
+
     def _file_visit(self, addr: str, row: dict, now: float, persist: bool = True) -> None:
         """A visitor left: log the visit, with everything the row knew about
         it, and drop the row. Nothing about a visit is current once it is
@@ -3344,7 +3382,8 @@ class Pipeline:
         the device table. The record keeps the evidence a later visit can
         be compared against: which key generation it sent under and how
         far its MLE counter had run."""
-        heard_for = row["last_seen"] - row["first_seen"]
+        since = row.get("heard_since", row["first_seen"])
+        heard_for = row["last_seen"] - since
         holders = router_holders(self.seen.table)
         parent_addr = parent_address(row, holders)
         live = rloc16_role(row.get("rloc16")) or {}
@@ -3358,7 +3397,7 @@ class Pipeline:
             generations.append({"sequence": seq, "mle_counter": mle[0] if mle else None,
                                 "counter": mac[0] if mac else None})
         self._emit("visitor_left", "info", now, addr=addr, name=None,
-                   first_seen=row["first_seen"], last_seen=row["last_seen"],
+                   first_seen=since, last_seen=row["last_seen"],
                    heard_for_s=round(heard_for), silent_for_s=round(now - row["last_seen"]),
                    frames=row.get("frames"), rloc16=row.get("rloc16"),
                    parent=parent, parent_addr=parent_addr, rssi_dbm=row.get("rssi"),

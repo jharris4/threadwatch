@@ -102,6 +102,7 @@ class Config:
     snapshot_on_critical: bool = False         # save the ring when a critical event fires
     keep_snapshots: int = 4                    # how many auto-* snapshots to keep; -1 = no cap, 0 = take none
     devices_path: Path | None = None
+    visitors_path: Path | None = None        # config/visitors.json: labels for visiting addresses (phones)
     detector: DetectorConfig = field(default_factory=DetectorConfig)
     config_dir: Path = REPO_ROOT / "config"
     config_path: Path | None = None         # the file load() read, None when defaults stood
@@ -288,6 +289,7 @@ SECTIONS: dict[str, frozenset[str] | None] = {
     "record": frozenset(("serial_port", "data_dir", "keep_hours", "keep_gb",
                          "snapshot_on_critical", "keep_snapshots")),
     "devices": frozenset(("inventory",)),
+    "visitors": frozenset(("file",)),
     "quiet": frozenset(("silence_s", "min_rssi_dbm")),
     "link": frozenset(("drop_db", "hold_s")),
     "polls": frozenset(("rearm_s", "confirm_s")),
@@ -416,6 +418,8 @@ def load(path: Path | None) -> Config:
             cfg.keep_snapshots = keep
         if raw.get("devices", {}).get("inventory"):
             cfg.devices_path = (Path(path).parent / raw["devices"]["inventory"]).resolve()
+        if raw.get("visitors", {}).get("file"):
+            cfg.visitors_path = (Path(path).parent / raw["visitors"]["file"]).resolve()
         det = raw.get("detect", {})
         # Every value is a number by the time the detector sees it: a
         # quoted "400" compares fine against nothing at load time and
@@ -595,6 +599,10 @@ def load(path: Path | None) -> Config:
                 if candidate.exists():
                     cfg.devices_path = candidate
                     break
+    if cfg.visitors_path is None:
+        # Beside the config file, like devices.json; read and written
+        # (name-visitor) there whether or not it exists yet.
+        cfg.visitors_path = cfg.config_dir / "visitors.json"
     if cfg.credentials_path is None:
         default_creds = cfg.config_dir / "credentials.toml"
         if default_creds.exists():

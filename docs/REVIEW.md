@@ -59,7 +59,7 @@ proxy that authenticates.
   marks the recorder's open `key_lag` episode (docs/ALERTING.md). With
   `[ha_availability]` on, an *HA* column says *available* or *unavailable
   since HH:MM* for every device Home Assistant knows.
-  `?only=unknown|quiet|marginal|down|foreign|routers|children` narrows
+  `?only=unknown|visitors|quiet|marginal|down|foreign|routers|children` narrows
   it and `?sort=last|rssi|frames` orders it (longest unheard, weakest,
   busiest); the links at the top of the page set both. `/api/devices`
   takes the same parameters.

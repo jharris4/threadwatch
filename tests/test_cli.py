@@ -175,6 +175,19 @@ class NameTest(CliCase):
         self.assertEqual(DeviceNames(cfg.devices_path).name("66417fe110ed6950"), "Office AQ")
 
 
+class NameVisitorTest(CliCase):
+    def test_name_visitor_writes_visitors_json_beside_the_config_and_never_the_inventory(self):
+        code, out, _ = self.run_cli("name-visitor", "4f2a9c3e7b1d6085", "Sam's iPhone")
+        self.assertEqual(code, 0)
+        self.assertIn(str(self.d / "visitors.json"), out)
+        self.assertEqual(json.loads((self.d / "visitors.json").read_text()),
+                         [{"name": "Sam's iPhone", "extendedAddress": "4F2A9C3E7B1D6085"}])
+        self.assertFalse((self.d / "devices.json").exists())
+        code, _, err = self.run_cli("name-visitor", "4f2a9c3e7b1d6085", "Kim's iPhone")
+        self.assertEqual(code, 1)
+        self.assertIn("already listed", err)
+
+
 class SnapshotTest(CliCase):
     def test_snapshot_copies_ring_state_and_events(self):
         from threadwatch.config import load

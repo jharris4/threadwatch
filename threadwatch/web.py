@@ -17,7 +17,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from .events import DAY_RE, day_bounds, day_of, next_day, prev_day
-from .names import AmbiguousName, DeviceNames, LastSeen, load_names
+from .names import AmbiguousName, DeviceNames, LastSeen, VisitorNames, load_names, load_visitor_names
 from .review import (
     DEVICE_FILTERS,
     DEVICE_HISTORY_DAYS,
@@ -284,6 +284,9 @@ class Site:
     def names(self) -> DeviceNames:
         return load_names(self.cfg)
 
+    def visitors(self) -> VisitorNames:
+        return load_visitor_names(self.cfg)
+
     def leader_router(self) -> int | None:
         part = self.status().get("partition") or {}
         return part.get("leader_router")
@@ -397,7 +400,7 @@ class Site:
         on any day that has one."""
         card = now_card(self.seen(), self.names(), self.cfg.events_dir,
                         self.cfg.quiet_min_rssi_dbm, day, now, pan_id=self.cfg.pan_id,
-                        state_dir=self.cfg.state_dir)
+                        state_dir=self.cfg.state_dir, visitors=self.visitors())
         out = ""
         if day == today():
             parts = []
@@ -413,6 +416,11 @@ class Site:
                                 f'usually {esc(i["reference_dbm"])})</span>'
                                 for i in card["degraded"])
                 parts.append(f'<span class="k">signal down</span>{who}')
+            if card.get("visiting"):
+                who = ", ".join(f'<a href="/device/{esc(i["addr"])}">{esc(i["name"])}</a> '
+                                f'<span class="muted">(heard {ago(i["last_seen"], now)})</span>'
+                                for i in card["visiting"])
+                parts.append(f'<span class="k">visiting</span>{who}')
             if card["unknown"]:
                 n = len(card["unknown"])
                 parts.append(f'<span class="k">unnamed</span><a href="/devices?only=unknown">'
@@ -536,7 +544,8 @@ class Site:
         names = self.names()
         seen = self.seen()
         every = device_rows(seen, names, self.cfg.quiet_min_rssi_dbm, now, leader_router=self.leader_router(),
-                            mesh_generation=self.mesh_generation(), ha=self.ha_availability())
+                            mesh_generation=self.mesh_generation(), ha=self.ha_availability(),
+                            visitors=self.visitors())
         dominant = dominant_pan(seen, self.cfg.pan_id, self.cfg.state_dir)
         rows = select_devices(every, dominant, only, sort)
         show_ha = any(r.get("ha_state") for r in every)
@@ -567,7 +576,12 @@ class Site:
                         "marginal": '<span class="warn">marginal</span>'}.get(rec, '<span class="muted">?</span>')
             silent = r["silent_for_s"]
             seen_html = f'<span class="{"bad" if silent > 1800 else ""}">{ago(r["last_seen"], now)}</span>'
-            nm = esc(r["name"]) if r["name"] else '<span class="warn">unknown</span>'
+            if r["name"]:
+                nm = esc(r["name"])
+            elif r.get("visitor"):
+                nm = f'{esc(r["visitor"])} <span class="muted">visitor</span>'
+            else:
+                nm = '<span class="warn">unknown</span>'
             if r.get("border_router_label"):
                 nm += f' <span class="muted">border router {esc(r["border_router_label"])}</span>'
             if r.get("rotated_to"):
@@ -581,7 +595,7 @@ class Site:
                        f'<td class="n">{esc(r["rssi_dbm"])}</td><td>{rec_html}</td>'
                        f'<td class="n">{r["frames"]:,}</td><td>{pan_html}</td>'
                        f'<td class="muted"><code>{esc(r["addr"])}</code></td></tr>')
-        unknown = sum(1 for r in every if r["name"] is None)
+        unknown = sum(1 for r in every if r["name"] is None and not r.get("visitor"))
         note = (f'<p class="muted">{len(every)} addresses tracked'
                 + (f', <span class="warn">{unknown} not in devices.json</span>' if unknown else "")
                 + (f'; showing {len(rows)} ({DEVICE_FILTERS[only][0]})' if only else "") + '.</p>')
@@ -613,6 +627,10 @@ class Site:
         primary = live_address(addrs, seen.table)
         entry = names.by_addr.get(primary, {})
         head = []
+        label = self.visitors().name(primary)
+        if name == primary and label:
+            name = label
+            head.append('visitor: named in visitors.json, not in devices.json, so its silences are visits, never pages')
         if entry.get("model"):
             head.append(esc(entry["model"]))
         if len(addrs) > 1:

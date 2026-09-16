@@ -269,6 +269,16 @@ class PageBranchTest(unittest.TestCase):
         self.assertIn('<span class="muted">ours</span>', body)
         self.assertIn('<span class="muted">?</span>', body)        # a device with no PAN yet
         self.assertIn('<span class="warn">unknown</span>', body)   # not in devices.json
+        self.assertIn("2 not in devices.json", body)
+        phone = "72d035122fdf06f6"
+        (self.d / "visitors.json").write_text(json.dumps([{"name": "Sam's iPhone", "extendedAddress": phone}]))
+        self.cfg.visitors_path = self.d / "visitors.json"
+        _st, body = self.get("/devices")
+        self.assertIn("Sam&#x27;s iPhone <span class=\"muted\">visitor</span>", body)
+        self.assertIn("1 not in devices.json", body)                # the labelled phone is not unknown
+        _st, body = self.get(f"/device/{phone}")
+        self.assertIn("Sam&#x27;s iPhone", body)
+        self.assertIn("named in visitors.json", body)
         _st, down = self.get("/devices?only=down")
         self.assertIn("Office AQ", down)
         self.assertNotIn("Living Room Apple TV", down)

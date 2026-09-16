@@ -1,0 +1,5 @@
+[
+  {"name": "Sam's iPhone", "extendedAddress": "4F2A9C3E7B1D6085"},
+  {"name": "Kim's iPhone", "extendedAddress": "7C41E09A2D5B38F6",
+   "note": "Phones keep their extended address between visits. Never list a phone in devices.json: an inventory entry pages when it goes silent, and a phone leaving is not a failure."}
+]

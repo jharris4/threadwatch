@@ -46,6 +46,7 @@ from .names import (
     _EXT_ADDR,
     DeviceNames,
     LastSeen,
+    VisitorNames,
     load_border_routers,
     newest_generation,
     parent_address,
@@ -133,6 +134,10 @@ class Pipeline:
         # only reads; nothing here writes the file back (_save_border_routers
         # returns on ephemeral, and no browse runs offline).
         self.names = DeviceNames(cfg.devices_path, cfg.state_dir / "border-routers.json")
+        # Labels for visiting addresses (config/visitors.json). Never the
+        # inventory: an inventory entry makes an address a device whose
+        # silence pages; a label only changes what a visit is called.
+        self.visitor_names = VisitorNames(getattr(cfg, "visitors_path", None))
         if not ephemeral:
             from .snapshot import remember_capture
             remember_capture(cfg, self.names.entries)
@@ -247,12 +252,13 @@ class Pipeline:
         # it meets. See _note_generation.
         self.keys_path = cfg.state_dir / "key-generations.json"
         self._keys: dict = {} if ephemeral else self._load_keys()
-        # Addresses that have visited: how many times, first and last. A
+        # Addresses that have visited: how many times, first and last
+        # (data/state/visits.json; config/visitors.json is the labels). A
         # visit drops the address's row, so without this a phone back
         # under the same address (they keep it, even across a reboot) was
         # "first seen" again on every visit.
-        self.visitors_path = cfg.state_dir / "visitors.json"
-        self._visitors: dict[str, dict] = {} if ephemeral else self._load_visitors()
+        self.visits_path = cfg.state_dir / "visits.json"
+        self._visits: dict[str, dict] = {} if ephemeral else self._load_visits()
         # The key generation the last frame ingested was accepted under
         # (None when it vouched for nobody): `device` reads it to print a
         # generation history without decoding anything twice.
@@ -696,31 +702,31 @@ class Pipeline:
 
     KEYS_STAMPS = ("highest_first_ts", "previous_first_ts", "census_at")
 
-    def _load_visitors(self) -> dict[str, dict]:
-        """visitors.json: {addr: {visits, first_visit, last_visit, ...}}.
+    def _load_visits(self) -> dict[str, dict]:
+        """visits.json: {addr: {visits, first_visit, last_visit, ...}}.
         Unreadable or shapeless: start afresh, which costs one
         device_first_seen where a visitor_returned was due and nothing
         else. Keys the recorder does not know (a label someone added by
         hand) are kept as they are."""
         try:
-            data = json.loads(self.visitors_path.read_text())
+            data = json.loads(self.visits_path.read_text())
         except FileNotFoundError:
             return {}
         except (OSError, ValueError) as exc:
-            print(f"[threadwatch] {self.visitors_path.name} is unreadable ({exc}): earlier visits are "
+            print(f"[threadwatch] {self.visits_path.name} is unreadable ({exc}): earlier visits are "
                   "forgotten, so the next visit by each address is first seen again", file=sys.stderr, flush=True)
             return {}
         if not isinstance(data, dict):
             return {}
         return {a: v for a, v in data.items() if isinstance(a, str) and isinstance(v, dict)}
 
-    def _save_visitors(self) -> None:
+    def _save_visits(self) -> None:
         if self.ephemeral:
             return
-        self.visitors_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.visitors_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self._visitors, indent=1))
-        tmp.replace(self.visitors_path)
+        self.visits_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.visits_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self._visits, indent=1))
+        tmp.replace(self.visits_path)
 
     def _load_keys(self) -> dict:
         """key-generations.json: {highest, previous, highest_first_ts,
@@ -1521,11 +1527,11 @@ class Pipeline:
                 # bind it, so the first_seen below already carries its name.
                 self._apply_border_routers([pending], ts)
             if was_new and not self._flooded(ts):
-                known = self._visitors.get(who)
+                known = self._visits.get(who)
                 if known:
                     # Back for another visit: its row went with the last
                     # one, but the recorder has not forgotten it.
-                    self._emit("visitor_returned", "info", ts, addr=who, name=None,
+                    self._emit("visitor_returned", "info", ts, addr=who, name=self.visitor_names.name(who),
                                visit=int(known.get("visits") or 0) + 1, last_visit=known.get("last_visit"),
                                note=f"an address that has visited {known.get('visits')} time"
                                     f"{'s' if known.get('visits') != 1 else ''} before, last "
@@ -3426,12 +3432,12 @@ class Pipeline:
         far its MLE counter had run."""
         since = row.get("heard_since", row["first_seen"])
         heard_for = row["last_seen"] - since
-        known = dict(self._visitors.get(addr) or {})
+        known = dict(self._visits.get(addr) or {})
         visit = int(known.get("visits") or 0) + 1
         known.update(visits=visit, last_visit=row["last_seen"], last_heard_for_s=round(heard_for),
                      first_visit=min(since, known.get("first_visit") or since))
-        self._visitors[addr] = known
-        self._save_visitors()
+        self._visits[addr] = known
+        self._save_visits()
         holders = router_holders(self.seen.table)
         parent_addr = parent_address(row, holders)
         live = rloc16_role(row.get("rloc16")) or {}
@@ -3444,7 +3450,7 @@ class Pipeline:
             mac = self._mac_counter.get(addr, {}).get(seq)
             generations.append({"sequence": seq, "mle_counter": mle[0] if mle else None,
                                 "counter": mac[0] if mac else None})
-        self._emit("visitor_left", "info", now, addr=addr, name=None, visit=visit,
+        self._emit("visitor_left", "info", now, addr=addr, name=self.visitor_names.name(addr), visit=visit,
                    first_seen=since, last_seen=row["last_seen"],
                    heard_for_s=round(heard_for), silent_for_s=round(now - row["last_seen"]),
                    frames=row.get("frames"), rloc16=row.get("rloc16"),

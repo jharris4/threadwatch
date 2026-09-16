@@ -215,6 +215,23 @@ make. The daemon reads the file at start, so restart it after editing.
 overwriting the other. It is not a crash artefact, and it stays there
 between runs.
 
+### visitors.json
+
+Phones and tablets with a Thread radio join the mesh for a few minutes
+to reach a HomeKit accessory and leave; the recorder files each such
+stay as a visit (`visitor_left`, docs/ALERTING.md) rather than a silence,
+and they keep their extended address, so the same phone is recognised
+on every visit. To call one by name, put it in `config/visitors.json`,
+the same shape as devices.json (`config/visitors.example.json` shows two):
+
+    bin/threadwatch name-visitor 4f2a9c3e7b1d6085 "Sam's iPhone"
+
+Never in devices.json: an inventory entry makes an address a device
+whose silence pages a warning, and a phone leaving is not a failure. The
+label only changes what the pages, the daily summary and the visit
+records call the address. `[visitors] file` in config.toml moves the
+file; both the recorder and the web pages read it at start.
+
 ## Developing
 
 ```bash

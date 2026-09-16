@@ -79,6 +79,41 @@ class DayRollingTest(unittest.TestCase):
             self.assertEqual(migrate_legacy(log.dir), 0)   # idempotent
 
 
+class VisitorNamesTest(unittest.TestCase):
+    def test_a_labelled_visitor_is_visiting_not_unknown_and_the_label_never_reaches_the_inventory(self):
+        from threadwatch.names import DeviceNames, LastSeen, VisitorNames
+        from threadwatch.review import DEVICE_FILTERS, device_rows, now_card
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "devices.json").write_text(json.dumps([{"name": "Office AQ", "extendedAddress": AQ}]))
+            (root / "visitors.json").write_text(json.dumps([
+                {"name": "Sam's iPhone", "extendedAddress": "4F2A9C3E7B1D6085"},
+                {"name": "", "extendedAddress": "1111111111111111"},          # blank label: still unknown
+                "junk", {"name": "Bad", "extendedAddress": 12}]))              # skipped, said once
+            (root / "events").mkdir()
+            visitors = VisitorNames(root / "visitors.json")
+            self.assertEqual(visitors.name("4f2a9c3e7b1d6085"), "Sam's iPhone")
+            self.assertIsNone(visitors.name("1111111111111111"))
+            self.assertIsNone(VisitorNames(root / "missing.json").name("4f2a9c3e7b1d6085"))
+            names = DeviceNames(root / "devices.json")
+            self.assertIsNone(names.name("4f2a9c3e7b1d6085"))                  # a label is not a name
+            seen = LastSeen(root / "last-seen.json")
+            for addr in (AQ, "4f2a9c3e7b1d6085", "2222222222222222"):
+                seen.touch(addr, T0, 1, pan=0x4e21)
+            card = now_card(seen, names, root / "events", -82.0, day_of(T0), T0 + 60, visitors=visitors)
+            self.assertEqual([i["name"] for i in card["visiting"]], ["Sam's iPhone"])
+            self.assertEqual([i["addr"] for i in card["unknown"]], ["2222222222222222"])
+            rows = {r["addr"]: r for r in device_rows(seen, names, -82.0, T0 + 60, visitors=visitors)}
+            self.assertEqual((rows["4f2a9c3e7b1d6085"]["name"], rows["4f2a9c3e7b1d6085"]["visitor"]),
+                             (None, "Sam's iPhone"))
+            unknown = [a for a, r in rows.items() if DEVICE_FILTERS["unknown"][1](r, None)]
+            self.assertEqual(unknown, ["2222222222222222"])
+            self.assertEqual([a for a, r in rows.items() if DEVICE_FILTERS["visitors"][1](r, None)],
+                             ["4f2a9c3e7b1d6085"])
+            report = seen.report(names, now=T0 + 60, visitors=visitors)
+            self.assertEqual([i["addr"] for i in report["unknown"]], ["2222222222222222"])
+
+
 class EpisodeTest(unittest.TestCase):
     def test_quiet_and_returned_collapse_to_one_row(self):
         eps = group_episodes([

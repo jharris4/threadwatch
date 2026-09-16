@@ -18,7 +18,16 @@ import time
 from pathlib import Path
 
 from .events import day_bounds, day_of, iter_days, list_days, next_day, prev_day, read_day
-from .names import DeviceNames, LastSeen, newest_generation, parent_address, reception, rloc16_role, router_holders
+from .names import (
+    DeviceNames,
+    LastSeen,
+    VisitorNames,
+    newest_generation,
+    parent_address,
+    reception,
+    rloc16_role,
+    router_holders,
+)
 from .snapshot import STAGING_DIR
 
 SEVERITY_RANK = {"info": 0, "notice": 1, "warning": 2, "critical": 3}
@@ -689,7 +698,8 @@ def day_index(events_dir: Path) -> list[dict]:
 
 def device_rows(seen: LastSeen, names: DeviceNames, min_rssi_dbm: float,
                 now: float | None = None, leader_router: int | None = None,
-                mesh_generation: int | None = None, ha: dict | None = None) -> list[dict]:
+                mesh_generation: int | None = None, ha: dict | None = None,
+                visitors: VisitorNames | None = None) -> list[dict]:
     """One dict per tracked address. The live role comes from the RLOC16 the
     recorder last saw the device use: router or child, which router it is
     or hangs off, and whether it holds the partition's leader id. The key
@@ -741,6 +751,7 @@ def device_rows(seen: LastSeen, names: DeviceNames, min_rssi_dbm: float,
             "parent": (names.name(parent_addr) or parent_addr) if parent_addr else None,
             "addr": addr,
             "name": names.name(addr),
+            "visitor": visitors.name(addr) if visitors else None,    # a labelled phone, here right now
             "frames": row.get("frames", 0),
             "first_seen": row.get("first_seen"),
             "last_seen": row.get("last_seen"),
@@ -759,7 +770,8 @@ def device_rows(seen: LastSeen, names: DeviceNames, min_rssi_dbm: float,
 
 
 DEVICE_FILTERS = {
-    "unknown": ("not in devices.json", lambda r, dom: r["name"] is None),
+    "unknown": ("not in devices.json", lambda r, dom: r["name"] is None and not r.get("visitor")),
+    "visitors": ("visitors", lambda r, dom: bool(r.get("visitor"))),
     "quiet": ("quiet now", lambda r, dom: r["quiet"] and not r["rotated_to"]),
     "marginal": ("heard marginally", lambda r, dom: r["reception"] == "marginal"),
     "down": ("signal down", lambda r, dom: r["degraded"]),
@@ -824,14 +836,15 @@ def dominant_pan(seen: LastSeen, configured: int | None = None,
 
 def now_card(seen: LastSeen, names: DeviceNames, events_dir: Path, min_rssi_dbm: float,
              day: str, now: float | None = None, pan_id: int | None = None,
-             state_dir: Path | None = None) -> dict:
+             state_dir: Path | None = None, visitors: VisitorNames | None = None) -> dict:
     """What matters at this moment, for the top of today's page: devices
     quiet right now (as the recorder announced them), devices whose signal
-    is down, unknown addresses still to name, and the day's daily_summary
+    is down, unknown addresses still to name, labelled visitors here right
+    now (a phone whose visit is not yet filed), and the day's daily_summary
     record if one has gone out. Devices on a foreign PAN are left out."""
     now = now or time.time()
     dominant = dominant_pan(seen, pan_id, state_dir)
-    quiet, degraded, unknown = [], [], []
+    quiet, degraded, unknown, visiting = [], [], [], []
     for addr, row in seen.table.items():
         pan = row.get("pan")
         if dominant is not None and pan is not None and pan != dominant:
@@ -844,14 +857,19 @@ def now_card(seen: LastSeen, names: DeviceNames, events_dir: Path, min_rssi_dbm:
         if row.get("rssi_degraded") and not row.get("rotated_to"):
             degraded.append({**item, "reference_dbm": row.get("rssi_ref")})
         if item["name"] is None:
-            unknown.append(item)
+            label = visitors.name(addr) if visitors else None
+            if label:
+                visiting.append({**item, "name": label})
+            else:
+                unknown.append(item)
     quiet.sort(key=lambda i: -i["silent_for_s"])
     unknown.sort(key=lambda i: i["silent_for_s"])
+    visiting.sort(key=lambda i: i["silent_for_s"])
     summary = None
     for rec in read_day(events_dir, day):
         if rec.get("event") == "daily_summary":
             summary = rec
-    return {"quiet": quiet, "degraded": degraded, "unknown": unknown, "summary": summary}
+    return {"quiet": quiet, "degraded": degraded, "unknown": unknown, "visiting": visiting, "summary": summary}
 
 
 def live_address(addrs: list[str], table: dict[str, dict]) -> str:

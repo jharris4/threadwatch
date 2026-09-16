@@ -44,6 +44,19 @@ class InventoryIsolationTest(unittest.TestCase):
                 self.assertEqual(config_mod.load(path).devices_path, other / "custom.json")
 
 
+class VisitorsFileTest(unittest.TestCase):
+    def test_visitors_json_sits_beside_the_config_unless_pointed_elsewhere(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "config.toml"
+            path.write_text("[record]\n")
+            self.assertEqual(config_mod.load(path).visitors_path, Path(d).resolve() / "visitors.json")
+            path.write_text('[visitors]\nfile = "phones.json"\n')
+            self.assertEqual(config_mod.load(path).visitors_path, Path(d).resolve() / "phones.json")
+            path.write_text('[visitors]\ninventory = "phones.json"\n')
+            with self.assertRaises(ValueError):
+                config_mod.load(path)
+
+
 class KeepGbTest(unittest.TestCase):
     def _load(self, text):
         with tempfile.TemporaryDirectory() as d:
@@ -403,6 +416,7 @@ class ExampleConfigTest(unittest.TestCase):
         ("record", "snapshot_on_critical"): ("snapshot_on_critical", True, False),
         ("record", "keep_snapshots"): ("keep_snapshots", 4, 9),
         ("devices", "inventory"): ("devices_path", "devices.json", "other.json"),
+        ("visitors", "file"): ("visitors_path", "visitors.json", "phones.json"),
         ("quiet", "silence_s"): ("quiet_s", 1800, 600),
         ("quiet", "min_rssi_dbm"): ("quiet_min_rssi_dbm", -82, -70),
         ("polls", "rearm_s"): ("poll_rearm_s", 3600, 120),
@@ -478,7 +492,7 @@ class ExampleConfigTest(unittest.TestCase):
         got = cfg
         for part in attr.split("."):
             got = getattr(got, part)
-        if attr in ("devices_path", "credentials_path"):
+        if attr in ("devices_path", "visitors_path", "credentials_path"):
             return got, (d / spec_value).resolve()
         return got, spec_value
 

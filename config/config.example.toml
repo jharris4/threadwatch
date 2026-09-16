@@ -38,6 +38,13 @@ keep_hours = 168                  # ring files to retain, one per hour heard (16
 # Inventory that maps extended addresses to human names (see names.py docstring).
 inventory = "devices.json"
 
+[visitors]
+# Labels for addresses that visit the mesh (the household's phones), same
+# shape as devices.json but deliberately not in it: an inventory entry makes
+# an address a device whose silence pages; a visitor's silence is a visit
+# ending. `threadwatch name-visitor <addr> "Sam's iPhone"` writes it.
+# file = "visitors.json"
+
 [quiet]
 # Silence before a device_quiet alert. Sleepy end devices poll every few
 # seconds and routers advertise every few, so from the sniffer's point of

@@ -476,6 +476,21 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual(s["visits_24h"], [{"addr": STRANGER, "first_seen": t0, "heard_for_s": 16}])
         self.assertIn("1 visit by unnamed addresses", s["note"])
 
+    def test_a_labelled_visitor_is_named_in_its_visit_records_but_is_still_a_visitor(self):
+        d = Path(self.tmp.name)
+        (d / "visitors.json").write_text(json.dumps([{"name": "Sam's iPhone", "extendedAddress": STRANGER}]))
+        self.cfg.visitors_path = d / "visitors.json"
+        pipe = self._pipe()
+        t0 = 1_700_000_000.0
+        for i in range(10):
+            pipe.ingest(frame(t0 + i, STRANGER))
+        pipe.periodic(t0 + 40 * 60)
+        pipe.ingest(frame(t0 + 3 * 3600, STRANGER))
+        about = [(r["event"], r.get("name")) for r in pipe.events.records if r.get("addr") == STRANGER]
+        self.assertEqual(about, [("device_first_seen", None), ("visitor_left", "Sam's iPhone"),
+                                 ("visitor_returned", "Sam's iPhone")])
+        self.assertEqual(self._quiet(pipe), [])
+
     def test_a_visitor_back_under_the_same_address_is_a_return_visit_not_first_seen(self):
         """Its row was dropped with the visit, but the recorder keeps a
         count per address (phones keep theirs, even across a reboot): a
@@ -499,7 +514,7 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual(back["last_visit"], t0 + 9)
         self.assertIn("visited 1 time before", back["note"])
         pipe2 = self._pipe()
-        self.assertEqual(pipe2._visitors[STRANGER]["visits"], 2)
+        self.assertEqual(pipe2._visits[STRANGER]["visits"], 2)
         pipe2.ingest(frame(t0 + 6 * 3600, STRANGER))
         self.assertEqual(about(pipe2), [("visitor_returned", 3)])
 

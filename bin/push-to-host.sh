@@ -8,7 +8,7 @@
 # A first install does not need this: `git clone` on the host and
 # `sudo bin/setup-host.sh` is enough (INSTALL.md). What this script adds is
 # that it also carries config/config.toml, config/devices.json,
-# config/credentials.toml and config/alerts.env, which git deliberately never
+# config/visitors.json, config/credentials.toml and config/alerts.env, which git deliberately never
 # sees, and it lets you deploy an uncommitted change. data/ on the host is
 # never touched, and a config/ file the host has but this workstation does
 # not (a fresh clone, a second machine, a credentials.toml written on the

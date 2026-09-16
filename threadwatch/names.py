@@ -410,7 +410,7 @@ class LastSeen:
 
     def report(self, names: DeviceNames, quiet_after_s: float | None = None,
                now: float | None = None, min_rssi_dbm: float = -82.0,
-               dominant: int | None = None) -> dict:
+               dominant: int | None = None, visitors: "VisitorNames | None" = None) -> dict:
         """Quiet, active and unknown devices. "Quiet" is one thing
         everywhere: what the recorder announced (the row's persisted
         quiet_reported flag, set after [quiet] silence_s of silence it
@@ -429,6 +429,7 @@ class LastSeen:
             item = {
                 "addr": addr,
                 "name": name,
+                "visitor": visitors.name(addr) if visitors else None,   # a labelled phone, here right now
                 "frames": row["frames"],
                 "first_seen": row.get("first_seen"),
                 "last_seen": row["last_seen"],
@@ -436,7 +437,7 @@ class LastSeen:
                 "rssi_dbm": rssi,
                 "reception": reception(rssi, min_rssi_dbm),
             }
-            if name is None:
+            if name is None and item["visitor"] is None:
                 unknown.append(item)
             judged = not row.get("rotated_to") and (
                 dominant is None or row.get("pan") is None or row.get("pan") == dominant)
@@ -479,6 +480,54 @@ def load_names(cfg) -> DeviceNames:
     """The inventory plus what the recorder has learned about border
     routers: the one way every command and page should build names."""
     return DeviceNames(cfg.devices_path, cfg.state_dir / "border-routers.json")
+
+
+class VisitorNames:
+    """config/visitors.json: labels for addresses that visit the mesh (the
+    household's phones), in the inventory's shape (name, extendedAddress
+    or extendedAddresses) but deliberately not in the inventory. An
+    inventory entry makes an address a device whose silence pages; a
+    visitor's silence is a visit ending. The label only changes what the
+    pages and the visit records call the address. Missing file: no
+    labels. A damaged file is said once and ignored, as devices.json is."""
+
+    def __init__(self, path: Path | None):
+        self.path = path
+        self.by_addr: dict[str, dict] = {}
+        self.entries: list[dict] = []
+        if not path or not path.exists():
+            return
+        try:
+            raw = json.loads(path.read_text())
+        except ValueError as exc:
+            print(f"[threadwatch] {path.name} is not valid JSON ({exc}): ignoring the file, so visitors "
+                  "show by address until it is fixed", file=sys.stderr, flush=True)
+            return
+        except OSError as exc:
+            print(f"[threadwatch] {path.name} is unreadable ({exc}): visitors show by address",
+                  file=sys.stderr, flush=True)
+            return
+        if not isinstance(raw, list):
+            print(f"[threadwatch] {path.name}: expected a list of visitors, got {type(raw).__name__}; "
+                  "ignoring the file", file=sys.stderr, flush=True)
+            return
+        self.entries = [e for e in raw if isinstance(e, dict)]
+        for entry in self.entries:
+            if address_field_error(entry):
+                print(f"[threadwatch] {path.name}: {address_field_error(entry)} in the entry for "
+                      f"{entry.get('name')!r}: ignored", file=sys.stderr, flush=True)
+            for a in entry_addresses(entry):
+                n = _norm(str(a))
+                if _EXT_ADDR.match(n):
+                    self.by_addr[n] = entry
+
+    def name(self, addr: str | None) -> str | None:
+        entry = self.by_addr.get(_norm(addr)) if addr else None
+        return str(entry["name"]) if entry and entry.get("name") else None
+
+
+def load_visitor_names(cfg) -> VisitorNames:
+    return VisitorNames(getattr(cfg, "visitors_path", None))
 
 
 def rloc16_role(rloc16: str | None) -> dict | None:

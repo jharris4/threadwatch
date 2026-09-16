@@ -142,6 +142,11 @@ def main(argv=None) -> int:
     p_name.add_argument("addr", help="16-hex extended address (from 'devices')")
     p_name.add_argument("name", help="device name; an existing name gains the address (rotation)")
 
+    p_vname = sub.add_parser("name-visitor", help="name a visiting address (a phone): add it to visitors.json, "
+                                                  "never to devices.json, so its silences stay visits and never page")
+    p_vname.add_argument("addr", help="16-hex extended address (from 'devices' or a visitor_left record)")
+    p_vname.add_argument("name", help="label, e.g. \"Sam's iPhone\"; an existing label gains the address")
+
     p_imp = sub.add_parser("import", help="fill devices.json and credentials.toml from Home Assistant (Matter "
                                           "devices, the network key) and mDNS (border routers)")
     p_imp.add_argument("--write", action="store_true", help="apply; without it, only report what would change")
@@ -470,13 +475,21 @@ def main(argv=None) -> int:
     if args.cmd == "devices":
         import sys
 
-        from .names import LastSeen, load_names, load_observed_names, rotation_hints, suggest_entries
+        from .names import (
+            LastSeen,
+            load_names,
+            load_observed_names,
+            load_visitor_names,
+            rotation_hints,
+            suggest_entries,
+        )
         from .review import dominant_pan
         names = load_names(cfg)
         seen = LastSeen(cfg.state_dir / "last-seen.json")
         report = seen.report(names, quiet_after_s=None if args.quiet_minutes is None else args.quiet_minutes * 60,
                              min_rssi_dbm=cfg.quiet_min_rssi_dbm,
-                             dominant=dominant_pan(seen, cfg.pan_id, cfg.state_dir))
+                             dominant=dominant_pan(seen, cfg.pan_id, cfg.state_dir),
+                             visitors=load_visitor_names(cfg))
         if args.suggest:
             hints = rotation_hints(report["unknown"], seen.table, names)
             entries = suggest_entries(report["unknown"], load_observed_names(cfg.state_dir), hints)
@@ -569,6 +582,16 @@ def main(argv=None) -> int:
         except ValueError as exc:
             parser.exit(1, f"threadwatch name: {exc}\n")
         print("(the recorder reads the inventory at start: restart it to use the name)")
+        return 0
+
+    if args.cmd == "name-visitor":
+        from .names import adopt
+        path = cfg.visitors_path or cfg.config_dir / "visitors.json"
+        try:
+            print(f"{adopt(path, args.addr, args.name)} -> {path}")
+        except ValueError as exc:
+            parser.exit(1, f"threadwatch name-visitor: {exc}\n")
+        print("(the recorder and the web pages read visitors.json at start: restart them to use the label)")
         return 0
 
     return 1

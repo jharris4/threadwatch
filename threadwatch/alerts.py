@@ -228,13 +228,17 @@ def _min_severity(raw, sink: str) -> int:
 # ------------------------------------------------------------------- sinks
 
 def record_id(record: dict) -> str:
-    """A stable id for a record: the same event at the same stamp about the
-    same address has the same id however many times it is sent, so a
+    """A stable id for a record: a retry resends the record as it was, so
+    the same record has the same id however many times it is sent, and a
     receiver that keeps what it has seen (a webhook with a store, an
     automation keyed on it) can drop a retry of a page that did arrive.
-    Twelve hex digits of a SHA-1 over stamp, event and address."""
-    key = (f"{float(record.get('ts') or 0):.3f}|{record.get('event', '')}|"
-           f"{record.get('addr') or record.get('src') or ''}")
+    Twelve hex digits of a SHA-1 over every field but the id itself. It
+    used to cover only stamp, event and address, so two records the same
+    moment about nobody in particular (a ``possible_foreign_pan`` per
+    neighbouring PAN at start-up, whose source is often no address at
+    all) shared an id, and a receiver deduplicating on it kept one."""
+    body = {k: v for k, v in record.items() if k != "id"}
+    key = json.dumps(body, sort_keys=True, default=str)
     return hashlib.sha1(key.encode()).hexdigest()[:12]
 
 

@@ -809,10 +809,26 @@ def wait_for(cond, timeout=3.0):
 
 class RecordIdTest(unittest.TestCase):
     def test_the_same_record_has_the_same_id_and_the_log_carries_it(self):
-        self.assertEqual(alerts.record_id(REC), alerts.record_id({**REC, "note": "different"}))
+        self.assertEqual(alerts.record_id(REC), alerts.record_id(dict(REC)))
+        self.assertEqual(alerts.record_id(REC), alerts.record_id({**REC, "id": "stale"}))
         self.assertNotEqual(alerts.record_id(REC), alerts.record_id({**REC, "ts": REC["ts"] + 1}))
         self.assertNotEqual(alerts.record_id(REC), alerts.record_id({**REC, "addr": "0" * 16}))
         self.assertEqual(len(alerts.record_id(REC)), 12)
+
+    def test_records_the_same_moment_about_no_address_get_their_own_ids(self):
+        # Two possible_foreign_pan notices at recorder start, one per
+        # neighbouring PAN, with no source address to tell them apart:
+        # they once shared an id, so a receiver deduplicating on it kept one.
+        base = {"ts": 1700000000.0, "event": "possible_foreign_pan", "severity": "notice",
+                "src": None, "dominant_pan": "0x7394", "note": "repeated foreign-PAN sightings"}
+        a = alerts.record_id({**base, "pan": "0x58bc"})
+        b = alerts.record_id({**base, "pan": "0x5131"})
+        self.assertNotEqual(a, b)
+        with tempfile.TemporaryDirectory() as d:
+            log = EventLog(Path(d) / "events")
+            one = log.emit("possible_foreign_pan", "notice", 1700000000.0, pan="0x58bc", src=None)
+            two = log.emit("possible_foreign_pan", "notice", 1700000000.0, pan="0x5131", src=None)
+            self.assertNotEqual(one["id"], two["id"])
         with tempfile.TemporaryDirectory() as d:
             log = EventLog(Path(d) / "events")
             rec = log.emit("device_quiet", "warning", 1700000000.0, addr="x")

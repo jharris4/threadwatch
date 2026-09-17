@@ -181,8 +181,9 @@ Each snapshot is one directory:
       blind-spans.json       when the recorder was not listening, as far as a silence still reached
       retransmissions.json   the retransmission detector's baseline and open elevation
       storm.json             the storm detector's windows, onsets and last page
-      key-generations.json   the highest key generation heard, the one before, and who was heard
-                             first under each (docs/ALERTING.md, key_sequence_advanced)
+      key-generations.json   the highest key generation heard, the one before, who was heard
+                             first under it and who is suspected of starting the rotation
+                             (docs/ALERTING.md, key_sequence_advanced)
       events/                a copy of the whole event log, one file per day
       ha-map.json            with [ha_availability]: HA device id -> address, names and entities (the link
                              the availability check uses; devices.json itself carries nothing of HA's)

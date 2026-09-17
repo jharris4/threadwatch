@@ -80,8 +80,8 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `poll_answered` | notice | `addr`, `name`, `note` |
 | `rssi_degradation` | notice | `addr`, `name`, `rssi_dbm`, `reference_dbm`, `drop_db`, `since`, `low_for_s`, `note` |
 | `rssi_recovered` | info | `addr`, `name`, `rssi_dbm`, `reference_dbm`, `note` |
-| `key_sequence_advanced` | info | `sequence` (the new key generation), `previous` (null the first time a generation is ever heard), `first_sender`, `name`, `rloc16`, `role`, `frame` (`mac_data`, `mac_poll` or `mle:<command>`, whichever was accepted first under it), `since_previous_s`, `note` (says "early" when `[keys] rotation_hours` is set and the rotation came under 90% of it) |
-| `key_lag_census` | info | `sequence`, `mesh_generation`, `counts` (devices per generation, fresh ones only), `behind_parent_1`, `behind_parent_2plus`, `routers_behind` (each: `name`, `addr`, `generation`, `lag`, and `parent` / `parent_generation` or `mesh_generation`), `unknown` (no fresh frame: not judged), `note`; `[keys] census_delay_s` after each rotation |
+| `key_sequence_advanced` | info | `sequence` (the new key generation), `previous` (null the first time a generation is ever heard), `first_sender`, `name`, `rloc16`, `role`, `frame` (`mac_data`, `mac_poll` or `mle:<command>`, whichever was accepted first under it), `since_previous_s`, `suspects` (one entry, the first sender: `addr`, `name`, `rloc16`, `role`, `ts`, `frame`, `evidence` (`ahead of its parent`: a child heard on the new generation while its parent was still fresh on the old one, so it advanced the key on its own; else `first on air`), `parent`, `parent_addr`, `parent_generation`, `parent_heard_s` (how long before the frame the parent was last heard on its generation)), `note` (says "early" when `[keys] rotation_hours` is set and the rotation came under 90% of it, and gives the verdict on the first sender) |
+| `key_lag_census` | info | `sequence`, `mesh_generation`, `counts` (devices per generation, fresh ones only), `behind_parent_1`, `behind_parent_2plus`, `routers_behind` (each: `name`, `addr`, `generation`, `lag`, and `parent` / `parent_generation` or `mesh_generation`), `unknown` (no fresh frame: not judged), `suspects` (the rotation's first sender, then every device whose first frame on the new generation came while its parent was still fresh on the old one, entries as in `key_sequence_advanced`), `note`; `[keys] census_delay_s` after each rotation |
 | `key_lag` | warning for a child, critical for a router; notice when `episode` > 1 (reopened within `[keys] rearm_s`) | `addr`, `name`, `role`, `generation`, `parent`, `parent_addr`, `parent_generation` (a child) or `mesh_generation` (a router), `lag`, `since`, `lagged_for_s`, `rssi_dbm`, `reception`, `polls_acked`, `episode`, `since_previous_s`, `note` |
 | `key_lag_cleared` | info | `addr`, `name`, `role`, `generation`, `parent`, `parent_addr`, `parent_generation` or `mesh_generation`, `since`, `lagged_for_s`, `rejoined`, `rejoin_ts`, `note`; only after a `key_lag` went out |
 | `retransmission_elevation` | notice for the first elevated minute, warning once the rate has stayed up for `[retransmissions] confirm_s` (`confirmed`); notice regardless when one sender-target pair is `top_share` >= 0.5 of the retries (a chronic bad link, not a storm precursor) | `rate`, `baseline`, `addr`, `name`, `top_sender`, `top_target`, `top_share`, `confirmed`, `sustained_s`, `note` |
@@ -232,12 +232,31 @@ week pages nothing:
   generation it meets with `previous` null. With `[keys] rotation_hours`
   set, a rotation under 90% of it after the previous one says "early" in
   the note, which is how a rotation the operator did not schedule shows.
+  The record also says who is suspected of starting it. A rotation is
+  started by whichever device's own rotation timer fires first, and the
+  mesh follows it; the first sender is that device only if it could not
+  have learned the new key from anyone. A child hears nobody but its
+  parent, so a child heard on the new generation while its parent's
+  freshest reading (within `[keys] fresh_s`) is still the old one advanced
+  the key on its own: `evidence` is `ahead of its parent`, the note says
+  so, and that is as close to proof as the sniffer gets. On 2026-09-17
+  that was Front Door, an Eve contact sensor polling on 87 while its
+  parent was on 86 and nothing else was on 87; it lost its parent, its
+  Parent Request carried 87 to the border router, and the mesh followed
+  within a minute. A router first on air may be relaying a frame the
+  sniffer missed, and a child whose parent has no fresh reading cannot be
+  judged: `first on air`, suspected, not proven. Until the census, every
+  further device whose first frame on the new generation comes while its
+  parent is still fresh on the old one joins the suspects (Front Door
+  Button did the same 74 s after Front Door, under a parent still two
+  behind); a child heard on it after its parent moved simply followed.
 - `key_lag_census` (info) comes `[keys] census_delay_s` (default 60 min)
   after each rotation: how many devices are on each generation, the
   children one behind their parent (normal), the children two or more
   behind (cut off), the routers behind the mesh, and the devices with no
   frame fresh enough to judge. It is the roll call to read after a
-  rotation; nothing in it pages.
+  rotation, and the suspects: the first sender and every device that
+  moved ahead of its parent since. Nothing in it pages.
 - `key_lag` is the page, once per device per episode. A device whose
   freshest reading is within `[keys] fresh_s` (default 30 min) is judged
   against its live parent's reading, when that is fresh too: the parent is

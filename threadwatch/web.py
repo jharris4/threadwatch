@@ -815,10 +815,16 @@ class Site:
                 who = (f'<a href="/device/{esc(first)}">{esc(self.names().name(first) or first)}</a>'
                        if first else "?")
                 when = keys.get("highest_first_ts")
+                suspects = [s for s in (keys.get("suspects") or []) if isinstance(s, dict) and s.get("addr")]
+                suspected = ", ".join(
+                    f'<a href="/device/{esc(s["addr"])}">{esc(self.names().name(s["addr"]) or s["addr"])}</a>'
+                    + (" (ahead of its parent)" if s.get("evidence") == "ahead of its parent" else "")
+                    for s in suspects)
                 row("key generation", f'{esc(keys["highest"])} <span class="muted">first heard from {who}'
                                       + (f' {ago(when, now)}' if when else "")
                                       + (f', previously {esc(keys["previous"])}' if keys.get("previous") is not None
-                                         else "") + '</span>')
+                                         else "")
+                                      + (f'; suspected trigger: {suspected}' if suspected else "") + '</span>')
             avail = st.get("ha_availability")
             if isinstance(avail, dict):
                 if not avail.get("enabled"):

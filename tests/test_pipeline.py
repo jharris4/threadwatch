@@ -4363,3 +4363,92 @@ class DeviceRssiEwmaTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RadiosTest(unittest.TestCase):
+    """What the pipeline keeps per radio, and what a radio going down
+    changes about a silence."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        # Named: an unnamed address heard briefly is a visitor, not quiet.
+        (d / "devices.json").write_text(json.dumps([
+            {"name": "Router", "extendedAddress": ROUTER}, {"name": "Sensor", "extendedAddress": SENSOR},
+            {"name": "Stranger", "extendedAddress": STRANGER}]))
+        self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json")
+        self.pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    @staticmethod
+    def _heard(f, **copies):
+        """f as the merger builds it: copies by radio label with their own RSSI."""
+        from dataclasses import replace
+        heard = {label: replace(f, rssi=rssi, radio=label) for label, rssi in copies.items()}
+        best = max(copies, key=copies.get)
+        return replace(f, rssi=copies[best], radio=best, heard=heard)
+
+    def test_rows_keep_each_radios_count_stamp_and_level_beside_the_best_ear(self):
+        t0 = 1_700_000_000.0
+        for i in range(10):
+            self.pipe.ingest(self._heard(frame(t0 + i, ROUTER), hub=-70.0, annex=-60.0))
+        self.pipe.ingest(self._heard(frame(t0 + 10, ROUTER), hub=-71.0))
+        row = self.pipe.seen.table[ROUTER]
+        self.assertEqual(row["heard_by"], {"hub": 11, "annex": 10})
+        self.assertEqual(row["last_seen_by"], {"hub": t0 + 10, "annex": t0 + 9})
+        self.assertLess(row["rssi_by_radio"]["hub"], -69.9)
+        self.assertEqual(row["rssi_by_radio"]["annex"], -60.0)
+        self.assertLess(row["rssi"], -60.0)              # the best ear's average, a little off since annex missed one
+        self.assertGreater(row["rssi"], -62.0)
+        # A single unnamed dongle leaves rows exactly as they were.
+        self.pipe.ingest(frame(t0 + 11, SENSOR))
+        self.assertNotIn("heard_by", self.pipe.seen.table[SENSOR])
+        from dataclasses import replace
+        f = frame(t0 + 12, SENSOR)
+        self.pipe.ingest(replace(f, radio=None, heard={None: f}))
+        self.assertNotIn("heard_by", self.pipe.seen.table[SENSOR])
+
+    def test_a_device_only_a_down_radio_was_hearing_is_a_notice_not_a_page(self):
+        t0 = 1_700_000_000.0
+        self.pipe.radio_changed("hub", "up", t0)
+        self.pipe.radio_changed("annex", "up", t0)
+        for i in range(40):
+            self.pipe.ingest(self._heard(frame(t0 + i, ROUTER), annex=-60.0))            # annex alone hears it
+            self.pipe.ingest(self._heard(frame(t0 + i, SENSOR), hub=-55.0, annex=-65.0))  # both hear this one
+        self.pipe.radio_changed("annex", "down", t0 + 60)
+        self.pipe.periodic(t0 + 91 * 60)
+        by_addr = {r["addr"]: r for r in self.pipe.events.records if r["event"] == "device_quiet"}
+        self.assertEqual((by_addr[ROUTER]["severity"], by_addr[ROUTER]["reception"], by_addr[ROUTER]["radio_down"]),
+                         ("notice", "unheard", "annex"))
+        self.assertIn("the only radio that heard this device lately (annex) is down", by_addr[ROUTER]["note"])
+        self.assertEqual((by_addr[SENSOR]["severity"], by_addr[SENSOR]["reception"]), ("warning", "good"))
+        # With the radio back up, the same silence is the device's.
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        pipe.radio_changed("hub", "up", t0)
+        pipe.radio_changed("annex", "up", t0)
+        for i in range(40):
+            pipe.ingest(self._heard(frame(t0 + 100 + i, STRANGER), annex=-60.0))
+        pipe.periodic(t0 + 100 + 91 * 60)
+        evs = [r for r in pipe.events.records if r["event"] == "device_quiet" and r["addr"] == STRANGER]
+        self.assertEqual([(e["severity"], e["reception"]) for e in evs], [("warning", "good")])
+
+    def test_losing_the_best_ear_re_bases_the_link_reference_instead_of_fading_every_device(self):
+        t0 = 1_700_000_000.0
+        self.pipe.radio_changed("hub", "up", t0)
+        self.pipe.radio_changed("annex", "up", t0)
+        for i in range(300):
+            self.pipe.ingest(self._heard(frame(t0 + i, ROUTER), hub=-78.0, annex=-60.0))
+        self.pipe.periodic(t0 + 300)                    # the link reference is taken at the annex's level
+        row = self.pipe.seen.table[ROUTER]
+        self.assertEqual(row["rssi_ref"], row["rssi"])
+        self.assertAlmostEqual(row["rssi_ref"], -60.0, delta=0.5)
+        self.pipe.radio_changed("annex", "down", t0 + 301)
+        self.assertEqual((row["rssi_ref"], row["rssi_ref_ts"]), (-78.0, t0 + 301))
+        # An hour of hub-only frames at its own level: no degradation.
+        for i in range(3600):
+            self.pipe.ingest(self._heard(frame(t0 + 400 + i, ROUTER), hub=-78.0))
+            if i % 30 == 0:
+                self.pipe.periodic(t0 + 400 + i)
+        self.assertEqual([r["event"] for r in self.pipe.events.records if r["event"] == "rssi_degradation"], [])

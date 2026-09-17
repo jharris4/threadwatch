@@ -343,7 +343,13 @@ class LastSeen:
         self._last_save = 0.0
 
     def touch(self, addr: str | None, ts: float, ftype: int | None,
-              pan: int | None = None, rssi: float | None = None) -> None:
+              pan: int | None = None, rssi: float | None = None, heard: dict | None = None) -> None:
+        """One sighting. ``heard`` is the merged frame's copies by radio
+        label (Frame.heard); with named radios the row keeps, per radio,
+        how many frames it heard (heard_by), when it last did
+        (last_seen_by) and its own RSSI average (rssi_by_radio), beside
+        the best-ear figures every other reader judges by. An unnamed
+        single dongle adds none of it: its rows stay as they were."""
         if not addr or len(addr) != 16:  # extended addresses only
             return
         row = self.table.setdefault(addr, {"first_seen": ts, "frames": 0, "types": {}})
@@ -360,6 +366,15 @@ class LastSeen:
             # of minutes at a time; that is reception, not device silence.
             prev = row.get("rssi")
             row["rssi"] = round(rssi if prev is None else 0.95 * prev + 0.05 * rssi, 1)
+        if heard and any(label is not None for label in heard):
+            by, last, levels = (row.setdefault(k, {}) for k in ("heard_by", "last_seen_by", "rssi_by_radio"))
+            for label, copy in heard.items():
+                key = label if label is not None else "radio"
+                by[key] = by.get(key, 0) + 1
+                last[key] = ts
+                if copy.rssi is not None:
+                    prev = levels.get(key)
+                    levels[key] = round(copy.rssi if prev is None else 0.95 * prev + 0.05 * copy.rssi, 1)
         self._dirty = True
 
     def maybe_save(self, interval: float = 30.0) -> None:

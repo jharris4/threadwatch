@@ -365,6 +365,12 @@ class Pipeline:
         self._verify_after: dict[str, float] = {}    # short addr -> next re-check of its mapping
         self._foreign_after: dict[tuple, float] = {}  # (short addr, other PAN) -> next MIC check against it
         self.extra_candidates: list[str] = []        # ext addrs to try first in the nonce search (device)
+        # The recorder's radios by label and state (up, down, missing),
+        # kept current by radio_changed; empty for a single unnamed dongle
+        # and offline. What a silence means depends on it: a device only
+        # a radio now down was hearing is out of the recorder's earshot,
+        # not necessarily quiet (_unheard_radio).
+        self.radios: dict = {}
         self.mle_names_path = cfg.state_dir / "observed-names.json"
         self.observed_names = {}
         if not ephemeral and self.mle_names_path.exists():
@@ -950,6 +956,9 @@ class Pipeline:
             for key in self.ROW_STAMPS:
                 if before(row.get(key)):
                     row[key] -= back
+            for label, t in list((row.get("last_seen_by") or {}).items()):
+                if before(t):
+                    row["last_seen_by"][label] = t - back
         self.seen._dirty = True
         self._blind = [(since - back if before(since) else since, length) for since, length in self._blind]
         self._save_blind()
@@ -996,6 +1005,58 @@ class Pipeline:
         # retransmission detection, and keeps stamps from before the step
         # out of the comparison entirely.
         self.dup_recent.clear()
+
+    # ------------------------------------------------------------ radios
+
+    # A radio that heard the device this recently before its last sighting
+    # counts as one of the radios that were hearing it.
+    RADIO_RECENT_S = 300.0
+
+    def radio_changed(self, label: str | None, state: str, now: float) -> None:
+        """The recorder's word that a radio is up, down or missing. A
+        radio going down takes the best ear from every device it was
+        the best ear for: the row's RSSI average sinks toward the other
+        radios' level and the link detector would call that a
+        degradation. Their reference is re-based to the surviving best
+        radio's level now, as the daily refresh does, so the loss of the
+        radio is not reported as every device fading at once."""
+        self.radios[label] = state
+        if state == "up":
+            return
+        key = label if label is not None else "radio"
+        for row in self.seen.table.values():
+            levels = row.get("rssi_by_radio") or {}
+            if key not in levels or len(levels) < 2:
+                continue
+            best = max(levels, key=lambda k: levels[k])
+            if best != key:
+                continue
+            others = [v for k, v in levels.items() if k != key and self.radios.get(k if k != "radio" else None) == "up"]
+            if others and row.get("rssi_ref") is not None:
+                row["rssi_ref"], row["rssi_ref_ts"] = max(others), now
+                row.pop("rssi_low_since", None)
+                self.seen._dirty = True
+
+    def _unheard_radio(self, row: dict) -> str | None:
+        """The radio a silent device's last sightings came from, when
+        every radio that heard it in the RADIO_RECENT_S before its last
+        frame is now down or missing: its silence here may be the
+        recorder's, not the device's. None otherwise, and always None
+        for a single unnamed dongle (the recorder's own blindness covers
+        that)."""
+        by = row.get("last_seen_by")
+        if not by or not self.radios:
+            return None
+        down = {label if label is not None else "radio" for label, state in self.radios.items() if state != "up"}
+        if not down:
+            return None
+        last = row.get("last_seen")
+        if last is None:
+            return None
+        recent = {label for label, t in by.items() if t >= last - self.RADIO_RECENT_S}
+        if recent and recent <= down:
+            return ", ".join(sorted(recent))
+        return None
 
     # ------------------------------------------------------- quiet policy
 
@@ -1463,7 +1524,7 @@ class Pipeline:
                 self._note_observed_name(who, name, repeat=retry)
             was_new = who not in self.seen.table
             prev_seen = None if was_new else self.seen.table[who].get("last_seen")
-            self.seen.touch(who, ts, f.ftype, pan=pan, rssi=f.rssi)
+            self.seen.touch(who, ts, f.ftype, pan=pan, rssi=f.rssi, heard=f.heard)
             row = self.seen.table[who]
             if prev_seen is None or ts - prev_seen > self.BRIEF_VISIT_S:
                 # A new stretch of presence: the first frame ever, or the
@@ -1815,11 +1876,17 @@ class Pipeline:
                 "and the device has not noticed; it still looks alive, so no device_quiet will follow, "
                 "and a rejoin attempt should. (If it just moved to a parent the sniffer cannot hear, "
                 "the ACKs are missing here, not on air.)")
+        # The ACKs may be missing at a radio that is down, not on air.
+        unheard = self._unheard_radio(row) if row else None
+        if unheard:
+            note += (f" The only radio that heard this device lately ({unheard}) is down, so the "
+                     "acknowledgements may be missing here and not on air: logged, not paged.")
         self._emit(
-            "poll_starvation", "warning", ts, addr=who, name=self.names.name(who),
+            "poll_starvation", "notice" if unheard else "warning", ts, addr=who, name=self.names.name(who),
             unanswered_polls=stats.unanswered_polls, since=since,
             starved_for_s=round(ts - since), acked_polls=stats.acked_polls,
-            rssi_dbm=rssi, reception=reception(rssi, self.cfg.quiet_min_rssi_dbm),
+            rssi_dbm=rssi, reception="unheard" if unheard else reception(rssi, self.cfg.quiet_min_rssi_dbm),
+            radio_down=unheard,
             episode=(row.get("starve_episodes") if row else None) or 1,
             since_previous_s=None, confirmed=True,
             parent_rloc16=dst if dst and len(dst) == 4 else None, parent_addr=parent_addr,
@@ -3492,13 +3559,20 @@ class Pipeline:
         # figure judged against the window; blind_s is the difference,
         # the recorder's own outage or clock step inside the silence.
         wall = now - row["last_seen"]
-        unheard = self.silence_s(row, now)
-        blind = max(0.0, wall - unheard)
+        unheard_s = self.silence_s(row, now)
+        blind = max(0.0, wall - unheard_s)
         # A device the sniffer barely hears goes "quiet" whenever the link
         # fades; log it, but do not page for it.
         rssi = row.get("rssi")
         marginal = reception(rssi, self.cfg.quiet_min_rssi_dbm) == "marginal"
-        if marginal:
+        # A device only a radio now down was hearing is out of earshot,
+        # which the recorder cannot tell from silent: logged, not paged,
+        # as a marginal device is.
+        unheard = self._unheard_radio(row)
+        if unheard:
+            note = (f"the only radio that heard this device lately ({unheard}) is down: its silence here is "
+                    "the recorder's loss of that radio until another hears it, not evidence about the device")
+        elif marginal:
             note = ("sniffer hears this device at the edge of its range; "
                     "silence is more likely reception than failure")
         else:
@@ -3522,10 +3596,11 @@ class Pipeline:
                      f"{round((vouched - row['last_seen']) / 60)} min after its last frame heard here, "
                      "so it was alive then, out of the recorder's earshot")
         self._emit(
-            "device_quiet", "notice" if marginal else "warning", now, addr=addr,
-            name=self.names.name(addr), silent_for_s=round(wall), unheard_s=round(unheard),
+            "device_quiet", "notice" if marginal or unheard else "warning", now, addr=addr,
+            name=self.names.name(addr), silent_for_s=round(wall), unheard_s=round(unheard_s),
             blind_s=round(blind), last_seen=row["last_seen"],
-            rssi_dbm=rssi, reception="marginal" if marginal else "good", note=note, **proxy)
+            rssi_dbm=rssi, reception="unheard" if unheard else "marginal" if marginal else "good",
+            radio_down=unheard, note=note, **proxy)
 
 
 class CredentialsError(RuntimeError):

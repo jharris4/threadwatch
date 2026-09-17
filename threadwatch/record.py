@@ -641,10 +641,11 @@ def run_record(cfg: Config) -> None:
                     epoch=lambda label, raw: raw + (by_label[label].clock.offset or 0.0),
                     stamp=lambda label, raw: by_label[label].clock.stamp(raw))
     # What the pipeline may ask about the radios (per-radio blindness).
-    pipe.radios = {r.label: r.state for r in radios}
+    for r in radios:
+        pipe.radio_changed(r.label, r.state, time.time())
 
     def _radio_event(r: Radio, event: str, severity: str, note: str) -> None:
-        pipe.radios[r.label] = r.state
+        pipe.radio_changed(r.label, r.state, time.time())
         try:
             events.emit(event, severity, radio=r.label, serial=r.serial, port=r.port, placement=r.placement,
                         note=note)

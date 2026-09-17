@@ -160,6 +160,7 @@ Each snapshot is one directory:
 
     data/snapshots/20260901T031500_storm-at-noon/
       threadwatch-20260825-04.pcap ... threadwatch-20260901-03.pcap   every ring file, as it was
+      threadwatch-20260825-04-annex.pcap ...                          and every further radio's, by label
       manifest.json          what the bundle holds: threadwatch version and commit, when and why it
                              was saved, channel and PAN, the hours the packets span, every file
                              with its size, and the commands that read it
@@ -283,7 +284,14 @@ bin/threadwatch device "Office AQ" --snapshot storm-at-noon  # one device across
 bin/threadwatch device "Office AQ" --snapshot storm-at-noon --hours 6   # its last six hours
 SNAP=data/snapshots/20260901T031500_storm-at-noon
 mergecap -w "$SNAP.pcap" "$SNAP"/*.pcap && wireshark "$SNAP.pcap"   # the week in one Wireshark window
+mergecap -I none -w "$SNAP.pcapng" "$SNAP"/*-04*.pcap               # two radios' copies of one hour, one
+                                                                    # interface each (frame.interface_id)
 ```
+
+With several radios an hour is one file per radio, each holding that
+radio's copies with its own RSSI, stamped on one timeline: `replay` and
+`device` read them together and merge the copies as the recorder did,
+and `mergecap -I none` keeps them apart in Wireshark by interface.
 
 `--snapshot` takes the directory name, the label as typed at the time,
 or a path to the directory. Names come from the snapshot's own
@@ -324,7 +332,12 @@ the live log.
 
 TAP frames carry per-frame RSSI *at the dongle*. If the dongle sits next
 to your border router, that approximates what the border router hears —
-which is what matters for CCA/channel-access failures. For localization
+which is what matters for CCA/channel-access failures. With several
+radios every judgement is made on the best ear's RSSI, and each radio's
+own average per device is on the devices page and in `threadwatch
+device` ("heard by"); the same frame measured by two dongles a few
+metres apart differs by ±11 dB frame to frame, so one radio's figure is
+a noisier number than it looks. For localization
 walks, a laptop + the same dongle in Wireshark, or an ESP32-C6 energy
 scanner, works room by room.
 

@@ -28,6 +28,9 @@ services:
     devices:
       # Left side: the dongle on the host. /dev/serial/by-id/usb-Nordic_Semiconductor_*
       # survives re-enumeration; a plain /dev/ttyACM0 works while there is one dongle.
+      # A second dongle is a second line (its by-id path on the left,
+      # /dev/ttyACM1 on the right) and a [record] radios table in
+      # config.toml naming both by serial (docs/DOCKER.md).
       - /dev/ttyACM0:/dev/ttyACM0
     # The image runs as uid 1000, not root, so what it writes into the two
     # bind mounts below stays readable and writable by an ordinary host user

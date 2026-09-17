@@ -65,8 +65,11 @@ Flash it with the sniffer firmware if not already done: `SETUP.md`
 (`bin/flash-dongle.sh` runs here, on this host — 64-bit Linux and macOS
 alike; the dongle keeps the firmware, so it is once per dongle). Plug it
 in; `lsusb` should show *Nordic Semiconductor* and `ls /dev/ttyACM*` a
-serial port. Auto-detection finds it by USB id;
-`serial_port` in config.toml pins one if you have several.
+serial port. Auto-detection finds it by USB id. With two or more dongles
+name each by its USB serial in `[record] radios` (`SETUP.md`, "A second
+dongle"): the recorder refuses to guess between two, since the order
+they enumerate in changes across restarts. `serial_port` pins one port
+for a single dongle and excludes the radios table.
 
 ## 4. Check
 
@@ -139,7 +142,13 @@ from the host. To remove a config file from the host, delete it there.
 ## 6. Placement and storage
 
 - Put the recorder and dongle **near your Thread border router**: the
-  capture should represent what the border router's radio hears.
+  capture should represent what the border router's radio hears. A
+  second dongle on an extension elsewhere widens the capture; both are
+  better a little away from the host (a Pi 4's USB 3 controller radiates
+  at 2.4 GHz).
+- With two dongles, each hour of the ring is two files (the second
+  radio's carry its label), so budget up to twice the storage below;
+  `keep_gb` is shared out between them.
 - Storage: about 7 MB/hour, 1.2 GB/week, measured on a 50-device mesh
   at rest; a storm multiplies that, and 30 MB/hour is a safe ceiling to
   budget for (it is what `doctor` assumes until the ring has measured

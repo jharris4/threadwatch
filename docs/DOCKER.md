@@ -54,7 +54,12 @@ The dongle shows as `usb-Nordic_Semiconductor_nRF_802154_Sniffer_..-if00`
 (flash it first if not: `SETUP.md`; `bin/flash-dongle.sh` runs on the host,
 not in the container). Put that path on the left side of the `devices:`
 line in `compose.yaml`; it survives re-enumeration, where `/dev/ttyACM0`
-only works while it is the sole such device. Then:
+only works while it is the sole such device. A second dongle is a second
+`devices:` line, its by-id path mapped to `/dev/ttyACM1`, plus the
+`[record] radios` table in config.toml naming both by serial (SETUP.md,
+"A second dongle"): the recorder reads each port's serial from sysfs,
+which the container sees, so it finds the right dongle behind either
+name. Then:
 
 ```bash
 docker compose up -d --build

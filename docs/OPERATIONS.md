@@ -55,7 +55,8 @@ either unit that is not running afterwards.
 Exactly one `threadwatch record` may run against a dongle and a data
 directory. Nothing stops a second one, and it does damage before it
 fails: it grabs the same auto-detected port, deletes and recreates the
-shared `capture.fifo`, and, before it has heard a frame, judges the shared
+shared `capture.fifo` (`capture-<label>.fifo` per radio with `[record]
+radios`), and, before it has heard a frame, judges the shared
 last-seen table as if it were the recorder and sends `device_quiet` and
 `device_returned` events through the real sinks, so the household is
 paged for nothing; then its sniffer thread cannot open the port the
@@ -85,10 +86,10 @@ the line; under Docker, `docker compose ps` and the log.
 | exit | last line | meaning |
 | --- | --- | --- |
 | 0 | `stopped after N frames` | a requested stop (`systemctl stop`, Ctrl-C) |
-| 1 | a traceback, then `recorder crashed` | an unexpected error; or, before capture began, `No nRF 802.15.4 sniffer found` or a refused `[alerts]` table |
+| 1 | a traceback, then `recorder crashed` | an unexpected error; or, before capture began, `No nRF 802.15.4 sniffer found`, `2 nRF 802.15.4 sniffers found` with no `[record] radios` table, `none of the radios in [record] radios is plugged in`, or a refused `[alerts]` table |
 | 2 | `threadwatch record: credentials.toml ...` or `threadwatch: [network] ...` | refused before capture began: no or bad network key, or a config value out of range |
 | 2 | `no frames for Ns - capture stalled` | the watchdog: three minutes without a frame after capture had begun |
-| 3 | `capture stream ended` | the sniffer closed the stream: dongle unplugged, or its process died |
+| 3 | `capture stream ended` | the sniffer closed the stream: dongle unplugged, or its process died. With several radios, only when the last of them went: one radio's stream ending is `radio_lost` and the run goes on |
 | 4 | `sniffer thread died before delivering any data` | the serial port could not be opened: held by another process, or gone |
 | 5 | `exit: <step> failed: ...` | the run ended the way it meant to, but a step of its shutdown did not: the ring would not close, or the last-seen table would not save (a full disk). What could still be saved was; the line names the step |
 
@@ -170,6 +171,9 @@ non-`ok` line means and what to do about it:
 | `dongle` configured port does not exist | `serial_port` in config.toml names a port that is gone | `ls /dev/serial/by-id/ /dev/ttyACM*`; fix or unset `serial_port` |
 | `dongle` pyserial is not installed | as for `cryptography` above | same fix |
 | `dongle` No nRF 802.15.4 sniffer found | nothing with the sniffer firmware is enumerated | `lsusb` should list Nordic Semiconductor; replug on a direct port; reflash if it is not an "nRF 802154 Sniffer" (SETUP.md) |
+| `dongle` 2 nRF 802.15.4 sniffers found | two dongles and no `[record] radios` table: the recorder will not guess which is which | name both by serial (SETUP.md, "A second dongle"), or unplug one |
+| `dongle` radio X: no sniffer with serial ... is plugged in | a configured radio's dongle is not enumerated | plug it in (any port); the recorder runs without it and looks for it every minute |
+| `dongle` a sniffer with serial ... is not in [record] radios | a dongle the table does not name | add a `[[record.radios]]` table for it, or unplug it |
 | `recorder` no status.json | the recorder has never run on this data directory | start it (`sudo systemctl start threadwatch`, or `bin/setup-host.sh`) |
 | `recorder` not running: status last written N min ago | the recorder is down | `systemctl status threadwatch`; the journal says why it left (exit codes above) |
 | `recorder` alive but no frames for N s | the dongle is up but hears nothing: wrong channel, or a silent mesh | check `[network] channel` against your border router's dataset (`threadwatch import` prints it); the watchdog restarts the recorder after 180 s regardless |
@@ -239,6 +243,49 @@ The daemon's own diagnostics, with what to do when one keeps appearing:
   heard`**: the LAN answered oddly; the recorder ignores the answer. Only a
   problem if a rebooted Apple hub stays unnamed (docs/HOME-ASSISTANT.md).
 
+## Several radios
+
+With `[record] radios` in config.toml (SETUP.md, "A second dongle") the
+recorder captures from every dongle named there, by serial, and judges
+one merged stream: a frame two radios heard reaches the detectors once,
+with each radio's reception kept; a MAC retry of the same bytes is still
+two frames, told apart by time (the radios' clocks are aligned to within
+tens of microseconds, and a retry is milliseconds later). Each radio
+writes its own ring series, `threadwatch-YYYYMMDD-HH-<label>.pcap`
+beside the primary's plain names, and everything that reads the ring
+(`replay`, `device`, snapshots) reads an hour's files together.
+
+What changes in operation:
+
+- A radio named in the table but not plugged in at start is
+  `radio_missing` (notice); the run starts with the rest and looks for
+  it by serial every minute, so it may come back on any port. Nothing
+  plugged in at all is a refused start (exit 1).
+- A radio that stops delivering for three minutes while another still
+  hears, or whose dongle goes away, is `radio_lost` (warning): it is
+  detached, the run goes on, and it is looked for every minute;
+  `radio_returned` when it is back. The whole-run stall and
+  stream-ended exits apply only when every radio is gone.
+- A device whose recent sightings all came from a radio now down is out
+  of the recorder's earshot, which cannot be told from silent: its
+  `device_quiet` (and a confirmed `poll_starvation`) is logged at notice
+  with `reception: unheard` and the radio named, not paged, until
+  another radio hears it.
+- `status.json` carries a `radios` block (below) and the status page a
+  row per radio: state, port, placement, last frame, frames, and for
+  every radio but the primary the clock lock (offset, drift in ppm,
+  jitter). `doctor` prints a line per configured radio and warns about
+  a plugged-in dongle the table does not name, serial included.
+- The devices page and `threadwatch device` say which radios hear each
+  device, how much of it, and at what level.
+
+Attaching a dongle opens its port and forks the sniffer's reader
+process; the recorder does this one radio at a time, because a fork
+taken while another radio's port is open in the process inherits that
+port's lock and the other radio can never open it. That is the
+recorder's problem to get right, not yours, but it is why a second
+radio takes a moment longer to start.
+
 ## Reading `threadwatch status`
 
 `bin/threadwatch status` prints `data/state/status.json`, which the daemon
@@ -258,7 +305,8 @@ file.) The fields:
 | `version`, `commit` | the threadwatch version and git commit that is recording. This is how you tell a deploy that landed from one that did not; `bin/threadwatch --version` prints the same pair for the checkout you are standing in, and `doctor`'s `version` line for the host |
 | `last_frame_age_s` | seconds since this run last heard a frame, on the daemon's own clock; the watchdog exits at 180 |
 | `last_frame_ts` | when any run last heard a frame (unix seconds); unlike the age it spans restarts, and stays put while nothing is heard |
-| `port`, `channel` | the dongle's serial port and the channel being captured |
+| `port`, `channel` | the dongle's serial port (the primary's, with several) and the channel being captured |
+| `radios` | with `[record] radios`: one entry per radio by label with its `port`, `serial`, `placement`, `state` (`up`, `down`, `missing`), `since_s`, `frames_total`, `last_frame_age_s`, `dropped_lines`, its own `current_file`, and `lock`: `null` for the primary, else the merger's alignment of its clock to the primary's (`locked`, `offset_ms`, `ppm`, `sigma_us`, `pairs`, `locks`). A single unnamed dongle shows one entry, `radio` |
 | `frames_total` | frames this run; it should climb between two runs of `status` |
 | `dropped_lines` | serial lines from the dongle the sniffer could not parse this run: frames nobody recorded. A steady climb is a cable or firmware problem, not a quiet mesh |
 | `uptime_s` | this run's age |
@@ -420,7 +468,9 @@ carry on from the event log, which is untouched.
 Unplug it and plug it back in, on a direct port rather than a hub. It
 re-enumerates, the watchdog exits the daemon within three minutes if it
 had not already, and systemd starts it again (its unit waits two seconds
-for udev). Then:
+for udev). With several radios the daemon does not exit for one of them:
+it logs `radio_lost`, carries on with the rest, and picks the dongle up
+again by serial within a minute of its return (`radio_returned`). Then:
 
 ```bash
 lsusb                                  # Nordic Semiconductor ... nRF 802154 Sniffer

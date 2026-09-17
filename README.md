@@ -105,12 +105,18 @@ question: *why did this device go offline?*
 
 ## Hardware
 
-- Nordic nRF52840 Dongle (PCA10059) — the radio.
+- Nordic nRF52840 Dongle (PCA10059) — the radio. One is enough. A second
+  one on a USB extension elsewhere in the house widens what the recorder
+  hears: frames both dongles hear are judged once, with each dongle's
+  reception kept, and a device only one of them hears is still heard
+  (`SETUP.md`, "A second dongle"; `[record] radios` in
+  `config/config.example.toml`).
 - Any always-on Linux box for the recorder: a Raspberry Pi 4 is plenty, so
   is a NAS or mini PC via Docker (docs/DOCKER.md); macOS works for
   portable/desk use.
 - Placement matters: put the dongle near your border router so captures
-  reflect what *its* radio hears.
+  reflect what *its* radio hears. A short extension away from the host
+  helps too: a Pi 4's USB 3 controller radiates in the 2.4 GHz band.
 
 ## Quick start
 

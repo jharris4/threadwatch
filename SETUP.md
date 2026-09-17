@@ -91,6 +91,55 @@ You can also open the pcaps under `data/ring/` in Wireshark — with the
 dongle near an active Thread mesh you'll see MLE/data/ack traffic
 immediately.
 
+## A second dongle
+
+Flash it the same way; the firmware is per dongle. Then find its USB
+serial, which is how the recorder tells the two apart (a port name such
+as `/dev/ttyACM1` changes with every replug and re-enumeration; the
+serial follows the dongle):
+
+```bash
+bin/threadwatch doctor        # with no [record] radios yet: FAIL, "2 nRF 802.15.4 sniffers found (<serial> at /dev/ttyACM0, <serial> at /dev/ttyACM1)"
+ls /dev/serial/by-id/         # Linux: usb-Nordic_Semiconductor_ASA_nRF_802154_Sniffer_<serial>-if00
+ls /dev/cu.usbmodem*          # macOS: the serial is in the name
+```
+
+Name both in `config/config.toml`, and leave `serial_port` unset:
+
+```toml
+[[record.radios]]
+label = "hub"                        # short: names ring files, events and page columns
+serial = "0123456789ABCDEF"
+placement = "next to the border router"
+
+[[record.radios]]
+label = "annex"
+serial = "FEDCBA9876543210"
+placement = "upstairs landing, on a 5 m extension"
+```
+
+The first is the primary: its ring files keep their plain names, so a
+recorder that already has a week of ring keeps it. Restart the service;
+`threadwatch status` shows a `radios` block with both, and the status
+page a row each. The recorder starts with whichever of them is plugged
+in, reports the other as missing and looks for it every minute, and a
+dongle that stops delivering while the other hears is reported (`radio_lost`,
+a warning) and looked for again, rather than restarting the run
+(docs/OPERATIONS.md, "Several radios").
+
+Cabling: the dongle is a USB full-speed device, and USB allows 5 m of
+passive cable per segment. One 5 m extension is fine; two chained are
+not, and beyond that the options are a powered hub at the end of a 5 m
+cable or an active repeater cable (each counts as a hub, five deep at
+most). The dongle's bare-PCB plug sits loose in some sockets (above): a
+short pigtail with a firm socket at the far end of the extension is
+worth having. Keep both dongles a little away from the host itself; a
+Pi 4's USB 3 controller is a 2.4 GHz noise source.
+
+Two dongles side by side, on the same host, still each miss 5-12 % of
+what the other hears (measured over an hour on a 50-device mesh), so a
+second radio adds coverage before it goes anywhere.
+
 ## Other radios
 
 Anything Wireshark-capable can substitute for ad-hoc work (an ESP32-C6

@@ -44,7 +44,9 @@ proxy that authenticates.
   day page carries the same text as a tooltip.
 - **/devices**: every address the recorder tracks, with its inventory
   name, its live role, its key generation, how well the sniffer hears it,
-  when it was last heard, and whether it is on your PAN. The role comes from the RLOC16 the
+  when it was last heard, and whether it is on your PAN; with several
+  radios, which of them hear it, what share of its frames and at what
+  level ("heard by"). The role comes from the RLOC16 the
   device was last seen using (the top six bits are a router id; the low
   ten, when non-zero, a child id): *router 33*, *leader · router 60*, or
   *child of Mudroom Air Quality*, each with the address and how long ago
@@ -73,7 +75,8 @@ proxy that authenticates.
   page says where it stopped and `/api/device/` reports the window as
   `episode_days`.
 - **/status**: the daemon's status file in prose (alive, last frame,
-  channel and port, this run's frames, the threadwatch version and commit
+  channel and port, a row per radio when there are several, this run's
+  frames, the threadwatch version and commit
   that is recording, partition and
   which device leads it (linked, once its RLOC16 has been matched),
   the highest key generation heard and from whom, storm detector, crypto

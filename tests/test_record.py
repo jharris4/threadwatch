@@ -1125,8 +1125,9 @@ class TwoRadiosRunTest(unittest.TestCase):
                       str(code))
 
     def test_the_status_file_carries_every_radio(self):
-        self.scripts["/dev/fake-hub"] = self._frames(2)
-        self.scripts["/dev/fake-annex"] = self._frames(2, offset=0.010)
+        frames = self._frames(2)
+        self.scripts["/dev/fake-hub"] = frames
+        self.scripts["/dev/fake-annex"] = [(ts + 0.010, psdu, -70.0) for ts, psdu, _ in frames]   # the same frames
         hub_hold = self.holds.setdefault("/dev/fake-hub", threading.Event())
         annex_hold = self.holds.setdefault("/dev/fake-annex", threading.Event())
 
@@ -1231,7 +1232,7 @@ class RelayRadioRunTest(TwoRadiosRunTest):
         self.assertEqual(self._events(), [("radio_missing", "annex"), ("radio_attached", "annex"),
                                           ("radio_lost", "annex")])
         ring = sorted(p.name for p in self.cfg.ring_dir.glob("*.pcap"))
-        self.assertEqual(len(ring), 2)
+        self.assertEqual(len(ring), 2, out)
         with open(self.cfg.ring_dir / ring[0], "rb") as fh:           # the annex's series
             self.assertEqual([f.rssi for f in PcapStreamReader(fh)], [-70.0, -70.0])
         self.assertIn("stopped after 3 frames", out)                    # the two shared frames once each

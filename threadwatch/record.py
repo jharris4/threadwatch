@@ -501,7 +501,10 @@ class Radio:
                 peer = f"{addr[0]}:{addr[1]}"
                 try:
                     conn.settimeout(10.0)
-                    hs = read_handshake(conn.makefile("rb"))
+                    # Unbuffered: a buffered file reads ahead past the line
+                    # into the pcap stream, and the reader thread, opening
+                    # its own file on the socket, then starts mid-record.
+                    hs = read_handshake(conn.makefile("rb", buffering=0))
                     if hs["label"] != self.label:
                         raise ValueError(f"relay is radio {hs['label']!r}, this listener is {self.label!r}")
                     if self.channel is not None and hs["channel"] != self.channel:

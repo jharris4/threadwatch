@@ -1,8 +1,10 @@
 """status.json as the recorder writes it, and what a later run reads back."""
 
 import json
+import struct
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -232,7 +234,8 @@ class StatusConsumersTest(unittest.TestCase):
         self.assertEqual(sorted(st), ["alerts", "channel", "commit", "crypto", "current_file", "detector",
                                       "devices_tracked", "dominant_pan", "dropped_lines", "frames_total",
                                       "ha_availability", "ha_logs_archive", "keys", "last_frame_age_s",
-                                      "last_frame_ts", "partition", "port", "updated", "uptime_s", "version"])
+                                      "last_frame_ts", "partition", "port", "radios", "updated", "uptime_s",
+                                      "version"])
         self.assertEqual(st["keys"], {})                  # nothing heard yet: no generation on record
         self.assertIsNone(st["ha_logs_archive"])          # [ha_logs] archive off
         self.assertIsNone(st["ha_availability"])          # [ha_availability] off
@@ -921,3 +924,225 @@ class RingSeriesTest(unittest.TestCase):
                              ["threadwatch-20260903-02-annex.pcap", "threadwatch-20260903-03-annex.pcap"])
             self.assertEqual(sorted(p.name for p in d.glob("threadwatch-????????-??.pcap")),
                              [f"threadwatch-20260903-{h}.pcap" for h in ("01", "02", "03")])
+
+
+class TwoRadiosRunTest(unittest.TestCase):
+    """run_record with [record] radios: two fake sniffers, one per port,
+    each writing its own frames into its own FIFO. What is proven here is
+    the recorder's side: attach by serial, one ring series per radio, a
+    radio that goes away while the other carries on, a radio missing at
+    start and found later, and the run ending only when every radio has."""
+
+    DEV = "26976e7f7d20964a"
+    KEY = "00112233445566778899aabbccddeeff"
+
+    def setUp(self):
+        import os
+        import sys
+        import types
+        from unittest import mock
+
+        from threadwatch import record
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        (d / "credentials.toml").write_text(f'[credentials]\nnetwork_key = "{self.KEY}"\n')
+        (d / "devices.json").write_text("[]")
+        (d / "config.toml").write_text(
+            '[record]\n[[record.radios]]\nlabel = "hub"\nserial = "AA"\nplacement = "by the router"\n'
+            '[[record.radios]]\nlabel = "annex"\nserial = "BB"\n')
+        from threadwatch import config as config_mod
+        self.cfg = config_mod.load(d / "config.toml")
+        self.cfg.data_dir = d / "data"
+        self.cfg.credentials_path = d / "credentials.toml"
+        self.cfg.devices_path = d / "devices.json"
+        self.cfg.border_router_browse_s = 0
+        self.ports = {"AA": "/dev/fake-hub", "BB": "/dev/fake-annex"}   # serial -> port, None = unplugged
+        self.scripts = {}          # port -> list of (ts, psdu, rssi); written then the FIFO is held
+        self.holds = {}            # port -> Event that lets the fake close its FIFO
+        self.calls = []
+        self.exits = []
+        self.tick = threading.Event()
+        self.finished = threading.Event()
+        self.run_over = threading.Event()
+        test = self
+
+        class FakeSniffer:
+            def __init__(self):
+                self.thread = None
+
+            def start_threaded(self, fifo, dev, channel, metadata=None):
+                test.calls.append(("start", dev))
+                hold = test.holds.setdefault(dev, threading.Event())
+
+                def run():
+                    from threadwatch.pcap import DLT_TAP, Frame, PcapWriter
+                    with open(fifo, "wb") as fh:
+                        w = PcapWriter(fh, DLT_TAP)
+                        for ts, psdu, rssi in test.scripts.get(dev, []):
+                            raw = struct.pack("<HH", 0, 28) + struct.pack("<HHf", 1, 4, rssi) \
+                                + struct.pack("<HHHH", 3, 3, 25, 0) + struct.pack("<HHI", 10, 1, 200) + psdu
+                            w.write(Frame(ts=ts, raw=raw, psdu=psdu, rssi=rssi, channel=25, lqi=200))
+                        fh.flush()
+                        hold.wait(10)
+                self.thread = threading.Thread(target=run, daemon=True, name=f"fake-{dev}")
+                self.thread.start()
+
+            def _stop(self):
+                test.calls.append(("stop",))
+
+        module = types.ModuleType("nrf802154_sniffer")
+        module.Nrf802154Sniffer = FakeSniffer
+        for patcher in (mock.patch.dict(sys.modules, {"nrf802154_sniffer": module}),
+                        mock.patch.object(os, "_exit", self._exit),
+                        mock.patch.object(record, "resolve_radio_port", lambda serial: test.ports.get(serial)),
+                        mock.patch.object(record, "REATTACH_S", 0.0),
+                        mock.patch.object(record.EventLog, "close", autospec=True,
+                                          side_effect=lambda log, *a, **k: None)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self._time = record.time
+        record.time = types.SimpleNamespace(time=time.time, monotonic=time.monotonic, strftime=time.strftime,
+                                             localtime=time.localtime, sleep=self._sleep)
+        expected = threading.excepthook
+        self.addCleanup(setattr, threading, "excepthook", expected)
+
+        def excepthook(args):
+            if args.exc_type is SystemExit and getattr(args.thread, "name", None) == "watchdog":
+                return
+            expected(args)
+        threading.excepthook = excepthook
+
+    def tearDown(self):
+        from threadwatch import record
+        self.finished.set()
+        for h in self.holds.values():
+            h.set()
+        record.time = self._time
+        self.tmp.cleanup()
+
+    def _exit(self, code):
+        self.exits.append((threading.current_thread().name, code))
+        raise SystemExit(code)
+
+    def _sleep(self, _seconds):
+        while not (self.finished.is_set() or self.run_over.is_set()):
+            if self.tick.wait(0.02):
+                self.tick.clear()
+                return
+
+    def _run(self):
+        import contextlib
+        import io
+
+        from threadwatch.record import run_record
+        out = io.StringIO()
+        self.run_over.clear()
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+                with self.assertRaises(SystemExit) as cm:
+                    run_record(self.cfg)
+        finally:
+            self.run_over.set()
+        return cm.exception.code, out.getvalue()
+
+    def _events(self):
+        """The radio events of the run, in order."""
+        from threadwatch.events import read_all
+        return [(r["event"], r.get("radio")) for r in read_all(self.cfg.events_dir) if r["event"].startswith("radio")]
+
+    def _frames(self, n, offset=0.0, start=0):
+        key = bytes.fromhex(self.KEY)
+        return [(1000.0 + i + offset, psdu_for(self.DEV, seq=i, key=key), -60.0 - (10 if offset else 0))
+                for i in range(start, start + n)]
+
+    def test_both_radios_write_their_own_series_and_the_run_ends_when_both_have(self):
+        from threadwatch.pcap import PcapStreamReader
+        frames = self._frames(3)
+        self.scripts["/dev/fake-hub"] = frames
+        # The annex hears the same three frames, its clock 10 ms ahead, and one more.
+        self.scripts["/dev/fake-annex"] = [(ts + 0.010, psdu, -70.0) for ts, psdu, _ in frames] + \
+            [(1003.01, psdu_for(self.DEV, seq=9, key=bytes.fromhex(self.KEY)), -70.0)]
+        hub_hold = self.holds.setdefault("/dev/fake-hub", threading.Event())
+        annex_hold = self.holds.setdefault("/dev/fake-annex", threading.Event())
+
+        def later():
+            time.sleep(0.5)
+            hub_hold.set()                # the hub's dongle goes first: the annex carries the run...
+            time.sleep(0.4)
+            annex_hold.set()              # ...until it goes too, which ends the run
+        threading.Thread(target=later, daemon=True).start()
+        code, out = self._run()
+        self.assertEqual(code, 3)
+        self.assertEqual(self.calls[:2], [("start", "/dev/fake-hub"), ("start", "/dev/fake-annex")])
+        self.assertIn("capturing channel 25 from /dev/fake-hub (radio hub (by the router))", out)
+        ring = sorted(p.name for p in self.cfg.ring_dir.glob("*.pcap"))
+        self.assertEqual(len(ring), 2)
+        self.assertTrue(ring[0].endswith("-annex.pcap") and not ring[1].endswith("-annex.pcap"), ring)
+        read = {}
+        for name in ring:
+            with open(self.cfg.ring_dir / name, "rb") as fh:
+                read[name] = [(round(f.ts), f.rssi) for f in PcapStreamReader(fh)]
+        self.assertEqual(len(read[ring[1]]), 3)                 # hub's copies
+        self.assertEqual(len(read[ring[0]]), 4)                 # annex's copies, its own RSSI
+        self.assertEqual({r for _, r in read[ring[0]]}, {-70.0})
+        self.assertEqual({r for _, r in read[ring[1]]}, {-60.0})
+        # The pipeline saw four frames, not seven: the three shared ones once each.
+        self.assertIn("stopped after 4 frames", out)
+        # The first radio to go is lost; the last to go ends the run instead.
+        self.assertEqual(self._events(), [("radio_lost", "hub")])
+        self.assertIn("radio hub (by the router) detached: capture stream ended", out)
+        self.assertFalse(list(self.cfg.state_dir.glob("capture-*.fifo")))
+
+    def test_a_radio_missing_at_start_is_reported_and_attached_when_it_appears(self):
+        self.ports["BB"] = None
+        self.scripts["/dev/fake-hub"] = self._frames(2)
+        self.scripts["/dev/fake-annex"] = self._frames(2, offset=0.010, start=5)
+        hub_hold = self.holds.setdefault("/dev/fake-hub", threading.Event())
+        annex_hold = self.holds.setdefault("/dev/fake-annex", threading.Event())
+
+        def later():
+            time.sleep(0.3)
+            self.ports["BB"] = "/dev/fake-annex"          # plugged in
+            self.tick.set()                                 # the watchdog looks for it
+            time.sleep(0.5)
+            annex_hold.set()
+            time.sleep(0.2)
+            hub_hold.set()
+        threading.Thread(target=later, daemon=True).start()
+        code, out = self._run()
+        self.assertEqual(code, 3)
+        self.assertIn("no sniffer with serial BB is plugged in", out)
+        self.assertEqual(self._events(), [("radio_missing", "annex"), ("radio_attached", "annex"),
+                                          ("radio_lost", "annex")])
+        self.assertEqual([c for c in self.calls if c[0] == "start"],
+                         [("start", "/dev/fake-hub"), ("start", "/dev/fake-annex")])
+        self.assertIn("stopped after 4 frames", out)
+
+    def test_nothing_plugged_in_is_a_start_failure_naming_every_radio(self):
+        self.ports = {"AA": None, "BB": None}
+        code, _out = self._run()
+        self.assertIn("none of the radios in [record] radios is plugged in: hub (serial AA), annex (serial BB)",
+                      str(code))
+
+    def test_the_status_file_carries_every_radio(self):
+        self.scripts["/dev/fake-hub"] = self._frames(2)
+        self.scripts["/dev/fake-annex"] = self._frames(2, offset=0.010)
+        hub_hold = self.holds.setdefault("/dev/fake-hub", threading.Event())
+        annex_hold = self.holds.setdefault("/dev/fake-annex", threading.Event())
+
+        def later():
+            time.sleep(0.4)
+            self.tick.set()                                 # a watchdog tick writes status.json
+            time.sleep(0.3)
+            annex_hold.set(); hub_hold.set()
+        threading.Thread(target=later, daemon=True).start()
+        self._run()
+        st = json.loads((self.cfg.state_dir / "status.json").read_text())
+        self.assertEqual(st["port"], "/dev/fake-hub")
+        self.assertEqual(sorted(st["radios"]), ["annex", "hub"])
+        hub, annex = st["radios"]["hub"], st["radios"]["annex"]
+        self.assertEqual((hub["state"], hub["serial"], hub["placement"], hub["frames_total"], hub["lock"]),
+                         ("up", "AA", "by the router", 2, None))
+        self.assertEqual((annex["state"], annex["port"], annex["frames_total"]), ("up", "/dev/fake-annex", 2))
+        self.assertIn("locked", annex["lock"])
+        self.assertTrue(annex["current_file"].endswith("-annex.pcap"))

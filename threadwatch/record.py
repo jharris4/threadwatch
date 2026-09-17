@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import signal
 import sys
 import threading
@@ -15,7 +16,7 @@ from . import __version__
 from .alerts import HeartbeatRunner, build_heartbeats, build_sinks
 from .config import Config, running_commit
 from .events import EventLog, NullEventLog
-from .pcap import Frame, PcapFormatError, PcapStreamReader, PcapWriter, scan_file
+from .pcap import DLT_TAP, Frame, PcapFormatError, PcapStreamReader, PcapWriter, scan_file
 from .pipeline import Pipeline, load_decryptor
 from .ring import ring_files, ring_name
 
@@ -384,9 +385,164 @@ def capture_healthy(last_frame_mono: float | None, now: float,
     return now - last_frame_mono < timeout
 
 
+# How long a configured radio that is missing or down waits before the
+# recorder looks for its dongle again. The dongle may come back on another
+# port; its serial finds it.
+REATTACH_S = 60.0
+
+
+class Radio:
+    """One dongle of the recorder: its configuration, its vendor sniffer
+    and FIFO while attached, the thread reading its stream, its clock,
+    its ring series and its counters. ``label`` None is the unnamed single
+    dongle of a recorder without [record] radios, on the port it was
+    given; every other radio is found by serial each time it attaches.
+
+    Attach and detach both open the dongle's port, and the vendored driver
+    forks its reader process right after: a fork taken while another
+    radio's port is open in this process inherits that descriptor and its
+    exclusive lock, and the other radio's reader can never lock its port
+    (found on 2026-09-17 with two dongles). So the two run under one lock
+    for all radios, and attach waits for the fork before it returns."""
+
+    def __init__(self, label: str | None, serial: str | None, placement: str, port: str | None,
+                 fifo: Path, log) -> None:
+        self.label, self.serial, self.placement = label, serial, placement
+        self.port = port
+        self.fifo = fifo
+        self.log = log
+        self.state = "missing"            # missing | up | down
+        self.state_mono = 0.0
+        self.sniffer = None
+        self.thread: threading.Thread | None = None
+        self.clock = RadioClock()
+        self.writer: RingWriter | None = None
+        self.dlt: int | None = None
+        self.frames = 0
+        self.dropped = 0                  # parse failures of sniffers that have gone
+        self.last_frame_mono: float | None = None
+        self.last_frame_ts: float | None = None
+        self.stopped_ok = True
+
+    @property
+    def key(self) -> str:
+        return self.label if self.label is not None else "radio"
+
+    def describe(self) -> str:
+        who = f"radio {self.label}" if self.label is not None else "the dongle"
+        where = f" ({self.placement})" if self.placement else ""
+        return f"{who}{where}"
+
+    def attach(self, sniffer_cls, channel: int, q, lock: threading.Lock, mono: float) -> bool:
+        """Find the dongle and start capturing from it. False when a radio
+        named by serial is not enumerated (the single unnamed dongle's port
+        was found before the run started, so it always starts here; a port
+        that cannot be opened shows up as a sniffer that died)."""
+        with lock:
+            if self.serial is not None:
+                port = resolve_radio_port(self.serial)
+                if port is None:
+                    self.state, self.state_mono = "missing", mono
+                    return False
+                self.port = port
+            self.fifo.unlink(missing_ok=True)
+            os.mkfifo(self.fifo)
+            self.sniffer = sniffer_cls()
+            self.sniffer.start_threaded(str(self.fifo), self.port, channel, metadata="ieee802154-tap")
+            self.thread = threading.Thread(target=self._read, args=(q, self.sniffer), daemon=True,
+                                           name=f"radio-{self.key}")
+            self.thread.start()
+            # Until the vendor's reader process has forked, no other port
+            # may be opened in this process (see the class docstring).
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and not self._forked():
+                time.sleep(0.02)
+            self.state, self.state_mono = "up", mono
+            self.last_frame_mono = None
+            return True
+
+    def _forked(self) -> bool:
+        processes = getattr(self.sniffer, "processes", None)
+        if processes is None:
+            return True                   # a stand-in sniffer with no process of its own
+        return bool(processes) and all(p.is_alive() for p in processes)
+
+    def _read(self, q, sniffer) -> None:
+        """The reader thread: the sniffer's pcap stream, frame by frame,
+        into the recorder's queue; then one end marker, whatever ended it."""
+        try:
+            with open(self.fifo, "rb") as fifo:
+                reader = PcapStreamReader(fifo)
+                self.dlt = reader.dlt
+                for frame in reader:
+                    q.put((self.label, frame, time.monotonic(), sniffer))
+        except (OSError, PcapFormatError) as exc:
+            self.log(f"{self.describe()}: capture stream unreadable: {exc}")
+        finally:
+            q.put((self.label, None, time.monotonic(), sniffer))
+
+    def stop_sniffer(self) -> None:
+        """The vendor's stop: the port opened once more to put the radio to
+        sleep, its reader process killed. Raises what it raises."""
+        if self.sniffer is not None:
+            self.sniffer._stop()
+
+    def detach(self, lock: threading.Lock, mono: float, reason: str) -> None:
+        """Stop capturing from this dongle and forget its sniffer. The
+        FIFO is opened once for writing so a reader thread still waiting
+        in open() sees its end, then removed."""
+        with lock:
+            self.dropped += getattr(self.sniffer, "parse_failures", 0)
+            try:
+                self.stop_sniffer()
+            except Exception as exc:  # a dongle that is gone raises on the way out
+                self.log(f"{self.describe()}: sniffer stop failed: {exc}")
+            try:
+                fd = os.open(self.fifo, os.O_WRONLY | os.O_NONBLOCK)
+                os.close(fd)
+            except OSError:
+                pass
+            self.fifo.unlink(missing_ok=True)
+            self.sniffer = None
+            self.state, self.state_mono = "down", mono
+            self.log(f"{self.describe()} detached: {reason}")
+
+    def dropped_lines(self) -> int:
+        return self.dropped + getattr(self.sniffer, "parse_failures", 0)
+
+    def sniffer_alive(self) -> bool:
+        thread = getattr(self.sniffer, "thread", None)
+        return bool(thread is not None and thread.is_alive())
+
+    def status(self, mono: float, aligner_status: dict | None) -> dict:
+        age = None
+        if self.state == "up":
+            age = round(mono - (self.last_frame_mono if self.last_frame_mono is not None else self.state_mono), 1)
+        return {"label": self.label, "port": self.port, "serial": self.serial, "placement": self.placement,
+                "state": self.state, "since_s": round(mono - self.state_mono, 1) if self.state_mono else None,
+                "frames_total": self.frames, "last_frame_age_s": age, "last_frame_ts": self.last_frame_ts,
+                "dropped_lines": self.dropped_lines(),
+                "current_file": str(self.writer.current_path) if self.writer and self.writer.current_path else None,
+                "lock": aligner_status}
+
+
+def plan_radios(cfg: Config, log) -> list[Radio]:
+    """The recorder's radios from its configuration: the [record] radios
+    table, or the one unnamed dongle, on serial_port or the one sniffer
+    found (two found and no table is refused here, before anything
+    starts, as it always was)."""
+    if not cfg.radios:
+        port = cfg.serial_port or find_sniffer_port()
+        return [Radio(None, None, "", port, cfg.state_dir / "capture.fifo", log)]
+    return [Radio(r.label, r.serial, r.placement, None, cfg.state_dir / f"capture-{r.label}.fifo", log)
+            for r in cfg.radios]
+
+
 def run_record(cfg: Config) -> None:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "vendor"))
     from nrf802154_sniffer import Nrf802154Sniffer
+
+    from .merge import HOLD_S, Merger
     # Set on the way out, so the watchdog stops ticking rather than writing
     # status.json or taking an exit decision while the main thread is saving
     # state and closing files. One per run, not module state: a watchdog
@@ -396,12 +552,15 @@ def run_record(cfg: Config) -> None:
     def _log(msg: str) -> None:
         print(f"[threadwatch] {msg}", file=sys.stderr, flush=True)
 
-    # Everything that can fail on configuration is built before the sniffer
-    # starts. The vendored sniffer runs a non-daemon thread that blocks until
-    # this process opens the FIFO, so an exception raised after
-    # start_threaded() would leave the interpreter waiting on that thread
-    # forever: a live process that systemd never restarts, holding the port.
-    port = cfg.serial_port or find_sniffer_port()
+    # Everything that can fail on configuration is built before any
+    # sniffer starts. The vendored sniffer runs a non-daemon thread that
+    # blocks until this process opens the FIFO, so an exception raised
+    # after start_threaded() would leave the interpreter waiting on that
+    # thread forever: a live process that systemd never restarts, holding
+    # the port.
+    radios = plan_radios(cfg, _log)
+    by_label = {r.label: r for r in radios}
+    primary = radios[0]
     # Read now, while the checkout is still the one this process imported
     # its modules from: every status write reports it (running_commit).
     _log(f"threadwatch {__version__} ({running_commit() or 'no .git and no REVISION here'})")
@@ -416,6 +575,8 @@ def run_record(cfg: Config) -> None:
     # unreadable, the FIFO's directory gone, the port busy) leaves before
     # the finally that closes it, so it is closed here, and the records go
     # back to the spool rather than out with the heap.
+    frames_q: queue.Queue = queue.Queue()
+    attach_lock = threading.Lock()
     try:
         decryptor = load_decryptor(cfg)      # raises CredentialsError: no key, no recorder
         _log("credentials: loaded")
@@ -423,19 +584,22 @@ def run_record(cfg: Config) -> None:
         heartbeats = build_heartbeats(cfg.heartbeats_raw, _log)
         for b in heartbeats:
             _log(f"heartbeat {b.describe()}")
-
-        fifo_path = cfg.state_dir / "capture.fifo"
-        fifo_path.unlink(missing_ok=True)
-        os.mkfifo(fifo_path)
-
-        sniffer = Nrf802154Sniffer()
-        sniffer.start_threaded(str(fifo_path), port, cfg.channel, metadata="ieee802154-tap")
-        _log(f"capturing channel {cfg.channel} from {port}")
+        for r in radios:
+            if r.attach(Nrf802154Sniffer, cfg.channel, frames_q, attach_lock, time.monotonic()):
+                _log(f"capturing channel {cfg.channel} from {r.port}"
+                     + (f" ({r.describe()})" if r.label is not None else ""))
+            else:
+                _log(f"{r.describe()}: no sniffer with serial {r.serial} is plugged in; "
+                     f"starting without it and looking again every {REATTACH_S:.0f} s")
+        if not any(r.state == "up" for r in radios):
+            raise SystemExit("none of the radios in [record] radios is plugged in: "
+                             + ", ".join(f"{r.label} (serial {r.serial})" for r in radios)
+                             + "; check 'threadwatch doctor'")
     except BaseException:
         events.close()
         raise
 
-    # Raising from the handler interrupts the blocking FIFO read, so
+    # Raising from the handler interrupts the blocking queue read, so
     # `systemctl stop` works even when the channel is silent. The finally
     # block below closes files. The watchdog's os._exit path flushes the
     # ring but can still leave a partial record: readers stop cleanly there
@@ -458,7 +622,6 @@ def run_record(cfg: Config) -> None:
     started = time.time()
     started_mono = time.monotonic()
     housekeeping = Housekeeping()
-    ring = None
     # Shared with the watchdog thread; benign races (status snapshot only).
     # last_frame is the wall clock (None until the first frame), for the
     # record; the stall clock and the heartbeat's health run on the
@@ -470,8 +633,65 @@ def run_record(cfg: Config) -> None:
     # blindness, not the devices' silence (Pipeline._last_frame_heard).
     prior_frame = last_frame_on_record(cfg.state_dir)
 
+    # The radios' copies become one stream here. Copies of the primary go
+    # through its RadioClock as they always did; a locked radio's copies
+    # are mapped into the primary's stamp domain first, so both series
+    # share one epoch mapping; an unlocked radio's copies use its own.
+    merger = Merger(primary.label, [r.label for r in radios], hold_s=HOLD_S,
+                    epoch=lambda label, raw: raw + (by_label[label].clock.offset or 0.0),
+                    stamp=lambda label, raw: by_label[label].clock.stamp(raw))
+    # What the pipeline may ask about the radios (per-radio blindness).
+    pipe.radios = {r.label: r.state for r in radios}
+
+    def _radio_event(r: Radio, event: str, severity: str, note: str) -> None:
+        pipe.radios[r.label] = r.state
+        try:
+            events.emit(event, severity, radio=r.label, serial=r.serial, port=r.port, placement=r.placement,
+                        note=note)
+        except Exception as exc:  # a full disk must not take the capture with it
+            _log(f"{event} not logged: {exc}")
+
+    for r in radios:
+        if r.state == "missing":
+            _radio_event(r, "radio_missing", "notice",
+                         f"{r.describe()}: no sniffer with serial {r.serial} is plugged in; the recorder "
+                         f"runs without it and looks again every {REATTACH_S:.0f} s")
+
+    def _supervise(mono: float) -> None:
+        """The watchdog's per-radio work, with more than one radio: a radio
+        that stalled while another hears is detached and reported, not the
+        whole run restarted; a radio missing or down is looked for again.
+        With one radio the whole-run verdicts below are the supervision."""
+        if len(radios) < 2:
+            return
+        hearing = [r for r in radios if r.state == "up" and r.last_frame_mono is not None
+                   and not capture_stalled(mono - r.last_frame_mono)]
+        for r in radios:
+            if r.state == "up" and hearing and r not in hearing:
+                age = mono - (r.last_frame_mono if r.last_frame_mono is not None else r.state_mono)
+                dead = not r.sniffer_alive() and r.last_frame_mono is None
+                if capture_stalled(age) or dead:
+                    why = ("its sniffer died before delivering a frame (port busy or gone?)" if dead
+                           else f"no frames for {age:.0f} s while {', '.join(h.describe() for h in hearing)} hears")
+                    r.detach(attach_lock, mono, why)
+                    merger.end(r.label)
+                    _radio_event(r, "radio_lost", "warning",
+                                 f"{r.describe()} stopped delivering: {why}; the recorder carries on with the "
+                                 f"rest and looks for it every {REATTACH_S:.0f} s")
+        for r in radios:
+            if r.state in ("missing", "down") and mono - r.state_mono >= REATTACH_S:
+                was = r.state
+                if r.attach(Nrf802154Sniffer, cfg.channel, frames_q, attach_lock, mono):
+                    merger.reset(r.label)
+                    _log(f"capturing channel {cfg.channel} from {r.port} ({r.describe()})")
+                    _radio_event(r, "radio_returned" if was == "down" else "radio_attached", "info",
+                                 f"{r.describe()} is capturing again from {r.port}" if was == "down"
+                                 else f"{r.describe()} found at {r.port} and capturing")
+                else:
+                    r.state_mono = mono                      # look again in REATTACH_S
+
     def _watchdog():
-        # The main loop blocks reading the FIFO, so a stalled stream (host
+        # The main loop blocks reading the queue, so a stalled stream (host
         # sleep/wake, dongle unplug, sniffer process death) looks alive
         # forever without this. Exit non-zero so a supervisor restarts us.
         # Also keeps status.json fresh when the channel is merely quiet.
@@ -479,10 +699,15 @@ def run_record(cfg: Config) -> None:
             time.sleep(30)
             if watchdog_stop.is_set():
                 return          # shutting down: the main thread owns the state now
-            age = status_tick(cfg, port, beat, started, started_mono, pipe, decryptor, prior_frame, _log,
-                              sniffer)
+            mono = time.monotonic()
+            age = status_tick(cfg, primary.port, beat, started, started_mono, pipe, decryptor, prior_frame, _log,
+                              radios=radios, merger=merger)
+            try:
+                _supervise(mono)
+            except Exception as exc:  # supervision must not take the watchdog down
+                _log(f"radio supervision failed: {exc}")
             verdict = watchdog_verdict(age, ring_open=beat["ring"] is not None,
-                                       sniffer_alive=sniffer.thread.is_alive())
+                                       sniffer_alive=any(r.sniffer_alive() for r in radios))
             if verdict == EXIT_SNIFFER_DIED:
                 _log("sniffer thread died before delivering any data (serial port busy or gone? "
                      "see the traceback above); exiting for supervisor restart")
@@ -492,19 +717,28 @@ def run_record(cfg: Config) -> None:
             if verdict == EXIT_STALLED:
                 _log(f"no frames for {age:.0f}s - capture stalled (host slept? "
                      "dongle gone?); exiting for supervisor restart")
-                # The main thread is blocked in the FIFO read, so nothing is
+                # The main thread is blocked in the queue read, so nothing is
                 # being written: keep the last frames and what they taught us,
                 # deliver the alerts still queued or held for a digest, and
-                # take the sniffer's child (which holds the port) with us.
+                # take the sniffers' children (which hold the ports) with us.
                 # Each step is allowed to fail without taking the rest
                 # with it, but never in silence: the whole point of the
                 # ladder is that what it saved is what the next run reads.
-                for what, step in (("ring flush", lambda: beat["ring"].fh.flush()),
+                def flush_rings():
+                    for r in radios:
+                        if r.writer and r.writer.fh:
+                            r.writer.fh.flush()
+
+                def stop_sniffers():
+                    for r in radios:
+                        r.stop_sniffer()
+
+                for what, step in (("ring flush", flush_rings),
                                    ("last-seen save", pipe.seen.save),
                                    ("exit note", lambda: record_exit(cfg.state_dir, EXIT_STALLED,
                                                                      beat["last_frame"] or prior_frame)),
                                    ("alert delivery", events.close),
-                                   ("sniffer stop", sniffer._stop)):
+                                   ("sniffer stop", stop_sniffers)):
                     try:
                         step()
                     except Exception as exc:
@@ -521,34 +755,75 @@ def run_record(cfg: Config) -> None:
                     healthy=lambda: capture_healthy(beat["last_frame_mono"], time.monotonic()),
                     log=_log)
 
+    def _take(out: Frame) -> None:
+        """One merged frame: every radio's copy into that radio's ring
+        series, the frame itself into the pipeline."""
+        nonlocal total
+        for label, copy in out.heard.items():
+            r = by_label[label]
+            if r.writer is None:
+                # One series per radio, the count cap per series and the
+                # byte cap shared out between them.
+                share = cfg.keep_bytes // len(radios) if cfg.keep_bytes else None
+                r.writer = RingWriter(cfg.ring_dir, cfg.keep_hours, r.dlt, share, label=r.label)
+                if r is primary or beat["ring"] is None:
+                    beat["ring"] = r.writer
+            r.writer.write(copy)
+            r.last_frame_ts = copy.ts
+        for r in radios:
+            if r.clock.last_step_s:
+                _log(f"capture clock re-anchored by {r.clock.last_step_s:+.3f} s "
+                     "(sniffer restarted, or the host clock stepped)")
+                r.clock.last_step_s = 0.0
+        pipe.ingest(out)
+        total += 1
+        beat["last_frame"] = out.ts
+        beat["last_frame_mono"] = time.monotonic()
+        beat["total"] = total
+        if housekeeping.due(out.ts, beat["last_frame_mono"]):
+            pipe.periodic(out.ts)
+
     # Exit status: 0 for a requested stop, otherwise non-zero so the journal
     # and the supervisor see a failure, and the traceback is printed here
     # because the os._exit in finally would otherwise swallow it.
     exit_code = 0
     try:
-        radio_clock = RadioClock()
-        with open(fifo_path, "rb") as fifo:
-            reader = PcapStreamReader(fifo)
-            ring = RingWriter(cfg.ring_dir, cfg.keep_hours, reader.dlt, cfg.keep_bytes)
-            beat["ring"] = ring
-            for frame in reader:
-                # The radio's timing, carried on the host's epoch (RadioClock).
-                frame.ts = radio_clock.stamp(frame.ts)
-                if radio_clock.last_step_s:
-                    _log(f"capture clock re-anchored by {radio_clock.last_step_s:+.3f} s "
-                         "(sniffer restarted, or the host clock stepped)")
-                ring.write(frame)
-                pipe.ingest(frame)
-                total += 1
-                beat["last_frame"] = frame.ts
-                beat["last_frame_mono"] = time.monotonic()
-                beat["total"] = total
-                if housekeeping.due(frame.ts, beat["last_frame_mono"]):
-                    pipe.periodic(frame.ts)
-        # The sniffer closed its end of the FIFO: dongle unplugged or the
-        # sniffer process died. Not a clean stop.
-        _log("capture stream ended (dongle unplugged? sniffer died?); exiting for supervisor restart")
-        exit_code = 3
+        while True:
+            # Copies waiting for another radio's are released on the next
+            # arrival, or by their age: on a quiet channel that is this
+            # timeout, not the next frame.
+            try:
+                label, frame, mono, sniffer = frames_q.get(timeout=HOLD_S if merger.pending() else TICK_S)
+            except queue.Empty:
+                for out in merger.release(time.monotonic()):
+                    _take(out)
+                continue
+            r = by_label[label]
+            if r.sniffer is not sniffer:
+                continue                      # an end marker of a sniffer already detached
+            if frame is None:
+                # The sniffer closed its end of the FIFO: dongle unplugged or
+                # the sniffer process died. With another radio still up, that
+                # radio goes on; alone, not a clean stop.
+                r.detach(attach_lock, mono, "capture stream ended")
+                merger.end(label)
+                for out in merger.release(mono):
+                    _take(out)
+                if any(x.state == "up" for x in radios):
+                    _radio_event(r, "radio_lost", "warning",
+                                 f"{r.describe()} closed its capture stream (dongle unplugged? sniffer died?); "
+                                 f"the recorder carries on with the rest and looks for it every {REATTACH_S:.0f} s")
+                    continue
+                _log("capture stream ended (dongle unplugged? sniffer died?); exiting for supervisor restart")
+                exit_code = 3
+                break
+            r.frames += 1
+            r.last_frame_mono = mono
+            if r.writer is None and r.dlt is None:
+                r.dlt = DLT_TAP
+            merger.push(label, frame, mono)
+            for out in merger.release(mono):
+                _take(out)
     except SystemExit as exc:
         exit_code = exc.code if isinstance(exc.code, int) else 0
     except BaseException:
@@ -578,12 +853,39 @@ def run_record(cfg: Config) -> None:
                     _log(f"exit: {what} failed: {exc}")
                     return True
 
-            lost = cleanup("sniffer stop", sniffer._stop)
+            def stop_sniffers():
+                failed = []
+                for r in radios:
+                    try:
+                        r.stop_sniffer()
+                    except Exception as exc:
+                        failed.append(f"{r.describe()}: {exc}")
+                if failed:
+                    raise RuntimeError("; ".join(failed))
+
+            def close_rings():
+                failed = []
+                for r in radios:
+                    if r.writer:
+                        try:
+                            r.writer.close()
+                        except Exception as exc:
+                            failed.append(f"{r.describe()}: {exc}")
+                if failed:
+                    raise RuntimeError("; ".join(failed))
+
+            def remove_fifos():
+                for r in radios:
+                    r.fifo.unlink(missing_ok=True)
+
+            # What the merger still holds goes into the rings and the
+            # pipeline before the rings close: the last quarter second.
+            cleanup("merger flush", lambda: [_take(out) for out in merger.release(flush=True)])
+            lost = cleanup("sniffer stop", stop_sniffers)
             watchdog_stop.set()
             lost |= cleanup("last-seen save", pipe.seen.save)
-            if ring:
-                lost |= cleanup("ring close", ring.close)
-            lost |= cleanup("FIFO cleanup", lambda: fifo_path.unlink(missing_ok=True))
+            lost |= cleanup("ring close", close_rings)
+            lost |= cleanup("FIFO cleanup", remove_fifos)
             if lost and exit_code == 0:
                 # Something of this run did not land. The journal says
                 # which step; the status must not read as a clean stop,
@@ -604,7 +906,7 @@ def run_record(cfg: Config) -> None:
 
 
 def status_tick(cfg, port, beat: dict, started: float, started_mono: float, pipe: Pipeline,
-                decryptor, prior_frame: float | None, log, sniffer=None) -> float:
+                decryptor, prior_frame: float | None, log, sniffer=None, radios=None, merger=None) -> float:
     """One watchdog tick: refresh status.json once the ring is open, and
     return the stall clock's reading (seconds since this run's last frame,
     or since it started). The file's last_frame_ts is when a frame was
@@ -612,12 +914,20 @@ def status_tick(cfg, port, beat: dict, started: float, started_mono: float, pipe
     status.json carried (prior_frame), else None. Never the time now: a
     stalled recorder reports a stale frame, which is the fact a reader of
     the file needs."""
-    age = time.monotonic() - (beat["last_frame_mono"] or started_mono)
+    mono = time.monotonic()
+    age = mono - (beat["last_frame_mono"] or started_mono)
     if beat["ring"] is not None:
+        dropped = getattr(sniffer, "parse_failures", 0)
+        radios_status = None
+        if radios:
+            dropped = sum(r.dropped_lines() for r in radios)
+            aligners = merger.aligners if merger is not None else {}
+            radios_status = {r.key: r.status(mono, aligners[r.label].status() if r.label in aligners else None)
+                             for r in radios}
         try:
             _write_status(cfg, port, beat["total"], started, pipe, beat["ring"], decryptor,
                           last_frame_age=age, last_frame_ts=beat["last_frame"] or prior_frame,
-                          dropped_lines=getattr(sniffer, "parse_failures", 0))
+                          dropped_lines=dropped, radios=radios_status)
         except Exception as exc:   # a full disk must not take the stall check with it
             log(f"status.json not written: {exc}")
     return age
@@ -637,7 +947,7 @@ def last_frame_on_record(state_dir: Path) -> float | None:
 
 def _write_status(cfg, port, total, started, pipe: Pipeline, ring, decryptor,
                   last_frame_age: float = 0.0, last_frame_ts: float | None = None,
-                  dropped_lines: int = 0) -> None:
+                  dropped_lines: int = 0, radios: dict | None = None) -> None:
     # last_frame_age_s is this run's view (the watchdog's stall clock);
     # last_frame_ts is the wall-clock time of the last frame any run heard,
     # which does not move while nothing is heard.
@@ -681,6 +991,12 @@ def _write_status(cfg, port, total, started, pipe: Pipeline, ring, decryptor,
         # With [ha_availability] on: HA reachability, the last poll and
         # the open episodes; null otherwise.
         "ha_availability": pipe.ha_availability_status(),
+        # Every radio by label ("radio" for the unnamed single dongle):
+        # its port, serial, placement, state (up, down, missing), frames,
+        # last-frame age, its own current ring file, and for every radio
+        # but the primary the merger's lock on its clock (offset, drift,
+        # jitter). None from a writer that has no radios to report.
+        "radios": radios,
     }
     status["crypto"] = {**decryptor.stats, "key_sequence": decryptor.key_sequence}
     tmp = cfg.state_dir / "status.tmp"

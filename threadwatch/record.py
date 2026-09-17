@@ -6,6 +6,7 @@ import json
 import os
 import queue
 import signal
+import socket
 import sys
 import threading
 import time
@@ -406,11 +407,18 @@ class Radio:
     for all radios, and attach waits for the fork before it returns."""
 
     def __init__(self, label: str | None, serial: str | None, placement: str, port: str | None,
-                 fifo: Path, log) -> None:
+                 fifo: Path, log, source: str = "usb", listen: str | None = None, channel: int | None = None) -> None:
         self.label, self.serial, self.placement = label, serial, placement
         self.port = port
         self.fifo = fifo
         self.log = log
+        # A relay from another host (relay.py): the listener is opened once
+        # and kept; each connection is one attachment, its socket the
+        # token the reader's items carry, as the sniffer is for a dongle.
+        self.source, self.listen, self.channel = source, listen, channel
+        self.listener: socket.socket | None = None
+        self.conn: socket.socket | None = None
+        self.peer: str | None = None
         self.state = "missing"            # missing | up | down
         self.state_mono = 0.0
         self.sniffer = None
@@ -437,7 +445,14 @@ class Radio:
         """Find the dongle and start capturing from it. False when a radio
         named by serial is not enumerated (the single unnamed dongle's port
         was found before the run started, so it always starts here; a port
-        that cannot be opened shows up as a sniffer that died)."""
+        that cannot be opened shows up as a sniffer that died). A tcp radio
+        opens its listener here and is attached when its relay connects
+        (adopt), so this returns False for it: missing until then."""
+        if self.source == "tcp":
+            self._listen(q)
+            if self.state != "up":
+                self.state, self.state_mono = "missing", mono
+            return False
         with lock:
             if self.serial is not None:
                 port = resolve_radio_port(self.serial)
@@ -461,6 +476,98 @@ class Radio:
             self.last_frame_mono = None
             return True
 
+    def _listen(self, q) -> None:
+        """Open the tcp radio's listener once, with a thread accepting
+        connections: each one's handshake is read and checked there, and
+        a good one is handed to the main loop as an item to adopt."""
+        if self.listener is not None:
+            return
+        from .relay import read_handshake
+        host, _, port = self.listen.rpartition(":")
+        host = host.strip("[]")
+        family = socket.AF_INET6 if ":" in host else socket.AF_INET
+        self.listener = socket.socket(family, socket.SOCK_STREAM)
+        self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.listener.bind((host, int(port)))
+        self.listener.listen(2)
+        self.port = f"tcp {self.listen}"
+
+        def accept():
+            while True:
+                try:
+                    conn, addr = self.listener.accept()
+                except OSError:
+                    return                        # the listener was closed: the run is over
+                peer = f"{addr[0]}:{addr[1]}"
+                try:
+                    conn.settimeout(10.0)
+                    hs = read_handshake(conn.makefile("rb"))
+                    if hs["label"] != self.label:
+                        raise ValueError(f"relay is radio {hs['label']!r}, this listener is {self.label!r}")
+                    if self.channel is not None and hs["channel"] != self.channel:
+                        raise ValueError(f"relay captures channel {hs['channel']}, this recorder channel "
+                                         f"{self.channel}")
+                    if self.serial and hs.get("serial") and hs["serial"].upper() != self.serial:
+                        raise ValueError(f"relay's dongle has serial {hs['serial']}, [record] radios says "
+                                         f"{self.serial}")
+                    conn.settimeout(None)
+                except (ValueError, OSError) as exc:
+                    self.log(f"{self.describe()}: connection from {peer} refused: {exc}")
+                    conn.close()
+                    continue
+                q.put((self.label, "connect", time.monotonic(), (conn, peer, hs)))
+
+        threading.Thread(target=accept, daemon=True, name=f"radio-{self.key}-accept").start()
+
+    def adopt(self, conn, peer: str, hs: dict, q, mono: float) -> None:
+        """A relay's connection becomes this radio's stream. A connection
+        already up is replaced: the relay restarted, or two are running,
+        and the newer one is the one still talking."""
+        if self.conn is not None:
+            self._close_conn()
+        self.conn, self.peer = conn, peer
+        if self.serial is None and hs.get("serial"):
+            self.serial = hs["serial"].upper()
+        self.dlt = None
+        self.thread = threading.Thread(target=self._read_socket, args=(q, conn), daemon=True,
+                                       name=f"radio-{self.key}")
+        self.thread.start()
+        self.state, self.state_mono = "up", mono
+        self.last_frame_mono = None
+        self.log(f"{self.describe()}: relay connected from {peer}")
+
+    def _read_socket(self, q, conn) -> None:
+        try:
+            with conn.makefile("rb") as stream:
+                reader = PcapStreamReader(stream)
+                self.dlt = reader.dlt
+                for frame in reader:
+                    q.put((self.label, frame, time.monotonic(), conn))
+        except (OSError, PcapFormatError) as exc:
+            self.log(f"{self.describe()}: relay stream unreadable: {exc}")
+        finally:
+            q.put((self.label, None, time.monotonic(), conn))
+
+    def _close_conn(self) -> None:
+        if self.conn is not None:
+            try:
+                self.conn.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                self.conn.close()
+            except OSError:
+                pass
+        self.conn = None
+
+    def close_listener(self) -> None:
+        if self.listener is not None:
+            try:
+                self.listener.close()
+            except OSError:
+                pass
+            self.listener = None
+
     def _forked(self) -> bool:
         processes = getattr(self.sniffer, "processes", None)
         if processes is None:
@@ -483,14 +590,28 @@ class Radio:
 
     def stop_sniffer(self) -> None:
         """The vendor's stop: the port opened once more to put the radio to
-        sleep, its reader process killed. Raises what it raises."""
+        sleep, its reader process killed. Raises what it raises. For a tcp
+        radio: its connection closed, so the relay reconnects."""
+        if self.source == "tcp":
+            self._close_conn()
+            return
         if self.sniffer is not None:
             self.sniffer._stop()
+
+    def token(self):
+        """What the reader's queue items carry to say which attachment
+        they belong to: the sniffer, or the relay's connection."""
+        return self.conn if self.source == "tcp" else self.sniffer
 
     def detach(self, lock: threading.Lock, mono: float, reason: str) -> None:
         """Stop capturing from this dongle and forget its sniffer. The
         FIFO is opened once for writing so a reader thread still waiting
         in open() sees its end, then removed."""
+        if self.source == "tcp":
+            self._close_conn()
+            self.state, self.state_mono = "down", mono
+            self.log(f"{self.describe()} detached: {reason}")
+            return
         with lock:
             self.dropped += getattr(self.sniffer, "parse_failures", 0)
             try:
@@ -511,6 +632,8 @@ class Radio:
         return self.dropped + getattr(self.sniffer, "parse_failures", 0)
 
     def sniffer_alive(self) -> bool:
+        if self.source == "tcp":
+            return self.thread is not None and self.thread.is_alive()
         thread = getattr(self.sniffer, "thread", None)
         return bool(thread is not None and thread.is_alive())
 
@@ -519,6 +642,7 @@ class Radio:
         if self.state == "up":
             age = round(mono - (self.last_frame_mono if self.last_frame_mono is not None else self.state_mono), 1)
         return {"label": self.label, "port": self.port, "serial": self.serial, "placement": self.placement,
+                "source": self.source, "peer": self.peer if self.state == "up" else None,
                 "state": self.state, "since_s": round(mono - self.state_mono, 1) if self.state_mono else None,
                 "frames_total": self.frames, "last_frame_age_s": age, "last_frame_ts": self.last_frame_ts,
                 "dropped_lines": self.dropped_lines(),
@@ -534,7 +658,8 @@ def plan_radios(cfg: Config, log) -> list[Radio]:
     if not cfg.radios:
         port = cfg.serial_port or find_sniffer_port()
         return [Radio(None, None, "", port, cfg.state_dir / "capture.fifo", log)]
-    return [Radio(r.label, r.serial, r.placement, None, cfg.state_dir / f"capture-{r.label}.fifo", log)
+    return [Radio(r.label, r.serial, r.placement, None, cfg.state_dir / f"capture-{r.label}.fifo", log,
+                  source=r.source, listen=r.listen, channel=cfg.channel)
             for r in cfg.radios]
 
 
@@ -588,10 +713,12 @@ def run_record(cfg: Config) -> None:
             if r.attach(Nrf802154Sniffer, cfg.channel, frames_q, attach_lock, time.monotonic()):
                 _log(f"capturing channel {cfg.channel} from {r.port}"
                      + (f" ({r.describe()})" if r.label is not None else ""))
+            elif r.source == "tcp":
+                _log(f"{r.describe()}: listening on {r.listen} for its relay")
             else:
                 _log(f"{r.describe()}: no sniffer with serial {r.serial} is plugged in; "
                      f"starting without it and looking again every {REATTACH_S:.0f} s")
-        if not any(r.state == "up" for r in radios):
+        if not any(r.state == "up" or r.source == "tcp" for r in radios):
             raise SystemExit("none of the radios in [record] radios is plugged in: "
                              + ", ".join(f"{r.label} (serial {r.serial})" for r in radios)
                              + "; check 'threadwatch doctor'")
@@ -655,8 +782,9 @@ def run_record(cfg: Config) -> None:
     for r in radios:
         if r.state == "missing":
             _radio_event(r, "radio_missing", "notice",
-                         f"{r.describe()}: no sniffer with serial {r.serial} is plugged in; the recorder "
-                         f"runs without it and looks again every {REATTACH_S:.0f} s")
+                         f"{r.describe()}: waiting for its relay to connect to {r.listen}" if r.source == "tcp"
+                         else f"{r.describe()}: no sniffer with serial {r.serial} is plugged in; the recorder "
+                              f"runs without it and looks again every {REATTACH_S:.0f} s")
 
     def _supervise(mono: float) -> None:
         """The watchdog's per-radio work, with more than one radio: a radio
@@ -680,6 +808,8 @@ def run_record(cfg: Config) -> None:
                                  f"{r.describe()} stopped delivering: {why}; the recorder carries on with the "
                                  f"rest and looks for it every {REATTACH_S:.0f} s")
         for r in radios:
+            if r.source == "tcp":
+                continue                                     # its relay reconnects by itself
             if r.state in ("missing", "down") and mono - r.state_mono >= REATTACH_S:
                 was = r.state
                 if r.attach(Nrf802154Sniffer, cfg.channel, frames_q, attach_lock, mono):
@@ -800,7 +930,17 @@ def run_record(cfg: Config) -> None:
                     _take(out)
                 continue
             r = by_label[label]
-            if r.sniffer is not sniffer:
+            if isinstance(frame, str) and frame == "connect":
+                # A relay connected: this radio's stream, from now.
+                conn, peer, hs = sniffer
+                was = r.state
+                r.adopt(conn, peer, hs, frames_q, mono)
+                merger.reset(label)
+                _radio_event(r, "radio_returned" if was == "down" else "radio_attached", "info",
+                             f"{r.describe()}: relay connected from {peer}" + (
+                                 f" (dongle serial {hs['serial']})" if hs.get("serial") else ""))
+                continue
+            if r.token() is not sniffer:
                 continue                      # an end marker of a sniffer already detached
             if frame is None:
                 # The sniffer closed its end of the FIFO: dongle unplugged or
@@ -810,10 +950,16 @@ def run_record(cfg: Config) -> None:
                 merger.end(label)
                 for out in merger.release(mono):
                     _take(out)
+                # A relay's radio counts as present only while its relay is
+                # connected: with every radio down the run ends and the
+                # supervisor restarts it, listener and all, and the relay
+                # reconnects with its own backoff.
                 if any(x.state == "up" for x in radios):
                     _radio_event(r, "radio_lost", "warning",
-                                 f"{r.describe()} closed its capture stream (dongle unplugged? sniffer died?); "
-                                 f"the recorder carries on with the rest and looks for it every {REATTACH_S:.0f} s")
+                                 f"{r.describe()} closed its capture stream ("
+                                 + ("relay disconnected; it reconnects by itself" if r.source == "tcp" else
+                                    f"dongle unplugged? sniffer died?); the recorder carries on with the rest "
+                                    f"and looks for it every {REATTACH_S:.0f} s"))
                     continue
                 _log("capture stream ended (dongle unplugged? sniffer died?); exiting for supervisor restart")
                 exit_code = 3
@@ -878,6 +1024,7 @@ def run_record(cfg: Config) -> None:
             def remove_fifos():
                 for r in radios:
                     r.fifo.unlink(missing_ok=True)
+                    r.close_listener()
 
             # What the merger still holds goes into the rings and the
             # pipeline before the rings close: the last quarter second.

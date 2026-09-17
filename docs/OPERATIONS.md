@@ -279,6 +279,15 @@ What changes in operation:
 - The devices page and `threadwatch device` say which radios hear each
   device, how much of it, and at what level.
 
+A radio with `source = "tcp"` is a `threadwatch relay` on another host
+(SETUP.md, "A dongle on another host"): the recorder listens on its
+`listen` address, checks each connection's handshake (the radio's
+label, the channel, the dongle's serial when configured) and refuses
+one that does not match, with the reason in the journal; a relay
+connecting is `radio_attached` or `radio_returned`, one disconnecting
+`radio_lost`, and the relay reconnects by itself. The relay exits 3
+when its own dongle's stream ends, for its supervisor to restart.
+
 Attaching a dongle opens its port and forks the sniffer's reader
 process; the recorder does this one radio at a time, because a fork
 taken while another radio's port is open in the process inherits that

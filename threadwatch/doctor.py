@@ -162,13 +162,17 @@ def check_dongle(cfg, find: Callable[[], str] | None = None,
     by_serial = {usb_serial: port for port, usb_serial in found if usb_serial}
     for radio in cfg.radios:
         where = f" ({radio.placement})" if radio.placement else ""
+        if radio.source == "tcp":
+            out.append((OK, "dongle", f"radio {radio.label}: a relay from another host, listening on {radio.listen}"
+                                      f"{where}; 'threadwatch status' says whether it is connected"))
+            continue
         port = by_serial.get(radio.serial)
         if port:
             out.append((OK, "dongle", f"radio {radio.label}: sniffer {radio.serial} at {port}{where}"))
         else:
             out.append((FAIL, "dongle", f"radio {radio.label}: no sniffer with serial {radio.serial} is plugged "
                                         f"in{where}; the recorder runs without it and keeps looking"))
-    configured = {r.serial for r in cfg.radios}
+    configured = {r.serial for r in cfg.radios if r.serial}
     for port, usb_serial in found:
         if usb_serial is None:
             out.append((WARN, "dongle", f"a sniffer at {port} reports no USB serial: it cannot be named in "

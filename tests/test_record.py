@@ -1146,3 +1146,111 @@ class TwoRadiosRunTest(unittest.TestCase):
         self.assertEqual((annex["state"], annex["port"], annex["frames_total"]), ("up", "/dev/fake-annex", 2))
         self.assertIn("locked", annex["lock"])
         self.assertTrue(annex["current_file"].endswith("-annex.pcap"))
+
+
+class RelayRadioRunTest(TwoRadiosRunTest):
+    """The annex as a relay from another host: the recorder listens, a
+    client connects with the handshake and streams pcap records."""
+
+    def setUp(self):
+        import socket
+        super().setUp()
+        with socket.socket() as probe:               # a free port for the listener
+            probe.bind(("127.0.0.1", 0))
+            self.port = probe.getsockname()[1]
+        d = Path(self.tmp.name)
+        (d / "config.toml").write_text(
+            '[record]\n[[record.radios]]\nlabel = "hub"\nserial = "AA"\n'
+            f'[[record.radios]]\nlabel = "annex"\nsource = "tcp"\nlisten = "127.0.0.1:{self.port}"\n')
+        from threadwatch import config as config_mod
+        cfg = config_mod.load(d / "config.toml")
+        cfg.data_dir, cfg.credentials_path, cfg.devices_path = self.cfg.data_dir, self.cfg.credentials_path, \
+            self.cfg.devices_path
+        cfg.border_router_browse_s = 0
+        self.cfg = cfg
+
+    def _client(self, frames, hold: threading.Event, label="annex", channel=25):
+        """A relay: handshake, header, records, then hold the connection until told."""
+        import socket
+        import struct as _struct
+
+        from threadwatch.pcap import DLT_TAP
+        from threadwatch.relay import handshake_line
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                sock = socket.create_connection(("127.0.0.1", self.port), timeout=2)
+                break
+            except OSError:
+                if time.monotonic() > deadline:
+                    raise
+                time.sleep(0.05)
+        sock.sendall(handshake_line(label, "BB", channel))
+        sock.sendall(_struct.pack("<LHHIILL", 0xA1B2C3D4, 2, 4, 0, 0, 0xFFFF, DLT_TAP))
+        for ts, psdu, rssi in frames:
+            raw = (_struct.pack("<HH", 0, 28) + _struct.pack("<HHf", 1, 4, rssi)
+                   + _struct.pack("<HHHH", 3, 3, 25, 0) + _struct.pack("<HHI", 10, 1, 200) + psdu)
+            sec, usec = int(ts), int(round((ts - int(ts)) * 1e6))
+            sock.sendall(_struct.pack("<LLLL", sec, usec, len(raw), len(raw)) + raw)
+        hold.wait(10)
+        sock.close()
+
+    # The parent's tests assume two USB dongles; only the ones below run here.
+    def test_both_radios_write_their_own_series_and_the_run_ends_when_both_have(self):
+        pass
+
+    def test_a_radio_missing_at_start_is_reported_and_attached_when_it_appears(self):
+        pass
+
+    def test_nothing_plugged_in_is_a_start_failure_naming_every_radio(self):
+        pass
+
+    def test_the_status_file_carries_every_radio(self):
+        pass
+
+    def test_a_relay_is_adopted_streams_its_copies_and_its_loss_is_the_radios_not_the_runs(self):
+        from threadwatch.pcap import PcapStreamReader
+        frames = self._frames(3)
+        self.scripts["/dev/fake-hub"] = frames
+        hub_hold = self.holds.setdefault("/dev/fake-hub", threading.Event())
+        relay_hold = threading.Event()
+        annex = [(ts + 0.010, psdu, -70.0) for ts, psdu, _ in frames[1:]]
+        threading.Thread(target=self._client, args=(annex, relay_hold), daemon=True).start()
+
+        def later():
+            time.sleep(1.0)
+            relay_hold.set()              # the relay disconnects: annex lost, the run goes on
+            time.sleep(0.4)
+            hub_hold.set()                # the hub ends: the run ends
+        threading.Thread(target=later, daemon=True).start()
+        code, out = self._run()
+        self.assertEqual(code, 3)
+        self.assertIn(f"radio annex: listening on 127.0.0.1:{self.port} for its relay", out)
+        self.assertIn("radio annex: relay connected from 127.0.0.1:", out)
+        self.assertEqual(self._events(), [("radio_missing", "annex"), ("radio_attached", "annex"),
+                                          ("radio_lost", "annex")])
+        ring = sorted(p.name for p in self.cfg.ring_dir.glob("*.pcap"))
+        self.assertEqual(len(ring), 2)
+        with open(self.cfg.ring_dir / ring[0], "rb") as fh:           # the annex's series
+            self.assertEqual([f.rssi for f in PcapStreamReader(fh)], [-70.0, -70.0])
+        self.assertIn("stopped after 3 frames", out)                    # the two shared frames once each
+
+    def test_a_relay_for_another_radio_or_channel_is_refused(self):
+        frames = self._frames(2)
+        self.scripts["/dev/fake-hub"] = frames
+        hub_hold = self.holds.setdefault("/dev/fake-hub", threading.Event())
+        hold = threading.Event()
+        threading.Thread(target=self._client, args=([], hold, "attic"), daemon=True).start()
+        threading.Thread(target=self._client, args=([], hold, "annex", 11), daemon=True).start()
+
+        def later():
+            time.sleep(0.8)
+            hold.set()
+            time.sleep(0.2)
+            hub_hold.set()
+        threading.Thread(target=later, daemon=True).start()
+        code, out = self._run()
+        self.assertEqual(code, 3)
+        self.assertIn("refused: relay is radio 'attic', this listener is 'annex'", out)
+        self.assertIn("refused: relay captures channel 11, this recorder channel 25", out)
+        self.assertEqual(self._events(), [("radio_missing", "annex")])

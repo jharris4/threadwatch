@@ -140,6 +140,40 @@ Two dongles side by side, on the same host, still each miss 5-12 % of
 what the other hears (measured over an hour on a 50-device mesh), so a
 second radio adds coverage before it goes anywhere.
 
+## A dongle on another host
+
+A dongle plugged into another machine on the LAN (a second Pi, the one
+by the far end of the house) can be one of the recorder's radios too.
+On that machine, install threadwatch the same way (INSTALL.md; it needs
+no network key, only the channel in its config.toml and the dongle) and
+run the relay instead of the recorder:
+
+```bash
+bin/threadwatch relay --to recorder-host:9154 --label annex
+```
+
+On the recorder, the radio is a `[[record.radios]]` entry with
+`source = "tcp"` and the address the relay connects to:
+
+```toml
+[[record.radios]]
+label = "annex"
+source = "tcp"
+listen = "192.0.2.10:9154"          # this host's LAN address; the relay connects here
+placement = "far end, second Pi"
+# serial = "FEDCBA9876543210"       # optional: refuse a relay whose dongle is another
+```
+
+The relay streams the dongle's capture as it is, stamped by the
+dongle's own clock, and the recorder aligns and merges it like a local
+one. A dropped connection is retried with backoff (2 s doubling to 30 s)
+and the frames heard meanwhile are dropped and counted; the recorder
+reports the radio lost and back. Nothing authenticates the stream, which
+is the encrypted frames and their timing without the key: keep `listen`
+on a LAN address behind a firewall, or carry it over `ssh -R`. A systemd
+unit for the relay is the recorder's with `relay --to ... --label ...`
+in place of `record`.
+
 ## Other radios
 
 Anything Wireshark-capable can substitute for ad-hoc work (an ESP32-C6

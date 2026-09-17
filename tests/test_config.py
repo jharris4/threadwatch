@@ -418,7 +418,9 @@ class ExampleConfigTest(unittest.TestCase):
         ("record", "radios"): ("radios", [{"label": "hub", "serial": "0123456789ABCDEF",
                                            "placement": "next to the border router"},
                                           {"label": "annex", "serial": "FEDCBA9876543210",
-                                           "placement": "upstairs landing, on a 5 m extension"}],
+                                           "placement": "upstairs landing, on a 5 m extension"},
+                                          {"label": "attic", "serial": None, "source": "tcp",
+                                           "listen": "192.0.2.10:9154", "placement": "attic, the second Pi"}],
                                [{"label": "one", "serial": "AA"}]),
         ("devices", "inventory"): ("devices_path", "devices.json", "other.json"),
         ("visitors", "file"): ("visitors_path", "visitors.json", "phones.json"),
@@ -501,7 +503,8 @@ class ExampleConfigTest(unittest.TestCase):
             return got, (d / spec_value).resolve()
         if attr == "radios":
             from dataclasses import asdict
-            return [asdict(r) for r in got], [{"placement": "", **r} for r in spec_value]
+            defaults = {"placement": "", "source": "usb", "listen": None}
+            return [asdict(r) for r in got], [{**defaults, **r} for r in spec_value]
         return got, spec_value
 
     def test_every_setting_in_the_example_is_one_load_reads(self):
@@ -721,6 +724,26 @@ class RadiosTest(unittest.TestCase):
                          [("hub", "0123456789ABCDEF", "by the router"), ("annex", "FEDCBA9876543210", "")])
         self.assertIsNone(cfg.serial_port)
         self.assertEqual(self._load("[record]\nkeep_hours = 24\n").radios, [])
+
+    def test_a_tcp_radio_needs_a_listen_address_and_may_carry_a_serial(self):
+        cfg = self._load('[record]\n[[record.radios]]\nlabel = "hub"\nserial = "AA"\n'
+                         '[[record.radios]]\nlabel = "annex"\nsource = "tcp"\nlisten = "192.0.2.10:9154"\n'
+                         '[[record.radios]]\nlabel = "attic"\nsource = "tcp"\nlisten = "[::1]:9155"\nserial = "cc"\n')
+        self.assertEqual([(r.label, r.source, r.listen, r.serial) for r in cfg.radios],
+                         [("hub", "usb", None, "AA"), ("annex", "tcp", "192.0.2.10:9154", None),
+                          ("attic", "tcp", "[::1]:9155", "CC")])
+        for what, text in {
+            "tcp without listen": '[record]\n[[record.radios]]\nlabel = "a"\nsource = "tcp"\n',
+            "listen without a port": '[record]\n[[record.radios]]\nlabel = "a"\nsource = "tcp"\nlisten = "host"\n',
+            "a port out of range": '[record]\n[[record.radios]]\nlabel = "a"\nsource = "tcp"\nlisten = "h:70000"\n',
+            "listen on a usb radio": '[record]\n[[record.radios]]\nlabel = "a"\nserial = "AA"\nlisten = "h:1"\n',
+            "an unknown source": '[record]\n[[record.radios]]\nlabel = "a"\nsource = "ble"\nserial = "AA"\n',
+            "the same listen twice": '[record]\n[[record.radios]]\nlabel = "a"\nsource = "tcp"\nlisten = "h:1"\n'
+                                     '[[record.radios]]\nlabel = "b"\nsource = "tcp"\nlisten = "h:1"\n',
+        }.items():
+            with self.subTest(what), self.assertRaises(ValueError) as cm:
+                self._load(text)
+            self.assertIn("radios", str(cm.exception), what)
 
     def test_what_is_refused(self):
         cases = {

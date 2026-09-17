@@ -94,8 +94,14 @@ class RadioConfig:
     text for the pages ("upstairs landing"). The first entry is the
     primary: its ring files keep the unlabelled names."""
     label: str
-    serial: str
+    serial: str | None
     placement: str = ""
+    # "usb": a dongle on this host, found by serial. "tcp": a dongle on
+    # another host, whose `threadwatch relay` connects to `listen`
+    # (host:port on this host) and streams what it hears; serial then
+    # optional, checked against the relay's if given.
+    source: str = "usb"
+    listen: str | None = None
 
 
 @dataclass
@@ -351,8 +357,9 @@ def _finite(section: str, key: str, value):
     return value
 
 
-_RADIO_KEYS = frozenset(("label", "serial", "placement"))
+_RADIO_KEYS = frozenset(("label", "serial", "placement", "source", "listen"))
 _SERIAL_RE = re.compile(r"^[0-9A-Za-z]{1,64}$")
+_LISTEN_RE = re.compile(r"^(?P<host>[^:\s]+|\[[0-9a-fA-F:]+\]):(?P<port>\d{1,5})$")
 
 
 def _radios(raw) -> list[RadioConfig]:
@@ -376,20 +383,36 @@ def _radios(raw) -> list[RadioConfig]:
                 raise ValueError(f"unknown key {key!r} in [[record.radios]] entry {i} "
                                  f"(a radio takes: {', '.join(sorted(_RADIO_KEYS))})")
         label, serial, placement = entry.get("label"), entry.get("serial"), entry.get("placement", "")
+        source, listen = entry.get("source", "usb"), entry.get("listen")
         if not isinstance(label, str) or not LABEL_RE.match(label):
             raise ValueError(f"[[record.radios]] entry {i}: label must be 1-16 of a-z, 0-9 and _ (it names ring "
                              f"files and events), not {label!r}")
-        if not isinstance(serial, str) or not _SERIAL_RE.match(serial):
-            raise ValueError(f"[[record.radios]] entry {i} ({label}): serial must be the dongle's USB serial as "
-                             f"'threadwatch doctor' or /dev/serial/by-id prints it, not {serial!r}")
+        if source not in ("usb", "tcp"):
+            raise ValueError(f"[[record.radios]] entry {i} ({label}): source must be \"usb\" (a dongle here) or "
+                             f"\"tcp\" (a relay from another host), not {source!r}")
+        if source == "usb" and listen is not None:
+            raise ValueError(f"[[record.radios]] entry {i} ({label}): listen is for source = \"tcp\"")
+        if source == "tcp":
+            if not isinstance(listen, str) or not _LISTEN_RE.match(listen):
+                raise ValueError(f"[[record.radios]] entry {i} ({label}): a tcp radio needs listen = \"host:port\" "
+                                 f"(this host's address the relay connects to), not {listen!r}")
+            if not 1 <= int(_LISTEN_RE.match(listen).group("port")) <= 65535:
+                raise ValueError(f"[[record.radios]] entry {i} ({label}): listen port out of range: {listen}")
+        if serial is not None or source == "usb":
+            if not isinstance(serial, str) or not _SERIAL_RE.match(serial):
+                raise ValueError(f"[[record.radios]] entry {i} ({label}): serial must be the dongle's USB serial as "
+                                 f"'threadwatch doctor' or /dev/serial/by-id prints it, not {serial!r}")
+            serial = serial.upper()
         if not isinstance(placement, str):
             raise ValueError(f"[[record.radios]] entry {i} ({label}): placement must be text, not {placement!r}")
         if any(r.label == label for r in out):
             raise ValueError(f"[[record.radios]]: two radios labelled {label!r}")
-        if any(r.serial == serial.upper() for r in out):
+        if serial is not None and any(r.serial == serial for r in out):
             raise ValueError(f"[[record.radios]]: serial {serial} is listed twice (for {label} and for "
-                             f"{next(r.label for r in out if r.serial == serial.upper())})")
-        out.append(RadioConfig(label=label, serial=serial.upper(), placement=placement))
+                             f"{next(r.label for r in out if r.serial == serial)})")
+        if listen is not None and any(r.listen == listen for r in out):
+            raise ValueError(f"[[record.radios]]: listen {listen} is listed twice")
+        out.append(RadioConfig(label=label, serial=serial, placement=placement, source=source, listen=listen))
     return out
 
 

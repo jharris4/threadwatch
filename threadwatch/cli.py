@@ -114,6 +114,12 @@ def main(argv=None) -> int:
 
     sub.add_parser("record", help="run the recorder (foreground)")
     sub.add_parser("status", help="show the running daemon's status")
+    p_relay = sub.add_parser("relay", help="stream this host's dongle to a recorder on another host, as one of "
+                                           "its [record] radios (source = \"tcp\")")
+    p_relay.add_argument("--to", required=True, metavar="HOST:PORT",
+                         help="the recorder's listen address for this radio")
+    p_relay.add_argument("--label", required=True, help="the radio's label in the recorder's [record] radios")
+    p_relay.add_argument("--serial-port", metavar="PORT", help="the dongle's port here (default: found by USB id)")
 
     p_replay = sub.add_parser("replay", help="run detection over existing pcap files, as one run")
     p_replay.add_argument("pcap", type=Path, nargs="*",
@@ -236,6 +242,10 @@ def main(argv=None) -> int:
         except CredentialsError as exc:
             parser.exit(2, f"threadwatch record: {exc}\n")
         return 0
+
+    if args.cmd == "relay":
+        from .relay import run_relay
+        return run_relay(cfg, args.label, args.to, args.serial_port)
 
     if args.cmd == "replay":
         from .record import run_replay

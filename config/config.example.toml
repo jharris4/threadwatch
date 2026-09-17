@@ -55,6 +55,15 @@ keep_hours = 168                  # ring files to retain, one per hour heard (16
 # label = "annex"
 # serial = "FEDCBA9876543210"
 # placement = "upstairs landing, on a 5 m extension"
+# A dongle on another host, streamed here by `threadwatch relay --to
+# <this host>:9154 --label attic` running there (SETUP.md): source = "tcp"
+# and the address this host listens on; serial is then optional and, when
+# given, a relay with another dongle is refused.
+# [[record.radios]]
+# label = "attic"
+# source = "tcp"
+# listen = "192.0.2.10:9154"
+# placement = "attic, the second Pi"
 
 [devices]
 # Inventory that maps extended addresses to human names (see names.py docstring).

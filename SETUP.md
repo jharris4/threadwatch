@@ -16,8 +16,10 @@ It runs on **64-bit Linux (x86_64 or aarch64) and both Mac
 architectures** — the recorder host itself included, so a 64-bit
 Raspberry Pi can flash its own dongle. It uses Nordic's `nrfutil`
 binary: set `NRFUTIL` to point at one you already have, or let the
-script download it into `.nrfutil-bin/` (gitignored) and reuse it. The
-first run needs network — the launcher fetches about 29 MB of device
+script download it into `.nrfutil-bin/` (gitignored) and reuse it. An
+`nrfutil` already on your PATH is used only when there is no cached
+build and it runs on this machine: an Intel build left behind on an
+Apple silicon Mac is skipped, not run. The first run needs network — the launcher fetches about 29 MB of device
 commands into `~/.nrfutil` — and nothing after that.
 
 The download is pinned to one Nordic release, and its sha256 is in

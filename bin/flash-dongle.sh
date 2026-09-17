@@ -6,9 +6,11 @@
 # firmware/README.md) and Nordic's nrfutil binary, which ships for 64-bit
 # Linux (x86_64 and aarch64) and both Mac architectures -- a 64-bit Raspberry
 # Pi included, so the recorder can flash its own dongle. Set NRFUTIL to use an
-# nrfutil you already have; otherwise one is downloaded into .nrfutil-bin/ and
-# reused. First run needs network: the launcher then fetches ~29 MB of device
-# commands into ~/.nrfutil. The dongle keeps the firmware, so this is once per
+# nrfutil you already have; otherwise the pinned build is downloaded into
+# .nrfutil-bin/ and reused, and one found on PATH is used only when there is
+# no cached build and it runs on this machine (a leftover build for another
+# architecture is skipped). First run needs network: the launcher then fetches
+# ~29 MB of device commands into ~/.nrfutil. The dongle keeps the firmware, so this is once per
 # dongle, not per boot.
 #
 # The dongle must be in its Open DFU bootloader to accept the flash: press the
@@ -52,12 +54,30 @@ target_triple() {
   esac
 }
 
+# Which launcher to run: NRFUTIL if set, else the pinned build already in
+# the cache, else one on PATH -- and only one that actually runs. A
+# launcher for another architecture (an Intel build left on an Apple
+# silicon Mac by an older install) passes `command -v` and `-x` and then
+# fails inside nrfutil with "Bad CPU type in executable", so a candidate
+# is asked for its version before it is trusted. The pinned build is
+# preferred over PATH because it is the one whose hash this repo records.
+_runs() { [ -n "$1" ] && [ -x "$1" ] && "$1" --version >/dev/null 2>&1; }
+
 NRFUTIL="${NRFUTIL:-}"
-if [ -z "$NRFUTIL" ] && command -v nrfutil >/dev/null 2>&1; then
-  NRFUTIL="$(command -v nrfutil)"
+if [ -n "$NRFUTIL" ] && ! _runs "$NRFUTIL"; then
+  echo "ERROR: NRFUTIL=$NRFUTIL does not run here (wrong architecture, or not executable)." >&2
+  echo "  Unset NRFUTIL to let this script fetch the pinned build for $(uname -s) $(uname -m)." >&2
+  exit 1
 fi
-if [ -z "$NRFUTIL" ] && [ -x "$CACHE/nrfutil" ]; then
+if [ -z "$NRFUTIL" ] && _runs "$CACHE/nrfutil"; then
   NRFUTIL="$CACHE/nrfutil"
+fi
+if [ -z "$NRFUTIL" ] && command -v nrfutil >/dev/null 2>&1; then
+  if _runs "$(command -v nrfutil)"; then
+    NRFUTIL="$(command -v nrfutil)"
+  else
+    echo "    (ignoring $(command -v nrfutil): it does not run on this machine)"
+  fi
 fi
 if [ -z "$NRFUTIL" ]; then
   TRIPLE="$(target_triple)"

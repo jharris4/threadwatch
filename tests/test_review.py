@@ -655,6 +655,13 @@ class DayViewTest(unittest.TestCase):
         sto = storage(self.cfg)
         self.assertEqual((sto["ring_files"], sto["ring_span"], sto["ring_bytes"], sto["bytes_per_hour"]),
                          (2, ("20260903-08", "20260903-09"), 8192, 4096))
+        # A second radio's series: the same two hours, twice the bytes per hour.
+        (self.cfg.ring_dir / "threadwatch-20260903-09-annex.pcap").write_bytes(b"y" * 4096)
+        sto = storage(self.cfg)
+        self.assertEqual((sto["ring_files"], sto["ring_span"], sto["bytes_per_hour"]),
+                         (2, ("20260903-08", "20260903-09"), 6144))
+        (self.cfg.ring_dir / "threadwatch-20260903-09-annex.pcap").unlink()
+        sto = storage(self.cfg)
         self.assertEqual(sto["snapshots_bytes"], 3072 + 14)   # notes.txt is disk usage too
         self.assertGreater(sto["disk_free"], 0)
         self.assertEqual((sto["ring_bound_bytes"], sto["ring_needs_bytes"]),

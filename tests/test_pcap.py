@@ -421,7 +421,8 @@ class RingHourNamingTest(unittest.TestCase):
     def test_two_hours_of_one_day_become_two_files_device_can_window(self):
         import time
 
-        from threadwatch.device import RING_NAME, select_recent
+        from threadwatch.device import select_recent
+        from threadwatch.ring import parse_ring_name
         with tempfile.TemporaryDirectory() as d:
             ring = RingWriter(Path(d), keep_hours=10, dlt=DLT_NOFCS)
             for stamp in ("2026-09-04 08:30:00", "2026-09-04 09:10:00"):
@@ -430,7 +431,7 @@ class RingHourNamingTest(unittest.TestCase):
             names = sorted(p.name for p in Path(d).glob("*.pcap"))
             self.assertEqual(names, ["threadwatch-20260904-08.pcap", "threadwatch-20260904-09.pcap"])
             for name in names:
-                time.strptime(name, RING_NAME)       # the name `device` has to parse
+                self.assertIsNotNone(parse_ring_name(name))     # the name `device` has to parse
             now = time.mktime(time.strptime("2026-09-04 09:40:00", "%Y-%m-%d %H:%M:%S"))
             recent = select_recent(sorted(Path(d).glob("*.pcap")), 0.5, now)
             self.assertEqual([p.name for p in recent], ["threadwatch-20260904-09.pcap"])

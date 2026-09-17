@@ -217,9 +217,12 @@ def write_manifest(cfg, dest: Path, label: str, now: float, trigger: str | None,
                    provenance: dict | None = None) -> dict:
     """manifest.json: what the bundle holds and the recorder that made it.
     Written last, so a bundle without one was cut short."""
+    from .ring import parse_ring_name
     files = list_files(dest)
     pcaps = sorted(n for n in files if n.endswith(".pcap"))
-    hours = sorted(n[12:23] for n in pcaps if n.startswith("threadwatch-") and len(n) == 28)
+    parsed = [p for n in pcaps if (p := parse_ring_name(n))]
+    hours = sorted({hour for hour, _label in parsed})
+    radios = sorted({label for _hour, label in parsed if label})
     manifest = {
         "format": 1,
         "threadwatch": __version__,
@@ -233,9 +236,14 @@ def write_manifest(cfg, dest: Path, label: str, now: float, trigger: str | None,
         "channel": provenance["channel"] if provenance else cfg.channel,
         "pan_id": (None if (pan := provenance["pan_id"] if provenance else cfg.pan_id) is None
                    else f"0x{pan:04x}"),
-        "capture_files": "one pcap per local hour, named threadwatch-YYYYMMDD-HH.pcap; "
-                         "the newest was still being written",
+        "capture_files": "one pcap per local hour, named threadwatch-YYYYMMDD-HH.pcap, and one more per hour "
+                         "per further radio, threadwatch-YYYYMMDD-HH-<label>.pcap; the newest was still "
+                         "being written",
         "ring_files": len(pcaps),
+        "ring_hours": len(hours),
+        # The radios beyond the primary whose series are here; a
+        # single-dongle ring lists none.
+        "radios": radios,
         "span": [hours[0], hours[-1]] if hours else None,
         "inventory": "devices.json" if "devices.json" in files else None,
         "config": "config.toml" if "config.toml" in files else None,

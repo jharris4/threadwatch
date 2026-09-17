@@ -1,5 +1,6 @@
 """`threadwatch device`: which ring files a time window selects."""
 
+import struct
 import sys
 import time
 import unittest
@@ -401,6 +402,24 @@ class RunDeviceRingTest(unittest.TestCase):
     @staticmethod
     def _frames_in_table(text):
         return sum(int(row[2]) for row in RunDeviceTest._rows(None, text))
+
+    def test_two_radios_series_are_one_story_with_each_radios_hearing(self):
+        from threadwatch.pcap import DLT_TAP, Frame, PcapWriter
+        frames = self._frames(1, 5)
+        self._ring_file(1, frames)                      # the primary: no RSSI in this fixture's DLT
+        annex = self.cfg.ring_dir / f"threadwatch-{self._hour(1)}-annex.pcap"
+        with open(annex, "wb") as fh:
+            w = PcapWriter(fh, DLT_TAP)
+            for ts, psdu in frames[:4]:                 # the annex missed the last one, hears at -70
+                raw = (struct.pack("<HH", 0, 28) + struct.pack("<HHf", 1, 4, -70.0)
+                       + struct.pack("<HHHH", 3, 3, 25, 0) + struct.pack("<HHI", 10, 1, 200) + psdu)
+                w.write(Frame(ts=ts + 20e-6, raw=raw, psdu=psdu, rssi=-70.0, channel=25, lqi=200))
+        rc, out, _err = self._run()
+        self.assertEqual(rc, 0)
+        self.assertIn("analyzed 1 hour(s) in 2 ring file(s) from 2 radios", out)
+        self.assertEqual(self._frames_in_table(out), 5)                  # each frame once
+        self.assertIn("rssi anne", out)                                  # the annex's own column
+        self.assertIn("heard by: annex 80% (4 frames, -70 dBm median)", out)
 
     def test_a_snapshot_is_read_with_its_own_names_and_history(self):
         # A snapshot saved months ago, read on a box whose inventory has

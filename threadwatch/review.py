@@ -929,7 +929,8 @@ def _dir_size(path: Path) -> int:
 
 def _span(pcaps: list[str]) -> tuple[str, str] | None:
     """First and last hour covered by ring-named pcaps, as YYYYMMDD-HH."""
-    hours = sorted(n[12:23] for n in pcaps if n.startswith("threadwatch-") and n.endswith(".pcap") and len(n) == 28)
+    from .ring import parse_ring_name
+    hours = sorted({parsed[0] for n in pcaps if (parsed := parse_ring_name(n))})
     return (hours[0], hours[-1]) if hours else None
 
 
@@ -953,8 +954,13 @@ def storage(cfg) -> dict:
     HA add-on logs when [ha_logs] is on, [ha_logs] max_hours of each
     add-on at HA_LOG_GZ_BYTES_PER_HOUR."""
     import shutil
-    ring = sorted(p.name for p in cfg.ring_dir.glob("threadwatch-*.pcap")) if cfg.ring_dir.exists() else []
-    out = {"ring_files": len(ring), "ring_span": _span(ring), "ring_bytes": _dir_size(cfg.ring_dir),
+
+    from .ring import ring_hours
+    # Counted in hours: with several radios an hour is a file per radio,
+    # and the rate per hour is what the ring grows by, all series together.
+    ring = [p.name for _hour, files in ring_hours(cfg.ring_dir) for p in files.values()]
+    hours = len(ring_hours(cfg.ring_dir))
+    out = {"ring_files": hours, "ring_span": _span(ring), "ring_bytes": _dir_size(cfg.ring_dir),
            "keep_hours": cfg.keep_hours,
            "snapshots_bytes": _dir_size(cfg.snapshots_dir) if cfg.snapshots_dir.exists() else 0,
            "events_bytes": _dir_size(cfg.events_dir) if cfg.events_dir.exists() else 0}
@@ -963,8 +969,8 @@ def storage(cfg) -> dict:
         out.update({"disk_total": usage.total, "disk_free": usage.free})
     except OSError:
         out.update({"disk_total": None, "disk_free": None})
-    if ring and len(ring) > 1:
-        out["bytes_per_hour"] = out["ring_bytes"] // len(ring)
+    if hours > 1:
+        out["bytes_per_hour"] = out["ring_bytes"] // hours
     per_hour = out.get("bytes_per_hour") or DEFAULT_BYTES_PER_HOUR
     bound = cfg.keep_hours * per_hour
     if cfg.keep_bytes:

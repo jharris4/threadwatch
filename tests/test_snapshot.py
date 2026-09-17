@@ -253,6 +253,16 @@ class SnapshotTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_the_manifest_counts_hours_and_names_the_further_radios(self):
+        from threadwatch.snapshot import write_manifest
+        (self.cfg.ring_dir / "threadwatch-20260903-02-annex.pcap").write_bytes(b"x" * 100)
+        dest = self.cfg.snapshots_dir / "20260903T100000_two"
+        shutil.copytree(self.cfg.ring_dir, dest)
+        m = write_manifest(self.cfg, dest, "two", time.time(), None)
+        self.assertEqual((m["ring_files"], m["ring_hours"], m["radios"], m["span"]),
+                         (4, 3, ["annex"], ["20260903-00", "20260903-02"]))
+        self.assertIn("threadwatch-YYYYMMDD-HH-<label>.pcap", m["capture_files"])
+
     def test_a_file_pruned_mid_copy_is_skipped_not_fatal(self):
         real = shutil.copy2
 

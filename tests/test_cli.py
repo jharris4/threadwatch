@@ -871,6 +871,27 @@ class ReplayTest(CliCase):
         self.assertEqual(code, f"threadwatch replay: no pcap files in {self.d}")
         self.assertEqual(self.run_cli("replay")[0], 2)                               # nothing named: usage error
 
+    def test_replay_reads_an_hour_recorded_by_two_radios_once(self):
+        # The annex's series holds its copies of the same frames, its clock
+        # a few microseconds off as the aligned stamps on disk are, and one
+        # frame the primary missed: the run is judged over the merged
+        # stream, each frame once, and names every file it read.
+        from threadwatch.pcap import DLT_NOFCS
+        self._named_dev()
+        (self.d / "credentials.toml").write_text('[credentials]\nnetwork_key = "00112233445566778899aabbccddeeff"\n')
+        ring = self.d / "ring"
+        ring.mkdir()
+        frames = [(self.T + 30 * i, self._psdu(self.OTHER, i)) for i in range(6)]
+        a = self._write_pcap("ring/threadwatch-20260903-08.pcap", frames, DLT_NOFCS)
+        copies = [(ts + 20e-6, psdu) for ts, psdu in frames[1:]] + [(self.T + 200, self._psdu(self.DEV, 9))]
+        b = self._write_pcap("ring/threadwatch-20260903-08-annex.pcap", copies, DLT_NOFCS)
+        code, out, _err = self.run_cli("replay", str(ring))
+        self.assertEqual(code, 0)
+        run = json.loads(out)
+        self.assertEqual((run["files"], run["frames"]), ([str(b), str(a)], 7))
+        self.assertEqual([e["addr"] for e in run["events"] if e["event"] == "device_first_seen"],
+                         [self.OTHER, self.DEV])
+
     def test_replay_reads_a_snapshot_with_the_inventory_saved_in_it(self):
         from threadwatch.pcap import DLT_NOFCS
         (self.d / "config.toml").write_text(f'[record]\ndata_dir = "{self.d / "data"}"\n'

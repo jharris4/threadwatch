@@ -1028,6 +1028,10 @@ def run_replay(cfg: Config, pcap_path: Path | list[Path]) -> None:
     order (a directory is every pcap in it), as one run: a silence or a
     storm that spans two hourly files is judged once, across the
     boundary, as the recorder judged it. Prints events + summary."""
+    from contextlib import ExitStack
+
+    from .merge import merge_readers
+    from .ring import group_files
     files = replay_files(pcap_path if isinstance(pcap_path, list) else [pcap_path])
     events = NullEventLog()
     decryptor = load_decryptor(cfg)
@@ -1042,11 +1046,14 @@ def run_replay(cfg: Config, pcap_path: Path | list[Path]) -> None:
     # then recovers, is only found by looking between the frames, not
     # once at the end.
     last_tick = 0.0
-    for path in files:
+    # An hour recorded by several radios is several files, read together:
+    # what the recorder judged once is judged once here too (merge.py).
+    for group in group_files(files):
         try:
-            with open(path, "rb") as fh:
-                reader = PcapStreamReader(fh)
-                for frame in reader:
+            with ExitStack() as stack:
+                readers = {label: PcapStreamReader(stack.enter_context(open(path, "rb")))
+                           for label, path in group.items()}
+                for frame in merge_readers(readers, primary=None if None in readers else next(iter(readers))):
                     if first is None:
                         first = frame.ts
                     last = frame.ts
@@ -1059,16 +1066,19 @@ def run_replay(cfg: Config, pcap_path: Path | list[Path]) -> None:
                         if periodic_due(last_tick, now):
                             pipe.periodic(now)
                         last_tick = now
-                if reader.skipped_bytes:
-                    print(f"[threadwatch] {path}: skipped {reader.skipped_bytes} bytes in {reader.gaps} "
-                          "place(s) that are not readable records", file=sys.stderr, flush=True)
-                if reader.tail_bytes:
-                    print(f"[threadwatch] {path}: the last {reader.tail_bytes} bytes hold no readable "
-                          "record and were not read", file=sys.stderr, flush=True)
+                for label, reader in readers.items():
+                    path = group[label]
+                    if reader.skipped_bytes:
+                        print(f"[threadwatch] {path}: skipped {reader.skipped_bytes} bytes in {reader.gaps} "
+                              "place(s) that are not readable records", file=sys.stderr, flush=True)
+                    if reader.tail_bytes:
+                        print(f"[threadwatch] {path}: the last {reader.tail_bytes} bytes hold no readable "
+                              "record and were not read", file=sys.stderr, flush=True)
         except (OSError, PcapFormatError) as exc:
             # A path that does not exist, cannot be read, or is not a pcap:
             # one line and exit 1 (as `device` does), not a traceback and not a
             # zero-frame JSON that reads as a quiet capture.
+            path = getattr(exc, "filename", None) or ", ".join(str(p) for p in group.values())
             raise SystemExit(f"threadwatch replay: could not read {path}: {exc}") from None
     if last:
         pipe.periodic(last)

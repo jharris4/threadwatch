@@ -15,9 +15,11 @@ from pathlib import Path
 
 from .config import Config
 from .events import NullEventLog
+from .merge import merge_readers
 from .pcap import PcapStreamReader, is_poll
 from .pipeline import Pipeline, load_decryptor
 from .review import coverage, devices_history, episode_blind_s, fmt_duration, fmt_episode
+from .ring import HOUR_FORMAT, group_files, parse_ring_name
 from .snapshot import saved_at
 
 HISTORY_ROWS = 20
@@ -33,7 +35,17 @@ def resolve_target(cfg: Config, target: str) -> tuple[list[str], str]:
         raise SystemExit(str(exc)) from None
 
 
-RING_NAME = "threadwatch-%Y%m%d-%H.pcap"
+def _hour_start(path: Path) -> float | None:
+    """When a ring-named file's local hour starts (any radio's series),
+    None for a name that is not a ring file's."""
+    import time as _t
+    parsed = parse_ring_name(path.name)
+    if parsed is None:
+        return None
+    try:
+        return _t.mktime(_t.strptime(parsed[0], HOUR_FORMAT))
+    except ValueError:
+        return None
 
 
 def select_recent(files: list[Path], hours: float | None, now: float | None = None) -> list[Path]:
@@ -47,12 +59,8 @@ def select_recent(files: list[Path], hours: float | None, now: float | None = No
     cutoff = (now or _t.time()) - hours * 3600
     keep = []
     for path in files:
-        try:
-            start = _t.mktime(_t.strptime(path.name, RING_NAME))
-        except ValueError:
-            keep.append(path)
-            continue
-        if start + 3600 > cutoff:
+        start = _hour_start(path)
+        if start is None or start + 3600 > cutoff:
             keep.append(path)
     return keep
 
@@ -64,13 +72,7 @@ def newest_hour_end(files: list[Path]) -> float | None:
     """When the newest ring-named file's hour ends: what "the last N
     hours" of a saved snapshot counts back from, since its files stop
     where the snapshot was taken, not now."""
-    import time as _t
-    ends = []
-    for path in files:
-        try:
-            ends.append(_t.mktime(_t.strptime(path.name, RING_NAME)) + 3600)
-        except ValueError:
-            continue
+    ends = [start + 3600 for path in files if (start := _hour_start(path)) is not None]
     return max(ends) if ends else None
 
 
@@ -157,7 +159,8 @@ def run_device(cfg: Config, target: str, pcap_file: Path | None = None,
 
     from collections import defaultdict
     per_hour = defaultdict(lambda: {"frames": 0, "polls": 0, "rssi": [], "acked": 0,
-                                 "tx": 0, "mle": {}})
+                                 "tx": 0, "mle": {}, "rssi_by": defaultdict(list)})
+    heard_by: dict = defaultdict(int)     # frames of this device per named radio
     last_ts = None
     first_ts = None
     gaps = []
@@ -200,11 +203,23 @@ def run_device(cfg: Config, target: str, pcap_file: Path | None = None,
     refused = 0                # frames bearing the address that did not vouch for it
     skipped_bytes = skipped_files = tail_bytes = 0
     unreadable: list[tuple[Path, Exception]] = []
-    for path in files:
-        try:
-            with open(path, "rb") as fh:
-                reader = PcapStreamReader(fh)
-                for f in reader:
+    from contextlib import ExitStack
+    # An hour recorded by several radios is several files read together,
+    # merged as the recorder merged them (merge.py); one radio's file
+    # unreadable costs that radio's copies of the hour, not the hour.
+    for group in group_files(files):
+        with ExitStack() as stack:
+            readers = {}
+            for label, path in group.items():
+                try:
+                    readers[label] = PcapStreamReader(stack.enter_context(open(path, "rb")))
+                except Exception as exc:
+                    print(f"(skipping {path}: {exc})", file=sys.stderr, flush=True)
+                    unreadable.append((path, exc))
+            if not readers:
+                continue
+            try:
+                for f in merge_readers(readers, primary=None if None in readers else next(iter(readers))):
                     # Every frame goes through the pipeline, ours or not:
                     # another device's MLE advertisement carries the key
                     # sequence the target's short-source frames are
@@ -238,6 +253,11 @@ def run_device(cfg: Config, target: str, pcap_file: Path | None = None,
                         h["polls"] += 1
                     if f.rssi is not None:
                         h["rssi"].append(f.rssi)
+                    for label, copy in (f.heard or {}).items():
+                        if label is not None:
+                            heard_by[label] += 1
+                            if copy.rssi is not None:
+                                h["rssi_by"][label].append(copy.rssi)
                     if vouched:
                         if first_ts is None:
                             first_ts = f.ts
@@ -257,19 +277,22 @@ def run_device(cfg: Config, target: str, pcap_file: Path | None = None,
                         refused += 1
                     if f.ftype == 1:
                         inspect(f, h)
-        except Exception as exc:
-            # A file that cannot be opened or is not a pcap: said on stderr,
-            # not woven into the report. With none readable there is no
-            # report to give: "no frames from this device" would be a
-            # verdict on zero packets, delivered with exit 0 to whatever
-            # script asked, in the middle of the outage it was asked about.
-            print(f"(skipping {path}: {exc})", file=sys.stderr, flush=True)
-            unreadable.append((path, exc))
-        else:
-            if reader.skipped_bytes:
-                skipped_bytes += reader.skipped_bytes
-                skipped_files += 1
-            tail_bytes += reader.tail_bytes
+            except Exception as exc:
+                # A file that is not a pcap past its header, or damaged in
+                # a way the reader cannot step over: said on stderr, not
+                # woven into the report. With none readable there is no
+                # report to give: "no frames from this device" would be a
+                # verdict on zero packets, delivered with exit 0 to whatever
+                # script asked, in the middle of the outage it was asked about.
+                for path in group.values():
+                    print(f"(skipping {path}: {exc})", file=sys.stderr, flush=True)
+                    unreadable.append((path, exc))
+            else:
+                for reader in readers.values():
+                    if reader.skipped_bytes:
+                        skipped_bytes += reader.skipped_bytes
+                        skipped_files += 1
+                    tail_bytes += reader.tail_bytes
     if unreadable and len(unreadable) == len(files):
         path, exc = unreadable[0]
         raise SystemExit(f"threadwatch device: could not read {path}: {exc}" if len(files) == 1 else
@@ -294,7 +317,12 @@ def run_device(cfg: Config, target: str, pcap_file: Path | None = None,
     if not pcap_file:
         window = f"last {hours:g} h: " if hours is not None else ""
         source = f"snapshot {snapshot_dir.name}: " if snapshot_dir is not None else ""
-        print(f"analyzed {source}{window}{len(files)} ring file(s), {files[0].name[12:23]} to {files[-1].name[12:23]}")
+        hours_on_disk = sorted({parsed[0] for f in files if (parsed := parse_ring_name(f.name))})
+        radios = sorted({parsed[1] for f in files if (parsed := parse_ring_name(f.name)) and parsed[1]})
+        count = (f"{len(hours_on_disk)} hour(s) in {len(files)} ring file(s) from {len(radios) + 1} radios"
+                 if radios else f"{len(files)} ring file(s)")
+        span = f", {hours_on_disk[0]} to {hours_on_disk[-1]}" if hours_on_disk else ""
+        print(f"analyzed {source}{window}{count}{span}")
     if not per_hour:
         print("No frames from this device in the analyzed window.")
         print("Interpretation: either out of range of the dongle, silent (dead "
@@ -313,15 +341,33 @@ def run_device(cfg: Config, target: str, pcap_file: Path | None = None,
     years = {k[0] for k in per_hour}
     labels = {k: (f"{k[0]}-" if len(years) > 1 else "") + f"{k[1]:02d}-{k[2]:02d} {k[3]:02d}h" for k in per_hour}
     width = max([12, *(len(v) for v in labels.values())])
-    print(f"\n{'hour':{width}s} {'frames':>6s} {'polls':>6s} {'tx':>5s} {'acked':>6s} {'rssi med':>9s}  mle")
+    # With named radios, the median each radio heard beside the best ear's.
+    radio_labels = sorted(heard_by)
+    radio_heads = "".join(f" {('rssi ' + lab)[:9]:>9s}" for lab in radio_labels)
+    print(f"\n{'hour':{width}s} {'frames':>6s} {'polls':>6s} {'tx':>5s} {'acked':>6s} {'rssi med':>9s}"
+          f"{radio_heads}  mle")
+
+    def median(values):
+        ordered = sorted(values)
+        return f"{ordered[len(ordered) // 2]:.0f}" if ordered else "-"
+
     for hkey in sorted(per_hour):
         h = per_hour[hkey]
         if h["frames"] == 0 and h["acked"] == 0:
             continue
-        rssi = sorted(h["rssi"])
-        med = f"{rssi[len(rssi)//2]:.0f}" if rssi else "-"
+        med = median(h["rssi"])
+        by_radio = "".join(f" {median(h['rssi_by'].get(lab, [])):>9s}" for lab in radio_labels)
         mle = ", ".join(f"{k}x{v}" for k, v in h["mle"].items()) if h["mle"] else ""
-        print(f"{labels[hkey]:{width}s} {h['frames']:6d} {h['polls']:6d} {h['tx']:5d} {h['acked']:6d} {med:>9s}  {mle}")
+        print(f"{labels[hkey]:{width}s} {h['frames']:6d} {h['polls']:6d} {h['tx']:5d} {h['acked']:6d} {med:>9s}"
+              f"{by_radio}  {mle}")
+    if radio_labels:
+        total_frames = sum(h["frames"] for h in per_hour.values())
+        parts = []
+        for lab in radio_labels:
+            levels = [v for h in per_hour.values() for v in h["rssi_by"].get(lab, [])]
+            parts.append(f"{lab} {100 * heard_by[lab] / total_frames:.0f}% ({heard_by[lab]:,} frames"
+                         + (f", {median(levels)} dBm median)" if levels else ")"))
+        print("\nheard by: " + ", ".join(parts))
     # The pipeline's own per-device figures, over the same frames. The
     # hour table above counts an ACK on a sequence match alone; the
     # pipeline additionally requires the ACK to answer the transmission

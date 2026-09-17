@@ -737,3 +737,40 @@ class CheckBorderRoutersTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RadiosDoctorTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.d = Path(self.tmp.name)
+        self.cfg = Config(data_dir=self.d / "data", config_dir=self.d)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_each_configured_radio_gets_a_line_and_a_stranger_a_warning(self):
+        from threadwatch.config import RadioConfig
+        self.cfg.radios = [RadioConfig("hub", "AA", "by the router"), RadioConfig("annex", "BB")]
+        found = [("/dev/ttyACM0", "BB"), ("/dev/ttyACM1", "CC"), ("/dev/ttyACM2", None)]
+        checks = doctor.check_dongle(self.cfg, find_all=lambda: found)
+        self.assertEqual([c[0] for c in checks], ["FAIL", "ok", "warn", "warn"])
+        self.assertIn("radio hub: no sniffer with serial AA is plugged in (by the router)", checks[0][2])
+        self.assertEqual(checks[1][2], "radio annex: sniffer BB at /dev/ttyACM0")
+        self.assertIn("serial CC at /dev/ttyACM1 is not in [record] radios", checks[2][2])
+        self.assertIn("/dev/ttyACM2 reports no USB serial", checks[3][2])
+        # The finder is never asked when there is no table (test_dongle_uses_the_finder).
+        both = doctor.check_dongle(self.cfg, find_all=lambda: [("/dev/ttyACM0", "AA"), ("/dev/ttyACM1", "BB")])
+        self.assertEqual([c[0] for c in both], ["ok", "ok"])
+
+    def test_the_ring_is_counted_in_hours_and_a_short_series_is_named(self):
+        now = time.time()
+        self.cfg.ring_dir.mkdir(parents=True)
+        for name in ("threadwatch-20260917-13.pcap", "threadwatch-20260917-14.pcap",
+                     "threadwatch-20260917-14-annex.pcap"):
+            f = self.cfg.ring_dir / name
+            f.write_bytes(b"x")
+            os.utime(f, (now - 60, now - 60))
+        level, _, text = doctor.check_ring(self.cfg, now)[0]
+        self.assertEqual(level, "ok")
+        self.assertIn("2 of 168 hours (2 radios)", text)
+        self.assertIn("radio annex has 1 of them", text)

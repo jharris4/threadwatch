@@ -847,3 +847,77 @@ class RunRecordTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FindSniffersTest(unittest.TestCase):
+    """Dongles by serial, one entry each, and no guessing between two."""
+
+    @staticmethod
+    def _ports(*specs):
+        ports = []
+        for device, serial in specs:
+            ports.append(SimpleNamespace(device=device, serial_number=serial, vid=0x1915, pid=0x154B))
+        ports.append(SimpleNamespace(device="/dev/ttyUSB0", serial_number="FTDI1", vid=0x0403, pid=0x6001))
+        return lambda: ports
+
+    def test_every_sniffer_is_listed_once_by_port_with_its_serial_upper_cased(self):
+        from threadwatch.record import find_sniffers
+        found = find_sniffers(self._ports(("/dev/ttyACM1", "fedcba9876543210"), ("/dev/ttyACM0", "0123456789ABCDEF")))
+        self.assertEqual(found, [("/dev/ttyACM0", "0123456789ABCDEF"), ("/dev/ttyACM1", "FEDCBA9876543210")])
+        # macOS: the same dongle as tty. and cu.; cu. is the one kept.
+        found = find_sniffers(self._ports(("/dev/tty.usbmodem0123456789ABCDEF1", "0123456789ABCDEF"),
+                                          ("/dev/cu.usbmodem0123456789ABCDEF1", "0123456789ABCDEF")))
+        self.assertEqual(found, [("/dev/cu.usbmodem0123456789ABCDEF1", "0123456789ABCDEF")])
+        # ...and still one dongle when the platform reports no serial at all.
+        found = find_sniffers(self._ports(("/dev/tty.usbmodem1", None), ("/dev/cu.usbmodem1", None)))
+        self.assertEqual(found, [("/dev/cu.usbmodem1", None)])
+        self.assertEqual(find_sniffers(self._ports()), [])
+
+    def test_one_dongle_is_the_port_and_two_without_a_table_are_refused_by_name(self):
+        from threadwatch.record import find_sniffer_port
+        self.assertEqual(find_sniffer_port(self._ports(("/dev/ttyACM0", "AA"))), "/dev/ttyACM0")
+        with self.assertRaises(SystemExit) as cm:
+            find_sniffer_port(self._ports())
+        self.assertIn("No nRF 802.15.4 sniffer found", str(cm.exception))
+        with self.assertRaises(SystemExit) as cm:
+            find_sniffer_port(self._ports(("/dev/ttyACM0", "AA"), ("/dev/ttyACM1", "BB")))
+        self.assertIn("2 nRF 802.15.4 sniffers found (AA at /dev/ttyACM0, BB at /dev/ttyACM1)", str(cm.exception))
+        self.assertIn("[record] radios", str(cm.exception))
+
+    def test_a_configured_radio_is_found_by_serial_wherever_it_enumerated(self):
+        from threadwatch.record import resolve_radio_port
+        ports = self._ports(("/dev/ttyACM3", "0123456789ABCDEF"), ("/dev/ttyACM0", "BB"))
+        self.assertEqual(resolve_radio_port("0123456789abcdef", ports), "/dev/ttyACM3")
+        self.assertIsNone(resolve_radio_port("CC", ports))
+
+
+class RingSeriesTest(unittest.TestCase):
+    """One RingWriter per radio, each pruning only its own hours."""
+
+    def test_a_labelled_writer_names_its_files_and_leaves_the_other_series_alone(self):
+        from threadwatch.pcap import Frame
+        from threadwatch.record import RingWriter
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            for h in ("00", "01", "02", "03"):
+                (d / f"threadwatch-20260903-{h}.pcap").write_bytes(b"x" * 10)
+            annex = RingWriter(d, keep_hours=2, dlt=230, label="annex")
+            for h in ("00", "01", "02"):
+                (d / f"threadwatch-20260903-{h}-annex.pcap").write_bytes(b"x" * 10)
+            ts = time.mktime(time.strptime("20260903-03", "%Y%m%d-%H"))
+            annex.write(Frame(ts=ts, raw=b"\x01\x02\x03", psdu=b"\x01\x02\x03", rssi=None, channel=None, lqi=None))
+            annex.close()
+            self.assertEqual(annex.current_path.name, "threadwatch-20260903-03-annex.pcap")
+            names = sorted(p.name for p in d.glob("*.pcap"))
+            # keep_hours=2 pruned the annex series to its two newest hours...
+            self.assertEqual([n for n in names if n.endswith("-annex.pcap")],
+                             ["threadwatch-20260903-02-annex.pcap", "threadwatch-20260903-03-annex.pcap"])
+            # ...and did not count or touch the primary's four.
+            self.assertEqual([n for n in names if not n.endswith("-annex.pcap")],
+                             [f"threadwatch-20260903-{h}.pcap" for h in ("00", "01", "02", "03")])
+            primary = RingWriter(d, keep_hours=3, dlt=230)
+            primary._prune()
+            self.assertEqual(sorted(p.name for p in d.glob("threadwatch-*-annex.pcap")),
+                             ["threadwatch-20260903-02-annex.pcap", "threadwatch-20260903-03-annex.pcap"])
+            self.assertEqual(sorted(p.name for p in d.glob("threadwatch-????????-??.pcap")),
+                             [f"threadwatch-20260903-{h}.pcap" for h in ("01", "02", "03")])

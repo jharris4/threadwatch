@@ -17,26 +17,62 @@ from .config import Config, running_commit
 from .events import EventLog, NullEventLog
 from .pcap import Frame, PcapFormatError, PcapStreamReader, PcapWriter, scan_file
 from .pipeline import Pipeline, load_decryptor
+from .ring import ring_files, ring_name
 
 
-def find_sniffer_port() -> str:
-    """Locate the nRF 802.15.4 sniffer dongle by USB VID/PID."""
-    from serial.tools import list_ports
+def find_sniffers(comports=None) -> list[tuple[str, str | None]]:
+    """Every nRF 802.15.4 sniffer dongle enumerated, as (port, serial),
+    one entry per dongle, sorted by port. The serial is the USB one udev
+    prints as ID_SERIAL_SHORT and /dev/serial/by-id embeds; it follows
+    the dongle across ports and re-enumerations, which the port name does
+    not. macOS lists each dongle twice, as /dev/tty.* and /dev/cu.*; the
+    cu. one is kept, as it always was."""
+    if comports is None:
+        from serial.tools import list_ports
+        comports = list_ports.comports
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "vendor"))
     from nrf802154_sniffer import Nrf802154Sniffer
-    candidates = []
-    for port in list_ports.comports():
-        if port.vid == Nrf802154Sniffer.NORDICSEMI_VID and port.pid == Nrf802154Sniffer.SNIFFER_802154_PID:
-            candidates.append(port.device)
-    if not candidates:
+    by_dongle: dict[str, tuple[str, str | None]] = {}
+    for port in comports():
+        if port.vid != Nrf802154Sniffer.NORDICSEMI_VID or port.pid != Nrf802154Sniffer.SNIFFER_802154_PID:
+            continue
+        serial = port.serial_number.upper() if isinstance(port.serial_number, str) and port.serial_number else None
+        device = port.device
+        # One dongle, two names on macOS: keyed so they collapse, cu. winning.
+        key = serial or device.replace("/tty.", "/cu.")
+        if key not in by_dongle or "/cu." in device:
+            by_dongle[key] = (device, serial)
+    return sorted(by_dongle.values())
+
+
+def find_sniffer_port(comports=None) -> str:
+    """The one sniffer dongle's port, for a recorder with no [record]
+    radios table. Two dongles and no table is refused rather than guessed:
+    the order pyserial lists them in is not stable across restarts, and a
+    recorder that came back on the other dongle would have moved its
+    microphone without a word in the log."""
+    found = find_sniffers(comports)
+    if not found:
         raise SystemExit(
             "No nRF 802.15.4 sniffer found. Is the dongle plugged in and flashed "
             "with the sniffer firmware? (see SETUP.md; flash with bin/flash-dongle.sh)"
         )
-    for c in candidates:
-        if "/cu." in c:
-            return c
-    return candidates[0]
+    if len(found) > 1:
+        listing = ", ".join(f"{serial or 'no serial'} at {port}" for port, serial in found)
+        raise SystemExit(
+            f"{len(found)} nRF 802.15.4 sniffers found ({listing}): name them in [record] radios in "
+            "config.toml (one [[record.radios]] table each, by serial), or pin one with serial_port"
+        )
+    return found[0][0]
+
+
+def resolve_radio_port(serial: str, comports=None) -> str | None:
+    """The port a configured radio is on now, by its serial; None when no
+    dongle with that serial is enumerated."""
+    for port, found in find_sniffers(comports):
+        if found == serial.upper():
+            return port
+    return None
 
 
 class RingWriter:
@@ -54,7 +90,8 @@ class RingWriter:
 
     PRUNE_STEP = 4 * 1024 * 1024
 
-    def __init__(self, ring_dir: Path, keep_hours: int, dlt: int, keep_bytes: int | None = None):
+    def __init__(self, ring_dir: Path, keep_hours: int, dlt: int, keep_bytes: int | None = None,
+                 label: str | None = None):
         if keep_bytes is not None and keep_bytes <= 0:
             # _prune would otherwise delete every file but the current one
             # at every rotation and call it a size cap.
@@ -67,6 +104,10 @@ class RingWriter:
         self._prune_step = max(65536, min(self.PRUNE_STEP, keep_bytes // 32)) if keep_bytes else None
         self._pruned_at = 0
         self.dlt = dlt
+        # Which radio's series this is: None for the primary (the plain
+        # threadwatch-YYYYMMDD-HH.pcap names), else the label suffix. Each
+        # series prunes only its own files (ring.ring_files).
+        self.label = label
         self.current_hour = None
         self.fh = None
         self.writer = None
@@ -94,7 +135,7 @@ class RingWriter:
         if self.fh:
             self.fh.close()
         self.current_hour = hour
-        self.current_path = self.ring_dir / f"threadwatch-{hour}.pcap"
+        self.current_path = self.ring_dir / ring_name(hour, self.label)
         # Resuming an hour file after a restart: a previous run killed
         # mid-write leaves a partial record at the tail, and appending after
         # it would make every later frame unreadable. Drop the fragment.
@@ -151,7 +192,7 @@ class RingWriter:
     def _prune(self) -> None:
         # The file being written is never a candidate: it does not always sort
         # last, since a clock step back names it before the ring's oldest.
-        files = sorted(self.ring_dir.glob("threadwatch-*.pcap"))
+        files = ring_files(self.ring_dir, self.label)
         current = self.current_path if self.current_path in files else None
         candidates = [f for f in files if f != current]
         drop = min(max(0, len(files) - self.keep_hours), len(candidates))

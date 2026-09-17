@@ -132,7 +132,12 @@ def check_credentials(cfg) -> list[Check]:
     return out
 
 
-def check_dongle(cfg, find: Callable[[], str] | None = None) -> list[Check]:
+def check_dongle(cfg, find: Callable[[], str] | None = None,
+                 find_all: Callable[[], list[tuple[str, str | None]]] | None = None) -> list[Check]:
+    """The dongle, or with [record] radios every dongle by serial: one line
+    per configured radio (found, at which port, or missing), and a warning
+    for any sniffer plugged in that the table does not name, with its
+    serial ready to paste in."""
     if cfg.serial_port:
         if Path(cfg.serial_port).exists():
             return [(OK, "dongle", f"configured port {cfg.serial_port} exists")]
@@ -141,18 +146,47 @@ def check_dongle(cfg, find: Callable[[], str] | None = None) -> list[Check]:
         import serial  # noqa: F401
     except ImportError:
         return [(FAIL, "dongle", "pyserial is not installed (pip install -r requirements.txt)")]
+    if not cfg.radios:
+        try:
+            port = (find or _find_port)()
+        except SystemExit as exc:
+            return [(FAIL, "dongle", str(exc).splitlines()[0])]
+        except Exception as exc:
+            return [(FAIL, "dongle", f"could not enumerate serial ports: {exc}")]
+        return [(OK, "dongle", f"nRF 802.15.4 sniffer at {port}")]
     try:
-        port = (find or _find_port)()
-    except SystemExit as exc:
-        return [(FAIL, "dongle", str(exc).splitlines()[0])]
+        found = (find_all or _find_all)()
     except Exception as exc:
         return [(FAIL, "dongle", f"could not enumerate serial ports: {exc}")]
-    return [(OK, "dongle", f"nRF 802.15.4 sniffer at {port}")]
+    out: list[Check] = []
+    by_serial = {usb_serial: port for port, usb_serial in found if usb_serial}
+    for radio in cfg.radios:
+        where = f" ({radio.placement})" if radio.placement else ""
+        port = by_serial.get(radio.serial)
+        if port:
+            out.append((OK, "dongle", f"radio {radio.label}: sniffer {radio.serial} at {port}{where}"))
+        else:
+            out.append((FAIL, "dongle", f"radio {radio.label}: no sniffer with serial {radio.serial} is plugged "
+                                        f"in{where}; the recorder runs without it and keeps looking"))
+    configured = {r.serial for r in cfg.radios}
+    for port, usb_serial in found:
+        if usb_serial is None:
+            out.append((WARN, "dongle", f"a sniffer at {port} reports no USB serial: it cannot be named in "
+                                        "[record] radios (reflash it, SETUP.md)"))
+        elif usb_serial not in configured:
+            out.append((WARN, "dongle", f"a sniffer with serial {usb_serial} at {port} is not in [record] radios: "
+                                        "add a [[record.radios]] table for it, or unplug it"))
+    return out
 
 
 def _find_port() -> str:
     from .record import find_sniffer_port
     return find_sniffer_port()
+
+
+def _find_all() -> list[tuple[str, str | None]]:
+    from .record import find_sniffers
+    return find_sniffers()
 
 
 def check_daemon(cfg, now: float | None = None) -> list[Check]:
@@ -177,13 +211,25 @@ def check_daemon(cfg, now: float | None = None) -> list[Check]:
 
 
 def check_ring(cfg, now: float | None = None) -> list[Check]:
+    """The ring by hours, not files: with several radios an hour is one
+    file per radio, and a radio that wrote fewer hours than the others was
+    down for the difference."""
+    from .ring import ring_hours
     now = now or time.time()
-    files = sorted(cfg.ring_dir.glob("threadwatch-*.pcap")) if cfg.ring_dir.exists() else []
-    if not files:
+    hours = ring_hours(cfg.ring_dir)
+    if not hours:
         return [(WARN, "ring", "no ring files yet")]
-    newest = files[-1]
+    _hour, newest_files = hours[-1]
+    newest = max(newest_files.values(), key=lambda p: p.stat().st_mtime)
     age = now - newest.stat().st_mtime
-    text = f"{len(files)} of {cfg.keep_hours} hourly files, newest {newest.name} written {age / 60:.0f} min ago"
+    text = f"{len(hours)} of {cfg.keep_hours} hourly files, newest {newest.name} written {age / 60:.0f} min ago"
+    labels = {label for _, files in hours for label in files}
+    if len(labels) > 1:
+        counts = {label: sum(1 for _, files in hours if label in files) for label in labels}
+        short = [f"radio {label} has {n} of them" for label, n in sorted(counts.items(), key=lambda kv: kv[0] or "")
+                 if n < len(hours)]
+        text = f"{len(hours)} of {cfg.keep_hours} hours ({len(labels)} radios), newest {newest.name} written " \
+               f"{age / 60:.0f} min ago" + (f"; {', '.join(short)}" if short else "")
     if age > 2 * 3600:
         return [(FAIL, "ring", text + ": the ring stopped growing")]
     return [(OK, "ring", text)]

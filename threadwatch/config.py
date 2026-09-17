@@ -88,6 +88,17 @@ def running_commit() -> str | None:
 
 
 @dataclass
+class RadioConfig:
+    """One entry of [record] radios: a dongle named by its USB serial.
+    label goes into file names, events and the pages; placement is free
+    text for the pages ("upstairs landing"). The first entry is the
+    primary: its ring files keep the unlabelled names."""
+    label: str
+    serial: str
+    placement: str = ""
+
+
+@dataclass
 class Config:
     channel: int = 25
     # [network] pan_id: this network's PAN id. When set, it decides whose
@@ -96,6 +107,7 @@ class Config:
     # same channel can win (see Pipeline.dominant_pan).
     pan_id: int | None = None
     serial_port: str | None = None          # auto-detect when unset
+    radios: list[RadioConfig] = field(default_factory=list)   # [record] radios; empty = one dongle, found by id
     data_dir: Path = REPO_ROOT / "data"
     keep_hours: int = 168                      # ring: one hourly file each, a week of them
     keep_bytes: int | None = None           # ring: total size cap ([record] keep_gb), None = files only
@@ -287,7 +299,7 @@ class Config:
 SECTIONS: dict[str, frozenset[str] | None] = {
     "network": frozenset(("channel", "pan_id")),
     "record": frozenset(("serial_port", "data_dir", "keep_hours", "keep_gb",
-                         "snapshot_on_critical", "keep_snapshots")),
+                         "snapshot_on_critical", "keep_snapshots", "radios")),
     "devices": frozenset(("inventory",)),
     "visitors": frozenset(("file",)),
     "quiet": frozenset(("silence_s", "min_rssi_dbm")),
@@ -339,6 +351,48 @@ def _finite(section: str, key: str, value):
     return value
 
 
+_RADIO_KEYS = frozenset(("label", "serial", "placement"))
+_SERIAL_RE = re.compile(r"^[0-9A-Za-z]{1,64}$")
+
+
+def _radios(raw) -> list[RadioConfig]:
+    """[record] radios as written: an array of tables, each a dongle by USB
+    serial. Labels become file names and event fields, so they are held
+    to a short lower-case alphabet; serials are compared case-blind and
+    kept upper-case, as udev and /dev/serial/by-id print them. Nothing
+    here is optional once the table exists: a radio without a serial
+    would be "whichever dongle is left", which is the ambiguity the table
+    is there to remove."""
+    if raw is None:
+        return []
+    from .ring import LABEL_RE
+    if not isinstance(raw, list) or not all(isinstance(r, dict) for r in raw):
+        raise ValueError("[record] radios must be an array of tables ([[record.radios]] with label and serial); "
+                         "see config/config.example.toml")
+    out: list[RadioConfig] = []
+    for i, entry in enumerate(raw, 1):
+        for key in sorted(entry):
+            if key not in _RADIO_KEYS:
+                raise ValueError(f"unknown key {key!r} in [[record.radios]] entry {i} "
+                                 f"(a radio takes: {', '.join(sorted(_RADIO_KEYS))})")
+        label, serial, placement = entry.get("label"), entry.get("serial"), entry.get("placement", "")
+        if not isinstance(label, str) or not LABEL_RE.match(label):
+            raise ValueError(f"[[record.radios]] entry {i}: label must be 1-16 of a-z, 0-9 and _ (it names ring "
+                             f"files and events), not {label!r}")
+        if not isinstance(serial, str) or not _SERIAL_RE.match(serial):
+            raise ValueError(f"[[record.radios]] entry {i} ({label}): serial must be the dongle's USB serial as "
+                             f"'threadwatch doctor' or /dev/serial/by-id prints it, not {serial!r}")
+        if not isinstance(placement, str):
+            raise ValueError(f"[[record.radios]] entry {i} ({label}): placement must be text, not {placement!r}")
+        if any(r.label == label for r in out):
+            raise ValueError(f"[[record.radios]]: two radios labelled {label!r}")
+        if any(r.serial == serial.upper() for r in out):
+            raise ValueError(f"[[record.radios]]: serial {serial} is listed twice (for {label} and for "
+                             f"{next(r.label for r in out if r.serial == serial.upper())})")
+        out.append(RadioConfig(label=label, serial=serial.upper(), placement=placement))
+    return out
+
+
 def check_sections(raw: dict, path: Path) -> None:
     """Reject sections and keys load() would otherwise ignore in silence."""
     where = f" in {path}"
@@ -387,6 +441,10 @@ def load(path: Path | None) -> Config:
                 raise ValueError(f"[network] pan_id must be 0x0000-0xfffe, not 0x{cfg.pan_id:x}")
         rec = raw.get("record", {})
         cfg.serial_port = rec.get("serial_port") or None
+        cfg.radios = _radios(rec.get("radios"))
+        if cfg.radios and cfg.serial_port:
+            raise ValueError("[record] serial_port and radios exclude each other: radios names every dongle "
+                             "by serial, so there is no one port to pin")
         if rec.get("data_dir"):
             cfg.data_dir = Path(os.path.expandvars(str(rec["data_dir"]))).expanduser()
         cfg.keep_hours = int(_finite("record", "keep_hours", rec.get("keep_hours", cfg.keep_hours)))

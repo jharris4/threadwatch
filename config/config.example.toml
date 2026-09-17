@@ -16,7 +16,7 @@ channel = 25
 # owner-only file, see [credentials] below and docs/CREDENTIALS.md.
 
 [record]
-# serial_port = "/dev/ttyACM0"   # leave unset to auto-detect the dongle
+# serial_port = "/dev/ttyACM0"   # leave unset to auto-detect the dongle (one dongle only; see radios below)
 # data_dir = "~/threadwatch-data"  # default: <repo>/data; ~ and ${HOME}-style variables expand
 keep_hours = 168                  # ring files to retain, one per hour heard (168 = a week of them;
                                   # hours the recorder was down leave no file, so a week of files
@@ -33,6 +33,27 @@ keep_hours = 168                  # ring files to retain, one per hour heard (16
                                   # -1 keeps every automatic one (nothing else deletes them);
                                   # 0 takes none at all, leaving snapshot_on_critical to the
                                   # events it logs ('threadwatch snapshot' still saves by hand).
+
+# Two or more dongles: name each by its USB serial, and leave serial_port
+# unset (the two exclude each other). `threadwatch doctor` prints every
+# sniffer it can see with its serial; so does `ls /dev/serial/by-id/` (the
+# hex before -if00). The first radio is the primary: its ring files keep
+# the plain threadwatch-YYYYMMDD-HH.pcap names, so adding this table to a
+# running single-dongle install keeps its ring continuous; every other
+# radio's files carry its label (threadwatch-YYYYMMDD-HH-<label>.pcap).
+# Frames both radios hear are judged once, with each radio's reception
+# kept; a radio that is unplugged or stops delivering is reported and the
+# recorder carries on with the rest. Two dongles found and no table here
+# is refused at start rather than guessed, since the order they enumerate
+# in is not stable across restarts.
+# [[record.radios]]
+# label = "hub"                    # 1-16 of a-z 0-9 _: names ring files, events and page columns
+# serial = "0123456789ABCDEF"      # the dongle's USB serial
+# placement = "next to the border router"   # free text, shown on the pages
+# [[record.radios]]
+# label = "annex"
+# serial = "FEDCBA9876543210"
+# placement = "upstairs landing, on a 5 m extension"
 
 [devices]
 # Inventory that maps extended addresses to human names (see names.py docstring).

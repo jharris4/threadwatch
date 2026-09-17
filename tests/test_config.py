@@ -415,6 +415,11 @@ class ExampleConfigTest(unittest.TestCase):
         ("record", "keep_gb"): ("keep_bytes", 4 * 1024 ** 3, 2 * 1024 ** 3),
         ("record", "snapshot_on_critical"): ("snapshot_on_critical", True, False),
         ("record", "keep_snapshots"): ("keep_snapshots", 4, 9),
+        ("record", "radios"): ("radios", [{"label": "hub", "serial": "0123456789ABCDEF",
+                                           "placement": "next to the border router"},
+                                          {"label": "annex", "serial": "FEDCBA9876543210",
+                                           "placement": "upstairs landing, on a 5 m extension"}],
+                               [{"label": "one", "serial": "AA"}]),
         ("devices", "inventory"): ("devices_path", "devices.json", "other.json"),
         ("visitors", "file"): ("visitors_path", "visitors.json", "phones.json"),
         ("quiet", "silence_s"): ("quiet_s", 1800, 600),
@@ -494,6 +499,9 @@ class ExampleConfigTest(unittest.TestCase):
             got = getattr(got, part)
         if attr in ("devices_path", "visitors_path", "credentials_path"):
             return got, (d / spec_value).resolve()
+        if attr == "radios":
+            from dataclasses import asdict
+            return [asdict(r) for r in got], [{"placement": "", **r} for r in spec_value]
         return got, spec_value
 
     def test_every_setting_in_the_example_is_one_load_reads(self):
@@ -508,6 +516,9 @@ class ExampleConfigTest(unittest.TestCase):
                 if key == "keep_gb":
                     value = other // 1024 ** 3
                 body = f"[{table}]\n{key} = {json.dumps(str(value) if isinstance(value, Path) else value)}\n"
+                if key == "radios":            # an array of tables, which JSON cannot spell
+                    body = "".join(f"[[record.radios]]\nlabel = {json.dumps(r['label'])}\n"
+                                   f"serial = {json.dumps(r['serial'])}\n" for r in value)
                 got, want = self._value(self._load(d, body), attr, other, d)
                 self.assertEqual(got, want)
 
@@ -533,8 +544,13 @@ class ExampleConfigTest(unittest.TestCase):
         self.addCleanup(lambda: [os.environ.pop(k) for k in ("NTFY_TOKEN", "GATUS_THREADWATCH_TOKEN")])
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
-            cfg = self._load(d, self._uncommented(self.EXAMPLE.read_text()))
+            # serial_port and radios exclude each other, so the everything-on
+            # load leaves serial_port commented out; it is proven read above.
+            text = self._uncommented(self.EXAMPLE.read_text()).replace('\nserial_port = ', '\n# serial_port = ')
+            cfg = self._load(d, text)
             for (table, key), (attr, stated, _other) in self.SETTINGS.items():
+                if key == "serial_port":
+                    continue
                 with self.subTest(table=table, key=key):
                     got, want = self._value(cfg, attr, stated, d)
                     self.assertEqual(got, want)
@@ -685,3 +701,44 @@ class UnknownNamesTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RadiosTest(unittest.TestCase):
+    """[record] radios: every dongle by serial, or nothing at all."""
+
+    def _load(self, text):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "config.toml"
+            path.write_text(text)
+            return config_mod.load(path)
+
+    TWO = ('[record]\n[[record.radios]]\nlabel = "hub"\nserial = "0123456789abcdef"\nplacement = "by the router"\n'
+           '[[record.radios]]\nlabel = "annex"\nserial = "FEDCBA9876543210"\n')
+
+    def test_radios_load_in_order_with_serials_upper_cased(self):
+        cfg = self._load(self.TWO)
+        self.assertEqual([(r.label, r.serial, r.placement) for r in cfg.radios],
+                         [("hub", "0123456789ABCDEF", "by the router"), ("annex", "FEDCBA9876543210", "")])
+        self.assertIsNone(cfg.serial_port)
+        self.assertEqual(self._load("[record]\nkeep_hours = 24\n").radios, [])
+
+    def test_what_is_refused(self):
+        cases = {
+            "serial_port with radios": '[record]\nserial_port = "/dev/ttyACM0"\n'
+                                       '[[record.radios]]\nlabel = "a"\nserial = "1"\n',
+            "not an array of tables": '[record]\nradios = "hub"\n',
+            "a label that is not a file-name-safe word": '[record]\n[[record.radios]]\nlabel = "Hub"\nserial = "1"\n',
+            "a label too long": '[record]\n[[record.radios]]\nlabel = "abcdefghijklmnopq"\nserial = "1"\n',
+            "no serial": '[record]\n[[record.radios]]\nlabel = "hub"\n',
+            "a serial with spaces": '[record]\n[[record.radios]]\nlabel = "hub"\nserial = "01 23"\n',
+            "a duplicate label": '[record]\n[[record.radios]]\nlabel = "hub"\nserial = "1"\n'
+                                 '[[record.radios]]\nlabel = "hub"\nserial = "2"\n',
+            "a duplicate serial, case-blind": '[record]\n[[record.radios]]\nlabel = "hub"\nserial = "ab"\n'
+                                              '[[record.radios]]\nlabel = "annex"\nserial = "AB"\n',
+            "an unknown key": '[record]\n[[record.radios]]\nlabel = "hub"\nserial = "1"\nport = "/dev/x"\n',
+            "a placement that is not text": '[record]\n[[record.radios]]\nlabel = "hub"\nserial = "1"\nplacement = 3\n',
+        }
+        for what, text in cases.items():
+            with self.subTest(what), self.assertRaises(ValueError) as cm:
+                self._load(text)
+            self.assertIn("radios", str(cm.exception), what)

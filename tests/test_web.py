@@ -288,7 +288,9 @@ class PageBranchTest(unittest.TestCase):
 
     def test_the_pages_show_each_devices_key_generation_and_how_far_behind_it_is(self):
         self.status(updated=self.now, last_frame_age_s=3, crypto={"key_sequence": 86},
-                    keys={"highest": 86, "previous": 85, "first_sender": TV2, "highest_first_ts": self.now - 7200})
+                    keys={"highest": 86, "previous": 85, "first_sender": TV2, "highest_first_ts": self.now - 7200,
+                          "suspects": [{"addr": TV2, "evidence": "first on air"},
+                                       {"addr": AQ, "evidence": "ahead of its parent"}]})
         self.seen({
             TV2: {"first_seen": self.now - 8000, "last_seen": self.now - 30, "frames": 500, "rssi": -55.0,
                   "pan": 0x4e21, "types": {}, "rloc16": "0400", "rloc16_ts": self.now - 30,
@@ -310,6 +312,8 @@ class PageBranchTest(unittest.TestCase):
         self.assertIn("<th>key generation</th>", status)
         self.assertIn(f'86 <span class="muted">first heard from <a href="/device/{TV2}">Living Room Apple TV</a>',
                       status)
+        self.assertIn(f'; suspected trigger: <a href="/device/{TV2}">Living Room Apple TV</a>, '
+                      f'<a href="/device/{AQ}">Office AQ</a> (ahead of its parent)</span>', status)
         self.assertIn("previously 85", status)
 
     def test_the_pages_show_home_assistant_availability_only_when_the_recorder_polls_it(self):

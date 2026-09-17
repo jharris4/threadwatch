@@ -552,17 +552,23 @@ class DayViewTest(unittest.TestCase):
             rec("key_sequence_advanced", "info", T0, sequence=5, previous=None, first_sender=AQ, name="Basement AQ",
                 frame="mac_data", since_previous_s=None, note="first key generation heard: 5"),
             rec("key_sequence_advanced", "info", T0 + 100, sequence=6, previous=5, first_sender=AQ,
-                name="Basement AQ", frame="mac_poll", since_previous_s=100, note="rotated -- early: ..."),
+                name="Basement AQ", frame="mac_poll", since_previous_s=100, note="rotated -- early: ...",
+                suspects=[{"addr": AQ, "name": "Basement AQ", "evidence": "ahead of its parent",
+                           "parent": "Hall Router", "parent_generation": 5}]),
             rec("key_lag_census", "info", T0 + 200, sequence=6, counts={"6": 3, "5": 1},
-                behind_parent_1=[{"name": "Irrigation", "addr": PLUG}], behind_parent_2plus=[], routers_behind=[]),
+                behind_parent_1=[{"name": "Irrigation", "addr": PLUG}], behind_parent_2plus=[], routers_behind=[],
+                suspects=[{"addr": AQ, "name": "Basement AQ", "evidence": "ahead of its parent"},
+                          {"addr": PLUG, "name": "Irrigation", "evidence": "first on air"}]),
             rec("key_lag_census", "info", T0 + 300, sequence=7, counts={"7": 4},
                 behind_parent_1=[], behind_parent_2plus=[], routers_behind=[]),
         ])
         self.assertEqual([(e["kind"], e["title"], e["detail"]) for e in eps], [
             ("key_rotation", "first key generation heard: 5", "first from Basement AQ (mac_data)"),
             ("key_rotation", "key rotated to generation 6",
-             "first from Basement AQ (mac_poll), 1m after the previous (early)"),
-            ("key_census", "key generation census: generation 6", "1 one behind"),
+             "first from Basement AQ (mac_poll), 1m after the previous (early); on its own: its parent Hall Router "
+             "was still on 5"),
+            ("key_census", "key generation census: generation 6",
+             "1 one behind; suspected trigger: Basement AQ (ahead of its parent), Irrigation"),
             ("key_census", "key generation census: generation 7", "everyone on the current generation")])
 
     def test_device_rows_carry_home_assistant_availability_when_the_recorder_polls_it(self):

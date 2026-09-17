@@ -2319,6 +2319,84 @@ class KeyGenerationTest(unittest.TestCase):
         ev = self._events(pipe2, "key_sequence_advanced")[0]
         self.assertEqual((ev["sequence"], ev["previous"], ev["frame"], ev["role"]), (7, 6, "mac_poll", "child"))
 
+    def test_a_child_ahead_of_its_parent_is_the_suspected_trigger_and_later_ones_join_the_census(self):
+        self.cfg.key_census_delay_s = 600
+        pipe = self._pipe()
+        t = self._mesh(pipe, self.T0, 5)
+        self._heard(pipe, t, SENSOR2, "0801", 5)                        # a child of the shed router
+        first = self._events(pipe, "key_sequence_advanced")[0]
+        self.assertEqual((first["suspects"][0]["addr"], first["suspects"][0]["evidence"]), (ROUTER, "first on air"))
+        # The porch sensor polls on 6 while its parent is fresh on 5: it
+        # advanced the key on its own, and nothing else was on 6.
+        pipe.ingest(poll(t + 100, SENSOR, 7, sequence=6))
+        ev = self._events(pipe, "key_sequence_advanced")[1]
+        self.assertEqual((ev["sequence"], ev["first_sender"], ev["role"]), (6, SENSOR, "child"))
+        self.assertEqual(len(ev["suspects"]), 1)
+        sus = ev["suspects"][0]
+        self.assertEqual((sus["addr"], sus["name"], sus["role"], sus["rloc16"], sus["frame"], sus["evidence"],
+                          sus["parent"], sus["parent_addr"], sus["parent_generation"], sus["ts"]),
+                         (SENSOR, "Porch Sensor", "child", "0401", "mac_poll", "ahead of its parent",
+                          "Hall Router", ROUTER, 5, t + 100))
+        self.assertEqual(sus["parent_heard_s"], round(t + 100 - (t - 20 + 0.5)))   # its last frame under 5
+        self.assertIn("Porch Sensor advanced the key on its own: its parent Hall Router was still on 5, heard "
+                      f"{sus['parent_heard_s']} s earlier, and a child hears nobody else, so it is the suspected "
+                      "trigger", ev["note"])
+        # The routers follow; a child heard on 6 after its parent moved
+        # simply followed, and is no suspect.
+        self._heard(pipe, t + 200, ROUTER, "0400", 6)
+        pipe.ingest(frame(t + 210, "e5e5e5e5e5e5e5e5", sequence=6))    # unknown role: not judged
+        pipe.ingest(short_frame(t + 211, "0403", "e5e5e5e5e5e5e5e5", sequence=6))
+        # The garage sensor moves to 6 while the shed router is still on 5.
+        pipe.ingest(frame(t + 220, SENSOR2, sequence=6))
+        self._heard(pipe, t + 230, ROUTER2, "0800", 6)
+        state = json.loads((self.cfg.state_dir / "key-generations.json").read_text())
+        self.assertEqual([(s["addr"], s["evidence"], s["parent"], s["parent_generation"]) for s in state["suspects"]],
+                         [(SENSOR, "ahead of its parent", "Hall Router", 5),
+                          (SENSOR2, "ahead of its parent", "Attic Router", 5)])
+        pipe.ingest(frame(t + 240, SENSOR2, sequence=6))                # again: recorded once
+        pipe.seen.save()
+        pipe2 = self._pipe()                                             # the census survives a restart
+        pipe2.periodic(t + 100 + 600)
+        census = self._events(pipe2, "key_lag_census")[0]
+        self.assertEqual([s["addr"] for s in census["suspects"]], [SENSOR, SENSOR2])
+        self.assertIn("suspected triggers: Porch Sensor (ahead of its parent Hall Router, still on 5), "
+                      "Garage Sensor (ahead of its parent Attic Router, still on 5)", census["note"])
+        # After the census the window is closed: a straggler moving ahead
+        # of a parent that is one behind is key_lag's story, not a suspect.
+        pipe2.ingest(frame(t + 800, ROUTER3, sequence=5))
+        pipe2.ingest(short_frame(t + 800.5, "0c00", ROUTER3, sequence=5))
+        pipe2.ingest(frame(t + 801, "d3d3d3d3d3d3d3d3", sequence=5))
+        pipe2.ingest(short_frame(t + 801.5, "0c01", "d3d3d3d3d3d3d3d3", sequence=5))
+        pipe2.ingest(frame(t + 802, "d3d3d3d3d3d3d3d3", sequence=6))
+        state = json.loads((self.cfg.state_dir / "key-generations.json").read_text())
+        self.assertEqual([s["addr"] for s in state["suspects"]], [SENSOR, SENSOR2])
+
+    def test_a_first_sender_that_cannot_be_judged_is_first_on_air(self):
+        pipe = self._pipe()
+        t = self._mesh(pipe, self.T0, 5)
+        # A router first: it hears every neighbour, so it may be relaying.
+        pipe.ingest(frame(t + 100, ROUTER2, sequence=6))
+        ev = self._events(pipe, "key_sequence_advanced")[1]
+        self.assertEqual((ev["suspects"][0]["evidence"], ev["suspects"][0]["role"]), ("first on air", "router"))
+        self.assertIn("Attic Router is a router, so it may have relayed a frame the sniffer missed: suspected, "
+                      "not proven", ev["note"])
+        self._heard(pipe, t + 200, ROUTER, "0400", 6)
+        # A child whose parent nobody is known to hold: not judged.
+        pipe.ingest(frame(t + 300, "d3d3d3d3d3d3d3d3", sequence=6))
+        pipe.ingest(short_frame(t + 300.5, "3c01", "d3d3d3d3d3d3d3d3", sequence=6))
+        pipe.ingest(frame(t + 400, "d3d3d3d3d3d3d3d3", sequence=7))
+        ev = self._events(pipe, "key_sequence_advanced")[2]
+        self.assertEqual((ev["suspects"][0]["evidence"], ev["suspects"][0]["parent"]), ("first on air", None))
+        self.assertIn("whether d3d3d3d3d3d3d3d3 started it or relayed it is not known: its parent is not known",
+                      ev["note"])
+        # A child whose parent has no fresh reading: not judged either.
+        self._heard(pipe, t + 500, ROUTER, "0400", 7)
+        t2 = t + 500 + self.cfg.key_fresh_s + 60
+        pipe.ingest(frame(t2, SENSOR, sequence=8))
+        ev = self._events(pipe, "key_sequence_advanced")[3]
+        self.assertEqual((ev["suspects"][0]["evidence"], ev["suspects"][0]["parent"]), ("first on air", "Hall Router"))
+        self.assertIn("its parent Hall Router had no fresh generation reading", ev["note"])
+
     def test_an_early_rotation_says_so_when_the_rotation_time_is_configured(self):
         self.cfg.key_rotation_hours = 24
         pipe = self._pipe()

@@ -211,6 +211,12 @@ LEGEND = [
      "restarts it) or an end it left no note of (a power cut, a kill) is a notice. Starts minutes "
      "apart are one row: the restart loop of a host asleep or a dongle gone. The coverage bar at "
      "the top of the day is drawn from these."),
+    ("radio", "Radio not plugged in / found / lost / back",
+     "One of the recorder's dongles, when it has more than one ([record] radios in config.toml): "
+     "not plugged in at start (a notice; the recorder runs without it and looks for it every "
+     "minute), found later, lost while another radio was still hearing (a warning: it stopped "
+     "delivering, or its dongle went away), or back. A device only the lost radio was hearing is "
+     "not paged for the silence that follows, only noted, until another radio hears it."),
     ("clock", "Host clock jumped",
      "The host clock was stepped, usually by NTP after a boot on a Pi without a real-time clock. "
      "Forward: the time jumped over was never lived through and counts as the recorder's own "
@@ -549,6 +555,8 @@ class Site:
         dominant = dominant_pan(seen, self.cfg.pan_id, self.cfg.state_dir)
         rows = select_devices(every, dominant, only, sort)
         show_ha = any(r.get("ha_state") for r in every)
+        # With named radios: which radios hear each device, and how much of it.
+        radio_labels = sorted({label for r in every for label in (r.get("heard_by") or {})})
         only = only if only in DEVICE_FILTERS else ""
         sort = sort if sort in DEVICE_SORTS else "name"
 
@@ -593,7 +601,8 @@ class Site:
                        + (f'<td>{self.ha_html(r, now)}</td>' if show_ha else "")
                        + f'<td>{seen_html}</td>'
                        f'<td class="n">{esc(r["rssi_dbm"])}</td><td>{rec_html}</td>'
-                       f'<td class="n">{r["frames"]:,}</td><td>{pan_html}</td>'
+                       + (f'<td>{self.heard_by_html(r, radio_labels)}</td>' if radio_labels else "")
+                       + f'<td class="n">{r["frames"]:,}</td><td>{pan_html}</td>'
                        f'<td class="muted"><code>{esc(r["addr"])}</code></td></tr>')
         unknown = sum(1 for r in every if r["name"] is None and not r.get("visitor"))
         note = (f'<p class="muted">{len(every)} addresses tracked'
@@ -601,9 +610,28 @@ class Site:
                 + (f'; showing {len(rows)} ({DEVICE_FILTERS[only][0]})' if only else "") + '.</p>')
         table = ('<table><tr><th>device</th><th>role (live)</th><th>key gen</th>'
                  + ('<th>HA</th>' if show_ha else "") + '<th>last heard</th><th>rssi</th>'
-                 f'<th>reception</th><th>frames</th><th>pan</th><th>address</th></tr>{"".join(trs)}</table>'
+                 '<th>reception</th>' + ('<th>heard by</th>' if radio_labels else "")
+                 + f'<th>frames</th><th>pan</th><th>address</th></tr>{"".join(trs)}</table>'
                  if trs else f'<p class="empty">no devices {DEVICE_FILTERS[only][0] if only else "tracked"}</p>')
         return self.page("devices", f'<h1>devices</h1>{note}{filters}{table}')
+
+    @staticmethod
+    def heard_by_html(r: dict, labels: list[str]) -> str:
+        """Which radios hear the device: each radio's share of its frames
+        and its own RSSI average, the radio hearing it best first."""
+        by = r.get("heard_by") or {}
+        levels = r.get("rssi_by_radio") or {}
+        # Of the device's frames (each counted once), the share this radio
+        # heard: the shares add up to more than 100 % when radios overlap.
+        total = max(r.get("frames") or 0, 1)
+        parts = []
+        for label in sorted(labels, key=lambda lb: (levels.get(lb) is None, -(levels.get(lb) or 0), lb)):
+            if label not in by:
+                parts.append(f'<span class="muted">{esc(label)} never</span>')
+                continue
+            level = f' {esc(levels[label])}' if levels.get(label) is not None else ""
+            parts.append(f'{esc(label)} {min(100, 100 * by[label] // total)}%{level}')
+        return ", ".join(parts)
 
     def device_page(self, target: str) -> str:
         """One device: every address it has used, what the recorder knows
@@ -665,6 +693,10 @@ class Site:
                     if row.get("rssi_degraded"):
                         level += ' <span class="warn">signal down</span>'
                 facts.append(level)
+                if row.get("heard_by"):
+                    facts.append("heard by " + self.heard_by_html(
+                        {"heard_by": row["heard_by"], "rssi_by_radio": row.get("rssi_by_radio"),
+                         "frames": row.get("frames")}, sorted(row["heard_by"])))
                 facts.append(f'{row.get("frames", 0):,} frames since '
                              f'{time.strftime("%Y-%m-%d", time.localtime(row.get("first_seen", now)))}')
             cards.append(f'<div class="card"><code>{esc(addr)}</code><br>'
@@ -708,6 +740,34 @@ class Site:
             row("last frame", (f'<span class="{"warn" if fa > 120 else "ok"}">{fmt_duration(fa)} ago</span>'
                                if alive else f'<span class="muted">{fmt_duration(age + fa)} ago</span>'))
             row("channel / port", f'{esc(st.get("channel"))} &middot; <code>{esc(st.get("port"))}</code>')
+            radios = st.get("radios") or {}
+            if len(radios) > 1 or any(r.get("label") for r in radios.values()):
+                for key, r in radios.items():
+                    state = r.get("state")
+                    state_html = {"up": '<span class="ok">up</span>', "down": '<span class="bad">down</span>',
+                                  "missing": '<span class="warn">not plugged in</span>'}.get(state, esc(state))
+                    bits = [state_html]
+                    if r.get("port"):
+                        bits.append(f'<code>{esc(r["port"])}</code>')
+                    if r.get("placement"):
+                        bits.append(esc(r["placement"]))
+                    if state == "up":
+                        fa = r.get("last_frame_age_s")
+                        if fa is not None:
+                            bits.append(f'last frame <span class="{"warn" if fa > 120 else ""}">{fmt_duration(fa)}'
+                                        ' ago</span>')
+                        bits.append(f'{r.get("frames_total", 0):,} frames')
+                    lock = r.get("lock")
+                    if lock:
+                        if lock.get("locked"):
+                            ppm = f', drift {lock["ppm"]:+g} ppm' if lock.get("ppm") is not None else ""
+                            bits.append(f'<span class="muted">clock locked: offset {lock.get("offset_ms"):+g} ms'
+                                        f'{ppm}, jitter {esc(lock.get("sigma_us"))} &micro;s</span>')
+                        else:
+                            bits.append('<span class="muted">clock not locked to the primary yet</span>')
+                    if r.get("dropped_lines"):
+                        bits.append(f'<span class="warn">{r["dropped_lines"]} serial lines dropped</span>')
+                    row(f"radio {esc(key)}", " &middot; ".join(bits))
             row("this run", f'{st.get("frames_total", 0):,} frames in {fmt_duration(st.get("uptime_s", 0))}, '
                             f'{st.get("devices_tracked", 0)} devices with stats')
             # null until the first frame of the run opens an hour file.

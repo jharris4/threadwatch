@@ -364,6 +364,11 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
             step = rec.get("step_s") or 0
             new("clock", rec, f"host clock jumped {'forward' if step > 0 else 'back'} {fmt_duration(abs(step))}",
                 rec.get("note", ""))
+        elif ev in ("radio_missing", "radio_attached", "radio_lost", "radio_returned"):
+            what = {"radio_missing": "not plugged in", "radio_attached": "found", "radio_lost": "lost",
+                    "radio_returned": "back"}[ev]
+            where = f" ({rec['placement']})" if rec.get("placement") else ""
+            new("radio", rec, f"radio {rec.get('radio') or '?'}{where} {what}", rec.get("note", ""))
         else:
             new(ev or "event", rec, ev, rec.get("note", ""))
 
@@ -758,6 +763,10 @@ def device_rows(seen: LastSeen, names: DeviceNames, min_rssi_dbm: float,
             "silent_for_s": round(now - row.get("last_seen", now)),
             "rssi_dbm": rssi,
             "reception": reception(rssi, min_rssi_dbm),
+            # With named radios: frames per radio, and each radio's own
+            # RSSI average; None for a single unnamed dongle's rows.
+            "heard_by": row.get("heard_by"),
+            "rssi_by_radio": row.get("rssi_by_radio"),
             "pan": row.get("pan"),
             # A row from before polls were counted by name carries every
             # MAC command under type 3, beacon requests and all.

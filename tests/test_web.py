@@ -165,6 +165,48 @@ class PageBranchTest(unittest.TestCase):
         self.assertNotIn("retrying", body)
         self.assertNotIn("given up", body)
 
+    def test_the_status_page_has_a_row_per_radio_and_the_devices_page_says_who_hears_whom(self):
+        radios = {"hub": {"label": "hub", "port": "/dev/ttyACM0", "serial": "AA", "placement": "by the router",
+                          "state": "up", "frames_total": 1200, "last_frame_age_s": 2.0, "dropped_lines": 0,
+                          "lock": None},
+                  "annex": {"label": "annex", "port": "/dev/ttyACM1", "serial": "BB", "placement": "",
+                            "state": "up", "frames_total": 900, "last_frame_age_s": 3.0, "dropped_lines": 4,
+                            "lock": {"locked": True, "offset_ms": 58.3, "ppm": 79.1, "sigma_us": 13.0,
+                                     "pairs": 800, "locks": 1}},
+                  "attic": {"label": "attic", "port": None, "serial": "CC", "placement": "attic",
+                            "state": "missing", "frames_total": 0, "last_frame_age_s": None, "dropped_lines": 0,
+                            "lock": {"locked": False, "offset_ms": None, "ppm": None, "sigma_us": None,
+                                     "pairs": 0, "locks": 0}}}
+        self.status(updated=self.now, last_frame_age_s=2, channel=25, port="/dev/ttyACM0", radios=radios)
+        _st, body = self.get("/status")
+        self.assertIn("<th>radio hub</th>", body)
+        self.assertIn('<span class="ok">up</span> &middot; <code>/dev/ttyACM0</code> &middot; by the router', body)
+        self.assertIn("1,200 frames", body)
+        self.assertIn("clock locked: offset +58.3 ms, drift +79.1 ppm, jitter 13.0 &micro;s", body)
+        self.assertIn('<span class="warn">4 serial lines dropped</span>', body)
+        self.assertIn('<th>radio attic</th><td><span class="warn">not plugged in</span> &middot; attic', body)
+        # A single unnamed dongle: no radio rows at all.
+        self.status(updated=self.now, last_frame_age_s=2, port="/dev/ttyACM0",
+                    radios={"radio": {"label": None, "port": "/dev/ttyACM0", "state": "up", "frames_total": 5}})
+        _st, body = self.get("/status")
+        self.assertNotIn("<th>radio", body)
+        # The devices page: a heard-by column only when rows carry it.
+        self.seen({AQ: {"first_seen": self.now - 3600, "last_seen": self.now - 10, "frames": 100, "types": {},
+                        "pan": 0x4e21, "rssi": -60.0, "heard_by": {"hub": 100, "annex": 40},
+                        "rssi_by_radio": {"hub": -60.0, "annex": -75.0}},
+                   TV1: {"first_seen": self.now - 3600, "last_seen": self.now - 5, "frames": 50, "types": {},
+                         "pan": 0x4e21, "rssi": -70.0, "heard_by": {"annex": 50}, "rssi_by_radio": {"annex": -70.0}}})
+        _st, body = self.get("/devices")
+        self.assertIn("<th>heard by</th>", body)
+        self.assertIn("<td>hub 100% -60.0, annex 40% -75.0</td>", body)
+        self.assertIn('<td>annex 100% -70.0, <span class="muted">hub never</span></td>', body)
+        _st, body = self.get(f"/device/{AQ}")
+        self.assertIn("heard by hub 100% -60.0, annex 40% -75.0", body)
+        self.seen({AQ: {"first_seen": self.now - 3600, "last_seen": self.now - 10, "frames": 100, "types": {},
+                        "pan": 0x4e21, "rssi": -60.0}})
+        _st, body = self.get("/devices")
+        self.assertNotIn("heard by", body)
+
     def test_the_status_page_says_which_code_is_recording(self):
         self.status(updated=self.now, last_frame_age_s=3, version="0.9.9", commit="abc1234")
         _st, body = self.get("/status")

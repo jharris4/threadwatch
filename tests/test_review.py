@@ -1223,6 +1223,25 @@ class EveryEventKindTest(unittest.TestCase):
         self.assertEqual(eps[0]["addr"], "3c1a")                       # the source stands in for an address
         self.assertEqual(eps[0]["events"], recs[:2])
 
+    def test_radio_events_are_rows_naming_the_radio(self):
+        recs = [rec("radio_missing", "notice", T0, radio="annex", serial="BB", port=None, placement="attic",
+                    note="no sniffer with serial BB is plugged in"),
+                rec("radio_attached", "info", T0 + 60, radio="annex", serial="BB", port="/dev/ttyACM1",
+                    placement="attic", note="found"),
+                rec("radio_lost", "warning", T0 + 7200, radio="annex", serial="BB", port="/dev/ttyACM1",
+                    placement="", note="no frames for 180 s while radio hub hears"),
+                rec("radio_returned", "info", T0 + 7300, radio="annex", serial="BB", port="/dev/ttyACM2",
+                    placement="", note="capturing again")]
+        eps = group_episodes(recs)
+        self.assertEqual([(e["kind"], e["severity"], e["title"], e["detail"]) for e in eps],
+                         [("radio", "notice", "radio annex (attic) not plugged in",
+                           "no sniffer with serial BB is plugged in"),
+                          ("radio", "info", "radio annex (attic) found", "found"),
+                          ("radio", "warning", "radio annex lost", "no frames for 180 s while radio hub hears"),
+                          ("radio", "info", "radio annex back", "capturing again")])
+        from threadwatch.web import LEGEND_BY_KIND
+        self.assertIn("radio", LEGEND_BY_KIND)
+
     def test_join_scan_bursts_within_half_an_hour_are_one_row(self):
         recs = [rec("join_scan_activity", "notice", T0, count_60s=5, src="1234"),
                 rec("join_scan_activity", "notice", T0 + 600, count_60s=7, src="1234"),

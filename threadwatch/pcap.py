@@ -53,6 +53,14 @@ class Frame:
     src_pan: int | None = None
     src: str | None = None
     cmd: int | None = None        # MAC command id, unsecured command frames only
+    # Which radio heard this copy (a [record] radios label; None for a
+    # single, unnamed dongle), and, on a frame the merger built from what
+    # several radios heard, every radio's own copy by label, each with its
+    # own stamp, RSSI, LQI and raw bytes. The merged frame itself is the
+    # best ear's copy (merge.py). Absent on a frame read straight from a
+    # file, which is one radio's copy.
+    radio: str | None = None
+    heard: dict | None = None
 
 
 def _read_exact(stream: BinaryIO, n: int) -> bytes:

@@ -1066,16 +1066,19 @@ def status_tick(cfg, port, beat: dict, started: float, started_mono: float, pipe
     age = mono - (beat["last_frame_mono"] or started_mono)
     if beat["ring"] is not None:
         dropped = getattr(sniffer, "parse_failures", 0)
-        radios_status = None
+        radios_status = merge_status = None
         if radios:
             dropped = sum(r.dropped_lines() for r in radios)
             aligners = merger.aligners if merger is not None else {}
             radios_status = {r.key: r.status(mono, aligners[r.label].status() if r.label in aligners else None)
                              for r in radios}
+            if merger is not None:
+                st = merger.status()
+                merge_status = {"merged": st["merged"], "duplicates": st["duplicates"], "pending": st["pending"]}
         try:
             _write_status(cfg, port, beat["total"], started, pipe, beat["ring"], decryptor,
                           last_frame_age=age, last_frame_ts=beat["last_frame"] or prior_frame,
-                          dropped_lines=dropped, radios=radios_status)
+                          dropped_lines=dropped, radios=radios_status, merge=merge_status)
         except Exception as exc:   # a full disk must not take the stall check with it
             log(f"status.json not written: {exc}")
     return age
@@ -1095,7 +1098,7 @@ def last_frame_on_record(state_dir: Path) -> float | None:
 
 def _write_status(cfg, port, total, started, pipe: Pipeline, ring, decryptor,
                   last_frame_age: float = 0.0, last_frame_ts: float | None = None,
-                  dropped_lines: int = 0, radios: dict | None = None) -> None:
+                  dropped_lines: int = 0, radios: dict | None = None, merge: dict | None = None) -> None:
     # last_frame_age_s is this run's view (the watchdog's stall clock);
     # last_frame_ts is the wall-clock time of the last frame any run heard,
     # which does not move while nothing is heard.
@@ -1145,6 +1148,11 @@ def _write_status(cfg, port, total, started, pipe: Pipeline, ring, decryptor,
         # but the primary the merger's lock on its clock (offset, drift,
         # jitter). None from a writer that has no radios to report.
         "radios": radios,
+        # The merger's totals this run: frames handed to the pipeline,
+        # copies folded into another radio's frame, copies waiting. With
+        # two radios, merged is between the larger radio's frames_total
+        # and the two added together; duplicates is what they both heard.
+        "merge": merge,
     }
     status["crypto"] = {**decryptor.stats, "key_sequence": decryptor.key_sequence}
     tmp = cfg.state_dir / "status.tmp"

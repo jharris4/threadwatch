@@ -315,6 +315,7 @@ file.) The fields:
 | `last_frame_age_s` | seconds since this run last heard a frame, on the daemon's own clock; the watchdog exits at 180 |
 | `last_frame_ts` | when any run last heard a frame (unix seconds); unlike the age it spans restarts, and stays put while nothing is heard |
 | `port`, `channel` | the dongle's serial port (the primary's, with several) and the channel being captured |
+| `merge` | with `[record] radios`: `merged`, frames handed to the detectors this run; `duplicates`, copies folded into another radio's frame (what both heard); `pending`, copies waiting for the other radio. `merged` sits between the busier radio's `frames_total` and the radios' totals added together |
 | `radios` | with `[record] radios`: one entry per radio by label with its `port`, `serial`, `placement`, `state` (`up`, `down`, `missing`), `since_s`, `frames_total`, `last_frame_age_s`, `dropped_lines`, its own `current_file`, and `lock`: `null` for the primary, else the merger's alignment of its clock to the primary's (`locked`, `offset_ms`, `ppm`, `sigma_us`, `pairs`, `locks`). A single unnamed dongle shows one entry, `radio` |
 | `frames_total` | frames this run; it should climb between two runs of `status` |
 | `dropped_lines` | serial lines from the dongle the sniffer could not parse this run: frames nobody recorded. A steady climb is a cable or firmware problem, not a quiet mesh |

@@ -325,7 +325,7 @@ class TrackerTest(unittest.TestCase):
             self._poll(tr, T0 + t, {IDS[0]: T0 + 10})
         ev = self._events("ha_unavailable")[0]
         self.assertEqual((ev["cause"], ev["generation"], ev["parent_generation"]), ("key_lag", 84, 86))
-        self.assertIn("Key lag may explain the outage", ev["note"])
+        self.assertIn("Cut off by a key change", ev["note"])
 
     def test_per_device_hold_and_mute(self):
         self.settings = {IDS[0]: {"hold_s": 7200}, IDS[1]: {"mute": True}, IDS[2]: {"mute": True}}

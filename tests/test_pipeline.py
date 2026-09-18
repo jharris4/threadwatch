@@ -2342,7 +2342,7 @@ class KeyGenerationTest(unittest.TestCase):
                           "Hall Router", ROUTER, 5, t + 100))
         self.assertEqual(sus["parent_heard_s"], round(t + 100 - (t - 20 + 0.5)))   # its last frame under 5
         self.assertIn("Porch Sensor was observed ahead of its last known parent sequence: Hall Router on 5, heard "
-                      f"{sus['parent_heard_s']} s earlier; origin unconfirmed", ev["note"])
+                      f"{sus['parent_heard_s']} s earlier; an origin candidate, not proof", ev["note"])
         self.assertEqual((ev["scope"], ev["confidence"]), ("device", "observation_only"))
         self.assertIn("mesh_adoption_not_established", ev["reasons"])
         self.assertEqual(sus["confidence"], "candidate_only")
@@ -2366,7 +2366,7 @@ class KeyGenerationTest(unittest.TestCase):
         pipe2.periodic(t + 100 + 600)
         census = self._events(pipe2, "key_lag_census")[0]
         self.assertEqual([s["addr"] for s in census["suspects"]], [SENSOR, SENSOR2])
-        self.assertIn("origin candidates (unconfirmed): Porch Sensor "
+        self.assertIn("origin candidates: Porch Sensor "
                       "(ahead of last known parent sequence: Hall Router on 5), "
                       "Garage Sensor (ahead of last known parent sequence: Attic Router on 5)", census["note"])
         # After the census the window is closed: a straggler moving ahead

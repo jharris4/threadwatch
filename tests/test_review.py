@@ -563,13 +563,12 @@ class DayViewTest(unittest.TestCase):
                 behind_parent_1=[], behind_parent_2plus=[], routers_behind=[]),
         ])
         self.assertEqual([(e["kind"], e["title"], e["detail"]) for e in eps], [
-            ("key_rotation", "first key generation heard: 5",
-             "first from Basement AQ (mac_data); origin and mesh-wide adoption unconfirmed"),
-            ("key_rotation", "new highest sequence observed: 6",
-             "first from Basement AQ (mac_poll), 1m after the previous observation (early); "
-             "ahead of last known parent sequence: Hall Router on 5; origin and mesh-wide adoption unconfirmed"),
+            ("key_rotation", "first key generation heard: 5", "first from Basement AQ (mac_data)"),
+            ("key_rotation", "key sequence 5 -> 6",
+             "first from Basement AQ (mac_poll), 1m after the previous (early); "
+             "ahead of last known parent sequence: Hall Router on 5"),
             ("key_census", "key generation census: generation 6",
-             "1 one behind; origin candidates (unconfirmed): Basement AQ "
+             "1 one behind; origin candidates: Basement AQ "
              "(ahead of last known parent sequence), Irrigation"),
             ("key_census", "key generation census: generation 7", "everyone on the current generation")])
 

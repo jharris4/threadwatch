@@ -80,8 +80,8 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `poll_answered` | notice | `addr`, `name`, `note` |
 | `rssi_degradation` | notice | `addr`, `name`, `rssi_dbm`, `reference_dbm`, `drop_db`, `since`, `low_for_s`, `note` |
 | `rssi_recovered` | info | `addr`, `name`, `rssi_dbm`, `reference_dbm`, `note` |
-| `key_sequence_advanced` | info | `sequence`, `previous`, `first_sender`, `name`, `rloc16`, `role`, `frame`, `since_previous_s`, `scope`, `confidence`, `reasons`, `suspects`, `note`. A new highest sequence observation from one device; no confirmed origin or mesh-wide adoption. Suspects retain `addr`, `name`, `rloc16`, `role`, `ts`, `frame`, legacy `evidence`, parent fields, and add candidate `confidence`/`reasons`. See the key-generation section below. |
-| `key_lag_census` | info | `sequence`, `mesh_generation`, `counts` (devices per generation, fresh ones only), `behind_parent_1`, `behind_parent_2plus`, `routers_behind` (each: `name`, `addr`, `generation`, `lag`, and `parent` / `parent_generation` or `mesh_generation`), `unknown` (no fresh frame: not judged), `suspects` (the observation's first sender, then every device whose first frame on the new generation came while its parent was still fresh on the old one, entries as in `key_sequence_advanced`), `note`; `[keys] census_delay_s` after each new highest observation |
+| `key_sequence_advanced` | info | `sequence`, `previous`, `first_sender`, `name`, `rloc16`, `role`, `frame`, `since_previous_s`, `scope`, `confidence`, `reasons`, `suspects`, `note`. The first frame accepted under a new generation; the census says whether the mesh followed. Suspects retain `addr`, `name`, `rloc16`, `role`, `ts`, `frame`, legacy `evidence`, parent fields, and add candidate `confidence`/`reasons`. See the key-generation section below. |
+| `key_lag_census` | info | `sequence`, `mesh_generation`, `counts` (devices per generation, fresh ones only), `behind_parent_1`, `behind_parent_2plus`, `routers_behind` (each: `name`, `addr`, `generation`, `lag`, and `parent` / `parent_generation` or `mesh_generation`), `unknown` (no fresh frame: not judged), `suspects` (the observation's first sender, then every device whose first frame on the new generation came while its parent was still fresh on the old one, entries as in `key_sequence_advanced`), `note`; `[keys] census_delay_s` after each advance |
 | `key_lag` | warning for a child, critical for a router; notice when `episode` > 1 (reopened within `[keys] rearm_s`) | `addr`, `name`, `role`, `generation`, `parent`, `parent_addr`, `parent_generation` (a child) or `mesh_generation` (a router), `lag`, `since`, `lagged_for_s`, `rssi_dbm`, `reception`, `polls_acked`, `episode`, `since_previous_s`, `note` |
 | `key_lag_cleared` | info | `addr`, `name`, `role`, `generation`, `parent`, `parent_addr`, `parent_generation` or `mesh_generation`, `since`, `lagged_for_s`, `rejoined`, `rejoin_ts`, `note`; only after a `key_lag` went out |
 | `retransmission_elevation` | notice for the first elevated minute, warning once the rate has stayed up for `[retransmissions] confirm_s` (`confirmed`); notice regardless when one sender-target pair is `top_share` >= 0.5 of the retries (a chronic bad link, not a storm precursor) | `rate`, `baseline`, `addr`, `name`, `top_sender`, `top_target`, `top_share`, `confirmed`, `sustained_s`, `note` |
@@ -220,35 +220,50 @@ last-seen rows carry it as `counter_seq` and `mle_counter_seq`, with when
 it was read). Four records follow from it, and the budget is that a normal
 week pages nothing:
 
-- `key_sequence_advanced` (info) records a new highest sequence observed in
-  an accepted authenticated frame, not proof that the whole mesh rotated.
-  `scope=device` and `confidence=observation_only` describe that observation;
-  `reasons` lists `accepted_authenticated_frame`, `mesh_adoption_not_established`
-  and `origin_not_established`. The other scope values (`router_group`,
-  `otbr_confirmed`, `unknown`) are reserved for richer evidence or unknown
-  legacy state; this detector only emits `device`.
-  The event retains its existing name, severity, sequence fields and suspects
-  for compatibility. The first observation has `previous=null`; the persisted
-  highest prevents repeated announcements after restart. `since_previous_s`
-  measures first observations, not known rotation times. With `rotation_hours`
-  set, an interval under 90% is annotated early, not a proven protocol violation.
-  Set that expectation from the scheduled Security Policy interval, not guardtime.
-  Suspects are origin candidates with `confidence=candidate_only` and `reasons`.
-  The legacy evidence strings `first on air` and `ahead of its parent` mean
-  first observed sender and ahead of the last fresh parent observation.
-  Candidate reasons are `first_observed_sender`, `ahead_of_last_parent_observation`,
-  `missed_traffic_or_attachment_possible`, `parent_unknown`,
-  `parent_sequence_not_fresh`, or `parent_already_observed_at_or_above_sequence`.
-  Missing traffic, attachment and stale parent mappings prevent these from
-  proving independent advancement. A later child observed ahead can join the
-  candidate list until the census; that still does not establish origin.
-  The September 17 Front Door and Front Door Button observations motivated this
-  detector, but the original attribution requires full exchange review. A Parent
-  Request alone does not establish why a receiving router adopted the sequence.
-  Old events and snapshots remain readable; missing attribution metadata is
-  unknown, and review pages use cautious wording even for legacy events.
+- `key_sequence_advanced` (info) is the advance itself: the first frame
+  accepted under a generation above any on record, who sent it and under
+  what (`mac_data`, `mac_poll`, `mle:<command>`), and how long after the
+  previous advance. Once per generation, ever: the highest generation is
+  kept in `data/state/key-generations.json`, so a restart does not announce
+  it again, and a replay (which starts with no record) announces the first
+  generation it meets with `previous` null. With `[keys] rotation_hours`
+  set, an advance under 90% of it after the previous one says "early" in
+  the note; set that from the active dataset's Security Policy rotation
+  time (672 h by default), not the keysequence guardtime (624 h), which is
+  a different setting. `since_previous_s` is between first observations,
+  so a capture gap can lengthen it and never shortens it.
+  The record also says who is suspected of starting it, as `suspects`, each
+  with `confidence=candidate_only` and `reasons`. An advance is started by
+  whichever device's own rotation timer fires first, and the mesh follows
+  it; the first sender is that device only if it could not have learned
+  the new key from anyone. A child hears nobody but its parent, so a child
+  heard on the new generation while its parent's freshest reading (within
+  `[keys] fresh_s`) is still the old one is the strongest candidate the
+  sniffer gets: `evidence` is `ahead of its parent`, the note says
+  "ahead of its last known parent sequence", and the reasons carry
+  `ahead_of_last_parent_observation` and `missed_traffic_or_attachment_possible`,
+  because a frame the sniffer missed, an attachment in progress or a stale
+  parent mapping can produce the same picture. On 2026-09-17 that was Front
+  Door, an Eve contact sensor polling on 87 while its parent was on 86 and
+  nothing else was on 87; it lost its parent, its Parent Request carried 87
+  to the border router, which had rebooted three days earlier (so its key
+  switch guard was clear and a +1 from a peer message was accepted), and
+  the mesh followed within a minute. A router first on air may be relaying
+  a frame the sniffer missed, and a child whose parent has no fresh reading
+  cannot be judged: `first on air`, with `parent_unknown` or
+  `parent_sequence_not_fresh`. Until the census, every further device whose
+  first frame on the new generation comes while its parent is still fresh
+  on the old one joins the suspects (Front Door Button did the same 74 s
+  after Front Door, under a parent still two behind); a child heard on it
+  after its parent moved simply followed, `parent_already_observed_at_or_above_sequence`.
+  The event carries `scope=device`, `confidence=observation_only` and
+  `reasons` (`accepted_authenticated_frame`, `mesh_adoption_not_established`,
+  `origin_not_established`): it records one device's frame, and the census
+  is what says whether the mesh followed. The other scope values
+  (`router_group`, `otbr_confirmed`, `unknown`) are reserved; legacy state
+  loads with `confidence=unknown`. Old events and snapshots still render.
 - `key_lag_census` (info) comes `[keys] census_delay_s` (default 60 min)
-  after each new highest sequence observation: how many devices are on each generation, the
+  after each advance: how many devices are on each generation, the
   children one behind their parent (normal), the children two or more
   behind (cut off), the routers behind the mesh, and the devices with no
   frame fresh enough to judge. It is the roll call to read after a

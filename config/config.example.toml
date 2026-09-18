@@ -103,20 +103,20 @@ rearm_s = 3600             # 60 min
 confirm_s = 600            # 10 min
 
 [keys]
-# Key-generation detectors (docs/ALERTING.md, "key_lag"). A child observed
-# two generations behind its parent may have ordinary MAC traffic rejected
-# even while polls receive ACKs. One generation behind is never paged.
-# Each new highest sequence observation is logged (key_sequence_advanced,
-# info) and followed by a census (key_lag_census, info). Origin candidates
-# are unconfirmed. Persistent 2+ lag is paged once (key_lag: warning for a
-# child, critical for a router).
+# Key-generation detectors (docs/ALERTING.md, "key_lag"). A child two
+# generations behind its parent has every frame dropped while its polls
+# are still ACKed, so it looks alive and delivers nothing. One generation
+# behind is never paged. Each advance of the key sequence is logged
+# (key_sequence_advanced, info) with its origin candidates and followed
+# by a census (key_lag_census, info). Persistent 2+ lag is paged once
+# (key_lag: warning for a child, critical for a router).
 # Hold a lag of 2+ this long, with fresh frames past the mark, before
 # paging. 0 pages at once.
 confirm_s = 900            # 15 min
 # A generation reading (the device's last authenticated frame) older than
 # this is not judged either way.
 fresh_s = 1800             # 30 min
-# How long after a new highest sequence observation to log the census.
+# How long after a key sequence advance to log the census.
 census_delay_s = 3600      # 60 min
 # An episode reopening this soon after closing is logged at notice, not
 # paged, as for [polls] rearm_s. 0 pages every episode.
@@ -124,9 +124,8 @@ rearm_s = 3600             # 60 min
 # The mesh's rotation time in hours, when known (OpenThread's default is
 # 672, 28 days): a rotation under 90% of it after the previous one is
 # called "early" in the key_sequence_advanced note. Unset says nothing.
-# This compares first observations, not proven rotation times. Use the
-# Security Policy rotation interval, not the keysequence guardtime.
-# Origin candidates and mesh-wide adoption remain unconfirmed.
+# Use the active dataset's Security Policy rotation time, not the
+# keysequence guardtime (624 h by default), which is a different setting.
 # rotation_hours = 672
 
 [ha_logs]

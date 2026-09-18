@@ -2796,20 +2796,18 @@ class Pipeline:
         role = rloc16_role(row.get("rloc16"))
         label = name or who
         if highest is None:
-            note = (f"first key generation heard: {generation}, from {label} ({frame}); "
-                    "initial observation, origin and mesh-wide adoption unknown")
+            note = (f"first key generation heard: {generation}, from {label} ({frame}); the mesh's key "
+                    "sequence is recorded from here on")
         else:
-            note = (f"new highest sequence observed: generation {highest} -> {generation}, first heard from {label} "
+            note = (f"key sequence advanced: generation {highest} -> {generation}, first heard from {label} "
                     f"({frame})")
             if since is not None:
-                note += f", {since / 86400:.1f} days after the previous first observation"
+                note += f", {since / 86400:.1f} days after the previous advance"
             expected = self.cfg.key_rotation_hours
             if expected is not None and since is not None and since < 0.9 * expected * 3600:
                 note += f" -- early: the configured rotation time is {expected:g} h"
             note += "; " + self._suspect_sentence(suspect)
-            note += ("; mesh-wide adoption is not established by this observation; "
-                     f"the generation census comes in "
-                     f"{self.cfg.key_census_delay_s / 60:.0f} min")
+            note += f"; the generation census comes in {self.cfg.key_census_delay_s / 60:.0f} min"
         self._emit("key_sequence_advanced", "info", ts, sequence=generation, previous=highest,
                    first_sender=who, name=name, rloc16=row.get("rloc16"), role=role["role"] if role else None,
                    frame=frame, since_previous_s=round(since) if since is not None else None,
@@ -2874,7 +2872,8 @@ class Pipeline:
             return (f"{label} was observed ahead of its last known parent sequence: {suspect.get('parent')} on "
                     f"{suspect.get('parent_generation')}"
                     + (f", heard {heard} s earlier" if heard is not None else "")
-                    + "; origin unconfirmed: missed traffic, attachment or a stale parent mapping may explain this")
+                    + "; an origin candidate, not proof: missed traffic, an attachment or a stale parent mapping "
+                      "can explain it")
         if suspect.get("role") == "router":
             return (f"{label} is a router, so it may have relayed a frame the sniffer missed: suspected, "
                     "not proven")
@@ -3087,12 +3086,12 @@ class Pipeline:
         if unknown:
             parts.append(f"{len(unknown)} not judged (no fresh frame)")
         suspects = list(self._keys.get("suspects") or [])
-        parts.append("origin candidates (unconfirmed): "
+        parts.append("origin candidates: "
                      + ", ".join(self._suspect_label(s) for s in suspects) if suspects else "trigger unknown")
         self._emit("key_lag_census", "info", now, sequence=highest, mesh_generation=self.decryptor.key_sequence,
                    counts=counts, behind_parent_1=behind_1, behind_parent_2plus=behind_2plus,
                    routers_behind=routers_behind, unknown=unknown, suspects=suspects,
-                   note=f"census {self.cfg.key_census_delay_s / 60:.0f} min after the first observation; "
+                   note=f"census {self.cfg.key_census_delay_s / 60:.0f} min after the advance; "
                    + "; ".join(parts))
 
     @staticmethod
@@ -3102,7 +3101,7 @@ class Pipeline:
         if suspect.get("evidence") == "ahead of its parent":
             return (f"{label} (ahead of last known parent sequence: {suspect.get('parent')} "
                     f"on {suspect.get('parent_generation')})")
-        return f"{label} (first observed sender)"
+        return f"{label} (first on air)"
 
     # ------------------------------------------------- border routers
 

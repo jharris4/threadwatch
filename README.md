@@ -26,10 +26,11 @@ question: *why did this device go offline?*
     its usual level, the precursor of a silence with no rejoin;
   - sleepy-device starvation: a child polling a parent that no longer
     answers, which never shows up as a silence;
-  - key generations: each new highest sequence observation is recorded,
-    with unconfirmed origin candidates and a later census. A device
-    observed two or more generations behind its parent is paged: ordinary
-    MAC traffic may be rejected even while its polls are acknowledged;
+  - key generations: every advance of the network key sequence is
+    recorded, with its origin candidates and a census of who followed,
+    and a device left two or more generations behind its parent is paged,
+    because its frames are being dropped while its polls are still
+    acknowledged, so it looks alive to everything else;
   - Home Assistant availability (opt-in): a device HA marks unavailable
     is paged with the radio evidence for why, and several dropping
     together are one critical burst with a snapshot.

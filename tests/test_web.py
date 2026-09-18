@@ -354,7 +354,7 @@ class PageBranchTest(unittest.TestCase):
         self.assertIn("<th>key generation</th>", status)
         self.assertIn(f'86 <span class="muted">first heard from <a href="/device/{TV2}">Living Room Apple TV</a>',
                       status)
-        self.assertIn(f'; origin candidates (unconfirmed): <a href="/device/{TV2}">Living Room Apple TV</a>, '
+        self.assertIn(f'; origin candidates: <a href="/device/{TV2}">Living Room Apple TV</a>, '
                       f'<a href="/device/{AQ}">Office AQ</a> (ahead of last known parent sequence)</span>', status)
         self.assertIn("previously 85", status)
 

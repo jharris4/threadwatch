@@ -411,6 +411,7 @@ class Radio:
         self.label, self.serial, self.placement = label, serial, placement
         self.port = port
         self.fifo = fifo
+        self._owns_fifo = False
         self.log = log
         # A relay from another host (relay.py): the listener is opened once
         # and kept; each connection is one attachment, its socket the
@@ -462,6 +463,7 @@ class Radio:
                 self.port = port
             self.fifo.unlink(missing_ok=True)
             os.mkfifo(self.fifo)
+            self._owns_fifo = True
             self.sniffer = sniffer_cls()
             self.sniffer.start_threaded(str(self.fifo), self.port, channel, metadata="ieee802154-tap")
             self.thread = threading.Thread(target=self._read, args=(q, self.sniffer), daemon=True,
@@ -491,11 +493,12 @@ class Radio:
         self.listener.bind((host, int(port)))
         self.listener.listen(2)
         self.port = f"tcp {self.listen}"
+        listener = self.listener
 
         def accept():
             while True:
                 try:
-                    conn, addr = self.listener.accept()
+                    conn, addr = listener.accept()
                 except OSError:
                     return                        # the listener was closed: the run is over
                 peer = f"{addr[0]}:{addr[1]}"
@@ -518,7 +521,10 @@ class Radio:
                     self.log(f"{self.describe()}: connection from {peer} refused: {exc}")
                     conn.close()
                     continue
-                q.put((self.label, "connect", time.monotonic(), (conn, peer, hs)))
+                if self.listener is listener:
+                    q.put((self.label, "connect", time.monotonic(), (conn, peer, hs)))
+                else:
+                    conn.close()
 
         threading.Thread(target=accept, daemon=True, name=f"radio-{self.key}-accept").start()
 
@@ -565,11 +571,42 @@ class Radio:
 
     def close_listener(self) -> None:
         if self.listener is not None:
+            listener, self.listener = self.listener, None
             try:
-                self.listener.close()
+                listener.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
-            self.listener = None
+            listener.close()
+
+    def abort_start(self) -> None:
+        """Unwind even a sniffer whose FIFO reader failed to start.
+
+        _stop() kills the serial process but does not wake the vendor's
+        non-daemon consumer. Give it its exit sentinel and a temporary
+        FIFO peer, then bound the join; the caller exits if it stays alive.
+        """
+        fd = None
+        try:
+            if self._owns_fifo and self.fifo.exists():
+                fd = os.open(self.fifo, os.O_RDWR | os.O_NONBLOCK)
+            try:
+                self.stop_sniffer()
+            finally:
+                if getattr(self.sniffer, "queue", None) is not None:
+                    from nrf802154_sniffer import ExitEvent
+                    self.sniffer.queue.put(ExitEvent())
+                thread = getattr(self.sniffer, "thread", None)
+                if thread is not None and thread.ident is not None:
+                    thread.join(timeout=1.0)
+        finally:
+            if fd is not None:
+                os.close(fd)
+            try:
+                if self._owns_fifo:
+                    self.fifo.unlink(missing_ok=True)
+                    self._owns_fifo = False
+            finally:
+                self.close_listener()
 
     def _forked(self) -> bool:
         processes = getattr(self.sniffer, "processes", None)
@@ -712,6 +749,11 @@ def run_record(cfg: Config) -> None:
         heartbeats = build_heartbeats(cfg.heartbeats_raw, _log)
         for b in heartbeats:
             _log(f"heartbeat {b.describe()}")
+        # Refuse an occupied/unavailable listener before starting any USB
+        # worker. All resources still unwind below if a later attach fails.
+        for r in radios:
+            if r.source == "tcp":
+                r._listen(frames_q)
         for r in radios:
             if r.attach(Nrf802154Sniffer, cfg.channel, frames_q, attach_lock, time.monotonic()):
                 _log(f"capturing channel {cfg.channel} from {r.port}"
@@ -726,7 +768,23 @@ def run_record(cfg: Config) -> None:
                              + ", ".join(f"{r.label} (serial {r.serial})" for r in radios)
                              + "; check 'threadwatch doctor'")
     except BaseException:
-        events.close()
+        for r in radios:
+            try:
+                r.abort_start()
+            except Exception as exc:
+                _log(f"startup cleanup for {r.describe()} failed: {exc}")
+        # A relay may have completed its handshake before startup failed.
+        while not frames_q.empty():
+            _label, frame, _mono, attachment = frames_q.get_nowait()
+            if isinstance(frame, str) and frame == "connect":
+                attachment[0].close()
+        try:
+            events.close()
+        finally:
+            if any(r.sniffer_alive() for r in radios):
+                traceback.print_exc()
+                _log("startup failed with a capture worker still alive; exiting for supervisor restart")
+                os._exit(1)
         raise
 
     # Raising from the handler interrupts the blocking queue read, so

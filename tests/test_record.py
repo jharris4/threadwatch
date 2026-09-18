@@ -105,6 +105,85 @@ class StatusFileTest(unittest.TestCase):
 
 
 class StartupFailureTest(unittest.TestCase):
+    def stub_startup(self, radios):
+        from unittest import mock
+
+        from threadwatch import record
+        for name, value in (("plan_radios", radios), ("load_decryptor", object()),
+                            ("Pipeline", mock.Mock()), ("build_sinks", []), ("build_heartbeats", [])):
+            patcher = mock.patch.object(record, name, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        patcher = mock.patch.object(record, "EventLog")
+        events = patcher.start().return_value
+        self.addCleanup(patcher.stop)
+        return events
+
+    def test_listener_failure_precedes_usb_start_and_closes_all_listeners(self):
+        from unittest import mock
+
+        from threadwatch import record
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            radios = [record.Radio("hub", "AA", "", None, root / "hub.fifo", lambda msg: None),
+                      record.Radio("annex", None, "", None, root / "annex.fifo", lambda msg: None,
+                                   source="tcp", listen="127.0.0.1:9154"),
+                      record.Radio("shed", None, "", None, root / "shed.fifo", lambda msg: None,
+                                   source="tcp", listen="127.0.0.1:9155")]
+            events = self.stub_startup(radios)
+            radios[0].fifo.write_text("not owned by this startup")
+            first, second = mock.Mock(), mock.Mock()
+            first.accept.side_effect = OSError("closed")
+            second.bind.side_effect = OSError("Address already in use")
+            with mock.patch.object(record.socket, "socket", side_effect=[first, second]), \
+                    mock.patch.object(radios[0], "attach") as attach:
+                with self.assertRaisesRegex(OSError, "Address already in use"):
+                    record.run_record(Config(data_dir=root))
+            attach.assert_not_called()
+            first.close.assert_called_once()
+            second.close.assert_called_once()
+            events.close.assert_called_once()
+            self.assertTrue(all(r.listener is None for r in radios))
+            self.assertEqual(radios[0].fifo.read_text(), "not owned by this startup")
+
+    def test_later_attach_failure_wakes_a_non_daemon_worker_stuck_opening_its_fifo(self):
+        import os
+        import queue
+        from unittest import mock
+
+        from threadwatch import record
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = record.Radio("hub", "AA", "", None, root / "hub.fifo", lambda msg: None)
+            second = record.Radio("annex", "BB", "", None, root / "annex.fifo", lambda msg: None)
+            events = self.stub_startup([first, second])
+            packets = queue.Queue()
+            stopped = mock.Mock()
+            received = []
+
+            def worker():
+                with open(first.fifo, "wb") as fifo:
+                    fifo.write(b"header")
+                    received.append(packets.get(timeout=2))
+
+            def attach(*_args):
+                os.mkfifo(first.fifo)
+                first._owns_fifo = True
+                thread = threading.Thread(target=worker)  # deliberately non-daemon
+                first.sniffer = SimpleNamespace(thread=thread, queue=packets, _stop=stopped)
+                thread.start()
+                return True
+
+            with mock.patch.object(first, "attach", side_effect=attach), \
+                    mock.patch.object(second, "attach", side_effect=OSError("cannot create FIFO")):
+                with self.assertRaisesRegex(OSError, "cannot create FIFO"):
+                    record.run_record(Config(data_dir=root))
+            self.assertFalse(first.sniffer.thread.is_alive())
+            self.assertEqual(type(received[0]).__name__, "ExitEvent")
+            stopped.assert_called_once()
+            events.close.assert_called_once()
+            self.assertFalse(first.fifo.exists())
+
     def test_a_start_that_fails_after_the_log_is_built_keeps_the_spool(self):
         # The likeliest start-up failure, credentials.toml missing or
         # unreadable, came after the event log had loaded the spool; the

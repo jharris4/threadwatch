@@ -236,6 +236,26 @@ class TwoRadiosTest(unittest.TestCase):
 
 
 class OfflineTest(unittest.TestCase):
+    def test_an_hour_starting_with_only_retries_merges_without_training(self):
+        psdu = secured(99)
+        hub = [frame(T0 + i * 0.0025, psdu) for i in range(4)]
+        annex = [frame(f.ts + 40e-6, psdu) for f in hub]
+        shed = [frame(f.ts + 60e-6, psdu) for f in hub]
+        out = list(merge_readers({None: hub, "annex": annex, "shed": shed}))
+        self.assertEqual(len(out), 4)
+        self.assertEqual([f.ts for f in out], [f.ts for f in hub])
+        self.assertTrue(all(len(f.heard) == 3 for f in out))
+        self.assertEqual([f.heard["annex"].ts for f in out], [f.ts for f in annex])
+
+    def test_identical_transmissions_heard_by_different_radios_are_not_clock_offsets(self):
+        ack = b"\x02\x00\x07"
+        hub = [frame(T0 + i, ack) for i in range(5)]
+        annex = [frame(f.ts + 0.0015, ack) for f in hub]
+        out = list(merge_readers({None: hub, "annex": annex}))
+        self.assertEqual(len(out), 10)
+        self.assertTrue(all(len(f.heard) == 1 for f in out))
+        self.assertEqual([f.ts for f in out], sorted(f.ts for f in hub + annex))
+
     def test_two_series_of_one_hour_merge_into_the_stream_the_recorder_saw(self):
         offset = 20e-6                     # stamps on disk are aligned already
         hub = [frame(T0 + i, secured(i), rssi=-70) for i in range(50)]

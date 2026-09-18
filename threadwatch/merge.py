@@ -248,8 +248,10 @@ class Merger:
     def _order(self, label: str | None, raw: float) -> float:
         """Where a copy sits for ordering: the primary's domain when it
         can be mapped there, else the recorder's epoch estimate for it."""
+        if self.offline:
+            return raw
         if label == self.primary:
-            return self._epoch(label, raw) if not self.offline else raw
+            return self._epoch(label, raw)
         al = self.aligners[label]
         if al.locked:
             mapped = al.to_primary(raw)
@@ -290,7 +292,7 @@ class Merger:
             if label == p.label or not self._active(label):
                 continue
             al = self.aligners.get(label) or self.aligners.get(p.label)
-            margin = W_MAX if (al is None or al.locked) else SEARCH_S
+            margin = W_MAX if (self.offline or al is None or al.locked) else SEARCH_S
             # Ordered within itself: the other radio has delivered past
             # the window once its newest copy is beyond it.
             newest = q[-1].order if q else None
@@ -341,6 +343,12 @@ class Merger:
         cands = self._by_psdu[label].get(p.frame.psdu)
         if not cands:
             return None
+        if self.offline:
+            # Ring timestamps already share an epoch. A retry burst needs
+            # no training pairs, and its milliseconds must never be fitted
+            # away as if they were an unknown clock offset.
+            best = min(cands, key=lambda c: abs(c.frame.ts - p.frame.ts))
+            return best if abs(best.frame.ts - p.frame.ts) <= W_MAX else None
         al = self._aligner_between(p.label, label)
         if al is not None and al.locked:
             pt, other_is = self._primary_side(p, label)
@@ -379,7 +387,7 @@ class Merger:
         return p.frame.ts, False     # p is the other side; the candidates are primary copies
 
     def _learn(self, copies: dict) -> None:
-        if self.primary not in copies:
+        if self.offline or self.primary not in copies:
             return
         pt = copies[self.primary].frame.ts
         for label, c in copies.items():
@@ -412,7 +420,9 @@ class Merger:
         ts = self._stamp(domain, raw)
         heard: dict[str | None, Frame] = {}
         for label, c in copies.items():
-            if label == domain:
+            if self.offline:
+                own = c.frame.ts
+            elif label == domain:
                 own = ts
             else:
                 al = self.aligners.get(label)

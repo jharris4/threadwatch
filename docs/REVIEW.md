@@ -137,7 +137,7 @@ The raw log is the wrong unit for people, so the pages group it:
 | `key_lag` ... `key_lag_cleared` | one row: *X 2 key generations behind Y for 40m* (or *still behind*) |
 | `ha_unavailable` ... `ha_available` | one row: *X unavailable in Home Assistant for 25m* (or *still unavailable*), with the cause |
 | `ha_unavailable_burst`, `ha_unreachable`, `ha_reachable` | one row each, always |
-| `key_sequence_advanced`, `key_lag_census` | one row each, always: *key rotated to generation 86*, *key generation census* |
+| `key_sequence_advanced`, `key_lag_census` | one row each, always: *new highest sequence observed: 86*, *key generation census* |
 | `partition_or_leader_change`, `phase_locked_storm`, `daily_summary` | one row each, always |
 
 A quiet spell that started yesterday and ended today appears on both days

@@ -757,6 +757,11 @@ class Pipeline:
         suspects = data.get("suspects")
         keys["suspects"] = [s for s in suspects if isinstance(s, dict) and isinstance(s.get("addr"), str)] \
             if isinstance(suspects, list) else []
+        keys["scope"] = data.get("scope") if data.get("scope") in (
+            "device", "router_group", "otbr_confirmed", "unknown") else "unknown"
+        keys["confidence"] = "observation_only" if data.get("confidence") == "observation_only" else "unknown"
+        reasons = data.get("reasons")
+        keys["reasons"] = [r for r in reasons if isinstance(r, str)] if isinstance(reasons, list) else []
         return keys
 
     def _save_keys(self) -> None:
@@ -2768,79 +2773,79 @@ class Pipeline:
 
     def _note_generation(self, who: str, row: dict, generation: int, frame: str, ts: float) -> None:
         """A frame accepted under a key generation above the highest on
-        record: the network rotated its key (or this is the first
+        record: a new highest sequence was observed (or this is the first
         generation ever heard). Announced once per generation, ever; the
         record is persisted before the event so a restart never repeats
-        it. Nothing pages: a rotation is routine, and the devices it
-        strands are found by _check_key_lag.
-
-        The sender is the first suspect for having started the rotation
-        (_origin): a child heard on the new generation while its parent
-        was still fresh on the old one advanced the key on its own, since
-        a child hears nobody but its parent. On 2026-09-17 that was Front
-        Door, an Eve contact sensor, polling on 87 while Dehumidifier was
-        on 86; it lost its parent, its Parent Request carried 87 to the
-        border router, and the mesh followed within a minute."""
+        it. This proves use by the sender, not mesh-wide adoption or who
+        initiated the change. _origin records candidates for investigation;
+        missing traffic, attachment, and stale parent mappings limit attribution."""
         highest = self._keys.get("highest")
         if highest is not None and generation <= highest:
             return
         previous_ts = self._keys.get("highest_first_ts")
         since = ts - previous_ts if previous_ts is not None else None
         suspect = self._origin(who, row, generation, frame, ts, first=True)
+        evidence = {"scope": "device", "confidence": "observation_only",
+                    "reasons": ["accepted_authenticated_frame", "mesh_adoption_not_established",
+                                "origin_not_established"]}
         self._keys = {"highest": generation, "previous": highest, "highest_first_ts": ts,
                       "previous_first_ts": previous_ts, "first_sender": who,
-                      "census_at": ts + self.cfg.key_census_delay_s, "suspects": [suspect]}
+                      "census_at": ts + self.cfg.key_census_delay_s, "suspects": [suspect], **evidence}
         self._save_keys()
         name = self.names.name(who)
         role = rloc16_role(row.get("rloc16"))
         label = name or who
         if highest is None:
-            note = (f"first key generation heard: {generation}, from {label} ({frame}); the mesh's rotations "
-                    "are recorded from here on")
+            note = (f"first key generation heard: {generation}, from {label} ({frame}); "
+                    "initial observation, origin and mesh-wide adoption unknown")
         else:
-            note = (f"the mesh rotated its key: generation {highest} -> {generation}, first heard from {label} "
+            note = (f"new highest sequence observed: generation {highest} -> {generation}, first heard from {label} "
                     f"({frame})")
             if since is not None:
-                note += f", {since / 86400:.1f} days after the previous rotation"
+                note += f", {since / 86400:.1f} days after the previous first observation"
             expected = self.cfg.key_rotation_hours
             if expected is not None and since is not None and since < 0.9 * expected * 3600:
                 note += f" -- early: the configured rotation time is {expected:g} h"
             note += "; " + self._suspect_sentence(suspect)
-            note += ("; a device that does not follow within one more rotation is cut off (key_lag); the "
-                     f"census of who followed, and of any other device that moved ahead of its parent, comes in "
+            note += ("; mesh-wide adoption is not established by this observation; "
+                     f"the generation census comes in "
                      f"{self.cfg.key_census_delay_s / 60:.0f} min")
         self._emit("key_sequence_advanced", "info", ts, sequence=generation, previous=highest,
                    first_sender=who, name=name, rloc16=row.get("rloc16"), role=role["role"] if role else None,
                    frame=frame, since_previous_s=round(since) if since is not None else None,
-                   suspects=[suspect], note=note)
+                   suspects=[suspect], **evidence, note=note)
 
     def _origin(self, who: str, row: dict, generation: int, frame: str, ts: float, first: bool) -> dict | None:
-        """What a device's first frame on ``generation`` says about who
-        started the rotation. A child whose parent's freshest reading
-        ([keys] fresh_s) is still below it advanced the key on its own:
-        ``evidence`` "ahead of its parent", with the parent, its generation
-        and how long before this frame it was heard on it. The first
-        sender is a suspect regardless, "first on air": a router hears
-        every neighbour and may be relaying a frame the sniffer missed,
-        and a child whose parent has no fresh reading cannot be judged.
-        Any other device is a suspect only when ahead of its parent; a
-        child whose parent already moved simply followed: None."""
+        """Record origin candidates, never proof of independent advancement.
+
+        Legacy evidence strings remain stable for consumers. A parent's
+        fresh observation is still only its last known sequence. Always
+        retain the first sender, even when its parent is already ahead;
+        later senders qualify only when observed ahead of their parent.
+        """
         role = (rloc16_role(row.get("rloc16")) or {}).get("role")
         entry = {"addr": who, "name": self.names.name(who), "rloc16": row.get("rloc16"), "role": role,
                  "ts": ts, "frame": frame, "evidence": "first on air", "parent": None, "parent_addr": None,
-                 "parent_generation": None, "parent_heard_s": None}
+                 "parent_generation": None, "parent_heard_s": None,
+                 "confidence": "candidate_only", "reasons": ["first_observed_sender"] if first else []}
         parent = parent_address(row, router_holders(self.seen.table))
         if parent is not None:
             entry["parent_addr"] = parent
             entry["parent"] = self.names.name(parent) or parent
             prow = self.seen.table.get(parent)
             pseq, pts = self._generation(prow, ts) if prow is not None else (None, None)
+            if pseq is not None:
+                entry.update(parent_generation=pseq, parent_heard_s=round(ts - pts))
             if pseq is not None and pseq < generation:
-                entry.update(evidence="ahead of its parent", parent_generation=pseq,
-                             parent_heard_s=round(ts - pts))
+                entry.update(evidence="ahead of its parent")
+                entry["reasons"].extend(["ahead_of_last_parent_observation", "missed_traffic_or_attachment_possible"])
                 return entry
             if pseq is not None:
-                return None
+                entry["reasons"].append("parent_already_observed_at_or_above_sequence")
+                return entry if first else None
+            entry["reasons"].append("parent_sequence_not_fresh")
+        else:
+            entry["reasons"].append("parent_unknown")
         return entry if first else None
 
     def _note_suspect(self, who: str, row: dict, generation: int, frame: str, ts: float) -> None:
@@ -2866,15 +2871,18 @@ class Pipeline:
         label = suspect.get("name") or suspect.get("addr")
         if suspect.get("evidence") == "ahead of its parent":
             heard = suspect.get("parent_heard_s")
-            return (f"{label} advanced the key on its own: its parent {suspect.get('parent')} was still on "
+            return (f"{label} was observed ahead of its last known parent sequence: {suspect.get('parent')} on "
                     f"{suspect.get('parent_generation')}"
                     + (f", heard {heard} s earlier" if heard is not None else "")
-                    + ", and a child hears nobody else, so it is the suspected trigger")
+                    + "; origin unconfirmed: missed traffic, attachment or a stale parent mapping may explain this")
         if suspect.get("role") == "router":
             return (f"{label} is a router, so it may have relayed a frame the sniffer missed: suspected, "
                     "not proven")
         if suspect.get("parent") is None:
             return f"whether {label} started it or relayed it is not known: its parent is not known"
+        if suspect.get("parent_generation") is not None:
+            return (f"{label}'s parent {suspect.get('parent')} was already observed on generation "
+                    f"{suspect['parent_generation']}; origin unconfirmed")
         return (f"whether {label} started it or relayed it is not known: its parent {suspect.get('parent')} had "
                 "no fresh generation reading")
 
@@ -3079,20 +3087,22 @@ class Pipeline:
         if unknown:
             parts.append(f"{len(unknown)} not judged (no fresh frame)")
         suspects = list(self._keys.get("suspects") or [])
-        parts.append("suspected trigger" + ("s: " if len(suspects) > 1 else ": ")
+        parts.append("origin candidates (unconfirmed): "
                      + ", ".join(self._suspect_label(s) for s in suspects) if suspects else "trigger unknown")
         self._emit("key_lag_census", "info", now, sequence=highest, mesh_generation=self.decryptor.key_sequence,
                    counts=counts, behind_parent_1=behind_1, behind_parent_2plus=behind_2plus,
                    routers_behind=routers_behind, unknown=unknown, suspects=suspects,
-                   note=f"census {self.cfg.key_census_delay_s / 60:.0f} min after the rotation; " + "; ".join(parts))
+                   note=f"census {self.cfg.key_census_delay_s / 60:.0f} min after the first observation; "
+                   + "; ".join(parts))
 
     @staticmethod
     def _suspect_label(suspect: dict) -> str:
         """One suspect for a note: the name and why."""
         label = suspect.get("name") or suspect.get("addr")
         if suspect.get("evidence") == "ahead of its parent":
-            return f"{label} (ahead of its parent {suspect.get('parent')}, still on {suspect.get('parent_generation')})"
-        return f"{label} (first on air)"
+            return (f"{label} (ahead of last known parent sequence: {suspect.get('parent')} "
+                    f"on {suspect.get('parent_generation')})")
+        return f"{label} (first observed sender)"
 
     # ------------------------------------------------- border routers
 

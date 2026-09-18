@@ -182,7 +182,7 @@ Each snapshot is one directory:
       retransmissions.json   the retransmission detector's baseline and open elevation
       storm.json             the storm detector's windows, onsets and last page
       key-generations.json   the highest key generation heard, the one before, who was heard
-                             first under it and who is suspected of starting the rotation
+                             first under it and unconfirmed origin candidates
                              (docs/ALERTING.md, key_sequence_advanced)
       events/                a copy of the whole event log, one file per day
       ha-map.json            with [ha_availability]: HA device id -> address, names and entities (the link

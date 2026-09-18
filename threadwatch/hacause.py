@@ -23,8 +23,9 @@ RADIO_OK_S = 5 * 60
 SILENT_BEFORE_S = 120.0
 
 SENTENCES = {
-    "key_lag": ("Cut off by a key change: radio alive on generation {generation}, parent on {parent}. "
-                "A battery pull or power cycle forces a rejoin."),
+    "key_lag": ("Key lag may explain the outage: observed generation {generation}, parent on {parent}. "
+                "Receiver acceptance and the cause of the key change are unconfirmed; preserve the capture "
+                "and check recovery exchanges."),
     "lost_parent": "Still polling its parent with no answer: parent gone or link broken.",
     "silent": "Radio went silent at {when}: device died, lost power or left the mesh.",
     "radio_ok": "Radio and key look fine: likely the Matter, IP or HA side. Check the Matter Server log.",

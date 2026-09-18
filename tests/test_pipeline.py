@@ -2310,6 +2310,9 @@ class KeyGenerationTest(unittest.TestCase):
                          (6, 5, ROUTER, t + 100))
         pipe.seen.save()
         pipe2 = self._pipe()
+        self.assertEqual(pipe2.keys_status()["scope"], "device")
+        self.assertEqual(pipe2.keys_status()["confidence"], "observation_only")
+        self.assertEqual(pipe2.keys_status()["reasons"], ev["reasons"])
         pipe2.ingest(frame(t + 200, ROUTER, sequence=6))
         pipe2.ingest(frame(t + 201, SENSOR, sequence=5))
         pipe2.ingest(poll(t + 202, SENSOR, 7, sequence=6))
@@ -2319,7 +2322,7 @@ class KeyGenerationTest(unittest.TestCase):
         ev = self._events(pipe2, "key_sequence_advanced")[0]
         self.assertEqual((ev["sequence"], ev["previous"], ev["frame"], ev["role"]), (7, 6, "mac_poll", "child"))
 
-    def test_a_child_ahead_of_its_parent_is_the_suspected_trigger_and_later_ones_join_the_census(self):
+    def test_a_child_ahead_of_its_parent_is_an_unconfirmed_candidate_and_later_ones_join_the_census(self):
         self.cfg.key_census_delay_s = 600
         pipe = self._pipe()
         t = self._mesh(pipe, self.T0, 5)
@@ -2327,7 +2330,7 @@ class KeyGenerationTest(unittest.TestCase):
         first = self._events(pipe, "key_sequence_advanced")[0]
         self.assertEqual((first["suspects"][0]["addr"], first["suspects"][0]["evidence"]), (ROUTER, "first on air"))
         # The porch sensor polls on 6 while its parent is fresh on 5: it
-        # advanced the key on its own, and nothing else was on 6.
+        # is an origin candidate, but missed traffic or attachment could explain it.
         pipe.ingest(poll(t + 100, SENSOR, 7, sequence=6))
         ev = self._events(pipe, "key_sequence_advanced")[1]
         self.assertEqual((ev["sequence"], ev["first_sender"], ev["role"]), (6, SENSOR, "child"))
@@ -2338,9 +2341,13 @@ class KeyGenerationTest(unittest.TestCase):
                          (SENSOR, "Porch Sensor", "child", "0401", "mac_poll", "ahead of its parent",
                           "Hall Router", ROUTER, 5, t + 100))
         self.assertEqual(sus["parent_heard_s"], round(t + 100 - (t - 20 + 0.5)))   # its last frame under 5
-        self.assertIn("Porch Sensor advanced the key on its own: its parent Hall Router was still on 5, heard "
-                      f"{sus['parent_heard_s']} s earlier, and a child hears nobody else, so it is the suspected "
-                      "trigger", ev["note"])
+        self.assertIn("Porch Sensor was observed ahead of its last known parent sequence: Hall Router on 5, heard "
+                      f"{sus['parent_heard_s']} s earlier; origin unconfirmed", ev["note"])
+        self.assertEqual((ev["scope"], ev["confidence"]), ("device", "observation_only"))
+        self.assertIn("mesh_adoption_not_established", ev["reasons"])
+        self.assertEqual(sus["confidence"], "candidate_only")
+        self.assertIn("missed_traffic_or_attachment_possible", sus["reasons"])
+        self.assertNotIn("on its own", ev["note"])
         # The routers follow; a child heard on 6 after its parent moved
         # simply followed, and is no suspect.
         self._heard(pipe, t + 200, ROUTER, "0400", 6)
@@ -2359,8 +2366,9 @@ class KeyGenerationTest(unittest.TestCase):
         pipe2.periodic(t + 100 + 600)
         census = self._events(pipe2, "key_lag_census")[0]
         self.assertEqual([s["addr"] for s in census["suspects"]], [SENSOR, SENSOR2])
-        self.assertIn("suspected triggers: Porch Sensor (ahead of its parent Hall Router, still on 5), "
-                      "Garage Sensor (ahead of its parent Attic Router, still on 5)", census["note"])
+        self.assertIn("origin candidates (unconfirmed): Porch Sensor "
+                      "(ahead of last known parent sequence: Hall Router on 5), "
+                      "Garage Sensor (ahead of last known parent sequence: Attic Router on 5)", census["note"])
         # After the census the window is closed: a straggler moving ahead
         # of a parent that is one behind is key_lag's story, not a suspect.
         pipe2.ingest(frame(t + 800, ROUTER3, sequence=5))
@@ -2370,6 +2378,36 @@ class KeyGenerationTest(unittest.TestCase):
         pipe2.ingest(frame(t + 802, "d3d3d3d3d3d3d3d3", sequence=6))
         state = json.loads((self.cfg.state_dir / "key-generations.json").read_text())
         self.assertEqual([s["addr"] for s in state["suspects"]], [SENSOR, SENSOR2])
+
+    def test_initial_observation_retains_sender_when_parent_was_already_seen_at_that_sequence(self):
+        pipe = self._pipe()
+        t = self._mesh(pipe, self.T0, 5)
+        # The sequence state can be lost independently of the device table.
+        pipe._keys = {}
+        pipe.ingest(poll(t + 100, SENSOR, 7, sequence=5))
+        ev = self._events(pipe, "key_sequence_advanced")[-1]
+        suspect = ev["suspects"][0]
+        self.assertEqual((ev["previous"], ev["scope"], suspect["addr"]), (None, "device", SENSOR))
+        self.assertEqual(suspect["parent_generation"], 5)
+        self.assertIn("parent_already_observed_at_or_above_sequence", suspect["reasons"])
+        self.assertIn("origin unconfirmed", pipe._suspect_sentence(suspect))
+
+    def test_legacy_key_state_has_unknown_provenance_and_does_not_repeat_the_observation(self):
+        pipe = self._pipe()
+        t = self._mesh(pipe, self.T0, 5)
+        pipe.seen.save()
+        path = self.cfg.state_dir / "key-generations.json"
+        state = json.loads(path.read_text())
+        for key in ("scope", "confidence", "reasons"):
+            state.pop(key)
+            for candidate in state["suspects"]:
+                candidate.pop(key, None)
+        path.write_text(json.dumps(state))
+        restarted = self._pipe()
+        self.assertEqual((restarted.keys_status()["scope"], restarted.keys_status()["confidence"],
+                          restarted.keys_status()["reasons"]), ("unknown", "unknown", []))
+        restarted.ingest(frame(t + 100, ROUTER, sequence=5))
+        self.assertEqual(self._events(restarted, "key_sequence_advanced"), [])
 
     def test_a_first_sender_that_cannot_be_judged_is_first_on_air(self):
         pipe = self._pipe()

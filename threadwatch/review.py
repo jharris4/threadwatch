@@ -246,16 +246,17 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
                 else "Home Assistant reachable again", rec.get("note", ""))
         elif ev == "key_sequence_advanced":
             seq, prev = rec.get("sequence"), rec.get("previous")
-            title = (f"key rotated to generation {seq}" if prev is not None
+            title = (f"new highest sequence observed: {seq}" if prev is not None
                      else f"first key generation heard: {seq}")
             suspects = [s for s in (rec.get("suspects") or []) if isinstance(s, dict)]
             ahead = suspects[0] if suspects and suspects[0].get("evidence") == "ahead of its parent" else None
             new("key_rotation", rec, title, f"first from {_label(rec)} ({rec.get('frame')})"
-                + (f", {fmt_duration(rec['since_previous_s'])} after the previous"
+                + (f", {fmt_duration(rec['since_previous_s'])} after the previous observation"
                    if isinstance(rec.get("since_previous_s"), (int, float)) else "")
                 + (" (early)" if "early" in (rec.get("note") or "") else "")
-                + (f"; on its own: its parent {ahead.get('parent')} was still on {ahead.get('parent_generation')}"
-                   if ahead else ""))
+                + (f"; ahead of last known parent sequence: {ahead.get('parent')} on {ahead.get('parent_generation')}"
+                   if ahead else "")
+                + "; origin and mesh-wide adoption unconfirmed")
         elif ev == "key_lag_census":
             behind = rec.get("behind_parent_2plus") or []
             one = rec.get("behind_parent_1") or []
@@ -267,9 +268,9 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
                                        if behind else "",
                                        "routers behind: " + ", ".join(i.get("name") or i.get("addr") for i in routers)
                                        if routers else "") if p) or "everyone on the current generation")
-                + ("; suspected trigger: " + ", ".join(
+                + ("; origin candidates (unconfirmed): " + ", ".join(
                     (s.get("name") or s.get("addr") or "?")
-                    + (" (ahead of its parent)" if s.get("evidence") == "ahead of its parent" else "")
+                    + (" (ahead of last known parent sequence)" if s.get("evidence") == "ahead of its parent" else "")
                     for s in suspects) if suspects else ""))
         elif ev == "rssi_degradation":
             addr = _addr(rec) or ""

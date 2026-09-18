@@ -143,20 +143,20 @@ LEGEND = [
      "succeeds again. No device episode opens or closes meanwhile, and the first poll after is a "
      "baseline, not transitions. Notice, logged only."),
     ("key_lag", "Key generation lag / cleared",
-     "The device is still transmitting under a network key two or more generations older than its "
-     "parent's (or, for a router, the mesh's). OpenThread accepts frames only within one generation of "
-     "its own, so every frame it sends is dropped while the radio still acknowledges its polls: it looks "
-     "alive, never goes quiet and never starves, and delivers nothing. One generation behind is normal "
-     "after a rotation and is never reported. Warning for a child, critical for a router, once per "
-     "episode after [keys] confirm_s of fresh frames; a battery pull or power cycle forces a rejoin, which "
-     "fetches the current key, and the row closes when the device is heard within a generation again."),
-    ("key_rotation", "Key rotated",
-     "The mesh rotated its network key: the first frame accepted under a generation above any heard "
-     "before, and from whom. Routine (OpenThread rotates on a schedule, 28 days by default) and logged "
-     "once per generation, ever. The census an hour later says who followed; a device that misses two "
-     "rotations in a row is cut off (key lag)."),
+     "The device is observed transmitting two or more generations behind its last known parent sequence "
+     "(or the mesh reference for a router). This can explain lost connectivity: ordinary OpenThread MAC "
+     "traffic outside the current/previous/next key window is rejected. A captured ACK does not prove "
+     "security acceptance or application delivery. Recovery may involve MLE attachment or resynchronization. "
+     "One generation behind is never paged. Warning for a child, critical for a router, after [keys] confirm_s "
+     "of fresh frames; clearing the sequence lag does not by itself establish application recovery."),
+    ("key_rotation", "New highest sequence observed",
+     "The first accepted authenticated frame under a sequence above any previously observed, and its sender. "
+     "This is evidence of that device's transmission; the origin and mesh-wide adoption remain unconfirmed. "
+     "A child ahead of its last known parent sequence is an origin candidate, but missed traffic, attachment "
+     "or a stale parent mapping may explain it. Logged once per new highest sequence; the census follows."),
     ("key_census", "Key generation census",
-     "[keys] census_delay_s after a rotation: how many devices are on each generation, who is one "
+     "[keys] census_delay_s after a new highest sequence observation: how many devices are on each generation, who is "
+     "one "
      "behind (normal, and never paged), who is two or more behind (cut off), which routers trail the "
      "mesh, and who could not be judged for want of a fresh frame. Information only."),
     ("retransmissions", "Retransmissions elevated",
@@ -818,13 +818,15 @@ class Site:
                 suspects = [s for s in (keys.get("suspects") or []) if isinstance(s, dict) and s.get("addr")]
                 suspected = ", ".join(
                     f'<a href="/device/{esc(s["addr"])}">{esc(self.names().name(s["addr"]) or s["addr"])}</a>'
-                    + (" (ahead of its parent)" if s.get("evidence") == "ahead of its parent" else "")
+                    + (" (ahead of last known parent sequence)" if s.get("evidence") == "ahead of its parent" else "")
                     for s in suspects)
                 row("key generation", f'{esc(keys["highest"])} <span class="muted">first heard from {who}'
                                       + (f' {ago(when, now)}' if when else "")
                                       + (f', previously {esc(keys["previous"])}' if keys.get("previous") is not None
                                          else "")
-                                      + (f'; suspected trigger: {suspected}' if suspected else "") + '</span>')
+                                      + '; highest observed, origin and mesh-wide adoption unconfirmed'
+                                      + (f'; origin candidates (unconfirmed): {suspected}' if suspected else "")
+                                      + '</span>')
             avail = st.get("ha_availability")
             if isinstance(avail, dict):
                 if not avail.get("enabled"):

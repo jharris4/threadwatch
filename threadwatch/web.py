@@ -333,7 +333,39 @@ class Site:
             text += f' <span class="muted">1 behind {esc(against)}</span>'
         if r.get("key_lagging"):
             text += ' <span class="bad">cut off</span>'
+        # Only what is unusual goes on the list page; the device page
+        # has the breakdown (key_facts_html).
+        facts = r.get("key_sequences") or {}
+        if facts.get("mixed"):
+            text += ' <span class="warn">mixed: ' + esc(", ".join(map(str, facts["recent_sequences"]))) + '</span>'
+        if facts.get("recent_rejected"):
+            text += f' <span class="muted">{facts["recent_rejected"]} rejected MIC-valid</span>'
         return text
+
+    @staticmethod
+    def key_facts_html(facts: dict) -> str:
+        """The device page's breakdown of sequence observations: the latest
+        accepted MAC and MLE readings, and every retained span of
+        MIC-valid frames the recorder refused (a replay, a counter that
+        went backwards, or a generation older than any retained), which is
+        what a device still transmitting on an old key looks like without
+        opening a pcap. Empty when nothing is on record."""
+        parts = []
+        for layer in ("mac", "mle"):
+            entry = facts.get(layer) or {}
+            point = entry.get("latest")
+            if point:
+                stamp = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(point["ts"]))
+                parts.append(f'{layer.upper()} {point["sequence"]} at {stamp}'
+                             + (' (from the counter record)' if point.get("legacy") else ''))
+            for span in entry.get("rejected") or []:
+                first = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(span["first_ts"]))
+                last = time.strftime('%H:%M:%S', time.localtime(span["last_ts"]))
+                parts.append(f'{layer.upper()} {span["sequence"]} rejected {span["count"]} ({span["reason"]}), '
+                             f'{first} to {last}')
+        if facts.get("mixed"):
+            parts.append('mixed recent accepted sequences: ' + ', '.join(map(str, facts["recent_sequences"])))
+        return esc('; '.join(parts))
 
     @staticmethod
     def role_html(r: dict, now: float) -> str:
@@ -552,7 +584,8 @@ class Site:
         names = self.names()
         seen = self.seen()
         every = device_rows(seen, names, self.cfg.quiet_min_rssi_dbm, now, leader_router=self.leader_router(),
-                            mesh_generation=self.mesh_generation(), ha=self.ha_availability(),
+                            mesh_generation=self.mesh_generation(), key_fresh_s=self.cfg.key_fresh_s,
+                            ha=self.ha_availability(),
                             visitors=self.visitors())
         dominant = dominant_pan(seen, self.cfg.pan_id, self.cfg.state_dir)
         rows = select_devices(every, dominant, only, sort)
@@ -667,7 +700,8 @@ class Site:
             head.append(f'{len(addrs)} addresses (rotates)')
         live = next((r for r in device_rows(seen, names, self.cfg.quiet_min_rssi_dbm, now,
                                             leader_router=self.leader_router(),
-                                            mesh_generation=self.mesh_generation(), ha=self.ha_availability())
+                                            mesh_generation=self.mesh_generation(), key_fresh_s=self.cfg.key_fresh_s,
+                                            ha=self.ha_availability())
                      if r["addr"] == primary), None)
         if live and live["role"]:
             head.append(self.role_html(live, now))
@@ -676,6 +710,9 @@ class Site:
         if live and live.get("generation") is not None:
             head.append(f'key generation {self.generation_html(live)}'
                         f' <span class="muted">as of {ago(live.get("generation_ts"), now)}</span>')
+            breakdown = self.key_facts_html(live.get("key_sequences") or {})
+            if breakdown:
+                head.append(f'sequence observations: <span class="muted">{breakdown}</span>')
         if live and live.get("border_router_label"):
             head.append(f'border router {esc(live["border_router_label"])}, '
                         f'hostname <code>{esc(live["border_router"])}</code>'
@@ -954,7 +991,8 @@ class Site:
         if path == "/api/devices":
             seen = self.seen()
             rows = device_rows(seen, self.names(), self.cfg.quiet_min_rssi_dbm, leader_router=self.leader_router(),
-                               mesh_generation=self.mesh_generation(), ha=self.ha_availability())
+                               mesh_generation=self.mesh_generation(), key_fresh_s=self.cfg.key_fresh_s,
+                               ha=self.ha_availability())
             return {"devices": select_devices(rows, dominant_pan(seen, self.cfg.pan_id, self.cfg.state_dir),
                                               query.get("only", ""),
                                               query.get("sort", "name"))}
@@ -975,12 +1013,13 @@ class Site:
             primary = live_address(addrs, table)
             live = next((r for r in device_rows(seen, names, self.cfg.quiet_min_rssi_dbm,
                                                 leader_router=self.leader_router(),
-                                                mesh_generation=self.mesh_generation(), ha=self.ha_availability())
+                                                mesh_generation=self.mesh_generation(),
+                                                key_fresh_s=self.cfg.key_fresh_s, ha=self.ha_availability())
                          if r["addr"] == primary), {})
             return {"addr": primary, "addresses": addrs, "name": name if name != addrs[0] else None,
                     "live": {k: live.get(k) for k in ("role", "rloc16", "rloc16_ts", "router_id",
                                                       "leader", "parent", "parent_addr", "border_router",
-                                                      "rotated_to", "generation", "generation_ts",
+                                                      "rotated_to", "generation", "generation_ts", "key_sequences",
                                                       "parent_generation", "mesh_generation", "lag",
                                                       "key_lagging", "ha_state", "ha_since", "ha_burst_id")},
                     "last_seen": table.get(primary),

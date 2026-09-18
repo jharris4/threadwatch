@@ -356,6 +356,8 @@ class Pipeline:
         self.replayed = 0                            # frames refused as replays this run
         self._replay_said: dict[str, float] = {}     # addr -> when its replays were last mentioned
         self._counter_was_retry = False              # last counter decision was a retry (see _counter_advances)
+        self._counter_rejection_reason: str | None = None
+        self._key_observations: list[tuple] = []
         self._resolve_after: dict[str, float] = {}   # short addr -> next attempt ts
         self._resolve_fails: dict[str, int] = {}     # short addr -> searches that found nobody, in a row
         self._resolve_tokens = float(self.RESOLVE_TRIALS_BURST)   # candidate trials in hand (see identity)
@@ -1226,6 +1228,8 @@ class Pipeline:
         if counter is None:
             return plain, False
         live = self._counter_advances(self._mac_counter, who, counter, f.ts, "frame", sequence)
+        self._key_observations.append(("mac", sequence, f.ts, live,
+                                       self._counter_was_retry, self._counter_rejection_reason))
         if live:
             self._last_mac_sequence = sequence
         return plain, live
@@ -1248,8 +1252,10 @@ class Pipeline:
                           sequence: int | None) -> bool:
         # Set for the caller that has just asked, and read straight after.
         self._counter_was_retry = False
+        self._counter_rejection_reason = None
         if who not in self._auth_addresses:
             if len(self._auth_addresses) >= self.AUTH_MAX:
+                self._counter_rejection_reason = "authentication_history_full"
                 if self._auth_capped_at is None or ts - self._auth_capped_at >= self.CAP_NOTE_S:
                     self._auth_capped_at = ts
                     self._emit("authentication_history_full", "warning", ts, limit=self.AUTH_MAX,
@@ -1275,6 +1281,7 @@ class Pipeline:
             last = gens.pop(None, None)
         if last is None:
             if gens and sequence is not None and sequence < min(g for g in gens if g is not None):
+                self._counter_rejection_reason = "older_than_retained"
                 self._say_replay(who, ts, f"a secured {what} under key generation {sequence}, older than any "
                                           f"this device has been heard under ({min(gens)}), is not counted as "
                                           "a sighting: a recording from before the network rotated its key")
@@ -1289,6 +1296,7 @@ class Pipeline:
             # to know the difference (see _note_observed_name).
             self._counter_was_retry = True
             return True
+        self._counter_rejection_reason = "counter_not_advancing"
         self._say_replay(who, ts, f"a secured {what} with counter {counter} at or below the last accepted "
                                   f"({last[0]}) under key generation {sequence} is not counted as a sighting: "
                                   "a replay of an earlier frame, or the device's counter went backwards")
@@ -1311,6 +1319,17 @@ class Pipeline:
                   file=sys.stderr, flush=True)
 
     # ---------------------------------------------------------- identity
+
+    def _record_key_facts(self, who: str) -> None:
+        """Forensic facts cannot admit devices or refresh liveness/topology."""
+        from .keyfacts import observe
+        row = self.seen.table.get(who)
+        if row is None:
+            return
+        for layer, sequence, ts, accepted, retry, reason in self._key_observations:
+            observe(row, layer, sequence, ts, accepted=accepted, retry=retry, reason=reason)
+        if self._key_observations:
+            self.seen._dirty = True
 
     RESOLVE_RETRY_S = 30.0
     RESOLVE_RETRY_MAX_S = 1800.0      # the backoff on a short address nobody in the table sent from
@@ -1445,6 +1464,7 @@ class Pipeline:
         address when this frame also vouched for it, and None when it did
         not, so a caller can count what the pipeline counted."""
         ts = f.ts
+        self._key_observations = []
         self.detector.add_frame(ts)
         bucket = int(ts // 3600)
         self._frames_by_hour[bucket] = self._frames_by_hour.get(bucket, 0) + 1
@@ -1496,6 +1516,8 @@ class Pipeline:
         if who and info is not None and info.secured and info.counter is not None:
             fresh_mle = self._counter_advances(self._mle_counter, who, info.counter, ts, "MLE message",
                                                info.key_sequence)
+            self._key_observations.append(("mle", info.key_sequence, ts, fresh_mle,
+                                           self._counter_was_retry, self._counter_rejection_reason))
             retry = retry or self._counter_was_retry
             live = live or fresh_mle
         if info is not None and info.secured and fresh_mle:
@@ -1542,6 +1564,7 @@ class Pipeline:
                 # read as a device heard for 44 h.
                 row["heard_since"] = ts
             before = newest_generation(row)[0]
+            self._record_key_facts(who)
             for key, table in (("counter", self._mac_counter), ("mle_counter", self._mle_counter)):
                 gens = table.get(who)
                 if not gens:
@@ -1733,6 +1756,8 @@ class Pipeline:
         self.last_frame = f
         self.last_sighting = who if (who and live) else None
         if not (who and live):
+            if who:
+                self._record_key_facts(who)
             self.last_generation = None
         self.last_mle = (info, fresh_mle) if info is not None else None
         return who

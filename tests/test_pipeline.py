@@ -2217,7 +2217,7 @@ ROUTER3 = "a3a3a3a3a3a3a3a3"
 SENSOR2 = "c2c2c2c2c2c2c2c2"
 
 
-def rejoin_frame(ts, src_ext, sequence):
+def rejoin_frame(ts, src_ext, sequence, mac_sequence=None):
     """A MAC-secured frame from ``src_ext`` carrying an MLE Parent Request
     under the same key generation: what a device sends when it has lost
     its parent. Both layers vouch for the sender, and _apply_mle stamps
@@ -2238,7 +2238,8 @@ def rejoin_frame(ts, src_ext, sequence):
     nonce = bytes.fromhex(src_ext) + struct.pack(">L", counter) + bytes([5])
     msg = bytes([0]) + aux + AESCCM(mle_key, tag_length=4).encrypt(nonce, bytes([9]), src_ip + ALL_NODES + aux)
     psdu = secured_psdu(src_ext, counter, dst="ffff", seq=int(ts) & 0xFF,
-                        payload=lowpan_udp(19788, 19788, msg), sequence=sequence)
+                        payload=lowpan_udp(19788, 19788, msg),
+                        sequence=sequence if mac_sequence is None else mac_sequence)
     return parse_frame(ts, psdu, 230)
 
 
@@ -2391,6 +2392,87 @@ class KeyGenerationTest(unittest.TestCase):
         self.assertEqual(suspect["parent_generation"], 5)
         self.assertIn("parent_already_observed_at_or_above_sequence", suspect["reasons"])
         self.assertIn("origin unconfirmed", pipe._suspect_sentence(suspect))
+
+    def test_layer_readings_stay_apart_across_a_restart(self):
+        # The lag detector still judges by the newest generation on record
+        # (newest_generation); the facts keep each layer's own latest reading.
+        from threadwatch.keyfacts import facts, latest_generation
+        from threadwatch.names import newest_generation
+
+        pipe = self._pipe()
+        t = self._mesh(pipe, self.T0, 87, children=())
+        self._heard(pipe, t, SENSOR, "0401", 85)
+        pipe.ingest(rejoin_frame(t + 10, SENSOR, 87, mac_sequence=85))
+        row = pipe.seen.table[SENSOR]
+        self.assertEqual(latest_generation(row), (85, t + 10))
+        self.assertEqual(facts(row)["mle"]["latest"]["sequence"], 87)
+        self.assertEqual(newest_generation(row), (87, t + 10))
+        pipe.seen.save()
+        restarted = self._pipe()
+        later = t + self.cfg.key_fresh_s + 20
+        restarted.ingest(poll(later, SENSOR, 7, sequence=85))
+        row = restarted.seen.table[SENSOR]
+        self.assertEqual(latest_generation(row), (85, later))
+        self.assertEqual(facts(row)["mle"]["latest"]["ts"], t + 10)
+        self.assertEqual(facts(row)["highest_authenticated"]["ts"], t + 10)
+
+    def test_rejected_authenticated_frames_are_visible_without_refreshing_live_state(self):
+        from threadwatch.keyfacts import facts, latest_generation
+
+        pipe = self._pipe()
+        t = self._mesh(pipe, self.T0, 85)
+        pipe.ingest(frame(t + 1, SENSOR, counter=100000, sequence=85))
+        row = pipe.seen.table[SENSOR]
+        live = {k: row.get(k) for k in ("last_seen", "frames", "rloc16", "counter", "counter_ts")}
+        count = len(self._events(pipe, "key_sequence_advanced"))
+        pipe.ingest(frame(t + 30, SENSOR, counter=99999, sequence=85))
+        pipe.ingest(frame(t + 31, SENSOR, counter=100001, sequence=82))
+        self.assertIsNone(pipe.last_sighting)
+        self.assertEqual({k: row.get(k) for k in live}, live)
+        self.assertEqual(latest_generation(row), (85, t + 1))
+        rejected = facts(row)["mac"]["rejected"]
+        self.assertEqual([(s["sequence"], s["reason"]) for s in rejected],
+                         [(85, "counter_not_advancing"), (82, "older_than_retained")])
+        self.assertEqual(len(self._events(pipe, "key_sequence_advanced")), count)
+        pipe.seen.save()
+        restarted = self._pipe()
+        self.assertEqual(facts(restarted.seen.table[SENSOR])["mac"]["rejected"], rejected)
+        restarted.ingest(frame(t + 40, SENSOR, counter=99999, sequence=85))
+        self.assertIsNone(restarted.last_sighting)
+
+    def test_bad_mic_cannot_enter_sequence_facts(self):
+        from dataclasses import replace
+
+        from threadwatch.keyfacts import facts
+
+        pipe = self._pipe()
+        t = self._mesh(pipe, self.T0, 85)
+        before = facts(pipe.seen.table[SENSOR])
+        forged = frame(t + 1, SENSOR, sequence=90)
+        forged = replace(forged, psdu=forged.psdu[:-1] + bytes([forged.psdu[-1] ^ 1]))
+        pipe.ingest(forged)
+        self.assertIsNone(pipe.last_sighting)
+        self.assertEqual(facts(pipe.seen.table[SENSOR]), before)
+
+    def test_fresh_mac_does_not_promote_replayed_inner_mle_to_latest(self):
+        from tests.frames import next_counter, secured_psdu
+        from threadwatch.keyfacts import facts
+        from threadwatch.pcap import parse_frame
+
+        pipe = self._pipe()
+        t = self._mesh(pipe, self.T0, 85)
+        original = rejoin_frame(t + 10, SENSOR, 87, mac_sequence=85)
+        pipe.ingest(original)
+        plain = pipe.decryptor.decrypt_frame_counter(original.psdu, SENSOR, None)[0]
+        wrapped = secured_psdu(SENSOR, next_counter(SENSOR), dst="ffff", payload=plain, sequence=85)
+        pipe.ingest(parse_frame(t + 40, wrapped, 230))
+        row = pipe.seen.table[SENSOR]
+        self.assertEqual(row["last_seen"], t + 40)
+        self.assertEqual(row["rejoin_ts"], t + 10)
+        state = facts(row)
+        self.assertEqual(state["mac"]["latest"]["ts"], t + 40)
+        self.assertEqual(state["mle"]["latest"]["ts"], t + 10)
+        self.assertEqual(state["mle"]["rejected"][0]["sequence"], 87)
 
     def test_legacy_key_state_has_unknown_provenance_and_does_not_repeat_the_observation(self):
         pipe = self._pipe()

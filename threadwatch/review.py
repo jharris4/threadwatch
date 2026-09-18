@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 from .events import day_bounds, day_of, iter_days, list_days, next_day, prev_day, read_day
+from .keyfacts import summary as key_summary
 from .names import (
     DeviceNames,
     LastSeen,
@@ -713,7 +714,7 @@ def day_index(events_dir: Path) -> list[dict]:
 def device_rows(seen: LastSeen, names: DeviceNames, min_rssi_dbm: float,
                 now: float | None = None, leader_router: int | None = None,
                 mesh_generation: int | None = None, ha: dict | None = None,
-                visitors: VisitorNames | None = None) -> list[dict]:
+                visitors: VisitorNames | None = None, key_fresh_s: float = 1800) -> list[dict]:
     """One dict per tracked address. The live role comes from the RLOC16 the
     recorder last saw the device use: router or child, which router it is
     or hangs off, and whether it holds the partition's leader id. The key
@@ -747,6 +748,7 @@ def device_rows(seen: LastSeen, names: DeviceNames, min_rssi_dbm: float,
             "ha_burst_id": ha_info.get("burst_id") if ha_info else None,
             "generation": generation,
             "generation_ts": generation_ts,
+            "key_sequences": key_summary(row, now, key_fresh_s),
             "parent_generation": parent_generation,
             "mesh_generation": mesh_generation,
             "lag": reference - generation if generation is not None and reference is not None else None,

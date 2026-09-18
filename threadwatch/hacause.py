@@ -47,8 +47,9 @@ def classify(row: dict | None, parent_row: dict | None, episode_since: float, no
     if row.get("keylag_since") is not None and isinstance(gens, list) and len(gens) == 2:
         return "key_lag", SENTENCES["key_lag"].format(generation=gens[0], parent=gens[1])
     generation, gen_ts = newest_generation(row)
-    parent_gen, _ = newest_generation(parent_row) if parent_row else (None, None)
+    parent_gen, parent_ts = newest_generation(parent_row) if parent_row else (None, None)
     if (generation is not None and gen_ts is not None and now - gen_ts <= fresh_s
+            and parent_ts is not None and 0 <= now - parent_ts <= fresh_s
             and parent_gen is not None and parent_gen >= generation + 2):
         return "key_lag", SENTENCES["key_lag"].format(generation=generation, parent=parent_gen)
     if row.get("starved"):

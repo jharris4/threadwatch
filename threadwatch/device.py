@@ -401,6 +401,30 @@ def run_device(cfg: Config, target: str, pcap_file: Path | None = None,
             a, b, n = generations[gen]
             print(f"  {gen}: {_t.strftime('%m-%d %H:%M', _t.localtime(a))} -> "
                   f"{_t.strftime('%m-%d %H:%M', _t.localtime(b))}  ({n} frame{'s' if n != 1 else ''})")
+    from .keyfacts import summary as key_summary
+    for addr in addrs:
+        row = pipe.seen.table.get(addr)
+        if row is None:
+            continue
+        facts = key_summary(row, pipe.last_frame.ts if pipe.last_frame else reference or 0, cfg.key_fresh_s)
+        if facts["highest_authenticated"] is None:
+            continue
+        print(f"\nsequence observations for {addr}:")
+        for layer in ("mac", "mle"):
+            entry = facts[layer]
+            latest = entry["latest"]
+            if latest:
+                stamp = _t.strftime('%m-%d %H:%M:%S', _t.localtime(latest['ts']))
+                print(f"  latest accepted {layer.upper()}: {latest['sequence']} at {stamp}")
+            for decision in ("accepted", "rejected"):
+                for span in entry[decision]:
+                    first = _t.strftime('%m-%d %H:%M:%S', _t.localtime(span['first_ts']))
+                    last = _t.strftime('%m-%d %H:%M:%S', _t.localtime(span['last_ts']))
+                    detail = f", {span['retries']} retries" if decision == "accepted" else f", {span['reason']}"
+                    print(f"  {layer.upper()} {decision} {span['sequence']}: {first} -> {last}; "
+                          f"{span['count']} observations{detail}")
+        if facts["mixed"]:
+            print("  mixed recent accepted sequences: " + ", ".join(map(str, facts["recent_sequences"])))
     if gaps:
         print(f"\nsilences (>{fmt_duration(cfg.quiet_s)}, the configured [quiet] silence_s):")
         for a, b in gaps[-10:]:

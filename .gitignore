@@ -19,3 +19,4 @@ config/ha.env
 REVISION
 
 .venv/
+scratch/

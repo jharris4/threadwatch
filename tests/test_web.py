@@ -339,13 +339,24 @@ class PageBranchTest(unittest.TestCase):
                   "counter_seq": 86, "counter_ts": self.now - 30},
             AQ: {"first_seen": self.now - 7200, "last_seen": self.now - 60, "frames": 900, "rssi": -60.0,
                  "pan": 0x4e21, "types": {}, "rloc16": "0401", "rloc16_ts": self.now - 60,
-                 "counter_seq": 84, "counter_ts": self.now - 60, "keylag_since": self.now - 900},
+                 "counter_seq": 84, "counter_ts": self.now - 60, "keylag_since": self.now - 900,
+                 "key_facts": {"version": 1, "mac": {
+                     "latest": {"sequence": 84, "ts": self.now - 60},
+                     "accepted": [{"sequence": 84, "first_ts": self.now - 7200, "last_ts": self.now - 60,
+                                   "count": 900, "retries": 0}],
+                     "rejected": [{"sequence": 84, "first_ts": self.now - 700, "last_ts": self.now - 100,
+                                   "count": 3, "reason": "counter_not_advancing"}]}}},
         })
         _st, body = self.get("/devices")
         self.assertIn("<th>key gen</th>", body)
-        self.assertIn('84 <span class="warn">2 behind 86</span> <span class="bad">cut off</span>', body)
+        # The list page marks only what is unusual; the breakdown is on the device page.
+        self.assertIn('84 <span class="warn">2 behind 86</span> <span class="bad">cut off</span> '
+                      '<span class="muted">3 rejected MIC-valid</span>', body)
+        self.assertNotIn("sequence observations", body)
         _st, page = self.get(f"/device/{AQ}")
         self.assertIn('key generation 84 <span class="warn">2 behind 86</span>', page)
+        self.assertIn("sequence observations: <span class=\"muted\">MAC 84 at ", page)
+        self.assertIn("MAC 84 rejected 3 (counter_not_advancing), ", page)
         _st, raw = self.get(f"/api/device/{AQ}")
         live = json.loads(raw)["live"]
         self.assertEqual((live["generation"], live["parent_generation"], live["mesh_generation"], live["lag"],

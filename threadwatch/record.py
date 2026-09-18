@@ -898,7 +898,8 @@ def run_record(cfg: Config) -> None:
                 # One series per radio, the count cap per series and the
                 # byte cap shared out between them.
                 share = cfg.keep_bytes // len(radios) if cfg.keep_bytes else None
-                r.writer = RingWriter(cfg.ring_dir, cfg.keep_hours, r.dlt, share, label=r.label)
+                r.writer = RingWriter(cfg.ring_dir, cfg.keep_hours, r.dlt, share,
+                                      label=None if r is primary else r.label)
                 if r is primary or beat["ring"] is None:
                     beat["ring"] = r.writer
             r.writer.write(copy)

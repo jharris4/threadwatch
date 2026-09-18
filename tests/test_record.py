@@ -1057,6 +1057,10 @@ class TwoRadiosRunTest(unittest.TestCase):
 
     def test_both_radios_write_their_own_series_and_the_run_ends_when_both_have(self):
         from threadwatch.pcap import PcapStreamReader
+        self.cfg.keep_hours = 1
+        self.cfg.ring_dir.mkdir(parents=True, exist_ok=True)
+        old_primary = self.cfg.ring_dir / "threadwatch-20200101-00.pcap"
+        old_primary.write_bytes(b"old primary hour")
         frames = self._frames(3)
         self.scripts["/dev/fake-hub"] = frames
         # The annex hears the same three frames, its clock 10 ms ahead, and one more.
@@ -1076,8 +1080,10 @@ class TwoRadiosRunTest(unittest.TestCase):
         self.assertEqual(self.calls[:2], [("start", "/dev/fake-hub"), ("start", "/dev/fake-annex")])
         self.assertIn("capturing channel 25 from /dev/fake-hub (radio hub (by the router))", out)
         ring = sorted(p.name for p in self.cfg.ring_dir.glob("*.pcap"))
+        self.assertFalse(old_primary.exists())
         self.assertEqual(len(ring), 2)
-        self.assertTrue(ring[0].endswith("-annex.pcap") and not ring[1].endswith("-annex.pcap"), ring)
+        self.assertTrue(ring[0].endswith("-annex.pcap"), ring)
+        self.assertEqual(ring[1], ring[0].replace("-annex.pcap", ".pcap"))
         read = {}
         for name in ring:
             with open(self.cfg.ring_dir / name, "rb") as fh:

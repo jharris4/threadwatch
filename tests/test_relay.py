@@ -4,8 +4,11 @@ import io
 import json
 import struct
 import sys
+import threading
+import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -64,57 +67,197 @@ class RecordsTest(unittest.TestCase):
 
 
 class RelayStreamTest(unittest.TestCase):
-    def test_every_connection_opens_with_the_handshake_and_header_and_drops_are_counted(self):
-        data = pcap_bytes(6)
+    def wait(self, event):
+        self.assertTrue(event.wait(2), "relay worker did not reach the expected state")
+
+    def test_capture_drains_during_connect_and_backoff_without_replaying_the_outage(self):
+        connecting, finish_connect = threading.Event(), threading.Event()
+        backing_off, retry = threading.Event(), threading.Event()
+        connected, sent = threading.Event(), threading.Event()
+        header, *recs = records(io.BytesIO(pcap_bytes(3)))
         hs = handshake_line("annex", "AA", 25)
-        sockets = [FakeSocket(fail_after=2), OSError("refused"), FakeSocket()]
-        logs, sleeps = [], []
+        sock = FakeSocket()
+        calls, sleeps = [], []
 
         def connect():
-            nxt = sockets.pop(0)
-            if isinstance(nxt, Exception):
-                raise nxt
-            return nxt
-        stats = relay_stream(io.BytesIO(data), connect, hs, logs.append, sleep=sleeps.append)
-        self.assertEqual(stats["connections"], 2)
-        self.assertTrue(logs[0].startswith("connected"))
-        self.assertIn("connection to the recorder lost", logs[1])
-        # The refused reconnect is not a line of its own: the loss said "reconnecting".
-        self.assertTrue(logs[2].startswith("reconnected; 2 frames were dropped"))
-        self.assertEqual(len(logs), 3)
-        self.assertEqual(sleeps, [2.0])                                  # one backoff, the first delay
-        # 6 records: 1 sent on the first connection, 1 lost to the drop, 1 lost to the refused
-        # connect, 3 on the second connection.
-        self.assertEqual((stats["sent"], stats["dropped"]), (4, 2))
+            calls.append(1)
+            if len(calls) == 1:
+                connecting.set()
+                self.wait(finish_connect)
+                raise OSError("offline")
+            return sock
 
-    def test_the_second_connection_starts_with_the_header_again(self):
-        data = pcap_bytes(4)
+        def sleep(delay):
+            sleeps.append(delay)
+            backing_off.set()
+            self.wait(retry)
+
+        def source(_stream):
+            yield header
+            self.wait(connecting)
+            for _ in range(1000):
+                yield recs[0]
+            finish_connect.set()
+            self.wait(backing_off)
+            for _ in range(1000):
+                yield recs[1]
+            retry.set()
+            self.wait(connected)
+            yield recs[2]
+            self.wait(sent)
+
+        original_send = sock.sendall
+
+        def send(data):
+            original_send(data)
+            if data == recs[2]:
+                sent.set()
+
+        with mock.patch.object(relay, "records", source), mock.patch.object(sock, "sendall", send):
+            stats = relay_stream(io.BytesIO(), connect, hs,
+                                 lambda msg: connected.set() if msg.startswith("reconnected") else None, sleep)
+        self.assertEqual(stats, {"sent": 1, "dropped": 2000, "connections": 1})
+        self.assertEqual(sock.sent, hs + header + recs[2])
+        self.assertTrue(sock.closed)
+        self.assertEqual(sleeps, [2.0])
+
+    def test_connection_loss_discards_pending_records_and_restarts_with_a_header(self):
+        connected, first_sent, failed, retry = (threading.Event() for _ in range(4))
+        header, *recs = records(io.BytesIO(pcap_bytes(3)))
         hs = handshake_line("annex", None, 25)
         first, second = FakeSocket(fail_after=2), FakeSocket()
-        sockets = [first, second]
-        relay_stream(io.BytesIO(data), lambda: sockets.pop(0), hs, lambda m: None, sleep=lambda s: None)
-        header = data[:24]
-        self.assertTrue(first.sent.startswith(hs + header))
-        self.assertTrue(second.sent.startswith(hs + header))
-        self.assertTrue(first.closed)
-        # Together the two connections carried every record but the one lost to the drop.
-        recs = list(records(io.BytesIO(data)))[1:]
-        carried = first.sent[len(hs) + 24:] + second.sent[len(hs) + 24:]
-        self.assertEqual(carried, recs[0] + recs[2] + recs[3])
+        sockets = iter([first, second])
+        original_send = first.sendall
 
-    def test_backoff_doubles_to_the_ceiling(self):
-        data = pcap_bytes(8)
-        sleeps = []
-        calls = {"n": 0}
+        def send(data):
+            original_send(data)
+            if data == recs[0]:
+                first_sent.set()
+
+        def sleep(_delay):
+            failed.set()
+            self.wait(retry)
+
+        def source(_stream):
+            yield header
+            self.wait(connected)
+            connected.clear()
+            yield recs[0]
+            self.wait(first_sent)
+            yield recs[1]  # the socket fails on this record
+            self.wait(failed)
+            yield recs[1]  # an outage record, also discarded
+            retry.set()
+            self.wait(connected)
+            yield recs[2]
+
+        with mock.patch.object(relay, "records", source), mock.patch.object(first, "sendall", send):
+            stats = relay_stream(io.BytesIO(), lambda: next(sockets), hs,
+                                 lambda msg: connected.set() if "connected" in msg else None, sleep)
+        self.assertEqual(stats, {"sent": 2, "dropped": 2, "connections": 2})
+        self.assertEqual(first.sent, hs + header + recs[0])
+        self.assertEqual(second.sent, hs + header + recs[2])
+        self.assertTrue(first.closed and second.closed)
+
+    def test_backoff_doubles_to_the_ceiling_and_failed_handshake_closes_socket(self):
+        connected = threading.Event()
+        sleeps, calls = [], []
+        broken, healthy = FakeSocket(fail_after=0), FakeSocket()
+        header, rec = records(io.BytesIO(pcap_bytes(1)))
 
         def connect():
-            calls["n"] += 1
-            if calls["n"] < 8:
+            calls.append(1)
+            if len(calls) == 1:
+                return broken
+            if len(calls) < 8:
                 raise OSError("down")
-            return FakeSocket()
-        relay_stream(io.BytesIO(data), connect, b"{}\n", lambda m: None, sleep=sleeps.append)
+            return healthy
+
+        def source(_stream):
+            yield header
+            self.wait(connected)
+            yield rec
+
+        with mock.patch.object(relay, "records", source):
+            stats = relay_stream(io.BytesIO(), connect, b"{}\n",
+                                 lambda msg: connected.set() if msg.startswith("connected") else None,
+                                 sleeps.append)
         self.assertEqual(sleeps, [2.0, 4.0, 8.0, 16.0, 30.0, 30.0, 30.0])
-        self.assertEqual(relay.BACKOFF_S, (2.0, 30.0))
+        self.assertEqual(stats, {"sent": 1, "dropped": 0, "connections": 1})
+        self.assertTrue(broken.closed and healthy.closed)
+
+    def test_end_of_capture_interrupts_backoff(self):
+        failed = threading.Event()
+        header, rec = records(io.BytesIO(pcap_bytes(1)))
+
+        def connect():
+            raise OSError("down")
+
+        def source(_stream):
+            yield header
+            self.wait(failed)
+            yield rec
+
+        start = time.monotonic()
+        with mock.patch.object(relay, "records", source), mock.patch.object(relay, "BACKOFF_S", (30, 30)):
+            stats = relay_stream(io.BytesIO(), connect, b"{}\n", lambda msg: failed.set())
+        self.assertLess(time.monotonic() - start, 2)
+        self.assertEqual(stats, {"sent": 0, "dropped": 1, "connections": 0})
+
+    def test_a_blocked_socket_cannot_build_an_unbounded_capture_queue(self):
+        connected, sending, resume = (threading.Event() for _ in range(3))
+        header, *recs = records(io.BytesIO(pcap_bytes(5)))
+        sock = FakeSocket()
+        original_send = sock.sendall
+
+        def send(data):
+            if data == recs[0]:
+                sending.set()
+                self.wait(resume)
+            original_send(data)
+
+        def source(_stream):
+            yield header
+            self.wait(connected)
+            yield recs[0]
+            self.wait(sending)
+            for rec in recs[1:]:
+                yield rec
+            resume.set()
+
+        with mock.patch.object(relay, "records", source), mock.patch.object(sock, "sendall", send), \
+                mock.patch.object(relay, "MAX_PENDING_RECORDS", 2):
+            stats = relay_stream(io.BytesIO(), lambda: sock, b"{}\n", lambda msg: connected.set())
+        self.assertEqual(stats, {"sent": 3, "dropped": 2, "connections": 1})
+        self.assertEqual(sock.sent, b"{}\n" + header + recs[0] + recs[3] + recs[4])
+
+    def test_records_that_waited_past_the_merge_hold_are_dropped(self):
+        connected, sending, resume = (threading.Event() for _ in range(3))
+        header, *recs = records(io.BytesIO(pcap_bytes(2)))
+        sock = FakeSocket()
+        original_send = sock.sendall
+        now = [0.0]
+
+        def send(data):
+            if data == recs[0]:
+                sending.set()
+                self.wait(resume)
+            original_send(data)
+
+        def source(_stream):
+            yield header
+            self.wait(connected)
+            yield recs[0]
+            self.wait(sending)
+            yield recs[1]
+            now[0] = 1.0
+            resume.set()
+
+        with mock.patch.object(relay, "records", source), mock.patch.object(sock, "sendall", send), \
+                mock.patch.object(relay.time, "monotonic", lambda: now[0]):
+            stats = relay_stream(io.BytesIO(), lambda: sock, b"{}\n", lambda msg: connected.set())
+        self.assertEqual(stats, {"sent": 1, "dropped": 1, "connections": 1})
+        self.assertEqual(sock.sent, b"{}\n" + header + recs[0])
 
 
 if __name__ == "__main__":

@@ -25,7 +25,9 @@ import os
 import socket
 import struct
 import sys
+import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import BinaryIO, Callable
 
@@ -34,6 +36,8 @@ from . import __version__
 HANDSHAKE_VERSION = 1
 BACKOFF_S = (2.0, 30.0)          # first retry, and the most between retries
 CONNECT_TIMEOUT_S = 10.0
+MAX_PENDING_RECORDS = 256
+MAX_PENDING_AGE_S = 0.25
 
 
 def handshake_line(label: str, serial: str | None, channel: int) -> bytes:
@@ -91,57 +95,105 @@ def _exact(stream: BinaryIO, n: int) -> bytes:
 
 
 def relay_stream(stream: BinaryIO, connect: Callable[[], socket.socket], handshake: bytes, log,
-                 sleep: Callable[[float], None] = time.sleep) -> dict:
-    """Copy the records of ``stream`` to the recorder, reconnecting with
-    backoff whenever the connection fails, each connection opened with
-    the handshake and the pcap header. Returns the counts when the
-    stream ends."""
+                 sleep: Callable[[float], None] | None = None) -> dict:
+    """Drain capture independently of connection attempts and socket writes.
+
+    Disconnected records are counted and discarded immediately. The small
+    connected queue also has an age limit: a slow network must not build a
+    backlog that is replayed after the recorder has released its copies.
+    """
     stats = {"sent": 0, "dropped": 0, "connections": 0}
     it = records(stream)
     header = next(it, None)
     if header is None:
         return stats
-    sock = None
-    delay = BACKOFF_S[0]
-    dropped_since = 0
-    for rec in it:
-        if sock is None:
-            try:
-                sock = connect()
-                sock.sendall(handshake + header)
-                stats["connections"] += 1
-                delay = BACKOFF_S[0]
-                if dropped_since:
-                    log(f"reconnected; {dropped_since} frames were dropped while disconnected")
-                    dropped_since = 0
-                else:
-                    log("connected to the recorder")
-            except OSError as exc:
-                sock = None
-                stats["dropped"] += 1
-                dropped_since += 1
-                if dropped_since == 1:
+    pending: deque = deque()
+    changed = threading.Condition()
+    done = threading.Event()
+    ready = False
+    errors = []
+
+    def sender():
+        nonlocal ready
+        sock = None
+        delay = BACKOFF_S[0]
+        reported_drops = 0
+        try:
+            while True:
+                with changed:
+                    if done.is_set() and not pending:
+                        break
+                try:
+                    if sock is None:
+                        sock = connect()
+                        sock.sendall(handshake + header)
+                        with changed:
+                            ready = True
+                            stats["connections"] += 1
+                            dropped = stats["dropped"] - reported_drops
+                            reported_drops = stats["dropped"]
+                        delay = BACKOFF_S[0]
+                        log(f"reconnected; {dropped} frames were dropped while disconnected"
+                            if dropped else "connected to the recorder")
+                    with changed:
+                        changed.wait_for(lambda: pending or done.is_set())
+                        if not pending:
+                            break
+                        captured, rec = pending.popleft()
+                        if time.monotonic() - captured > MAX_PENDING_AGE_S:
+                            stats["dropped"] += 1
+                            continue
+                    try:
+                        sock.sendall(rec)
+                    except OSError:
+                        with changed:
+                            stats["dropped"] += 1
+                        raise
+                    with changed:
+                        stats["sent"] += 1
+                except OSError as exc:
+                    with changed:
+                        ready = False
+                        stats["dropped"] += len(pending)
+                        pending.clear()
+                    if sock is not None:
+                        sock.close()
+                        sock = None
                     log(f"cannot reach the recorder ({exc}); retrying, dropping frames meanwhile")
-                sleep(delay)
-                delay = min(BACKOFF_S[1], delay * 2)
-                continue
-        try:
-            sock.sendall(rec)
-            stats["sent"] += 1
-        except OSError as exc:
-            log(f"connection to the recorder lost ({exc}); reconnecting")
-            try:
+                    # Production waits are interruptible when capture ends.
+                    (sleep or done.wait)(delay)
+                    delay = min(BACKOFF_S[1], delay * 2)
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            with changed:
+                ready = False
+                stats["dropped"] += len(pending)
+                pending.clear()
+            if sock is not None:
                 sock.close()
-            except OSError:
-                pass
-            sock = None
-            stats["dropped"] += 1
-            dropped_since += 1
-    if sock is not None:
-        try:
-            sock.close()
-        except OSError:
-            pass
+
+    worker = threading.Thread(target=sender, daemon=True, name="relay-sender")
+    worker.start()
+    try:
+        for rec in it:
+            with changed:
+                if not ready:
+                    stats["dropped"] += 1
+                else:
+                    if len(pending) >= MAX_PENDING_RECORDS:
+                        pending.popleft()
+                        stats["dropped"] += 1
+                    pending.append((time.monotonic(), rec))
+                    changed.notify()
+    finally:
+        done.set()
+        with changed:
+            changed.notify()
+        # connect() and sendall() use CONNECT_TIMEOUT_S on real sockets.
+        worker.join()
+    if errors:
+        raise errors[0]
     return stats
 
 

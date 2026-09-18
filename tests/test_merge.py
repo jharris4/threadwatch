@@ -98,7 +98,9 @@ class TwoRadiosTest(unittest.TestCase):
             t = T0 + 3 + i
             m.push("hub", frame(t, secured(10 + i)), mono)
             m.push("annex", frame(t + self.OFFSET, secured(10 + i)), mono)
-        out.extend(m.release(mono))
+        # Once locked, both final watermarks agree. Let the hold expire
+        # instead of relying on the old unaligned 10 ms ordering skew.
+        out.extend(m.release(mono + merge.HOLD_S))
         self.assertTrue(m.aligners["annex"].locked)
         return out
 
@@ -220,6 +222,60 @@ class TwoRadiosTest(unittest.TestCase):
         m.push("hub", frame(T0, secured(2)))
         self.assertTrue(all(not al.locked for al in m.aligners.values()))
         self.assertEqual([f.psdu for f in m.release(flush=True)], [secured(1), secured(2)])
+
+    def test_either_radio_expires_a_model_without_shared_frames(self):
+        for label in ("hub", "annex"):
+            with self.subTest(label=label):
+                m = self._merger()
+                self._lock(m)
+                m.push(label, frame(T0 + 1000, secured(500)))
+                self.assertFalse(m.aligners["annex"].locked)
+                self.assertEqual(len(m.release(flush=True)), 1)
+
+    def test_expiration_rebases_pending_copies_without_losing_them(self):
+        offsets = {"hub": 0.0, "annex": -0.04}
+        m = Merger("hub", ["hub", "annex"], epoch=lambda label, raw: raw + offsets[label])
+        self._lock(m)
+        m.push("annex", frame(T0 + 300.01, secured(500)))
+        before = m._queues["annex"][0].order
+        m.push("hub", frame(T0 + 1000, secured(501)))
+        self.assertFalse(m.aligners["annex"].locked)
+        self.assertNotEqual(m._queues["annex"][0].order, before)
+        self.assertAlmostEqual(m._queues["annex"][0].order, T0 + 299.97, places=6)
+        self.assertEqual([f.psdu for f in m.release(flush=True)], [secured(500), secured(501)])
+
+    def test_live_epoch_clocks_recover_after_drift_beyond_the_search_span(self):
+        from threadwatch.record import RadioClock
+        now = [T0]
+        clocks = {lb: RadioClock(wall=lambda: now[0], mono=lambda: now[0] - T0)
+                  for lb in ("hub", "annex")}
+        m = Merger("hub", ["hub", "annex"],
+                   epoch=lambda label, raw: raw + (clocks[label].offset or 0.0),
+                   stamp=lambda label, raw: clocks[label].stamp(raw))
+        for i in range(3):
+            now[0] = T0 + i
+            m.push("hub", frame(now[0], secured(i)), mono=i)
+            m.push("annex", frame(now[0] + 0.01 + i * 79e-6, secured(i)), mono=i)
+            m.release(mono=i + 1)
+        self.assertTrue(m.aligners["annex"].locked)
+        # For a thousand seconds the radios hear disjoint traffic.
+        for i in range(3, 1000):
+            now[0] = T0 + i
+            m.push("hub", frame(now[0], secured(1000 + i)), mono=i)
+            m.push("annex", frame(now[0] + 0.01 + i * 79e-6, secured(3000 + i)), mono=i)
+            m.release(mono=i + 1)
+        self.assertFalse(m.aligners["annex"].locked)
+        # Their raw offset now exceeds SEARCH_S, but independent epoch
+        # estimates allow shared traffic to train a new lock.
+        out = []
+        for i in range(1000, 1020):
+            now[0] = T0 + i
+            m.push("hub", frame(now[0], secured(i)), mono=i)
+            m.push("annex", frame(now[0] + 0.01 + i * 79e-6, secured(i)), mono=i)
+            out.extend(m.release(mono=i + 1))
+        self.assertTrue(m.aligners["annex"].locked)
+        self.assertEqual(len(out), 20)
+        self.assertTrue(all(len(f.heard) == 2 for f in out))
 
     def test_before_the_lock_only_an_unambiguous_pair_merges(self):
         m = self._merger()

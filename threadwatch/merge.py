@@ -99,8 +99,10 @@ class Aligner:
 
     def stale(self, t_primary: float) -> bool:
         """Locked for so long without a pair that the model should go."""
+        budget = BUDGET_PPM if self.rate_known else YOUNG_BUDGET_PPM
+        widening = max(0.0, W_MAX - max(W_MIN, 3 * self.sigma)) / (budget * 1e-6)
         return (self.locked and self.t_last is not None
-                and t_primary - self.t_last > UNLOCK_AFTER_S + (W_MAX - W_MIN) / (BUDGET_PPM * 1e-6))
+                and t_primary - self.t_last > UNLOCK_AFTER_S + widening)
 
     def to_primary(self, t_other: float) -> float:
         """The primary-domain stamp of a copy this radio stamped t_other
@@ -191,7 +193,7 @@ class Merger:
         self._queues: dict[str | None, deque] = {label: deque() for label in self.labels}
         self._by_psdu: dict[str | None, dict[bytes, list]] = {label: {} for label in self.labels}
         self._last_ts: dict[str | None, float] = {}       # newest stamp pushed, per radio
-        # What each radio released lately, (order, psdu): a copy released
+        # What each radio released lately, (raw, order, psdu): a copy released
         # alone because its twin was ambiguous must keep the twin from
         # pairing with the next radio's copy as if it were alone.
         self._recent: dict[str | None, deque] = {label: deque() for label in self.labels}
@@ -211,6 +213,7 @@ class Merger:
         last = self._last_ts.get(label)
         if last is not None and frame.ts < last - 1.0:
             self.reset(label)
+        self._expire(label, frame.ts)
         self._last_ts[label] = frame.ts
         q = self._queues[label]
         self._seq += 1
@@ -244,6 +247,29 @@ class Merger:
             recent.clear()
 
     # ------------------------------------------------------------ domains
+
+    def _refresh_orders(self, label: str | None) -> None:
+        """Queued and recent copies must use the same current estimate."""
+        for p in self._queues[label]:
+            p.order = self._order(label, p.frame.ts)
+        self._recent[label] = deque((raw, self._order(label, raw), psdu)
+                                    for raw, _order, psdu in self._recent[label])
+
+    def _expire(self, label: str | None, raw: float) -> bool:
+        if self.offline:
+            return False
+        if label == self.primary:
+            primary_time = raw
+        else:
+            al = self.aligners[label]
+            if not al.locked:
+                return False
+            primary_time = al.to_primary(raw)
+        expired = [lb for lb, al in self.aligners.items() if al.stale(primary_time)]
+        for lb in expired:
+            self.aligners[lb].reset()
+            self._refresh_orders(lb)
+        return bool(expired)
 
     def _order(self, label: str | None, raw: float) -> float:
         """Where a copy sits for ordering: the primary's domain when it
@@ -280,6 +306,8 @@ class Merger:
                     head = q[0]
             if head is None:
                 break
+            if self._expire(head.label, head.frame.ts):
+                continue  # the oldest queued copy may have changed domains
             if not flush and not self._ready(head, mono):
                 break
             out.append(self._release(head))
@@ -323,8 +351,8 @@ class Merger:
         if not lst:
             del self._by_psdu[p.label][p.frame.psdu]
         recent = self._recent[p.label]
-        recent.append((p.order, p.frame.psdu))
-        while recent and recent[0][0] < p.order - 2 * SEARCH_S:
+        recent.append((p.frame.ts, p.order, p.frame.psdu))
+        while recent and recent[0][1] < p.order - 2 * SEARCH_S:
             recent.popleft()
 
     def _alike_nearby(self, label: str | None, p: _Pending, exclude=None) -> int:
@@ -332,7 +360,8 @@ class Merger:
         released within the search span of p, other than ``exclude``."""
         pending = self._by_psdu[label].get(p.frame.psdu, [])
         n = sum(1 for c in pending if c is not exclude and abs(c.order - p.order) <= SEARCH_S)
-        n += sum(1 for order, psdu in self._recent[label] if psdu == p.frame.psdu and abs(order - p.order) <= SEARCH_S)
+        n += sum(1 for _raw, order, psdu in self._recent[label]
+                 if psdu == p.frame.psdu and abs(order - p.order) <= SEARCH_S)
         return n
 
     def _match(self, p: _Pending, label: str | None) -> _Pending | None:
@@ -362,6 +391,8 @@ class Merger:
                     near = True
             if best is None and near:
                 al.missed()
+                if not al.locked:
+                    self._refresh_orders(label if label != self.primary else p.label)
             return best
         # Unlocked, or no aligner between these two: unambiguous only. One
         # identical psdu on their side, none other on mine, and neither
@@ -392,7 +423,11 @@ class Merger:
         pt = copies[self.primary].frame.ts
         for label, c in copies.items():
             if label != self.primary and label in self.aligners:
-                self.aligners[label].observe(pt, c.frame.ts)
+                al = self.aligners[label]
+                was_locked = al.locked
+                al.observe(pt, c.frame.ts)
+                if not was_locked and al.locked:
+                    self._refresh_orders(label)
 
     def _build(self, copies: dict) -> Frame:
         """The merged frame: the best ear's copy, every copy under heard,
@@ -418,6 +453,10 @@ class Merger:
                 raw = self._last_out
             self._last_out = raw
         ts = self._stamp(domain, raw)
+        if not self.offline and domain != self.primary:
+            # The first independent stamp after expiration may initialize
+            # a RadioClock that was unused while this radio was locked.
+            self._refresh_orders(domain)
         heard: dict[str | None, Frame] = {}
         for label, c in copies.items():
             if self.offline:

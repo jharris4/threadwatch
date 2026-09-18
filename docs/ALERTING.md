@@ -244,11 +244,17 @@ week pages nothing:
   `ahead_of_last_parent_observation` and `missed_traffic_or_attachment_possible`,
   because a frame the sniffer missed, an attachment in progress or a stale
   parent mapping can produce the same picture. On 2026-09-17 that was Front
-  Door, an Eve contact sensor polling on 87 while its parent was on 86 and
-  nothing else was on 87; it lost its parent, its Parent Request carried 87
-  to the border router, which had rebooted three days earlier (so its key
-  switch guard was clear and a +1 from a peer message was accepted), and
-  the mesh followed within a minute. A router first on air may be relaying
+  Door, an Eve contact sensor polling on 87 with frame counter 0 while its
+  parent was still on 85 and nothing else was on 87, and nothing but ACKs
+  had been sent to it for the previous 95 s; it lost its parent, and its
+  Child ID Request to a new one forced that router onto 87 (an attaching
+  child's Child ID Request is authoritative). The border router took 87
+  two seconds later from a frame another router sent it over TREL, the
+  Thread link over the IP backbone, which the sniffer cannot see: its key
+  switch guard was clear because it had rebooted three days earlier, so
+  the ordinary guarded path accepted a +1 from a valid neighbour. Routers
+  two behind re-established their links and followed; routers one behind
+  with an armed guard refused and stayed. A router first on air may be relaying
   a frame the sniffer missed, and a child whose parent has no fresh reading
   cannot be judged: `first on air`, with `parent_unknown` or
   `parent_sequence_not_fresh`. Until the census, every further device whose

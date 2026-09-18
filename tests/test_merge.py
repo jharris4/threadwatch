@@ -188,6 +188,39 @@ class TwoRadiosTest(unittest.TestCase):
         self.assertEqual([(f.psdu, f.radio, list(f.heard)) for f in out], [(secured(1), None, [None])])
         self.assertEqual(m.pending(), 0)
 
+    def test_primary_restart_drains_old_copies_and_relearns_every_secondary(self):
+        offsets = {"hub": 0.0, "annex": 0.0}
+        m = Merger("hub", ["hub", "annex"], epoch=lambda label, raw: raw + offsets[label])
+        self._lock(m)
+        old = T0 + 10
+        m.push("hub", frame(old, secured(80)))
+        m.push("annex", frame(old + self.OFFSET, secured(80)))
+        m.reset("hub")
+        self.assertFalse(m.aligners["annex"].locked)
+        # The old pair survives, with its old timestamp and both receptions.
+        drained = m.release()
+        self.assertEqual([(f.ts, len(f.heard)) for f in drained], [(old, 2)])
+        offsets["hub"] = -0.2  # the restarted primary is now 200 ms ahead
+        for i in range(20):
+            t = T0 + 20 + i
+            m.push("hub", frame(t + 0.2, secured(100 + i)))
+            m.push("annex", frame(t + self.OFFSET, secured(100 + i)))
+        out = m.release(flush=True)
+        self.assertEqual(len(out), 20)
+        self.assertTrue(all(len(f.heard) == 2 for f in out))
+        self.assertTrue(m.aligners["annex"].locked)
+        self.assertAlmostEqual(m.aligners["annex"].a, self.OFFSET - 0.2, places=6)
+
+    def test_primary_backwards_stamp_invalidates_all_secondary_models(self):
+        m = Merger("hub", ["hub", "annex", "shed"])
+        for al in m.aligners.values():
+            for i in range(3):
+                al.observe(T0 + i, T0 + i + 0.01)
+        m.push("hub", frame(T0 + 10, secured(1)))
+        m.push("hub", frame(T0, secured(2)))
+        self.assertTrue(all(not al.locked for al in m.aligners.values()))
+        self.assertEqual([f.psdu for f in m.release(flush=True)], [secured(1), secured(2)])
+
     def test_before_the_lock_only_an_unambiguous_pair_merges(self):
         m = self._merger()
         t = T0

@@ -816,7 +816,6 @@ def run_record(cfg: Config) -> None:
             if r.state in ("missing", "down") and mono - r.state_mono >= REATTACH_S:
                 was = r.state
                 if r.attach(Nrf802154Sniffer, cfg.channel, frames_q, attach_lock, mono):
-                    merger.reset(r.label)
                     _log(f"capturing channel {cfg.channel} from {r.port} ({r.describe()})")
                     _radio_event(r, "radio_returned" if was == "down" else "radio_attached", "info",
                                  f"{r.describe()} is capturing again from {r.port}" if was == "down"
@@ -921,6 +920,7 @@ def run_record(cfg: Config) -> None:
     # and the supervisor see a failure, and the traceback is printed here
     # because the os._exit in finally would otherwise swallow it.
     exit_code = 0
+    streams = {}                         # attachment tokens, owned by the capture loop
     try:
         while True:
             # Copies waiting for another radio's are released on the next
@@ -938,7 +938,6 @@ def run_record(cfg: Config) -> None:
                 conn, peer, hs = sniffer
                 was = r.state
                 r.adopt(conn, peer, hs, frames_q, mono)
-                merger.reset(label)
                 _radio_event(r, "radio_returned" if was == "down" else "radio_attached", "info",
                              f"{r.describe()}: relay connected from {peer}" + (
                                  f" (dongle serial {hs['serial']})" if hs.get("serial") else ""))
@@ -967,6 +966,16 @@ def run_record(cfg: Config) -> None:
                 _log("capture stream ended (dongle unplugged? sniffer died?); exiting for supervisor restart")
                 exit_code = 3
                 break
+            if streams.get(label) is not sniffer:
+                # Drain with the old clocks before replacing them. USB
+                # reattachment runs on the watchdog; domain changes belong
+                # here, in queue order, just like a relay's first frame.
+                if label in streams:
+                    merger.reset(label)
+                    for out in merger.release(mono):
+                        _take(out)
+                r.clock = RadioClock()
+                streams[label] = sniffer
             r.frames += 1
             r.last_frame_mono = mono
             if r.writer is None and r.dlt is None:

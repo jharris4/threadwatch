@@ -198,6 +198,7 @@ class Merger:
         self._ended: set = set()
         self._seq = 0
         self._last_out: float | None = None    # last released primary-domain stamp (monotone clamp)
+        self._released: list[Frame] = []      # old-domain frames drained before a stream reset
         self.merged = 0                        # frames released
         self.duplicates = 0                    # copies folded into another
 
@@ -224,9 +225,23 @@ class Merger:
         self._ended.add(label)
 
     def reset(self, label: str | None) -> None:
-        """The radio's stamps have a new base: forget its alignment."""
-        if label in self.aligners:
+        """Finish the old domain before learning a restarted stream.
+
+        Every secondary model depends on the primary's base. Keep queued
+        receptions, but build them with the old model so they cannot train
+        or match against the new attachment.
+        """
+        drained = self.release(flush=True)
+        self._released.extend(drained)
+        if label == self.primary:
+            for al in self.aligners.values():
+                al.reset()
+            self._last_out = None
+        elif label in self.aligners:
             self.aligners[label].reset()
+        self._last_ts.pop(label, None)
+        for recent in self._recent.values():
+            recent.clear()
 
     # ------------------------------------------------------------ domains
 
@@ -255,7 +270,7 @@ class Merger:
     def release(self, mono: float = 0.0, flush: bool = False) -> list[Frame]:
         """Every merged frame that is ready, in order. ``flush`` releases
         everything (the end of a replay, or a shutdown)."""
-        out: list[Frame] = []
+        out, self._released = self._released, []
         while True:
             head = None
             for q in self._queues.values():
@@ -414,7 +429,7 @@ class Merger:
     # ------------------------------------------------------------ status
 
     def pending(self) -> int:
-        return sum(len(q) for q in self._queues.values())
+        return len(self._released) + sum(len(q) for q in self._queues.values())
 
     def status(self) -> dict:
         return {"merged": self.merged, "duplicates": self.duplicates, "pending": self.pending(),

@@ -80,7 +80,7 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `poll_answered` | notice | `addr`, `name`, `note` |
 | `rssi_degradation` | notice | `addr`, `name`, `rssi_dbm`, `reference_dbm`, `drop_db`, `since`, `low_for_s`, `note` |
 | `rssi_recovered` | info | `addr`, `name`, `rssi_dbm`, `reference_dbm`, `note` |
-| `key_sequence_advanced` | info | `sequence`, `previous`, `first_sender`, `name`, `rloc16`, `role`, `frame`, `since_previous_s`, `scope`, `confidence`, `reasons`, `suspects`, `note`. The first frame accepted under a new generation; the census says whether the mesh followed. Suspects retain `addr`, `name`, `rloc16`, `role`, `ts`, `frame`, legacy `evidence`, parent fields, and add candidate `confidence`/`reasons`. See the key-generation section below. |
+| `key_sequence_advanced` | info | `sequence`, `previous`, `first_sender`, `name`, `rloc16`, `role`, `frame`, `since_previous_s`, `observed_interval_s`, `sequence_delta`, `observation_kind`, `previous_first_ts`, `coverage`, `scheduled_expectation`, `early_against_configured_interval`, `scope`, `confidence`, `reasons`, `suspects`, `note`. The first frame accepted under a new generation; the census says whether the mesh followed. Suspects retain `addr`, `name`, `rloc16`, `role`, `ts`, `frame`, legacy `evidence`, parent fields, and add candidate `confidence`/`reasons`. See the key-generation section below. |
 | `key_lag_census` | info | `sequence`, `mesh_generation`, `counts` (devices per generation, fresh ones only), `behind_parent_1`, `behind_parent_2plus`, `routers_behind` (each: `name`, `addr`, `generation`, `lag`, and `parent` / `parent_generation` or `mesh_generation`), `unknown` (no fresh frame: not judged), `suspects` (the observation's first sender, then every device whose first frame on the new generation came while its parent was still fresh on the old one, entries as in `key_sequence_advanced`), `note`; `[keys] census_delay_s` after each advance |
 | `key_lag` | warning for a child, critical for a router; notice when `episode` > 1 (reopened within `[keys] rearm_s`) | `addr`, `name`, `role`, `generation`, `parent`, `parent_addr`, `parent_generation` (a child) or `mesh_generation` (a router), `lag`, `since`, `lagged_for_s`, `rssi_dbm`, `reception`, `polls_acked`, `episode`, `since_previous_s`, `note` |
 | `key_lag_cleared` | info | `addr`, `name`, `role`, `generation`, `parent`, `parent_addr`, `parent_generation` or `mesh_generation`, `since`, `lagged_for_s`, `rejoined`, `rejoin_ts`, `note`; only after a `key_lag` went out |
@@ -231,7 +231,21 @@ week pages nothing:
   the note; set that from the active dataset's Security Policy rotation
   time (672 h by default), not the keysequence guardtime (624 h), which is
   a different setting. `since_previous_s` is between first observations,
-  so a capture gap can lengthen it and never shortens it.
+  not between internal timer expiries; missed traffic at either endpoint can
+  distort that interval. `observed_interval_s` preserves the elapsed seconds,
+  `previous_first_ts` identifies the preceding observation, and `sequence_delta`
+  records the jump. Initial discovery is a `baseline` with no interval or delta;
+  a +3 advance is one observed jump, not three witnessed rotations.
+  `coverage` lists retained recorder blind spans (downtime or forward clock
+  steps) intersecting the interval, with `status=gapped` when present. Otherwise
+  coverage is `unknown`, never assumed continuous. History is bounded and
+  incomplete; restarts are labeled, and negative timestamp intervals are unknown.
+  `scheduled_expectation` labels `rotation_hours` as a local configuration
+  annotation, not live telemetry; device and observation time remain null
+  because the recorder does not collect Security Policy observations. The
+  reported 672 h active policy can inform that setting but is not independently
+  measured by this event. `early_against_configured_interval` uses the same 90%
+  comparison as the note, and does not establish a protocol violation.
   The record also says who is suspected of starting it, as `suspects`, each
   with `confidence=candidate_only` and `reasons`. An advance is started by
   whichever device's own rotation timer fires first, and the mesh follows

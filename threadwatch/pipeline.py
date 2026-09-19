@@ -252,6 +252,7 @@ class Pipeline:
         # it meets. See _note_generation.
         self.keys_path = cfg.state_dir / "key-generations.json"
         self._keys: dict = {} if ephemeral else self._load_keys()
+        self._keys_reloaded = bool(self._keys)
         # Addresses that have visited: how many times, first and last
         # (data/state/visits.json; config/visitors.json is the labels). A
         # visit drops the address's row, so without this a phone back
@@ -608,12 +609,16 @@ class Pipeline:
         return [(s, e - s) for s, e in merged]
 
     def _save_blind(self) -> None:
-        """Write the blind spans, less those no silence reaches back over
-        (every row was heard after them) and beyond the newest BLIND_MAX."""
+        """Keep spans needed by device silence or the current key interval,
+        bounded to the newest BLIND_MAX."""
         if self.ephemeral:
             return
         stamps = [row.get("last_seen") for row in self.seen.table.values()]
         stamps = [t for t in stamps if isinstance(t, (int, float))]
+        # Preserve outage evidence back to the current generation's first
+        # observation even after every device has been heard again.
+        if self._keys.get("highest_first_ts") is not None:
+            stamps.append(self._keys["highest_first_ts"])
         oldest = min(stamps) if stamps else None
         keep = [span for span in self._blind if oldest is None or span[0] >= oldest][-self.BLIND_MAX:]
         tmp = self.blind_path.with_suffix(".tmp")
@@ -738,8 +743,11 @@ class Pipeline:
 
     def _load_keys(self) -> dict:
         """key-generations.json: {highest, previous, highest_first_ts,
-        previous_first_ts, first_sender, census_at, suspects}. Unreadable
-        or shapeless: start afresh, which costs one repeated
+        previous_first_ts, first_sender, census_at, suspects, scope,
+        confidence, reasons} plus the interval facts of the last advance
+        (observed_interval_s, sequence_delta, observation_kind, coverage,
+        scheduled_expectation, early_against_configured_interval).
+        Unreadable or shapeless: start afresh, which costs one repeated
         key_sequence_advanced (info) and nothing else."""
         try:
             data = json.loads(self.keys_path.read_text())
@@ -764,6 +772,18 @@ class Pipeline:
         keys["confidence"] = "observation_only" if data.get("confidence") == "observation_only" else "unknown"
         reasons = data.get("reasons")
         keys["reasons"] = [r for r in reasons if isinstance(r, str)] if isinstance(reasons, list) else []
+        # Interval facts (P0.3): kept as recorded, when they have the shape
+        # they were written with; a shapeless one is left out, not guessed.
+        number = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)
+        for key, ok in (("observed_interval_s", number),
+                        ("sequence_delta", lambda v: _whole(v) is not None),
+                        ("observation_kind", lambda v: v in ("baseline", "advance")),
+                        ("coverage", lambda v: isinstance(v, dict)),
+                        ("scheduled_expectation", lambda v: isinstance(v, dict)),
+                        ("early_against_configured_interval", lambda v: isinstance(v, bool))):
+            value = data.get(key)
+            if value is None or ok(value):
+                keys[key] = value
         return keys
 
     def _save_keys(self) -> None:
@@ -2796,6 +2816,30 @@ class Pipeline:
 
     # ------------------------------------------------ key generations
 
+    def _generation_coverage(self, previous_ts: float | None, ts: float) -> dict:
+        """Known blind spans are evidence of gaps, never proof of full coverage.
+
+        The bounded blind history includes downtime and forward clock steps;
+        it cannot distinguish those or establish radio/transport coverage.
+        """
+        reasons = ["capture_completeness_not_measured"]
+        gaps = []
+        if previous_ts is None:
+            reasons.append("initial_discovery" if not self._keys else "previous_observation_time_unknown")
+        elif ts < previous_ts:
+            reasons.append("non_monotonic_observation_time")
+        else:
+            for start, length in self._blind:
+                end = min(ts, start + length)
+                start = max(previous_ts, start)
+                if end > start:
+                    gaps.append({"start_ts": start, "end_ts": end,
+                                 "source": "recorder_blind_span"})
+        if self._keys_reloaded:
+            reasons.append("recorder_restart")
+        return {"status": "gapped" if gaps else "unknown", "gaps": gaps[-self.BLIND_MAX:],
+                "reasons": reasons, "history_complete": False}
+
     def _note_generation(self, who: str, row: dict, generation: int, frame: str, ts: float) -> None:
         """A frame accepted under a key generation above the highest on
         record: a new highest sequence was observed (or this is the first
@@ -2808,15 +2852,32 @@ class Pipeline:
         if highest is not None and generation <= highest:
             return
         previous_ts = self._keys.get("highest_first_ts")
-        since = ts - previous_ts if previous_ts is not None else None
+        since = ts - previous_ts if highest is not None and previous_ts is not None and ts >= previous_ts else None
+        expected = self.cfg.key_rotation_hours
+        interval_facts = {
+            "observed_interval_s": since,
+            "sequence_delta": generation - highest if highest is not None else None,
+            "observation_kind": "baseline" if highest is None else "advance",
+            "coverage": self._generation_coverage(previous_ts, ts),
+            "scheduled_expectation": {
+                "rotation_hours": expected,
+                "source": "local_config" if expected is not None else "unknown",
+                "config_key": "keys.rotation_hours" if expected is not None else None,
+                "device": None, "observed_at": None, "live_telemetry": False,
+            },
+            "early_against_configured_interval": (
+                since < 0.9 * expected * 3600 if expected is not None and since is not None else None),
+        }
         suspect = self._origin(who, row, generation, frame, ts, first=True)
         evidence = {"scope": "device", "confidence": "observation_only",
                     "reasons": ["accepted_authenticated_frame", "mesh_adoption_not_established",
                                 "origin_not_established"]}
         self._keys = {"highest": generation, "previous": highest, "highest_first_ts": ts,
                       "previous_first_ts": previous_ts, "first_sender": who,
-                      "census_at": ts + self.cfg.key_census_delay_s, "suspects": [suspect], **evidence}
+                      "census_at": ts + self.cfg.key_census_delay_s, "suspects": [suspect],
+                      **evidence, **interval_facts}
         self._save_keys()
+        self._keys_reloaded = False
         name = self.names.name(who)
         role = rloc16_role(row.get("rloc16"))
         label = name or who
@@ -2827,8 +2888,7 @@ class Pipeline:
             note = (f"key sequence advanced: generation {highest} -> {generation}, first heard from {label} "
                     f"({frame})")
             if since is not None:
-                note += f", {since / 86400:.1f} days after the previous advance"
-            expected = self.cfg.key_rotation_hours
+                note += f", {since / 86400:.1f} days after the previous first observation"
             if expected is not None and since is not None and since < 0.9 * expected * 3600:
                 note += f" -- early: the configured rotation time is {expected:g} h"
             note += "; " + self._suspect_sentence(suspect)
@@ -2836,7 +2896,7 @@ class Pipeline:
         self._emit("key_sequence_advanced", "info", ts, sequence=generation, previous=highest,
                    first_sender=who, name=name, rloc16=row.get("rloc16"), role=role["role"] if role else None,
                    frame=frame, since_previous_s=round(since) if since is not None else None,
-                   suspects=[suspect], **evidence, note=note)
+                   suspects=[suspect], previous_first_ts=previous_ts, **interval_facts, **evidence, note=note)
 
     def _origin(self, who: str, row: dict, generation: int, frame: str, ts: float, first: bool) -> dict | None:
         """Record origin candidates, never proof of independent advancement.

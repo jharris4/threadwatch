@@ -1082,8 +1082,12 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual(self._quiet(pipe3), [])
         pipe3.periodic(T + 2461 + 28 * 60)
         self.assertEqual(self._quiet(pipe3), [ROUTER])
-        # Once every device has been heard since a span, it is retired.
+        # Device recovery alone no longer retires the span: the next key
+        # observation still needs it to describe its interval coverage.
         pipe3.ingest(frame(T + 2461 + 29 * 60, ROUTER))
+        pipe3._save_blind()
+        self.assertEqual(json.loads(pipe3.blind_path.read_text()), [[T + 120, 2280.0], [T + 2460, 1.0]])
+        pipe3.ingest(frame(T + 2461 + 30 * 60, ROUTER, sequence=1))
         pipe3._save_blind()
         self.assertEqual(json.loads(pipe3.blind_path.read_text()), [[T + 2460, 1.0]])   # the sensor's, still
         pipe3.ingest(frame(T + 2461 + 29 * 60, SENSOR))
@@ -2516,6 +2520,70 @@ class KeyGenerationTest(unittest.TestCase):
         ev = self._events(pipe, "key_sequence_advanced")[3]
         self.assertEqual((ev["suspects"][0]["evidence"], ev["suspects"][0]["parent"]), ("first on air", "Hall Router"))
         self.assertIn("its parent Hall Router had no fresh generation reading", ev["note"])
+
+    def test_interval_facts_baseline_single_step_and_skipped_generations(self):
+        self.cfg.key_rotation_hours = 672
+        pipe = self._pipe()
+        for offset, generation in ((0, 85), (3600.25, 86), (7200.5, 89)):
+            pipe.ingest(frame(self.T0 + offset, ROUTER, sequence=generation))
+        baseline, step, jump = self._events(pipe, "key_sequence_advanced")
+        self.assertEqual(baseline["observation_kind"], "baseline")
+        for key in ("observed_interval_s", "sequence_delta", "previous_first_ts",
+                    "early_against_configured_interval"):
+            self.assertIsNone(baseline[key])
+        self.assertEqual(step["observed_interval_s"], 3600.25)
+        self.assertEqual(step["since_previous_s"], 3600)
+        self.assertEqual(step["sequence_delta"], 1)
+        self.assertEqual(jump["sequence_delta"], 3)
+        self.assertEqual(jump["observed_interval_s"], 3600.25)
+        self.assertEqual(jump["previous_first_ts"], self.T0 + 3600.25)
+        self.assertEqual(jump["coverage"]["status"], "unknown")
+        self.assertEqual(jump["coverage"]["gaps"], [])
+        self.assertEqual(jump["scheduled_expectation"], {
+            "rotation_hours": 672, "source": "local_config", "config_key": "keys.rotation_hours",
+            "device": None, "observed_at": None, "live_telemetry": False})
+        self.assertTrue(jump["early_against_configured_interval"])
+        self.assertIn("previous first observation", jump["note"])
+        restarted = self._pipe()
+        for key in ("observed_interval_s", "sequence_delta", "coverage", "scheduled_expectation"):
+            self.assertEqual(restarted.keys_status()[key], jump[key])
+
+    def test_interval_retains_downtime_after_devices_return_and_another_restart(self):
+        from unittest import mock
+        pipe = self._pipe()
+        pipe.ingest(frame(self.T0, ROUTER, sequence=85))
+        pipe.seen.save()
+        with mock.patch("threadwatch.pipeline.time.time", return_value=self.T0 + 100):
+            pipe = self._pipe()
+        pipe.ingest(frame(self.T0 + 120, ROUTER, sequence=85))
+        pipe.seen.save()
+        pipe._save_blind()
+        with mock.patch("threadwatch.pipeline.time.time", return_value=self.T0 + 200):
+            pipe = self._pipe()
+        pipe.ingest(frame(self.T0 + 300, ROUTER, sequence=86))
+        event = self._events(pipe, "key_sequence_advanced")[0]
+        self.assertEqual(event["observed_interval_s"], 300)
+        self.assertEqual(event["coverage"]["status"], "gapped")
+        self.assertIn("recorder_restart", event["coverage"]["reasons"])
+        self.assertEqual(event["coverage"]["gaps"], [
+            {"start_ts": self.T0, "end_ts": self.T0 + 100, "source": "recorder_blind_span"},
+            {"start_ts": self.T0 + 120, "end_ts": self.T0 + 200, "source": "recorder_blind_span"}])
+        self.assertFalse(event["coverage"]["history_complete"])
+        self.assertEqual(event["scheduled_expectation"]["source"], "unknown")
+
+    def test_legacy_missing_timestamp_and_backward_time_do_not_invent_intervals(self):
+        pipe = self._pipe()
+        pipe._keys = {"highest": 85}
+        pipe.ingest(frame(self.T0, ROUTER, sequence=86))
+        event = self._events(pipe, "key_sequence_advanced")[-1]
+        self.assertIsNone(event["observed_interval_s"])
+        self.assertIn("previous_observation_time_unknown", event["coverage"]["reasons"])
+        pipe._keys["highest_first_ts"] = self.T0 + 200
+        pipe.ingest(frame(self.T0 + 100, ROUTER, sequence=87))
+        event = self._events(pipe, "key_sequence_advanced")[-1]
+        self.assertIsNone(event["observed_interval_s"])
+        self.assertIsNone(event["since_previous_s"])
+        self.assertIn("non_monotonic_observation_time", event["coverage"]["reasons"])
 
     def test_an_early_rotation_says_so_when_the_rotation_time_is_configured(self):
         self.cfg.key_rotation_hours = 24

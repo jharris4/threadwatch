@@ -117,6 +117,7 @@ class Config:
     data_dir: Path = REPO_ROOT / "data"
     keep_hours: int = 168                      # ring: one hourly file each, a week of them
     keep_bytes: int | None = None           # ring: total size cap ([record] keep_gb), None = files only
+    snapshot_on_key_advance: bool = False     # advance and census pair, independent of critical cooldown
     snapshot_on_critical: bool = False         # save the ring when a critical event fires
     keep_snapshots: int = 4                    # how many auto-* snapshots to keep; -1 = no cap, 0 = take none
     devices_path: Path | None = None
@@ -305,7 +306,7 @@ class Config:
 SECTIONS: dict[str, frozenset[str] | None] = {
     "network": frozenset(("channel", "pan_id")),
     "record": frozenset(("serial_port", "data_dir", "keep_hours", "keep_gb",
-                         "snapshot_on_critical", "keep_snapshots", "radios")),
+                         "snapshot_on_critical", "snapshot_on_key_advance", "keep_snapshots", "radios")),
     "devices": frozenset(("inventory",)),
     "visitors": frozenset(("file",)),
     "quiet": frozenset(("silence_s", "min_rssi_dbm")),
@@ -486,6 +487,7 @@ def load(path: Path | None) -> Config:
             if not keep_gb > 0:
                 raise ValueError(f"[record] keep_gb must be more than 0 (unset it for no size cap), not {keep_gb:g}")
             cfg.keep_bytes = int(keep_gb * 1024 ** 3)
+        cfg.snapshot_on_key_advance = bool(rec.get("snapshot_on_key_advance", cfg.snapshot_on_key_advance))
         cfg.snapshot_on_critical = bool(rec.get("snapshot_on_critical", cfg.snapshot_on_critical))
         if rec.get("keep_snapshots") is not None:
             # Each automatic snapshot is a whole ring, and nothing else

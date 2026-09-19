@@ -413,6 +413,7 @@ class ExampleConfigTest(unittest.TestCase):
         ("record", "data_dir"): ("data_dir", Path("~/threadwatch-data").expanduser(), Path("/srv/tw")),
         ("record", "keep_hours"): ("keep_hours", 168, 24),
         ("record", "keep_gb"): ("keep_bytes", 4 * 1024 ** 3, 2 * 1024 ** 3),
+        ("record", "snapshot_on_key_advance"): ("snapshot_on_key_advance", True, False),
         ("record", "snapshot_on_critical"): ("snapshot_on_critical", True, False),
         ("record", "keep_snapshots"): ("keep_snapshots", 4, 9),
         ("record", "radios"): ("radios", [{"label": "hub", "serial": "0123456789ABCDEF",

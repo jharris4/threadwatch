@@ -234,21 +234,27 @@ def credentials(cfg) -> tuple[str, str] | None:
         return None
 
 
+def _capture_window(snapshot_dir: Path, fallback: float) -> dict:
+    from .snapshot import capture_window_start
+    try:
+        manifest = json.loads((snapshot_dir / "manifest.json").read_text())
+        value = manifest.get("capture_window")
+        if isinstance(value, dict) and isinstance(value.get("start_ts"), (int, float)):
+            return value
+    except (OSError, ValueError, AttributeError):
+        pass
+    return capture_window_start(snapshot_dir, fallback)
+
+
 def window(snapshot_dir: Path, now: float, max_hours: float, saved: float | None = None) -> tuple[float, float]:
     """The journal window a snapshot asks for: from the start of its oldest
-    ring file's hour (a local hour, as ring files are named), never further
+    ring file's UTC hour (from packet/manifest epochs), never further
     back than ``max_hours`` before now, up to when it was saved (an until
     in the future was never tested against the realtime range)."""
     saved = saved if saved is not None else now
     until = min(saved, now)
     floor = now - max_hours * 3600.0
-    since = floor
-    for pcap in sorted(snapshot_dir.glob("threadwatch-*.pcap")):
-        try:
-            since = max(floor, time.mktime(time.strptime(pcap.name[12:23], "%Y%m%d-%H")))
-        except ValueError:
-            since = floor
-        break
+    since = max(floor, _capture_window(snapshot_dir, until - 3600)["start_ts"])
     if since >= until:
         since = until - 3600.0
     return since, until
@@ -279,11 +285,14 @@ def summary(status: dict) -> dict:
     for slug, r in status["addons"].items():
         entry = {k: r.get(k) for k in keep if k in r}
         if isinstance(r.get("hours"), dict):
-            entry["hours"] = {h: {k: v.get(k) for k in ("source", "file", "lines", "complete", "error") if k in v}
+            entry["hours"] = {h: {k: v.get(k) for k in
+                                    ("source", "file", "lines", "complete", "error", "received", "gap_before_s")
+                                    if k in v}
                               for h, v in r["hours"].items()}
         addons[slug] = entry
     return {"status": status.get("status"), "reason": status.get("reason"), "requested": status.get("requested"),
-            "attempts": status.get("attempts"), "addons": addons}
+            "attempts": status.get("attempts"), "addons": addons,
+            "window_provenance": status.get("window_provenance")}
 
 
 def _has_file(result: dict) -> bool:
@@ -294,12 +303,14 @@ def _settle(status: dict, interrupted: bool = False) -> dict:
     """status from the add-on results: complete when every add-on's log
     is whole, partial when any file exists, failed when none does."""
     results = list(status["addons"].values())
-    if results and all(r.get("complete") for r in results) and not interrupted:
+    lost = [f"{r.get('slug', 'addon')}: missing archived hours: {', '.join(r['lost'])}"
+            for r in results if r.get("lost")]
+    if results and all(r.get("complete") for r in results) and not interrupted and not lost:
         status["status"], status["reason"] = "complete", None
     elif any(_has_file(r) for r in results):
         status["status"] = "partial"
         status["reason"] = "interrupted" if interrupted else "; ".join(
-            r["error"] for r in results if r.get("error")) or None
+            [r["error"] for r in results if r.get("error")] + lost) or None
     else:
         status["status"] = "failed"
         status["reason"] = "; ".join(r["error"] for r in results if r.get("error")) or "nothing arrived"
@@ -337,6 +348,7 @@ def attach_logs(cfg, snapshot_dir: Path, *, now: float | None = None, settings: 
         secrets = known_secrets(cfg, token=token)
     if not (isinstance(status.get("requested"), list) and len(status["requested"]) == 2):
         status["requested"] = list(window(snapshot_dir, now, cfg.ha_logs_max_hours, saved))
+    status["window_provenance"] = _capture_window(snapshot_dir, (saved or now) - 3600)
     since, until = status["requested"]
     for slug in cfg.ha_logs_addons:
         status["addons"].setdefault(slug, {"slug": slug, "file": None, "complete": False, "error": None})
@@ -427,6 +439,8 @@ def retries_due(cfg, now: float) -> list[Path]:
         status = read_status(d)
         if status is None or status.get("status") not in ("failed", "partial"):
             continue
+        if status.get("addons") and all(r.get("complete") for r in status["addons"].values()):
+            continue
         attempts = int(status.get("attempts") or 1)
         retries = attempts - 1
         if retries >= len(RETRY_AFTER_S):
@@ -449,7 +463,8 @@ def retry_pending(cfg, now: float | None = None, secrets=None) -> list[tuple[Pat
         status = attach_logs(cfg, d, now=now, secrets=secrets)
         if status is None:
             continue
-        final = status.get("status") == "complete" or int(status.get("attempts") or 1) - 1 >= len(RETRY_AFTER_S)
+        final = (all(r.get("complete") for r in status.get("addons", {}).values())
+                 or int(status.get("attempts") or 1) - 1 >= len(RETRY_AFTER_S))
         out.append((d, status, final))
     return out
 
@@ -685,11 +700,7 @@ def _assemble_hours(cfg, snapshot_dir: Path, slug: str, previous: dict, url: str
     hours that are not yet whole."""
     saved = saved_at(snapshot_dir) or now
     until = min(saved, now)
-    pcaps = sorted(snapshot_dir.glob("threadwatch-*.pcap"))
-    try:
-        span_start = time.mktime(time.strptime(pcaps[0].name[12:23], "%Y%m%d-%H")) if pcaps else until - 3600.0
-    except ValueError:
-        span_start = until - 3600.0
+    span_start = _capture_window(snapshot_dir, until - 3600)["start_ts"]
     floor = now - cfg.ha_logs_max_hours * 3600.0
     state = load_archive_state(cfg)
     entry = _slug_state(state, slug)

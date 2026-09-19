@@ -270,6 +270,41 @@ class FetchTest(unittest.TestCase):
         self.assertNotIn("ab", secrets)                          # too short to scrub
 
 
+class SnapshotEpochTest(unittest.TestCase):
+    def test_packet_epochs_select_the_same_hours_across_timezones_and_dst(self):
+        import os
+        from datetime import datetime
+        from unittest.mock import patch
+
+        from threadwatch.pcap import DLT_NOFCS, Frame, PcapWriter
+        # September incident, UTC midnight, and both occurrences of 01:00
+        # in Toronto's fall-back hour. A second radio has the older packet.
+        for stamp in ("2026-09-17T23:14:59.650+00:00", "2026-09-18T00:00:01+00:00",
+                      "2026-11-01T05:30:00+00:00", "2026-11-01T06:30:00+00:00"):
+            ts = datetime.fromisoformat(stamp).timestamp()
+            with tempfile.TemporaryDirectory() as tmp:
+                dest = Path(tmp)
+                try:
+                    with patch.dict(os.environ, TZ="America/Toronto"):
+                        time.tzset()
+                        for label, offset in (("", 0), ("-second", -3600)):
+                            hour = time.strftime("%Y%m%d-%H", time.localtime(ts + offset))
+                            with (dest / f"threadwatch-{hour}{label}.pcap").open("wb") as fh:
+                                PcapWriter(fh, DLT_NOFCS).write(
+                                    Frame(ts + offset, b"abc", b"abc", None, None, None))
+                finally:
+                    time.tzset()
+                for zone in ("America/Toronto", "UTC"):
+                    try:
+                        with patch.dict(os.environ, TZ=zone):
+                            time.tzset()
+                            since, until = halogs.window(dest, ts + 120, 24, ts + 60)
+                            self.assertEqual(since, (ts - 3600) // 3600 * 3600)
+                            self.assertEqual(until, ts + 60)
+                    finally:
+                        time.tzset()
+
+
 class KnownSecretsTest(unittest.TestCase):
     def test_the_hosts_secrets_come_from_the_credentials_and_env_files(self):
         from threadwatch.config import Config
@@ -771,6 +806,56 @@ class ArchiveTest(unittest.TestCase):
         self.assertEqual(removed[0], f"{OTBR}/20250910-06")                # oldest hour first, whichever add-on
         self.assertEqual(halogs.prune_archive(self.cfg), [])               # keep_hours is 168: nothing to do
 
+    def test_key_pair_keeps_switch_packets_and_otbr_log_across_utc_midnight(self):
+        import os
+        from datetime import datetime
+        from unittest.mock import patch
+
+        from threadwatch.pcap import DLT_NOFCS, Frame, PcapStreamReader, PcapWriter
+        from threadwatch.snapshot import save_snapshot
+
+        switch = datetime.fromisoformat("2026-09-17T23:14:59.650+00:00").timestamp()
+        self.cfg.ha_logs_addons = [OTBR]
+        self.srv.lines = {OTBR: [(switch, "KeySeqCntr: 86 -> 87"), (switch + 3600, "census context")]}
+        self.cfg.ring_dir.mkdir(parents=True)
+        for name, ts in (("20260917-18-second", switch - 3600), ("20260917-19", switch)):
+            with (self.cfg.ring_dir / f"threadwatch-{name}.pcap").open("wb") as fh:
+                PcapWriter(fh, DLT_NOFCS).write(Frame(ts, b"abc", b"abc", None, None, None))
+        archive = halogs.archive_dir(self.cfg) / OTBR
+        archive.mkdir(parents=True)
+        with gzip.open(archive / "20260917-22.log.gz", "wt") as fh:
+            fh.write(journal_line(switch - 3600, "before switch"))
+        for phase, now in (("advance", switch + 60), ("census", switch + 3660)):
+            if phase == "census":
+                with gzip.open(archive / "20260917-23.log.gz", "wt") as fh:
+                    fh.write(journal_line(switch, "KeySeqCntr: 86 -> 87"))
+            observation = {"sequence": 87, "observed_at": switch, "phase": phase}
+            try:
+                with patch.dict(os.environ, TZ="America/Toronto"):
+                    time.tzset()
+                    dest, _ = save_snapshot(self.cfg, phase, now=now, key_observation=observation)
+                with patch.dict(os.environ, TZ="UTC"):
+                    time.tzset()
+                    status = halogs.attach_logs(self.cfg, dest, now=now + 5)
+            finally:
+                time.tzset()
+            manifest = json.loads((dest / "manifest.json").read_text())
+            self.assertEqual(manifest["saved_at"], now)
+            self.assertEqual(manifest["key_observation"], observation)
+            self.assertEqual(manifest["capture_window"]["source"], "packet_epochs")
+            self.assertEqual(status["requested"], [halogs.hour_start("20260917-22"), now])
+            hours = status["addons"][OTBR]["hours"]
+            self.assertEqual(hours["20260917-23"]["source"], "live" if phase == "advance" else "archive")
+            with gzip.open(dest / hours["20260917-23"]["file"], "rt") as fh:
+                text = fh.read()
+                self.assertIn("2026-09-17 23:14:59.650", text)
+                self.assertIn("KeySeqCntr: 86 -> 87", text)
+            with (dest / "threadwatch-20260917-19.pcap").open("rb") as fh:
+                self.assertAlmostEqual(next(iter(PcapStreamReader(fh))).ts, switch)
+            current = halogs.hour_name(now)
+            self.assertEqual(hours[current]["source"], "live")
+            self.assertEqual(hours[current]["received"][0], switch if phase == "advance" else switch + 3600)
+
     def test_a_snapshot_with_the_archive_on_copies_its_hours_and_fetches_only_the_rest_live(self):
         from threadwatch.snapshot import save_snapshot
         self._pass(self.H22 + 120)                                          # 16:00-21:00 archived
@@ -838,7 +923,9 @@ class ArchiveTest(unittest.TestCase):
                                  (OTBR, f"realtime={int(self.H22)}:{int(saved)}"),
                                  (MATTER, f"realtime={int(self.H22)}:{int(saved)}")]))
         status = halogs.read_status(dest)
-        self.assertEqual(status["status"], "complete")
+        self.assertEqual(status["status"], "partial")
+        self.assertIn("missing archived hours", status["reason"])
+        self.assertEqual(halogs.retries_due(self.cfg, saved + 3600), [])
         self.assertEqual(status["addons"][OTBR]["hours"]["20250913-20"]["complete"], True)
 
 

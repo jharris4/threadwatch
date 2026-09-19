@@ -32,6 +32,7 @@ With Thread credentials (optional):
 from __future__ import annotations
 
 import json
+import math
 import struct
 import sys
 import threading
@@ -279,9 +280,12 @@ class Pipeline:
             for label in discard_partials(cfg.snapshots_dir):
                 # events.emit, not _emit: this is the snapshot path reporting
                 # on itself, and self.snapshotter is not set until below.
+                # discard_partials returns the label (after the stamp's "_").
+                next_attempt = ("a key snapshot attempt is not repeated after a restart"
+                                if label.startswith("auto-key-") else "the next storm event tries again")
                 self.events.emit("snapshot_failed", "warning", time.time(), label=label,
                                  note=(f"the copy for {label} was cut short when the recorder last stopped; "
-                                       "the half copy was discarded, and the next storm event tries again"))
+                                       f"the half copy was discarded; {next_attempt}"))
             # A log fetch the last run died in: what arrived is kept as a
             # partial log, and the retry pass takes it from there.
             from .halogs import recover_interrupted
@@ -327,6 +331,8 @@ class Pipeline:
             from . import mdns  # noqa: F401  (warmed, used in _poll_border_routers)
         # How a critical event saves the ring: in the background, so the
         # copy (gigabytes on a Pi) never stalls capture. Tests swap it.
+        self._snapshot_lock = threading.Lock()
+        self._key_snapshot_slots = threading.BoundedSemaphore(2)
         self.snapshotter = self._snapshot_in_background
         self._summary_day: str | None = None      # local day whose summary is settled
         self._pruned_day: str | None = None       # local day the event log was last pruned on
@@ -784,6 +790,11 @@ class Pipeline:
             value = data.get(key)
             if value is None or ok(value):
                 keys[key] = value
+        pair = data.get("snapshot_pair")
+        if (isinstance(pair, dict) and _whole(pair.get("sequence")) is not None
+                and number(pair.get("observed_at")) and math.isfinite(pair["observed_at"])
+                and isinstance(pair.get("census_claimed"), bool)):
+            keys["snapshot_pair"] = pair
         return keys
 
     def _save_keys(self) -> None:
@@ -812,7 +823,14 @@ class Pipeline:
         from .snapshot import is_auto_snapshot
         try:
             for inc in snapshots(self.cfg.snapshots_dir):      # newest first
-                if is_auto_snapshot(self.cfg.snapshots_dir / inc["name"]):
+                directory = self.cfg.snapshots_dir / inc["name"]
+                if is_auto_snapshot(directory):
+                    try:
+                        manifest = json.loads((directory / "manifest.json").read_text())
+                        if manifest.get("trigger") in ("key_sequence_advanced", "key_lag_census"):
+                            continue
+                    except (OSError, ValueError):
+                        continue
                     return float(inc["saved"])
         except OSError:
             pass
@@ -2439,10 +2457,33 @@ class Pipeline:
         self._last_auto_snapshot = ts
         return f"auto-{event}"
 
-    def _snapshot_in_background(self, label: str, trigger: str) -> None:
-        threading.Thread(target=self._save_snapshot_now, args=(label, trigger), daemon=True).start()
+    def _snapshot_in_background(self, label: str, trigger: str, key_observation: dict | None = None) -> None:
+        if key_observation is None:
+            threading.Thread(target=self._save_snapshot_now, args=(label, trigger), daemon=True).start()
+            return
+        if not self._key_snapshot_slots.acquire(blocking=False):
+            self.events.emit("snapshot_skipped", "warning", time.time(), label=label,
+                             key_observation=key_observation, reason="key_snapshot_workers_busy",
+                             note="both key snapshot workers are busy; this attempt was skipped")
+            return
 
-    def _save_snapshot_now(self, label: str, trigger: str) -> None:
+        def run():
+            try:
+                self._save_snapshot_now(label, trigger, key_observation)
+            finally:
+                self._key_snapshot_slots.release()
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _save_snapshot_now(self, label: str, trigger: str, key_observation: dict | None = None) -> None:
+        # Serialize pruning and copying, including critical events that race
+        # the pair. Log fetching stays off the capture thread too.
+        with self._snapshot_lock:
+            dest = self._save_snapshot_locked(label, trigger, key_observation)
+        if dest is not None:
+            self._attach_snapshot_logs(label, dest)
+
+    def _save_snapshot_locked(self, label: str, trigger: str, key_observation: dict | None = None) -> Path | None:
         """Take the snapshot _emit reserved. ``trigger`` is the event that
         called for it, recorded in the snapshot's manifest. What this path
         logs goes to events.emit rather than _emit: a snapshot reporting on
@@ -2456,28 +2497,35 @@ class Pipeline:
         # the no-cap sentinel and has to stay -1 through that subtraction:
         # the 0 it used to become deleted every automatic snapshot on disk,
         # which is the opposite of what -1 asks for.
-        dropped = prune_auto_snapshots(self.cfg.snapshots_dir, keep - 1 if keep > 0 else keep)
-        if dropped:
-            self.events.emit("snapshots_pruned", "info", time.time(), removed=dropped,
-                             note=(f"{len(dropped)} older automatic snapshot(s) removed to keep "
-                                   f"[record] keep_snapshots = {self.cfg.keep_snapshots}: "
-                                   + ", ".join(dropped)))
-        if not self._room_for_snapshot(label):
-            return
         try:
-            dest, count = save_snapshot(self.cfg, label, trigger=trigger)
+            dropped = prune_auto_snapshots(self.cfg.snapshots_dir, keep - 1 if keep > 0 else keep)
+            if dropped:
+                self.events.emit("snapshots_pruned", "info", time.time(), removed=dropped,
+                                 note=(f"{len(dropped)} older automatic snapshot(s) removed to keep "
+                                       f"[record] keep_snapshots = {self.cfg.keep_snapshots}: "
+                                       + ", ".join(dropped)))
+            if not self._room_for_snapshot(label, key_observation is None):
+                return
+            kwargs = {"key_observation": key_observation} if key_observation is not None else {}
+            dest, count = save_snapshot(self.cfg, label, trigger=trigger, **kwargs)
         except Exception as exc:
             # Nothing was kept (save_snapshot removes a half copy), so the
             # six-hour cooldown armed for this attempt must not stand: the
             # next storm event after the retry hold tries again.
-            self._last_auto_snapshot -= self.AUTO_SNAPSHOT_COOLDOWN_S - self.AUTO_SNAPSHOT_RETRY_S
+            if key_observation is None:
+                self._last_auto_snapshot -= self.AUTO_SNAPSHOT_COOLDOWN_S - self.AUTO_SNAPSHOT_RETRY_S
+            retry_note = ("this key snapshot attempt is not retried; the other phase is independent"
+                          if key_observation is not None else
+                          f"the next critical event after {self.AUTO_SNAPSHOT_RETRY_S // 60} min tries again")
             self.events.emit("snapshot_failed", "warning", time.time(), label=label,
                              note=(f"could not save the ring for {label}: {exc}; nothing was kept, and "
-                                   f"the next critical event after {self.AUTO_SNAPSHOT_RETRY_S // 60} min "
-                                   f"tries again"))
+                                   + retry_note))
             return
         self.events.emit("snapshot_saved", "info", time.time(), label=label, path=str(dest),
                          ring_files=count, note=f"{count} ring files kept as {dest.name}")
+        return dest
+
+    def _attach_snapshot_logs(self, label: str, dest: Path) -> None:
         # The HA add-on logs join the snapshot now that it is final, on
         # this same background thread: a slow fetch costs capture nothing,
         # and the ring copy is already whole whatever happens here.
@@ -2516,6 +2564,7 @@ class Pipeline:
         errors = [r["error"] for r in status.get("addons", {}).values() if r.get("error")] or \
             [status.get("reason") or "nothing arrived"]
         kept = [slug for slug, r in status.get("addons", {}).items() if r.get("file")]
+        final = final or bool(addons) and all(r.get("complete") for r in status.get("addons", {}).values())
         how = ("the fetch is not retried: [ha_logs] retry is off" if not self.cfg.ha_logs_retry
                else "no retry remains" if final
                else "the recorder retries at 15 min, 1 h and 4 h after the snapshot while the journal "
@@ -2681,7 +2730,7 @@ class Pipeline:
         self._halogs_thread = threading.Thread(target=run, name="ha-logs-retry", daemon=True)
         self._halogs_thread.start()
 
-    def _room_for_snapshot(self, label: str) -> bool:
+    def _room_for_snapshot(self, label: str, critical: bool = True) -> bool:
         """A snapshot is a second copy of the ring. Taking one that leaves
         the ring less room than it still needs trades a week of recording
         for one snapshot, and the recorder exits 1 the moment the card
@@ -2692,7 +2741,8 @@ class Pipeline:
         copy = sto["ring_bytes"] + sto.get("snapshot_extra_bytes", 0)     # the ring, plus the HA logs when on
         if free is None or free - copy >= need:
             return True
-        self._last_auto_snapshot -= self.AUTO_SNAPSHOT_COOLDOWN_S - self.AUTO_SNAPSHOT_RETRY_S
+        if critical:
+            self._last_auto_snapshot -= self.AUTO_SNAPSHOT_COOLDOWN_S - self.AUTO_SNAPSHOT_RETRY_S
         self.events.emit("snapshot_skipped", "warning", time.time(), label=label,
                          disk_free=free, ring_bytes=sto["ring_bytes"], ring_needs_bytes=need,
                          note=(f"not saving {label}: a copy of the ring ({fmt_bytes(copy)}"
@@ -2816,6 +2866,41 @@ class Pipeline:
 
     # ------------------------------------------------ key generations
 
+    def _key_snapshot(self, ts: float, phase: str) -> None:
+        """At-most-once reservations, persisted before launching a copy.
+
+        A crash between reservation and copy may lose an attempt, never
+        duplicate it. Rapid advances share the outstanding census bundle;
+        a completed pair also holds new advances for five minutes.
+        """
+        if self.ephemeral or not self.cfg.snapshot_on_key_advance:
+            return
+        pair = self._keys.get("snapshot_pair")
+        if phase == "advance":
+            if pair and (not pair["census_claimed"] or 0 <= ts - pair["observed_at"] < 300):
+                self.events.emit("snapshot_skipped", "info", ts, reason="key_advance_coalesced",
+                                 sequence=self._keys["highest"], key_observation=dict(pair),
+                                 note="key advance coalesced into the preceding snapshot pair")
+                return
+            pair = {"sequence": self._keys["highest"], "observed_at": self._keys["highest_first_ts"],
+                    "census_claimed": False}
+            self._keys["snapshot_pair"] = pair
+        elif not pair or pair["census_claimed"]:
+            return
+        else:
+            pair["census_claimed"] = True
+        self._save_keys()
+        observation = {"sequence": pair["sequence"], "observed_at": pair["observed_at"], "phase": phase}
+        label = f"auto-key-{pair['sequence']}-{int(pair['observed_at'] * 1000)}-{phase}"
+        if self.cfg.keep_snapshots == 0:
+            self.events.emit("snapshot_skipped", "info", ts, label=label, key_observation=observation,
+                             reason="keep_snapshots_zero", note="key snapshot disabled by keep_snapshots = 0")
+            return
+        trigger = "key_sequence_advanced" if phase == "advance" else "key_lag_census"
+        self.events.emit("snapshot_requested", "info", ts, label=label, trigger=trigger,
+                         key_observation=observation, note=f"saving the ring for key {phase} as {label}")
+        self.snapshotter(label, trigger, observation)
+
     def _generation_coverage(self, previous_ts: float | None, ts: float) -> dict:
         """Known blind spans are evidence of gaps, never proof of full coverage.
 
@@ -2872,10 +2957,13 @@ class Pipeline:
         evidence = {"scope": "device", "confidence": "observation_only",
                     "reasons": ["accepted_authenticated_frame", "mesh_adoption_not_established",
                                 "origin_not_established"]}
+        pair = self._keys.get("snapshot_pair")
         self._keys = {"highest": generation, "previous": highest, "highest_first_ts": ts,
                       "previous_first_ts": previous_ts, "first_sender": who,
                       "census_at": ts + self.cfg.key_census_delay_s, "suspects": [suspect],
                       **evidence, **interval_facts}
+        if pair is not None:
+            self._keys["snapshot_pair"] = pair
         self._save_keys()
         self._keys_reloaded = False
         name = self.names.name(who)
@@ -2897,6 +2985,8 @@ class Pipeline:
                    first_sender=who, name=name, rloc16=row.get("rloc16"), role=role["role"] if role else None,
                    frame=frame, since_previous_s=round(since) if since is not None else None,
                    suspects=[suspect], previous_first_ts=previous_ts, **interval_facts, **evidence, note=note)
+        if highest is not None:
+            self._key_snapshot(ts, "advance")
 
     def _origin(self, who: str, row: dict, generation: int, frame: str, ts: float, first: bool) -> dict | None:
         """Record origin candidates, never proof of independent advancement.
@@ -3178,6 +3268,7 @@ class Pipeline:
                    routers_behind=routers_behind, unknown=unknown, suspects=suspects,
                    note=f"census {self.cfg.key_census_delay_s / 60:.0f} min after the advance; "
                    + "; ".join(parts))
+        self._key_snapshot(now, "census")
 
     @staticmethod
     def _suspect_label(suspect: dict) -> str:

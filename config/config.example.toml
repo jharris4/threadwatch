@@ -29,6 +29,10 @@ keep_hours = 168                  # ring files to retain, one per hour heard (16
 # newest auto-* snapshot on disk, so a restart does not reset it). Off by default:
 # a snapshot is the size of the ring. 'threadwatch snapshots' lists them.
 # snapshot_on_critical = true
+# Save once at an observed key advance and once at its census (not initial
+# discovery). Independent of the critical cooldown; rapid advances coalesce
+# into the outstanding pair. These use the same disk budget and retention.
+# snapshot_on_key_advance = true
 # keep_snapshots = 4              # how many auto-* snapshots to keep; the oldest go before each new
                                   # one is taken. Snapshots you saved by hand are never pruned.
                                   # -1 keeps every automatic one (nothing else deletes them);

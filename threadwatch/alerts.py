@@ -79,7 +79,7 @@ KNOWN_EVENTS = frozenset((
     "border_router_address_changed", "border_router_unlisted", "border_router_address_conflict",
     "border_router_rotation_unverified",
     "phase_locked_storm",
-    "snapshot_saved", "snapshot_failed", "snapshot_skipped", "snapshots_pruned",
+    "snapshot_requested", "snapshot_saved", "snapshot_failed", "snapshot_skipped", "snapshots_pruned",
     "snapshot_logs_saved", "snapshot_logs_failed", "ha_logs_archive_stalled", "ha_logs_archive_resumed",
     "ha_unavailable", "ha_unavailable_burst", "ha_available", "ha_unreachable", "ha_reachable",
     "daily_summary", "alert_test", "recorder_started",

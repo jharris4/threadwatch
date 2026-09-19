@@ -19,6 +19,7 @@ runs is skipped, not fatal.
 from __future__ import annotations
 
 import fcntl
+import io
 import json
 import os
 import re
@@ -213,6 +214,35 @@ def rewrite_manifest(dest: Path, **extra) -> dict | None:
     return manifest
 
 
+def capture_window_start(dest: Path, fallback: float) -> dict:
+    """Read one packet per ring file, independent of local names and DST.
+
+    Ring files are chronological streams. This reads their first observations,
+    not every packet in a potentially week-long copy. Legacy/unreadable files
+    retain the filename fallback, explicitly marked as timezone-dependent.
+    """
+    from .pcap import PcapFormatError, PcapStreamReader
+    starts, uncertain = [], []
+    for path in sorted(dest.glob("threadwatch-*.pcap")):
+        try:
+            with path.open("rb") as fh:
+                # Bound recovery work on a corrupt file to one maximum record.
+                packet = next(iter(PcapStreamReader(io.BytesIO(fh.read(24 + 16 + 65535)))), None)
+            if packet is not None:
+                starts.append(packet.ts // 3600 * 3600)
+                continue
+        except (OSError, PcapFormatError, ValueError):
+            pass
+        uncertain.append(path.name)
+        try:
+            starts.append(time.mktime(time.strptime(path.name[12:23], "%Y%m%d-%H")))
+        except ValueError:
+            starts.append(fallback)
+    return {"start_ts": min(starts) if starts else fallback,
+            "source": "packet_epochs" if starts and not uncertain else "legacy_local_filename_or_fallback",
+            "uncertain_files": uncertain}
+
+
 def write_manifest(cfg, dest: Path, label: str, now: float, trigger: str | None,
                    provenance: dict | None = None) -> dict:
     """manifest.json: what the bundle holds and the recorder that made it.
@@ -230,6 +260,7 @@ def write_manifest(cfg, dest: Path, label: str, now: float, trigger: str | None,
         "provenance": provenance["source"] if provenance else "snapshot_process_inputs; capture provenance unavailable",
         "recorder_started_at": provenance.get("started_at") if provenance else None,
         "saved_at": now,
+        "capture_window": capture_window_start(dest, now - 3600),
         "saved_at_local": time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(now)),
         "label": label,
         "trigger": trigger or "manual",
@@ -279,7 +310,7 @@ def _take_lock(path: Path, wait: bool) -> int | None:
 
 
 def save_snapshot(cfg, label: str = "snapshot", now: float | None = None,
-                trigger: str | None = None) -> tuple[Path, int]:
+                trigger: str | None = None, key_observation: dict | None = None) -> tuple[Path, int]:
     """Save the ring. Returns (snapshot dir, ring files copied). The
     label is reduced to filename-safe characters (safe_label); ``trigger``
     names the event that asked for it, for the manifest."""
@@ -347,6 +378,8 @@ def save_snapshot(cfg, label: str = "snapshot", now: float | None = None,
             if kept != count:
                 raise OSError(f"{count} ring files were copied but the snapshot holds {kept}")
             write_manifest(cfg, dest, label, now, trigger, provenance)
+            if key_observation is not None:
+                rewrite_manifest(dest, key_observation=key_observation)
         except BaseException:
             # A copy cut short by a full disk, an I/O error or Ctrl-C would
             # otherwise stay behind looking like a whole snapshot, with nothing
@@ -381,7 +414,7 @@ def saved_at(snapshot_dir: Path) -> float | None:
 
 
 def is_auto_snapshot(snapshot_dir: Path) -> bool:
-    """Did snapshot_on_critical take this snapshot, rather than a person?
+    """Did an automatic trigger take this snapshot, rather than a person?
 
     Read from the manifest's trigger, which is the event that called for
     the copy and "manual" for the ones somebody asked for by name. The
@@ -403,7 +436,7 @@ def is_auto_snapshot(snapshot_dir: Path) -> bool:
 
 def prune_auto_snapshots(snapshots_dir: Path, keep: int) -> list[str]:
     """Remove all but the newest ``keep`` automatic snapshots and return
-    their names, oldest first. Only those snapshot_on_critical made are
+    their names, oldest first. Only automatically triggered snapshots are
     pruned (is_auto_snapshot, from the manifest): a snapshot somebody
     saved by hand is kept, however old and whatever it is called, because
     nothing else remembers to.

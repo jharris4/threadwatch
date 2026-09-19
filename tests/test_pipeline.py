@@ -2521,6 +2521,120 @@ class KeyGenerationTest(unittest.TestCase):
         self.assertEqual((ev["suspects"][0]["evidence"], ev["suspects"][0]["parent"]), ("first on air", "Hall Router"))
         self.assertIn("its parent Hall Router had no fresh generation reading", ev["note"])
 
+    def test_a_half_key_snapshot_left_by_a_restart_says_it_is_not_retried(self):
+        from threadwatch import snapshot
+        staging = self.cfg.snapshots_dir / snapshot.STAGING_DIR
+        for label in ("auto-key-86-1700000010000-advance", "auto-phase_locked_storm"):
+            (staging / f"20260917T192634_{label}").mkdir(parents=True)
+        pipe = self._pipe()
+        notes = {e["label"]: e["note"] for e in self._events(pipe, "snapshot_failed")}
+        self.assertIn("not repeated after a restart", notes["auto-key-86-1700000010000-advance"])
+        self.assertIn("the next storm event tries again", notes["auto-phase_locked_storm"])
+
+    def test_key_snapshot_pair_survives_restart_and_ignores_critical_cooldown(self):
+        self.cfg.snapshot_on_key_advance = True
+        self.cfg.key_census_delay_s = 600
+        pipe = self._pipe()
+        saved = []
+        pipe.snapshotter = lambda *args: saved.append(args)
+        pipe._last_auto_snapshot = self.T0
+        pipe.ingest(frame(self.T0, ROUTER, sequence=85))
+        self.assertEqual(saved, [])  # discovery is not a rotation
+        pipe.ingest(frame(self.T0 + 10, ROUTER, sequence=86))
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0][1], "key_sequence_advanced")
+        pipe.seen.save()
+        pipe = self._pipe()
+        pipe.snapshotter = lambda *args: saved.append(args)
+        pipe.ingest(frame(self.T0 + 20, ROUTER, sequence=86))
+        pipe._maybe_census(self.T0 + 609, None)
+        self.assertEqual(len(saved), 1)
+        pipe._maybe_census(self.T0 + 610, None)
+        self.assertEqual(len(saved), 2)
+        self.assertEqual(saved[1][1], "key_lag_census")
+        self.assertEqual(saved[0][2], {"sequence": 86, "observed_at": self.T0 + 10, "phase": "advance"})
+        self.assertEqual(saved[1][2], {"sequence": 86, "observed_at": self.T0 + 10, "phase": "census"})
+        pipe = self._pipe()
+        pipe.snapshotter = lambda *args: self.fail("duplicated the pair after restart")
+        pipe._maybe_census(self.T0 + 1000, None)
+
+    def test_key_snapshots_coalesce_a_burst_and_link_the_original_observation(self):
+        self.cfg.snapshot_on_key_advance = True
+        self.cfg.key_census_delay_s = 600
+        pipe = self._pipe()
+        saved = []
+        pipe.snapshotter = lambda *args: saved.append(args)
+        for offset, sequence in ((0, 85), (10, 86), (20, 87), (30, 88)):
+            pipe.ingest(frame(self.T0 + offset, ROUTER, sequence=sequence))
+        self.assertEqual(len(saved), 1)
+        skipped = self._events(pipe, "snapshot_skipped")
+        self.assertEqual([e["sequence"] for e in skipped], [87, 88])
+        self.assertTrue(all(e["reason"] == "key_advance_coalesced" for e in skipped))
+        pipe._maybe_census(self.T0 + 630, None)
+        self.assertEqual(len(saved), 2)
+        self.assertEqual(saved[1][2]["sequence"], 86)
+        pipe.ingest(frame(self.T0 + 700, ROUTER, sequence=89))
+        self.assertEqual(len(saved), 3)
+
+    def test_key_snapshot_disk_guard_and_worker_limit_report_skipped_attempts(self):
+        from unittest.mock import patch
+        pipe = self._pipe()
+        pipe._last_auto_snapshot = self.T0
+        observation = {"sequence": 86, "observed_at": self.T0, "phase": "advance"}
+        with patch("threadwatch.review.storage", return_value={
+                "disk_free": 0, "ring_bytes": 100, "ring_needs_bytes": 200}):
+            pipe._save_snapshot_now("key-disk-full", "key_sequence_advanced", observation)
+        self.assertEqual(pipe._last_auto_snapshot, self.T0)
+        skipped = self._events(pipe, "snapshot_skipped")
+        self.assertEqual(skipped[0]["disk_free"], 0)
+        self.assertEqual(self._events(pipe, "snapshot_saved"), [])
+        pipe._key_snapshot_slots.acquire()
+        pipe._key_snapshot_slots.acquire()
+        try:
+            pipe._snapshot_in_background("key-busy", "key_lag_census", observation)
+        finally:
+            pipe._key_snapshot_slots.release()
+            pipe._key_snapshot_slots.release()
+        self.assertEqual(self._events(pipe, "snapshot_skipped")[-1]["reason"], "key_snapshot_workers_busy")
+
+    def test_key_snapshots_are_opt_in_and_replay_has_no_side_effects(self):
+        for enabled, ephemeral, keep in ((False, False, 4), (True, True, 4), (True, False, 0)):
+            with self.subTest(enabled=enabled, ephemeral=ephemeral, keep=keep):
+                self.cfg.snapshot_on_key_advance = enabled
+                self.cfg.keep_snapshots = keep
+                pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor(), ephemeral=ephemeral)
+                pipe._keys = {}
+                pipe.snapshotter = lambda *args: self.fail("unexpected copy")
+                pipe.ingest(frame(self.T0, ROUTER, sequence=85))
+                pipe.ingest(frame(self.T0 + 10, ROUTER, sequence=86))
+                pipe._maybe_census(self.T0 + 10000, None)
+                if enabled and not ephemeral:
+                    self.assertEqual([e["reason"] for e in self._events(pipe, "snapshot_skipped")],
+                                     ["keep_snapshots_zero"] * 2)
+
+    def test_key_snapshot_manifests_and_disk_failure_keep_the_pair_bounded(self):
+        from unittest.mock import patch
+        self.cfg.snapshot_on_key_advance = True
+        self.cfg.key_census_delay_s = 600
+        pipe = self._pipe()
+        pipe.snapshotter = pipe._save_snapshot_now
+        pipe.ingest(frame(self.T0, ROUTER, sequence=85))
+        pipe.ingest(frame(self.T0 + 10, ROUTER, sequence=86))
+        pipe._maybe_census(self.T0 + 610, None)
+        manifests = [json.loads(p.read_text()) for p in self.cfg.snapshots_dir.glob("*/manifest.json")]
+        self.assertEqual(len(manifests), 2)
+        self.assertEqual({m["key_observation"]["phase"] for m in manifests}, {"advance", "census"})
+        self.assertTrue(all(m["key_observation"]["observed_at"] == self.T0 + 10 for m in manifests))
+        self.assertEqual(self._pipe()._last_auto_snapshot, 0)
+        pipe._last_auto_snapshot = self.T0
+        with patch("threadwatch.snapshot.save_snapshot", side_effect=OSError("disk full")):
+            pipe.ingest(frame(self.T0 + 700, ROUTER, sequence=87))
+            pipe._maybe_census(self.T0 + 1300, None)
+            pipe._maybe_census(self.T0 + 1400, None)
+        self.assertEqual(len(self._events(pipe, "snapshot_failed")), 2)
+        self.assertEqual(pipe._last_auto_snapshot, self.T0)
+        self.assertTrue(pipe.keys_status()["snapshot_pair"]["census_claimed"])
+
     def test_interval_facts_baseline_single_step_and_skipped_generations(self):
         self.cfg.key_rotation_hours = 672
         pipe = self._pipe()

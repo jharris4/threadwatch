@@ -353,3 +353,31 @@ runs may contain packets captured with earlier settings. For legacy captures
 without this record, the manifest labels the inputs as belonging to the snapshot
 process and says capture provenance is unavailable. Such inputs are not proof of
 what captured the packets. Replay still uses the selected analysis configuration.
+
+
+### Key advance snapshot pairs and log time ranges
+
+Enable `[record] snapshot_on_key_advance = true` to preserve an advance and
+its census automatically (details and failure semantics in
+[ALERTING.md](ALERTING.md)). The two manifests carry the same sequence and
+first-observation epoch under `key_observation`, and a distinct `phase`.
+Keep at least two snapshots to retain both; the usual disk and retention
+limits still apply.
+
+New manifests record `capture_window.start_ts` from the earliest first
+packet among the ring files, rounded down to a UTC hour. Both live-log
+requests and archive selection use this epoch, so another host's timezone,
+local midnight, multiple radios and repeated DST hours do not change which
+UTC archive hours are selected. Older bundles are read from packet epochs
+when available. Unreadable or empty files fall back to local filename
+interpretation, explicitly labeled `legacy_local_filename_or_fallback` with
+`uncertain_files`; that fallback cannot establish the capture timezone.
+The saved epoch bounds the end of the request. The active partial hour is
+fetched live; existing complete archive hours are copied locally.
+
+`ha-logs.json` and the manifest expose `window_provenance`, requested epochs,
+and per-hour source, received bounds and leading gaps. An archive hour
+known to be lost makes the bundle status partial, even when all remaining
+fetches finished; terminal lost hours are not retried. A completed HTTP
+response does not prove that every log line survived journal retention.
+A week of packets cannot recover add-on logs that already rolled away.

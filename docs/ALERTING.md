@@ -94,9 +94,10 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `border_router_address_conflict` | warning | `addr`, `name` (the entry devices.json gives the address to), `hostname`, `claimed_by` (the entry the hostname belongs to), `note` |
 | `border_router_rotation_unverified` | notice | `addr`, `name`, `previous`, `hostname`, `evidence` (what held, when anything did), `missing` (what did not), `note` |
 | `phase_locked_storm` | critical | detector snapshot (`period_s`, `onsets`, ...) |
-| `snapshot_saved` | info | `label`, `path`, `ring_files`, `note` (with `[record] snapshot_on_critical`) |
+| `snapshot_requested` | info | `label`, `trigger`, `key_observation` (`sequence`, `observed_at`, `phase`): a key snapshot attempt was reserved |
+| `snapshot_saved` | info | `label`, `path`, `ring_files`, `note` (with either automatic snapshot option) |
 | `snapshot_failed` | warning | `label`, `note` |
-| `snapshot_skipped` | warning | `label`, `disk_free`, `ring_bytes`, `ring_needs_bytes`, `note` |
+| `snapshot_skipped` | info/warning | `label` when assigned, `note`; disk refusals include `disk_free`, `ring_bytes`, `ring_needs_bytes`; key coalescing/disabled/busy attempts include `reason` and `key_observation` |
 | `snapshots_pruned` | info | `removed`, `note` |
 | `snapshot_logs_saved` | info | `label`, `path`, `addons`, `lines` (per add-on), `note`; the HA add-on logs joined an automatic snapshot, or a retry completed them (with `[ha_logs] enabled`) |
 | `snapshot_logs_failed` | notice | `label`, `addons`, `errors`, `status` (`failed`, `partial` or `skipped`), `note` (whether and when the recorder retries) |
@@ -492,6 +493,33 @@ If HA automations already notify on unavailability, keep `ha_unavailable`
 off the phone sink with `ignore_events = ["ha_unavailable"]` and let the
 burst through; the devices page shows `HA: available` or `unavailable
 since` either way.
+
+With `[record] snapshot_on_key_advance = true` (off by default), an
+accepted advance saves the ring immediately and again at the existing
+`[keys] census_delay_s` census. Initial discovery does not save anything.
+The manifest and `snapshot_requested` event link both attempts through
+`key_observation.sequence` and `observed_at`, with phase `advance` or `census`.
+These attempts bypass the critical-event cooldown and share automatic
+retention and disk-space checks. Keep at least two automatic snapshots if
+you want both retained; critical snapshots share that budget.
+
+Further advances while a census is outstanding coalesce into that pair;
+the follow-up runs at the latest advance's census, while its link still
+identifies the original observation. Each coalesced advance records
+`snapshot_skipped` with `reason=key_advance_coalesced`. A completed pair
+also holds new pairs for five minutes from its first observation. At most
+two key workers run; busy or disabled saves are explicitly recorded as
+skipped. Copying and pruning are serialized, and log fetching runs after
+the copy on the worker thread.
+
+Reservations are persisted before starting each worker, and the existing
+census deadline survives restart. Each phase is attempted at most once:
+a crash between reservation and completion can lose that attempt, but
+cannot duplicate it after restart. Existing partial-copy cleanup reports
+interrupted copies. Disk-full and copy failures are reported without
+retrying the ring copy; the other phase remains independent. HA log
+fetches retain their existing bounded retry schedule. Replay never starts
+these workers.
 
 `snapshot_logs_saved` and `snapshot_logs_failed` report the Home Assistant
 add-on logs that join a snapshot with `[ha_logs] enabled` (docs/ANALYSIS.md,

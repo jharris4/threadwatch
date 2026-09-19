@@ -926,6 +926,7 @@ def run_record(cfg: Config) -> None:
 
                 for what, step in (("ring flush", flush_rings),
                                    ("last-seen save", pipe.seen.save),
+                                   ("key journal save", lambda: pipe.journal.save(force=True)),
                                    ("exit note", lambda: record_exit(cfg.state_dir, EXIT_STALLED,
                                                                      beat["last_frame"] or prior_frame)),
                                    ("alert delivery", events.close),
@@ -961,6 +962,7 @@ def run_record(cfg: Config) -> None:
                 if r is primary or beat["ring"] is None:
                     beat["ring"] = r.writer
             r.writer.write(copy)
+            pipe._journal_files[label] = r.writer.current_path
             r.last_frame_ts = copy.ts
         for r in radios:
             if r.clock.last_step_s:
@@ -1103,6 +1105,7 @@ def run_record(cfg: Config) -> None:
             lost = cleanup("sniffer stop", stop_sniffers)
             watchdog_stop.set()
             lost |= cleanup("last-seen save", pipe.seen.save)
+            lost |= cleanup("key journal save", lambda: pipe.journal.save(force=True))
             lost |= cleanup("ring close", close_rings)
             lost |= cleanup("FIFO cleanup", remove_fifos)
             if lost and exit_code == 0:
@@ -1250,7 +1253,7 @@ def replay_files(paths: list[Path]) -> list[Path]:
     return out
 
 
-def run_replay(cfg: Config, pcap_path: Path | list[Path]) -> None:
+def run_replay(cfg: Config, pcap_path: Path | list[Path], *, journal=None, output=True) -> dict:
     """Run the full pipeline over existing pcaps, one file or several in
     order (a directory is every pcap in it), as one run: a silence or a
     storm that spans two hourly files is judged once, across the
@@ -1264,6 +1267,8 @@ def run_replay(cfg: Config, pcap_path: Path | list[Path]) -> None:
     decryptor = load_decryptor(cfg)
     print("[threadwatch] credentials: loaded", file=sys.stderr, flush=True)   # stdout is the JSON
     pipe = Pipeline(cfg, events, decryptor, ephemeral=True)
+    if journal is not None:
+        pipe.journal = journal
     pipe.detector.cfg.alert_cooldown_s = 0
     total = 0
     first = last = None
@@ -1276,6 +1281,7 @@ def run_replay(cfg: Config, pcap_path: Path | list[Path]) -> None:
     # An hour recorded by several radios is several files, read together:
     # what the recorder judged once is judged once here too (merge.py).
     for group in group_files(files):
+        pipe._journal_files = group
         try:
             with ExitStack() as stack:
                 readers = {label: PcapStreamReader(stack.enter_context(open(path, "rb")))
@@ -1319,4 +1325,8 @@ def run_replay(cfg: Config, pcap_path: Path | list[Path]) -> None:
         "events": events.records,
     }
     out["crypto"] = {**decryptor.stats, "key_sequence": decryptor.key_sequence}
-    print(json.dumps(out, indent=1))
+    if journal is not None:
+        out["key_journal"] = journal.report()
+    if output:
+        print(json.dumps(out, indent=1))
+    return out

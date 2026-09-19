@@ -71,7 +71,7 @@ sudo systemctl start threadwatch
 
 (Docker: `docker compose stop recorder`.) Everything else is safe beside
 a running recorder: `doctor`, `status`, `devices`, `device`, `replay`,
-`events`, `snapshots`, `snapshot`, `otbr-evidence`, `border-routers`, `alert-test`, `serve`,
+`events`, `snapshots`, `snapshot`, `otbr-evidence`, `key-journal`, `border-routers`, `alert-test`, `serve`,
 and `name` and `import`, which write `config/` files the recorder reads
 only at its next start. `replay` and `device` run the pipeline in a mode that
 writes nothing to `data/state` and sends nothing to any sink.
@@ -554,3 +554,109 @@ the future long-term adoption journal. Snapshots copy it alongside key state.
 `status.json` exposes `otbr_inventory` with the last sample's status and
 per-command outcomes; null means disabled or no completed sample yet. Failure
 to read or write this optional inventory never stops packet recording.
+
+## Key-transition journal
+
+`threadwatch key-journal` prints a compact origin/adoption history;
+`--json` includes all evidence and references. It reads
+`data/state/key-journal.json` and retained events, without decoding the ring
+or contacting HA. The recorder builds the journal from accepted keyfacts,
+existing events, optional OTBR inventory and archived OTBR logs. Detector
+and replay-protection decisions do not read it.
+
+The JSON has `incidents`, `devices`, and `records`. An incident keeps its
+network observation interval separately from its first sender's local
+interval. Local transitions are ordered independently for MAC and MLE.
+First discovery, including a reading seeded from older keyfacts, is a
+baseline with unknown switch time. The preceding local interval is null
+until a preceding actual transition is retained; an observation timestamp
+never becomes an exact device switch time. Rejected, duplicate and late
+packets do not become accepted transitions. Earlier authenticated higher
+readings, including rejected traffic, are separately labelled with their
+bounded keyfacts provenance.
+
+Origin records include the inventory's explicit address grouping (never a
+same-name join), model/firmware when supplied, role, partition context,
+parent sequence and freshness, and child-minus-parent deltas both before
+and after the change. Missing or stale topology stays qualified. Packet
+references keep the file, epoch, radio, MAC sequence and PSDU SHA-256, not
+packet contents or keys. Cross-radio/host ordering remains uncertain.
+Preceding MLE exchanges are limited to eight per device and 30 minutes.
+A Child ID Request immediately before a router's first use can identify an
+**authoritative candidate**; its assumptions remain explicit, and it does
+not prove completed attachment or exclude an unseen update.
+
+Each adopting router has a first-use row and references to its layer
+observations. Transport (`802.15.4`, `trel`, `unknown`) is distinct from
+update class (`authoritative`, `MAC_peer`, `MLE_peer`, `unknown`). An OTBR
+`KeySeqCntr` log line that omits the counter leaves old/new sequence null.
+Nearby TREL reception is retained as a candidate path, with its peer and
+file/line evidence, not promoted to a proven cause. A missing radio packet
+never implies TREL. Link-message observations do not prove completion of
+link re-establishment.
+
+Device histories retain reattachment attempts, scoped reset evidence, and
+separate key-lag, RLOC and HA-availability milestones. Parent Requests do
+not count as reboots. A successful `otbr-agent` service start establishes a
+process start, not a host reboot. A sampled uptime reset is scoped to the
+OpenThread instance; both samples travel with the evidence. Guard
+annotations are `unknown`, `consistent_with_active_guard`, or
+`consistent_with_clear_guard`, with assumptions. Conditional inventory
+annotations require an observed reset or a preceding +1 transition and
+configured guard duration. They do not expose a timer countdown or apply
+the OTBR's policy to accessories.
+
+The journal keeps up to **90 days, 8,192 records and 16 MiB**, whichever bound
+is reached first; a busy or flapping network can shorten that history.
+Dropped records and unreadable/partial state are visible in reports.
+Individual records are capped at 64 KiB and packet tracking at 1,024 address
+pairs per layer. State is saved atomically at most once a minute, and at
+network advances, key snapshot requests and shutdown. A failed journal
+write is reported without stopping capture. Snapshots include the journal;
+its compact history survives ring pruning, but packet/log references can
+outlive their source files. `bundles` lists snapshot directories still
+present when the report is built.
+
+Archive processing runs on the existing HA archive worker, scanning at most
+four new or replaced OTBR hour files per pass, newest first. Backfill
+continues on later passes. `archive_scan` reports pending files, read status,
+coverage and limits. An unchanged truncated/limited file does not block
+older files. Optional inventory polling retains changes and resets here,
+not every raw table sample. Replay starts neither collector.
+
+For historical reconstruction, explicitly supply the saved captures:
+
+```sh
+bin/threadwatch key-journal --snapshot SAVED_NAME --replay /path/to/older-snapshot /path/to/newer-snapshot --json > /tmp/key-journal.json
+```
+
+This can take minutes. Overlapping ring filenames use the largest copy;
+only supplied files are decoded, and capture coverage remains unknown.
+The selected snapshot supplies inventory labels; these are not verified
+historical firmware or identity telemetry for every packet. Recorded events
+remain alongside replay observations. The earliest retained network
+observation wins over a later recorder-start baseline; the report names
+when its network interval was reconstructed from retained observations.
+Use `--events DIR` to include additional archived events. Imports and replay
+never write the live journal, snapshots, alerts or remote services.
+
+`--logs` reads archived logs from 60 seconds before through 600 seconds after
+each network observation. Missing/partial files appear in `log_files`.
+For earlier resets or a different log window, use `otbr-evidence` with
+explicit timezone-bearing `--since`/`--until` timestamps and `--json`, then
+include that report with `key-journal --otbr-evidence /tmp/otbr.json`.
+Both `--events` and `--otbr-evidence` are repeatable.
+
+Confirmed operator/service evidence can be included in a report with
+`--reboot-evidence /tmp/resets.json`. It is a JSON list, for example:
+
+```json
+[{"ts": 1700000000, "addr": "0011223344556677", "source": "operator_action",
+  "scope": "device", "reference": "maintenance log entry recording a power cycle"}]
+```
+
+Sources are `operator_action`, `service_log`, or `uptime_reset`; scope is
+`device`, `process`, or `openthread_instance`. Supply the actual timestamp,
+identity and evidence reference. These declarations are external evidence,
+not independently verified device telemetry. No firmware guard duration or
+completed reattachment is inferred from them.

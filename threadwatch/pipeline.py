@@ -254,6 +254,11 @@ class Pipeline:
         self.keys_path = cfg.state_dir / "key-generations.json"
         self._keys: dict = {} if ephemeral else self._load_keys()
         self._keys_reloaded = bool(self._keys)
+        from .journal import STATE as JOURNAL_STATE
+        from .journal import Journal
+        self.journal = Journal(None if ephemeral else cfg.state_dir / JOURNAL_STATE)
+        self._journal_exchanges: dict[str, deque] = {}
+        self._journal_files: dict = {}       # replay supplies actual source files
         # Addresses that have visited: how many times, first and last
         # (data/state/visits.json; config/visitors.json is the labels). A
         # visit drops the address's row, so without this a phone back
@@ -1362,16 +1367,65 @@ class Pipeline:
 
     # ---------------------------------------------------------- identity
 
-    def _record_key_facts(self, who: str) -> None:
+    def _record_key_facts(self, who: str, f: Frame) -> None:
         """Forensic facts cannot admit devices or refresh liveness/topology."""
         from .keyfacts import observe
         row = self.seen.table.get(who)
         if row is None:
             return
         for layer, sequence, ts, accepted, retry, reason in self._key_observations:
+            self.journal.observe(who, layer, sequence, ts, row=row, accepted=accepted, retry=retry,
+                                 context=lambda seq=sequence, src=layer: self._journal_context(who, row, f, seq, src),
+                                 packet=lambda: self._journal_packet(f), coverage=self._generation_coverage)
             observe(row, layer, sequence, ts, accepted=accepted, retry=retry, reason=reason)
         if self._key_observations:
             self.seen._dirty = True
+
+    def _journal_packet(self, f: Frame) -> dict:
+        import hashlib
+        return {"ts": f.ts, "src": f.src, "dst": f.dst, "mac_sequence": f.seq,
+                "radio": f.radio, "psdu_sha256": hashlib.sha256(f.psdu).hexdigest(),
+                "file": str(self._journal_files[f.radio]) if f.radio in self._journal_files else None,
+                "radio_timestamps": [{"radio": label, "ts": copy.ts} for label, copy in (f.heard or {}).items()],
+                "locator": "timestamp_and_psdu_hash", "retained": "unknown"}
+
+    def _journal_context(self, who: str, row: dict, f: Frame, sequence: int, layer: str) -> dict:
+        from .keyfacts import facts, latest_generation
+        entry = self.names.by_addr.get(who, {})
+        addresses = sorted(self.names.entry_addresses_of(who))
+        known = bool(entry) and who not in self.names.learned
+        # The frame's authenticated short address can be newer than the
+        # topology row, which ingest updates after recording key facts.
+        short = f.src if f.src and len(f.src) == 4 else row.get("rloc16")
+        topology = {**row, "rloc16": short}
+        role = (rloc16_role(short) or {}).get("role")
+        parent = parent_address(topology, router_holders(self.seen.table))
+        prow = self.seen.table.get(parent, {})
+        pseq, pts = latest_generation(prow)
+        age = f.ts - pts if pts is not None and pts <= f.ts else None
+        delta = sequence - pseq if pseq is not None else None
+        previous = facts(row)[layer]["latest"]
+        oldseq = previous["sequence"] if previous else None
+        olddelta = oldseq - pseq if oldseq is not None and pseq is not None else None
+        exchanges = [r for r in self._journal_exchanges.get(who, ()) if 0 <= f.ts - r["ts"] <= 1800]
+        return {"name": self.names.name(who), "model": entry.get("model"),
+                "firmware": entry.get("firmware"), "role": role, "rloc16": short,
+                "role_observed_at": f.ts if f.src == short else row.get("rloc16_ts"),
+                "physical_identity": {"id": ",".join(addresses) if known else who,
+                                      "addresses": addresses, "source": "inventory" if known else "address_only",
+                                      "physical_device_known": known},
+                "partition": self.partition_status(), "partition_scope": "last_observed_network_context",
+                "parent": {"addr": parent, "sequence": pseq, "observed_at": pts, "age_s": age,
+                           "fresh": age is not None and age <= self.cfg.key_fresh_s,
+                           "child_minus_parent": delta, "child_one_ahead": delta == 1 if delta is not None else None,
+                           "child_sequence_before": oldseq, "child_minus_parent_before": olddelta,
+                           "child_one_ahead_before": olddelta == 1 if olddelta is not None else None,
+                           "mapping_observed_at": row.get("rloc16_ts"),
+                           "mapping_confidence": "last_known_rloc_inference" if parent else "unknown"},
+                "preceding_exchanges": exchanges,
+                "earlier_highest_authenticated": facts(row)["highest_authenticated"],
+                "uncertainties": ["parent_and_role_may_have_changed", "missed_traffic_possible",
+                                  "multi_radio_and_host_clock_ordering_not_proven"]}
 
     RESOLVE_RETRY_S = 30.0
     RESOLVE_RETRY_MAX_S = 1800.0      # the backoff on a short address nobody in the table sent from
@@ -1606,7 +1660,7 @@ class Pipeline:
                 # read as a device heard for 44 h.
                 row["heard_since"] = ts
             before = newest_generation(row)[0]
-            self._record_key_facts(who)
+            self._record_key_facts(who, f)
             for key, table in (("counter", self._mac_counter), ("mle_counter", self._mle_counter)):
                 gens = table.get(who)
                 if not gens:
@@ -1799,7 +1853,7 @@ class Pipeline:
         self.last_sighting = who if (who and live) else None
         if not (who and live):
             if who:
-                self._record_key_facts(who)
+                self._record_key_facts(who, f)
             self.last_generation = None
         self.last_mle = (info, fresh_mle) if info is not None else None
         return who
@@ -1814,6 +1868,8 @@ class Pipeline:
         if row is None:
             return
         if row.get("rloc16") != short:
+            if row.get("rloc16") is not None:
+                self.journal.topology(ext, row["rloc16"], short, ts)
             row["rloc16"] = short
             self.seen._dirty = True
         row["rloc16_ts"] = ts
@@ -2216,6 +2272,18 @@ class Pipeline:
         Applied on a stale message, this reverted the partition and the
         device's RLOC to what they were when it was captured and paged for
         a change that never happened."""
+        if src_for_mle and info.command_name in (
+                "Parent Request", "Parent Response", "Child ID Request", "Child ID Response",
+                "Child Update Request", "Child Update Response", "Link Request", "Link Accept",
+                "Link Accept and Request"):
+            peer = f.dst if f.dst and len(f.dst) == 16 else self.decryptor.short_to_ext.get(f.dst)
+            exchange = {"ts": f.ts, "command": info.command_name, "sender": src_for_mle,
+                        "receiver": peer, "packet": self._journal_packet(f),
+                        "key_sequence": info.key_sequence,
+                        "completed_attachment": "unknown"}
+            for addr in (src_for_mle, peer):
+                if addr and (addr in self._journal_exchanges or len(self._journal_exchanges) < 1024):
+                    self._journal_exchanges.setdefault(addr, deque(maxlen=8)).append(exchange)
         if info.source_addr16 is not None and src_for_mle:
             short = f"{info.source_addr16:04x}"
             self._note_rloc16(src_for_mle, short, f.ts)
@@ -2290,6 +2358,7 @@ class Pipeline:
         """Run every ~30 s in live capture: quiet checks, persistence."""
         self._check_clock(now)
         self.seen.maybe_save()
+        self.journal.save(now)
         self._check_credentials(now)
         self._check_configured_pan(now)
         if not self.ephemeral and self.cfg.border_router_browse_s > 0:
@@ -2302,6 +2371,9 @@ class Pipeline:
             self._poll_ha_availability(now)
         if self._otbr_inventory is not None:
             self._otbr_inventory.tick(now)
+            samples = self._otbr_inventory.history.get("samples", [])
+            if samples:
+                self.journal.inventory(samples[-1])
         # Devices on another PAN (a neighbour's mesh, an unpaired device
         # announcing itself) are tracked for the report but never alerted on:
         # their absence says nothing about this network.
@@ -2433,6 +2505,9 @@ class Pipeline:
             note = fields.get("note")
             fields["note"] = f"{note}; {keep}" if note else keep
         record = self.events.emit(event, severity, ts, **fields)
+        self.journal.event(record, source="replay" if self.ephemeral else "event_log")
+        if event == "key_sequence_advanced":
+            self.journal.save(ts, force=True)
         if label:
             # The copy starts only once the event that called for it is in
             # the log: the snapshot copies the log, and a worker that got
@@ -2661,6 +2736,8 @@ class Pipeline:
             self._archive_thread = None
             result, self._archive_result = self._archive_result, None
             if result is not None:
+                if result.get("key_journal_scan") is not None:
+                    self.journal.apply_archive_scan(result["key_journal_scan"])
                 for event, severity, fields in result.get("events", []):
                     # events.emit: a report on the archive is never a
                     # reason to snapshot, and never pages.
@@ -2675,12 +2752,17 @@ class Pipeline:
         # forward when the result comes in (above).
         self._next_archive = (int(now // 3600) + 1) * 3600 + ARCHIVE_GRACE_S
         secrets = self._halogs_secrets()
+        journal_scanned = dict(self.journal.archive_scan["files"])
 
         def run():
             from .halogs import archive_pass, credentials, prune_archive
             try:
                 result = archive_pass(self.cfg, now, credentials(self.cfg), secrets=secrets,
                                       log=lambda msg: print(f"[threadwatch] {msg}", file=sys.stderr, flush=True))
+                # The newest completed hours first; bounded backfill on
+                # subsequent passes. No gzip scans on the capture path.
+                from .journal import scan_archive
+                result["key_journal_scan"] = scan_archive(self.cfg.data_dir, journal_scanned)
                 pruned = prune_archive(self.cfg)
                 if pruned:
                     print(f"[threadwatch] ha-logs archive: dropped {len(pruned)} hour(s) past [record] keep_hours",
@@ -2906,8 +2988,10 @@ class Pipeline:
                              reason="keep_snapshots_zero", note="key snapshot disabled by keep_snapshots = 0")
             return
         trigger = "key_sequence_advanced" if phase == "advance" else "key_lag_census"
-        self.events.emit("snapshot_requested", "info", ts, label=label, trigger=trigger,
-                         key_observation=observation, note=f"saving the ring for key {phase} as {label}")
+        record = self.events.emit("snapshot_requested", "info", ts, label=label, trigger=trigger,
+                                  key_observation=observation, note=f"saving the ring for key {phase} as {label}")
+        self.journal.event(record)
+        self.journal.save(ts, force=True)
         self.snapshotter(label, trigger, observation)
 
     def _generation_coverage(self, previous_ts: float | None, ts: float) -> dict:
@@ -2966,6 +3050,18 @@ class Pipeline:
         evidence = {"scope": "device", "confidence": "observation_only",
                     "reasons": ["accepted_authenticated_frame", "mesh_adoption_not_established",
                                 "origin_not_established"]}
+        from .keyfacts import facts
+        earlier = []
+        for addr, observed in self.seen.table.items():
+            history = facts(observed)
+            for layer in ("mac", "mle"):
+                for decision in ("accepted", "rejected"):
+                    for span in history[layer][decision]:
+                        if span["sequence"] >= generation and span["first_ts"] < ts:
+                            earlier.append({"addr": addr, "layer": layer, "decision": decision,
+                                            "sequence": span["sequence"], "ts": span["first_ts"],
+                                            "reason": span.get("reason"), "source": "bounded_keyfacts_history"})
+        earlier = sorted(earlier, key=lambda r: r["ts"])[-64:]
         pair = self._keys.get("snapshot_pair")
         self._keys = {"highest": generation, "previous": highest, "highest_first_ts": ts,
                       "previous_first_ts": previous_ts, "first_sender": who,
@@ -2993,7 +3089,8 @@ class Pipeline:
         self._emit("key_sequence_advanced", "info", ts, sequence=generation, previous=highest,
                    first_sender=who, name=name, rloc16=row.get("rloc16"), role=role["role"] if role else None,
                    frame=frame, since_previous_s=round(since) if since is not None else None,
-                   suspects=[suspect], previous_first_ts=previous_ts, **interval_facts, **evidence, note=note)
+                   suspects=[suspect], previous_first_ts=previous_ts, earlier_higher_sequence=earlier,
+                   **interval_facts, **evidence, note=note)
         if highest is not None:
             self._key_snapshot(ts, "advance")
 
@@ -3045,6 +3142,14 @@ class Pipeline:
         if entry is None:
             return
         suspects.append(entry)
+        # Update the incident's candidate list without creating a second
+        # network advance or duplicating the packet history.
+        for record in reversed(self.journal.records):
+            evidence = record.get("evidence", {})
+            if evidence.get("event") == "key_sequence_advanced" and evidence.get("sequence") == generation:
+                evidence["suspects"] = [dict(s) for s in suspects]
+                self.journal.dirty = True
+                break
         self._save_keys()
 
     @staticmethod

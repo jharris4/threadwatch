@@ -38,7 +38,8 @@ from .config import repo_commit, running_commit
 # router on the very day it rebooted, the device most worth reading.
 STATE_FILES = ("status.json", "last-seen.json", "observed-names.json", "frames-by-hour.json",
                "border-routers.json", "blind-spans.json", "retransmissions.json",
-               "storm.json", "key-generations.json", "otbr-inventory.json", "ha-availability.json", "ha-map.json")
+               "storm.json", "key-generations.json", "key-journal.json", "otbr-inventory.json",
+               "ha-availability.json", "ha-map.json")
 # The per-device hold and mute for the HA availability check
 # (config/<[ha_availability] settings>) travels beside devices.json under
 # this name: no secrets in it, and the state file above already takes

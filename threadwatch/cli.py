@@ -225,6 +225,19 @@ def main(argv=None) -> int:
     p_otbr.add_argument("--json", action="store_true",
                        help="include raw context, provenance and inventory associations")
 
+    p_journal = sub.add_parser("key-journal", help="report retained key transitions and origin/adoption evidence")
+    p_journal.add_argument("--snapshot", help="read a saved snapshot's state and inventory")
+    p_journal.add_argument("--replay", nargs="+", type=Path, metavar="PCAP",
+                           help="explicitly reconstruct local transitions from pcaps/directories (can take minutes)")
+    p_journal.add_argument("--events", action="append", type=Path, default=[], metavar="DIR",
+                           help="also read an archived event directory; repeatable")
+    p_journal.add_argument("--reboot-evidence", action="append", type=Path, default=[], metavar="JSON",
+                           help="include referenced operator/service/uptime evidence in this report only")
+    p_journal.add_argument("--otbr-evidence", action="append", type=Path, default=[], metavar="JSON",
+                           help="include an otbr-evidence JSON report (including earlier process starts); repeatable")
+    p_journal.add_argument("--logs", action="store_true", help="scan archived OTBR logs around each network advance")
+    p_journal.add_argument("--json", action="store_true", help="include all retained evidence and references")
+
     p_test = sub.add_parser("alert-test",
                             help="send a synthetic event through every alert sink and "
                                  "push every heartbeat once (cooldowns ignored)")
@@ -242,6 +255,18 @@ def main(argv=None) -> int:
         # a volume that failed to mount): one line, not five frames.
         parser.exit(2, f"threadwatch: {exc}\n")
     from .pipeline import CredentialsError
+
+    if args.cmd == "key-journal":
+        from .journal import read_report, text_report
+        if args.snapshot:
+            cfg = cfg.for_snapshot(_find_snapshot(cfg, args.snapshot, parser, "key-journal"))
+        try:
+            report = read_report(cfg, replay_paths=args.replay or (), event_dirs=args.events,
+                                 evidence_paths=args.reboot_evidence, otbr_paths=args.otbr_evidence, logs=args.logs)
+        except (ValueError, OSError, CredentialsError) as exc:
+            parser.exit(2, f"threadwatch key-journal: {exc}\n")
+        print(json.dumps(report, indent=2) if args.json else text_report(report))
+        return 0
 
     if args.cmd == "otbr-evidence":
         from datetime import datetime

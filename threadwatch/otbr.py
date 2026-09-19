@@ -287,6 +287,8 @@ def peer_at(rloc: str | None, ts: float, samples: list[dict]) -> dict | None:
 
 
 def _kind(line: str) -> str | None:
+    if "service otbr-agent successfully started" in line:
+        return "service_started"
     if "KeySeqCntr" in line:
         return "key_sequence_change"
     lower = line.lower()
@@ -301,7 +303,8 @@ def _kind(line: str) -> str | None:
     return None
 
 
-def extract(root: Path, since: float, until: float, *, inventory: dict | None = None, limit: int = 1000) -> dict:
+def extract(root: Path, since: float, until: float, *, inventory: dict | None = None, limit: int = 1000,
+            changes_only: bool = False) -> dict:
     """Bounded, offline extraction from a data directory or a saved snapshot."""
     if not 0 < until - since <= 7 * 86400 or not 1 <= limit <= 10000:
         raise ValueError("request a positive window of at most seven days and a limit from 1 to 10000")
@@ -367,7 +370,8 @@ def extract(root: Path, since: float, until: float, *, inventory: dict | None = 
                         record["context"].append(context)
                     kind = _kind(line)
                     if kind and stamp is not None and since <= stamp < until:
-                        if len(records) >= limit:
+                        if len(records) >= limit and (not changes_only or kind in (
+                                "key_sequence_change", "service_started")):
                             report["limited"] = True
                             file["read_status"] = "limit"
                             break
@@ -390,7 +394,17 @@ def extract(root: Path, since: float, until: float, *, inventory: dict | None = 
                                                     else "observation_only")
                         if kind == "trel_receive":
                             recent_trel.append(record)
-                        records.append(record)
+                        if changes_only and kind == "key_sequence_change":
+                            existing = {r["id"] for r in records}
+                            links = [r for r in recent_trel if r["id"] in record["nearby_evidence"]
+                                     and r["id"] not in existing]
+                            if len(records) + len(links) + 1 > limit:
+                                report["limited"] = True
+                                file["read_status"] = "limit"
+                                break
+                            records.extend(links)
+                        if not changes_only or kind in ("key_sequence_change", "service_started"):
+                            records.append(record)
                         pending.append(record)
                     before.append(context)
         except FileNotFoundError:

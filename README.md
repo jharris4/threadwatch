@@ -312,6 +312,7 @@ default in them is checked against `--help` and the source).
       mdns.py      border routers over mDNS (threadwatch border-routers)
       ha.py        Home Assistant websocket client (names, network key)
       importer.py  threadwatch import: devices.json + credentials.toml from HA and mDNS
+      otbr.py      archived OTBR evidence and optional read-only SSH inventory
       snapshot.py  ring buffer -> snapshot (threadwatch snapshot, snapshot_on_critical)
       halogs.py    the Home Assistant add-on logs (OTBR, Matter Server) copied into each snapshot
       haavail.py   the Home Assistant availability poll, its episodes, and the per-device settings file

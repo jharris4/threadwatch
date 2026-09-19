@@ -217,6 +217,14 @@ def main(argv=None) -> int:
     sub.add_parser("doctor", help="check this box is fit to record: dongle, config, key file, disk, "
                                   "clock, services, ring, sinks (read-only)")
 
+    p_otbr = sub.add_parser("otbr-evidence", help="extract timestamped OTBR adoption evidence from archived logs")
+    p_otbr.add_argument("--since", required=True, help="ISO-8601 timestamp with timezone, e.g. 2026-09-17T23:14:58Z")
+    p_otbr.add_argument("--until", required=True, help="exclusive ISO-8601 end, at most seven days after --since")
+    p_otbr.add_argument("--snapshot", help="read this saved snapshot instead of the live archive")
+    p_otbr.add_argument("--limit", type=_positive_int, default=1000, help="maximum evidence records (up to 10000)")
+    p_otbr.add_argument("--json", action="store_true",
+                       help="include raw context, provenance and inventory associations")
+
     p_test = sub.add_parser("alert-test",
                             help="send a synthetic event through every alert sink and "
                                  "push every heartbeat once (cooldowns ignored)")
@@ -234,6 +242,33 @@ def main(argv=None) -> int:
         # a volume that failed to mount): one line, not five frames.
         parser.exit(2, f"threadwatch: {exc}\n")
     from .pipeline import CredentialsError
+
+    if args.cmd == "otbr-evidence":
+        from datetime import datetime
+
+        from .otbr import extract
+        try:
+            stamps = [datetime.fromisoformat(t.replace("Z", "+00:00")) for t in (args.since, args.until)]
+            if any(t.tzinfo is None for t in stamps):
+                raise ValueError("--since and --until must include a timezone")
+            root = _find_snapshot(cfg, args.snapshot, parser, "otbr-evidence") if args.snapshot else cfg.data_dir
+            report = extract(root, *(t.timestamp() for t in stamps), limit=args.limit)
+        except (ValueError, OSError) as exc:
+            parser.exit(2, f"threadwatch otbr-evidence: {exc}\n")
+        if args.json:
+            print(json.dumps(report, indent=2))
+        else:
+            for rec in report["records"]:
+                links = ", ".join(rec["nearby_evidence"])
+                peer = f" {rec['peer']}" if rec["peer"] else ""
+                print(f"{rec['utc']} UTC {rec['kind']}{peer} ({rec['file']}:{rec['line']})"
+                      + (f"; nearby: {links}" if links else ""))
+            for f in report["files"]:
+                print(f"{f['hour_utc']}: coverage={f['coverage']}, read={f['read_status']}")
+            print(report["interpretation"])
+            if report["limited"]:
+                print("Extraction limit reached; narrow the time window.")
+        return 0
 
     if args.cmd == "record":
         from .record import run_record

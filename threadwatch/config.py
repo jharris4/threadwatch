@@ -183,6 +183,14 @@ class Config:
     # under 90% of it after the previous one is called "early" in the
     # key_sequence_advanced note. None says nothing about timing.
     key_rotation_hours: float | None = None
+    # [otbr] optional read-only SSH/container inventory, separate from capture.
+    otbr_enabled: bool = False
+    otbr_ssh_target: str = ""
+    otbr_ssh_port: int = 22
+    otbr_container: str = "app_core_openthread_border_router"
+    otbr_ssh_identity_file: str = ""
+    otbr_sudo: bool = False
+    otbr_poll_s: float = 600
     # [ha_logs] copy the Home Assistant OTBR and Matter Server add-on logs
     # into every snapshot (docs/ANALYSIS.md, "Snapshots"). Off by default: it
     # needs config/ha.env with a token from an admin user, since the add-on
@@ -313,6 +321,7 @@ SECTIONS: dict[str, frozenset[str] | None] = {
     "link": frozenset(("drop_db", "hold_s")),
     "polls": frozenset(("rearm_s", "confirm_s")),
     "keys": frozenset(("confirm_s", "fresh_s", "census_delay_s", "rearm_s", "rotation_hours")),
+    "otbr": frozenset(("enabled", "ssh_target", "ssh_port", "ssh_identity_file", "sudo", "container", "poll_s")),
     "ha_logs": frozenset(("enabled", "addons", "max_hours", "read_timeout_s", "deadline_s", "retry", "archive")),
     "ha_availability": frozenset(("enabled", "settings", "poll_s", "hold_s", "burst_devices", "burst_window_s",
                                   "burst_hold_s", "rearm_s", "registry_refresh_s")),
@@ -595,6 +604,25 @@ def load(path: Path | None) -> Config:
             cfg.key_rotation_hours = float(_finite("keys", "rotation_hours", keys["rotation_hours"]))
             if not cfg.key_rotation_hours > 0:
                 raise ValueError(f"[keys] rotation_hours must be more than 0, not {cfg.key_rotation_hours:g}")
+        otbr = raw.get("otbr", {})
+        cfg.otbr_enabled = otbr.get("enabled", cfg.otbr_enabled)
+        if not isinstance(cfg.otbr_enabled, bool):
+            raise ValueError("[otbr] enabled must be true or false")
+        cfg.otbr_ssh_target = otbr.get("ssh_target", cfg.otbr_ssh_target)
+        cfg.otbr_ssh_port = otbr.get("ssh_port", cfg.otbr_ssh_port)
+        cfg.otbr_container = otbr.get("container", cfg.otbr_container)
+        cfg.otbr_ssh_identity_file = otbr.get("ssh_identity_file", cfg.otbr_ssh_identity_file)
+        cfg.otbr_sudo = otbr.get("sudo", cfg.otbr_sudo)
+        from .otbr import validate_access, validate_target
+        validate_access(cfg.otbr_ssh_identity_file, cfg.otbr_sudo)
+        if not isinstance(cfg.otbr_ssh_target, str):
+            raise ValueError("[otbr] ssh_target must be a string")
+        validate_target(cfg.otbr_ssh_target or "unconfigured", cfg.otbr_ssh_port, cfg.otbr_container)
+        if cfg.otbr_enabled and not cfg.otbr_ssh_target:
+            raise ValueError("[otbr] ssh_target is required when enabled")
+        cfg.otbr_poll_s = float(_finite("otbr", "poll_s", otbr.get("poll_s", cfg.otbr_poll_s)))
+        if not 300 <= cfg.otbr_poll_s <= 900:
+            raise ValueError("[otbr] poll_s must be between 300 and 900 seconds")
         ha_logs = raw.get("ha_logs", {})
         for name, attr in (("enabled", "ha_logs_enabled"), ("retry", "ha_logs_retry"), ("archive", "ha_logs_archive")):
             value = ha_logs.get(name, getattr(cfg, attr))

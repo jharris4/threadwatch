@@ -36,6 +36,27 @@ class CliCase(unittest.TestCase):
         return code, out.getvalue(), err.getvalue()
 
 
+class OtbrEvidenceCliTest(CliCase):
+    def test_json_and_text_report_missing_logs_without_claiming_coverage(self):
+        args = ("otbr-evidence", "--since", "2026-09-17T23:14:58Z", "--until", "2026-09-17T23:15:01Z")
+        code, out, err = self.run_cli(*args, "--json")
+        self.assertEqual((code, err), (0, ""))
+        report = json.loads(out)
+        self.assertFalse(report["complete"])
+        self.assertEqual(report["files"][0]["read_status"], "missing")
+        code, out, err = self.run_cli(*args)
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("read=missing", out)
+        self.assertIn("not proof", out)
+
+    def test_requires_explicit_timezones_and_bounded_window(self):
+        for since, until in (("2026-09-17T23:14:58", "2026-09-17T23:15:01Z"),
+                             ("2026-09-01T00:00:00Z", "2026-09-19T00:00:00Z")):
+            code, _, err = self.run_cli("otbr-evidence", "--since", since, "--until", until)
+            self.assertEqual(code, 2)
+            self.assertIn("threadwatch otbr-evidence:", err)
+
+
 class AlertTestFilterTest(CliCase):
     """alert-test says which sinks a named event reaches and which filter it out."""
 

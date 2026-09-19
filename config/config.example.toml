@@ -132,6 +132,19 @@ rearm_s = 3600             # 60 min
 # keysequence guardtime (624 h by default), which is a different setting.
 # rotation_hours = 672
 
+[otbr]
+# Optional read-only inventory from the Home Assistant host, over SSH.
+# The recorder user needs a trusted host key and noninteractive docker access.
+# Uses only trel peers, router table, neighbor table, keysequence counter,
+# keysequence guardtime, uptime and state. No dataset exports or setters.
+enabled = false
+ssh_target = "hassio@homeassistant.local"
+ssh_port = 2222
+ssh_identity_file = "~/.ssh/threadwatch_otbr"  # path on the recorder, readable by its service user
+sudo = true                       # sudo -n; no password prompt
+container = "app_core_openthread_border_router"
+poll_s = 600                       # 300..900 seconds; failures back off up to an hour
+
 [ha_logs]
 # Copy the Home Assistant OTBR and Matter Server add-on logs into every
 # snapshot, by hand or on a critical event, covering the snapshot's window

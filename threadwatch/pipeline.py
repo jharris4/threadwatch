@@ -306,6 +306,10 @@ class Pipeline:
         self._archive_result: dict | None = None
         self._next_archive = 0.0
         self._archive_status: dict | None = None
+        self._otbr_inventory = None
+        if not ephemeral and cfg.otbr_enabled:
+            from .otbr import InventoryPoller
+            self._otbr_inventory = InventoryPoller(cfg)
         # Home Assistant availability ([ha_availability]): a worker polls
         # /api/states every poll_s (and rebuilds the device map over the
         # websocket every registry_refresh_s); the next periodic pass
@@ -2296,6 +2300,8 @@ class Pipeline:
             self._poll_ha_archive(now)
         if not self.ephemeral and self.cfg.ha_availability_enabled:
             self._poll_ha_availability(now)
+        if self._otbr_inventory is not None:
+            self._otbr_inventory.tick(now)
         # Devices on another PAN (a neighbour's mesh, an unpaired device
         # announcing itself) are tracked for the report but never alerted on:
         # their absence says nothing about this network.
@@ -2687,6 +2693,9 @@ class Pipeline:
 
         self._archive_thread = threading.Thread(target=run, name="ha-logs-archive", daemon=True)
         self._archive_thread.start()
+
+    def otbr_inventory_status(self) -> dict | None:
+        return self._otbr_inventory.status if self._otbr_inventory is not None else None
 
     def ha_logs_archive_status(self) -> dict | None:
         """The 'ha_logs_archive' entry of status.json: per add-on the last

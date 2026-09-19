@@ -381,3 +381,45 @@ known to be lost makes the bundle status partial, even when all remaining
 fetches finished; terminal lost hours are not retried. A completed HTTP
 response does not prove that every log line survived journal retention.
 A week of packets cannot recover add-on logs that already rolled away.
+
+
+### OTBR adoption evidence
+
+`threadwatch otbr-evidence` reads the existing UTC hourly OTBR log archive
+without contacting Home Assistant or replaying packets. Use explicit timezone
+offsets and a narrow incident window:
+
+```sh
+bin/threadwatch otbr-evidence --since 2026-09-17T23:14:58Z --until 2026-09-17T23:15:01Z
+bin/threadwatch otbr-evidence --snapshot 20260917T192634_auto-ha_unavailable_burst \
+  --since 2026-09-17T23:14:58Z --until 2026-09-17T23:15:01Z --json
+```
+
+The extractor selects `KeySeqCntr`, MeshForwarder TREL receives, security
+receive failures, and received Parent Request / Child ID Request messages.
+JSON retains original UTC timestamps, source paths and line numbers, peer
+identifiers and two surrounding lines on either side. A key-change record
+links preceding TREL receives within one second (up to 32 candidates). This
+is temporal evidence, not proof of the receiver's update path. Update class
+and the peer's preceding adoption path remain unknown. Missing packets do
+not imply TREL, and security failures do not prove link re-establishment.
+
+Each source has separate coverage metadata and read status. Missing files,
+truncated gzip streams, pending/lost archive hours, and absent coverage
+metadata are explicit. `fetch_complete` means the saved metadata reports a
+finished fetch, not that the journal retained all traffic. Partial evidence
+survives a truncated stream. The current, unarchived hour is reported missing;
+this command never fetches it implicitly. Extraction is bounded to seven
+days, 256 MiB of decompressed text, 8 KiB per line, and 1,000 matched records
+by default (`--limit` can raise this to 10,000). A limit is reported, not
+silently treated as a complete result. Only the hourly archive layout is
+supported; older single-file add-on exports need separate inspection.
+
+Optional `[otbr]` inventory (below) travels in snapshots as
+`otbr-inventory.json`. A log peer's RLOC can be associated with an extended
+MAC observed in a router/neighbor table and the TREL table, only when both
+observations precede the event and are at most 15 minutes old. The sample's
+source and individual table timestamps stay attached. A later inventory
+cannot establish a historical RLOC assignment; stale or missing identities
+remain unknown. This corroboration does not change trusted packet state,
+parent relationships, key-lag decisions or device names.

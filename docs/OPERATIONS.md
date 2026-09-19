@@ -71,7 +71,7 @@ sudo systemctl start threadwatch
 
 (Docker: `docker compose stop recorder`.) Everything else is safe beside
 a running recorder: `doctor`, `status`, `devices`, `device`, `replay`,
-`events`, `snapshots`, `snapshot`, `border-routers`, `alert-test`, `serve`,
+`events`, `snapshots`, `snapshot`, `otbr-evidence`, `border-routers`, `alert-test`, `serve`,
 and `name` and `import`, which write `config/` files the recorder reads
 only at its next start. `replay` and `device` run the pipeline in a mode that
 writes nothing to `data/state` and sends nothing to any sink.
@@ -327,6 +327,7 @@ file.) The fields:
 | `detector` | the storm detector: `baseline_frames_per_window` (calm frames per 10 s), `recent_windows` (the last six counts), `storm_active`, `flood_onsets_recent`, `alerts_sent` |
 | `crypto` | the decryption counters, below, and `key_sequence`, the highest Thread key sequence a frame has decrypted under (null until one has) |
 | `ha_availability` | null unless `[ha_availability]` is on; then `enabled` (false with a `reason` when the settings file would not load), `reachable`, `last_poll_ts`, `last_ok_ts`, `devices_mapped`, `burst` (the live burst's id) and `open`: the devices unavailable in HA right now, each with `name`, `addr`, `since`, `paged`, `severity`, `burst_id` |
+| `otbr_inventory` | null when disabled or not yet sampled; otherwise the latest optional SSH inventory sample status, start/completion times and per-command outcomes (see below) |
 | `ha_logs_archive` | null unless `[ha_logs] archive` is on; then per add-on `last_archived` (the newest hour in `data/ha-logs/`, a UTC hour name), `hours_on_disk`, `pending` (hours a fetch has failed for and will be retried) and `lost` (hours that rolled out of HA's journal before they could be fetched) |
 | `keys` | the key generations as the recorder records them (docs/ALERTING.md, `key_sequence_advanced`): `highest` and `previous`, `highest_first_ts` and `previous_first_ts` (when each was first heard), `first_sender` (which address was heard first under the highest), `suspects` (unconfirmed origin candidates: the first sender, and every device since whose first frame on the new generation came while its parent was still on the old one; each with `evidence`, `parent` and `parent_generation`, as `key_sequence_advanced` records them) and `scope`, `confidence`, `reasons` (observation provenance; legacy state defaults to unknown), the interval facts of the last advance (`observed_interval_s`, `sequence_delta`, `observation_kind`, `coverage`, `scheduled_expectation`, `early_against_configured_interval`, as `key_sequence_advanced` records them; absent in legacy state), plus `census_at` (when the census for it is due, null once sent) and optional `snapshot_pair` (`sequence`, `observed_at`, `census_claimed`: the persisted automatic pair reservation). Empty until a frame has been accepted under any generation. `highest` can trail `crypto.key_sequence` for a moment: the decryptor's value moves on any frame that decrypts, this one on a frame the pipeline accepted as a sighting |
 | `alerts` | this run's deliveries: `delivered`, `queued` (held for a send or a retry), `retrying` (failed at least once), `given_up` (too old to retry), `resumed` (taken from the spool the last run left; docs/ALERTING.md) |
@@ -493,3 +494,63 @@ as something other than the sniffer has lost its firmware and wants
 `bin/flash-dongle.sh` (SETUP.md). Nothing else is needed: the ring, the
 event log and the last-seen table are all on disk, and the restart gap is
 not counted against any device.
+
+
+### Optional OTBR inventory over SSH
+
+The recorder can sample the Home Assistant host's OTBR container every
+5–15 minutes. This is off by default. Configure `[otbr]` in `config.toml`:
+
+```toml
+[otbr]
+enabled = true
+ssh_target = "hassio@homeassistant.local" # replace with your existing SSH target
+ssh_port = 2222                          # SSH add-on with Docker access
+ssh_identity_file = "~/.ssh/threadwatch_otbr"
+sudo = true                             # sudo -n; never prompt for a password
+container = "app_core_openthread_border_router"
+poll_s = 600
+```
+
+Use the same SSH/container access you already use for read-only diagnosis.
+The recorder service user must have noninteractive SSH authentication, a
+trusted host key and permission to run `docker exec` on that host. For a
+non-root SSH user, `sudo = true` prefixes the fixed Docker command with
+`sudo -n`; it never prompts for a password. `ssh_identity_file` is a path
+on the machine running the collector, resolved under its service user's
+home for `~`. When supplied it selects that key with `IdentitiesOnly=yes`;
+when empty, the user's normal SSH identity selection applies. The key is
+not read into inventory records or copied into snapshots.
+
+The collector neither installs credentials nor accepts unknown host keys.
+Hostname aliases in that user's SSH config are supported; arbitrary SSH
+options and remote shell commands are not configuration fields. The SSH
+endpoint must expose Docker access: an add-on in protection mode cannot
+provide this even if SSH authentication succeeds. Container names such as
+`app_core_openthread_border_router` differ from the archive slug
+`core_openthread_border_router`. Commands execute `ot-ctl` directly inside
+the container; no configurable shell wrapper is needed.
+
+The fixed queries are `trel peers`, `router table`, `neighbor table`,
+`keysequence counter`, `keysequence guardtime`, `uptime` and `state`, following
+the [OpenThread CLI reference](https://openthread.io/reference/cli/commands).
+There are no setters or dataset exports. Unknown table layouts are preserved
+as raw output; parsed columns retain stable extended addresses where present.
+Unsupported queries do not prevent the remaining queries from running.
+
+One background worker runs at a time, with a 10-second limit and 32 KiB output
+cap per command (at most 70 seconds for seven queries). A failed SSH connection
+or timeout skips the rest of that sample. A wholly failed sample backs off
+exponentially to at most one hour; a partially supported sample keeps its
+configured cadence. The next due time survives restart. Capture and replay
+never wait for these commands; replay does not start the collector.
+
+`data/state/otbr-inventory.json` holds per-command observation/completion
+timestamps, status, raw output, parsed tables, and numeric key counter/guardtime
+readings where parseable. Guardtime is the configured guard duration, not a
+runtime countdown; uptime alone does not explain an adoption. It keeps at most seven days, 2,016 samples and 8 MiB,
+whichever limit is reached first. This bounded corroborating history is not
+the future long-term adoption journal. Snapshots copy it alongside key state.
+`status.json` exposes `otbr_inventory` with the last sample's status and
+per-command outcomes; null means disabled or no completed sample yet. Failure
+to read or write this optional inventory never stops packet recording.

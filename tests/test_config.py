@@ -434,6 +434,13 @@ class ExampleConfigTest(unittest.TestCase):
         ("keys", "census_delay_s"): ("key_census_delay_s", 3600, 60),
         ("keys", "rearm_s"): ("key_rearm_s", 3600, 120),
         ("keys", "rotation_hours"): ("key_rotation_hours", 672, 24),
+        ("otbr", "enabled"): ("otbr_enabled", False, True),
+        ("otbr", "ssh_target"): ("otbr_ssh_target", "hassio@homeassistant.local", "admin@ha"),
+        ("otbr", "ssh_port"): ("otbr_ssh_port", 2222, 22),
+        ("otbr", "container"): ("otbr_container", "app_core_openthread_border_router", "otbr"),
+        ("otbr", "ssh_identity_file"): ("otbr_ssh_identity_file", "~/.ssh/threadwatch_otbr", "/tmp/test-identity"),
+        ("otbr", "sudo"): ("otbr_sudo", True, False),
+        ("otbr", "poll_s"): ("otbr_poll_s", 600, 900),
         ("ha_logs", "enabled"): ("ha_logs_enabled", True, False),
         ("ha_logs", "addons"): ("ha_logs_addons", ["core_openthread_border_router", "core_matter_server"],
                                 ["core_matter_server"]),
@@ -520,6 +527,8 @@ class ExampleConfigTest(unittest.TestCase):
                 if key == "keep_gb":
                     value = other // 1024 ** 3
                 body = f"[{table}]\n{key} = {json.dumps(str(value) if isinstance(value, Path) else value)}\n"
+                if (table, key) == ("otbr", "enabled"):
+                    body += 'ssh_target = "test@ha"\n'
                 if key == "radios":            # an array of tables, which JSON cannot spell
                     body = "".join(f"[[record.radios]]\nlabel = {json.dumps(r['label'])}\n"
                                    f"serial = {json.dumps(r['serial'])}\n" for r in value)

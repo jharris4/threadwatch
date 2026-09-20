@@ -237,6 +237,7 @@ class InventoryPoller:
         self.next_poll = now + self.cfg.otbr_poll_s
 
         def run():
+            before = self.status
             try:
                 sample = collect(self.cfg)
                 self.history = save_inventory(self.cfg.state_dir / STATE, self.history, sample, self.cfg.otbr_poll_s)
@@ -245,9 +246,28 @@ class InventoryPoller:
             except Exception as exc:
                 self.next_poll = time.time() + min(3600, self.cfg.otbr_poll_s * 2)
                 self.status = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
+            self._announce(before, self.status)
 
         self.thread = threading.Thread(target=run, name="otbr-inventory", daemon=True)
         self.thread.start()
+
+    def _announce(self, before: dict | None, after: dict) -> None:
+        """One journal line when the outcome changes, none while it holds:
+        a failing inventory is otherwise visible only in status.json."""
+        was, now = (before or {}).get("status"), after.get("status")
+        if was == now:
+            return
+        if now == "ok":
+            text = f"ok, all {len(after.get('commands', {}))} commands answered"
+        elif "error" in after:
+            text = f"failed: {after['error']}"
+        else:
+            bad = ", ".join(f"{k} {v}" for k, v in after.get("commands", {}).items() if v != "ok")
+            text = f"{now}: {bad}"
+        wait = self.next_poll - time.time()
+        print(f"[threadwatch] otbr inventory {self.cfg.otbr_ssh_target}: {text}"
+              + (f" (was {was})" if was else "") + (f"; next poll in {wait / 60:.0f} min" if wait > 0 else ""),
+              flush=True)
 
 
 def peer_at(rloc: str | None, ts: float, samples: list[dict]) -> dict | None:

@@ -774,3 +774,129 @@ class RadiosDoctorTest(unittest.TestCase):
         self.assertEqual(level, "ok")
         self.assertIn("2 of 168 hours (2 radios)", text)
         self.assertIn("radio annex has 1 of them", text)
+
+
+class OtbrCheckTest(unittest.TestCase):
+    """With [otbr] on, doctor runs one read-only `ot-ctl state` over the
+    recorder's key and reads the newest inventory sample. The poller
+    itself backs off quietly, so this is where a revoked key or a stale
+    sample shows before the next key advance needs it."""
+
+    def setUp(self):
+        import tempfile
+
+        from threadwatch.config import Config
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        self.cfg = Config(data_dir=d / "data")
+        self.cfg.state_dir.mkdir(parents=True, exist_ok=True)
+        self.cfg.otbr_enabled = True
+        self.cfg.otbr_ssh_target = "user@ha.example"
+        self.cfg.otbr_ssh_port = 2222
+        self.cfg.otbr_sudo = True
+        self.cfg.otbr_poll_s = 600
+        self.key = d / "otbr_key"
+        self.key.write_text("not a real key\n")
+        self.cfg.otbr_ssh_identity_file = str(self.key)
+        self.now = 1_800_000_000.0
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _sample(self, at, **overrides):
+        from threadwatch import otbr
+        commands = {c: {"status": "ok", "observed_at": at, "completed_at": at} for c in otbr.COMMANDS}
+        for name, status in overrides.items():
+            commands[name.replace("_", " ")] = {"status": status, "output": "", "error": "ssh: connection refused"}
+        statuses = [r["status"] for r in commands.values()]
+        return {"started_at": at, "completed_at": at + 2, "commands": commands,
+                "status": "ok" if all(s == "ok" for s in statuses) else "partial" if "ok" in statuses else "failed"}
+
+    def _write(self, samples, failures=0, next_poll_at=None):
+        from threadwatch import otbr
+        (self.cfg.state_dir / otbr.STATE).write_text(json.dumps({
+            "samples": samples, "failures": failures,
+            "next_poll_at": next_poll_at if next_poll_at is not None else samples[-1]["completed_at"] + 600}))
+
+    def test_off_says_nothing(self):
+        self.cfg.otbr_enabled = False
+        self.assertEqual(doctor.check_otbr(self.cfg, now=self.now), [])
+
+    def test_probe_and_fresh_sample_are_ok_lines(self):
+        argvs = []
+        def probe(argv):
+            argvs.append(argv)
+            return {"status": "ok", "output": "router\r\nDone\r\n", "returncode": 0}
+        self._write([self._sample(self.now - 300)])
+        checks = doctor.check_otbr(self.cfg, now=self.now, probe=probe)
+        self.assertEqual([(c[0], c[1]) for c in checks], [("ok", "otbr"), ("ok", "otbr")])
+        self.assertIn("ot-ctl state: router via user@ha.example:2222", checks[0][2])
+        self.assertIn("5 min ago", checks[1][2])
+        self.assertIn("7 of 7 commands ok", checks[1][2])
+        self.assertIn("1 sample(s) on record", checks[1][2])
+        # The probe is the allowlisted command over the configured key, nothing else.
+        self.assertEqual(len(argvs), 1)
+        self.assertEqual(argvs[0][-1], "sudo -n docker exec app_core_openthread_border_router ot-ctl state")
+        self.assertIn(str(self.key), argvs[0])
+
+    def test_missing_key_is_named_without_probing(self):
+        self.key.unlink()
+        probe = lambda argv: self.fail("probed with no key")
+        checks = doctor.check_otbr(self.cfg, now=self.now, probe=probe)
+        self.assertEqual((checks[0][0], checks[0][1]), ("warn", "otbr"))
+        self.assertIn("does not exist on this host", checks[0][2])
+        self.assertIn("no sample yet", checks[1][2])
+
+    def test_a_failed_probe_says_what_kind_of_failure(self):
+        for status, output, expect in (
+                ("unreachable", "user@ha.example: Permission denied (publickey).", "authorized_keys"),
+                ("error", "sudo: a password is required", "sudo"),
+                ("timeout", "", "10 s")):
+            probe = lambda argv, s=status, o=output: {"status": s, "output": o, "returncode": 1}
+            with self.subTest(status=status):
+                level, subject, text = doctor.check_otbr(self.cfg, now=self.now, probe=probe)[0]
+                self.assertEqual((level, subject), ("warn", "otbr"))
+                self.assertIn(f"via user@ha.example:2222: {status}", text)
+                self.assertIn(expect, text)
+                if output:
+                    self.assertIn(output, text)
+
+    def test_failed_and_partial_samples_name_the_command_and_the_backoff(self):
+        ok = lambda argv: {"status": "ok", "output": "router\nDone\n", "returncode": 0}
+        failed = self._sample(self.now - 120, **{c: "unreachable" if i == 0 else "skipped"
+                                                  for i, c in enumerate(("trel_peers", "router_table", "neighbor_table",
+                                                                         "keysequence_counter", "keysequence_guardtime",
+                                                                         "uptime", "state"))})
+        self._write([self._sample(self.now - 900), failed], failures=1, next_poll_at=self.now + 1080)
+        checks = doctor.check_otbr(self.cfg, now=self.now, probe=ok)
+        self.assertEqual((checks[1][0], checks[1][1]), ("warn", "otbr"))
+        self.assertIn("0 of 7 commands ok", checks[1][2])
+        self.assertIn("trel peers unreachable", checks[1][2])
+        self.assertIn("next poll in 18 min", checks[1][2])
+        self.assertIn("backing off", checks[1][2])
+        self.assertIn("2 sample(s)", checks[1][2])
+        partial = self._sample(self.now - 60, keysequence_guardtime="unsupported")
+        self._write([partial])
+        text = doctor.check_otbr(self.cfg, now=self.now, probe=ok)[1][2]
+        self.assertIn("6 of 7 commands ok", text)
+        self.assertIn("keysequence guardtime unsupported", text)
+
+    def test_a_stale_sample_is_a_warning_even_when_the_probe_works(self):
+        ok = lambda argv: {"status": "ok", "output": "leader\nDone\n", "returncode": 0}
+        self._write([self._sample(self.now - 1500)])
+        checks = doctor.check_otbr(self.cfg, now=self.now, probe=ok)
+        self.assertEqual([c[0] for c in checks], ["ok", "warn"])
+        self.assertIn("25 min ago", checks[1][2])
+        self.assertIn("key journal will not use it", checks[1][2])
+        self.assertIn("is the recorder running", checks[1][2])
+
+    def test_it_runs_as_part_of_doctor_and_a_crash_does_not_hide_the_rest(self):
+        from unittest.mock import patch
+        self._write([self._sample(self.now - 60)])
+        with patch("threadwatch.otbr.run_command", return_value={"status": "ok", "output": "router\nDone\n",
+                                                                   "returncode": 0}):
+            checks = doctor.run_doctor(self.cfg, find_port=lambda: "/dev/x", now=self.now)
+        self.assertEqual([c[0] for c in checks if c[1] == "otbr"], ["ok", "ok"])
+        self.cfg.otbr_enabled = False
+        checks = doctor.run_doctor(self.cfg, find_port=lambda: "/dev/x", now=self.now)
+        self.assertEqual([c for c in checks if c[1] == "otbr"], [])

@@ -204,6 +204,12 @@ non-`ok` line means and what to do about it:
 | `ha-avail` name or extendedAddress out of date | a device was renamed in HA or in devices.json | `threadwatch import --write` refreshes them |
 | `ha-logs` the hourly archive has nothing yet | `[ha_logs] archive` is on and no hour has been archived | it fills two minutes after the next hour while the recorder runs; check the recorder is up |
 | `ha-logs` archive up to H UTC (N min behind): the archive has not kept up | the newest archived hour ended more than two hours ago | the recorder is down, or HA has not answered (the `ha_logs_archive_stalled` event says since when); the pending hours are retried every 15 min while the journal can still have them |
+| `otbr` ssh_identity_file ... does not exist on this host | `[otbr]` is on but the recorder's key is not where `ssh_identity_file` says | make the key on the capture host and authorize it on the HA SSH add-on ("Optional OTBR inventory over SSH" below) |
+| `otbr` ot-ctl state via host:port: unreachable | SSH did not connect: host, port, key, or the add-on dropped its `authorized_keys` (an add-on restart after a config change can) | `ssh -p PORT -i KEY USER@HOST` by hand as the service user; re-add the public key in the add-on's configuration |
+| `otbr` ot-ctl state via host:port: error | SSH worked but the command did not: `sudo -n` refused, docker not allowed, or the container name is wrong | the add-on needs protection mode off and passwordless sudo; `docker ps` on the HA host for the name |
+| `otbr` no sample yet | `[otbr]` is on and the recorder has not completed a poll | it polls at startup and every `poll_s`; restart the recorder if the section was just added |
+| `otbr` N of 7 commands ok: cmd status; next poll in N min | the newest sample failed or was partial; the poller is backing off (up to an hour) | the `ot-ctl state` line above says whether the host is reachable at all; the journal has one `otbr inventory` line per change of outcome |
+| `otbr` older than 2 polls, so the key journal will not use it | the last sample is stale; a key advance now would get guard `unknown` and unnamed TREL peers | is the recorder running? the `recorder` line says |
 | `alerts` alert sink 'x' disabled: environment variable(s) not set | a `${NAME}` the sink references is not in `config/alerts.env`; the daemon runs without that sink | add it to alerts.env, restart |
 | `alerts` the recorder refuses to start on this table | a sink or heartbeat with no url, an unknown type, or two sharing a name | fix `[alerts]` / `[[heartbeats]]` in config.toml (docs/ALERTING.md) |
 | `alerts` no sinks / `heartbeats` none | nothing pages you, or nothing pages when the recorder dies | optional; docs/ALERTING.md |
@@ -554,6 +560,15 @@ the future long-term adoption journal. Snapshots copy it alongside key state.
 `status.json` exposes `otbr_inventory` with the last sample's status and
 per-command outcomes; null means disabled or no completed sample yet. Failure
 to read or write this optional inventory never stops packet recording.
+
+The poller is quiet by design: it writes one `otbr inventory` journal line
+when the outcome changes (first sample, ok to failed, failed to ok) and
+nothing while it holds, so a key the add-on dropped shows up as a single
+line and then a growing backoff. `threadwatch doctor` is the check: with
+`[otbr]` on it runs one read-only `ot-ctl state` over the configured key
+and reports the newest sample's age and per-command results, warning when
+the sample is older than two polls, which is when the key journal stops
+using it.
 
 ## Key-transition journal
 

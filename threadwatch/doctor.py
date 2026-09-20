@@ -625,6 +625,73 @@ def check_ha_availability(cfg, now: float | None = None) -> list[Check]:
     return out
 
 
+OTBR_STALE_POLLS = 2
+
+
+def check_otbr(cfg, now: float | None = None, probe: Callable[[list[str]], dict] | None = None) -> list[Check]:
+    """With [otbr] enabled: can this host run ot-ctl on the border router,
+    and is the recorder's inventory fresh? The poller writes nothing to
+    the journal on failure and backs off up to an hour, so a revoked key,
+    a renamed container or a sudo that stopped answering would otherwise
+    show only as a stale sample, and the key journal would silently fall
+    back to guard `unknown` and unnamed TREL peers. One read-only
+    `ot-ctl state` over the configured key, then the newest sample's
+    age and per-command results."""
+    if not getattr(cfg, "otbr_enabled", False):
+        return []
+    from . import otbr
+    now = now if now is not None else time.time()
+    where = f"{cfg.otbr_ssh_target}:{cfg.otbr_ssh_port}"
+    out: list[Check] = []
+    identity = cfg.otbr_ssh_identity_file
+    if identity and not Path(identity).expanduser().exists():
+        out.append((WARN, "otbr", f"ssh_identity_file {identity} does not exist on this host: the inventory "
+                                  f"cannot reach {where} (docs/OPERATIONS.md: the recorder's own key)"))
+    else:
+        result = (probe or otbr.run_command)(otbr.command_argv(cfg, "state"))
+        if result["status"] == "ok":
+            lines = [ln.strip() for ln in result["output"].splitlines() if ln.strip() and ln.strip() != "Done"]
+            out.append((OK, "otbr", f"ot-ctl state: {lines[0] if lines else '(no role line)'} "
+                                    f"via {where} in {cfg.otbr_container}"))
+        else:
+            reason = next((ln.strip() for ln in result.get("output", "").splitlines() if ln.strip()),
+                          result.get("error") or "")
+            why = {"unreachable": "SSH did not connect: host, port, key or the add-on's authorized_keys",
+                   "timeout": f"no answer within {otbr.TIMEOUT_S} s",
+                   "unsupported": "ot-ctl did not accept the command",
+                   "error": "the command ran but failed: sudo, docker or the container name",
+                   "incomplete": "output ended without Done"}.get(result["status"], result["status"])
+            out.append((WARN, "otbr", f"ot-ctl state via {where}: {result['status']} ({why})"
+                                      + (f": {reason[:160]}" if reason else "")))
+    history = otbr.load_inventory(cfg.state_dir / otbr.STATE)
+    samples = history.get("samples") or []
+    poll_s = float(getattr(cfg, "otbr_poll_s", 600))
+    if not samples:
+        out.append((WARN, "otbr", f"{otbr.STATE}: no sample yet (the recorder polls at startup and every "
+                                  f"{poll_s / 60:.0f} min while it runs)"))
+        return out
+    newest = samples[-1]
+    age = now - newest["completed_at"]
+    when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(newest["completed_at"]))
+    statuses = {k: (r.get("status") if isinstance(r, dict) else None) for k, r in newest["commands"].items()}
+    bad = {k: v for k, v in statuses.items() if v != "ok"}
+    ok_count = len(statuses) - len(bad)
+    text = f"newest sample {when} ({age / 60:.0f} min ago), {ok_count} of {len(otbr.COMMANDS)} commands ok, " \
+           f"{len(samples)} sample(s) on record"
+    if newest.get("status") != "ok" or bad:
+        failing = ", ".join(f"{k} {v}" for k, v in bad.items()) or newest.get("status", "?")
+        wait = history.get("next_poll_at", 0) - now
+        retry = f"next poll in {wait / 60:.0f} min" if wait > 0 else "next poll is due"
+        backoff = " (backing off)" if history.get("failures") else ""
+        out.append((WARN, "otbr", f"{text}: {failing}; {retry}{backoff}"))
+    elif age > OTBR_STALE_POLLS * poll_s:
+        out.append((WARN, "otbr", f"{text}: older than {OTBR_STALE_POLLS} polls, so the key journal will not use "
+                                  "it; is the recorder running?"))
+    else:
+        out.append((OK, "otbr", text))
+    return out
+
+
 def check_alerts(cfg) -> list[Check]:
     from .alerts import SPOOL_FILE, ConfigError, build_heartbeats, build_sinks
 
@@ -699,7 +766,8 @@ def run_doctor(cfg, find_port: Callable[[], str] | None = None, now: float | Non
                  lambda: check_writable(cfg), check_clock,
                  check_services,
                  lambda: check_alerts(cfg), lambda: check_ha_env(cfg), lambda: check_ha_logs(cfg, now),
-                 lambda: check_ha_availability(cfg, now), lambda: check_web(cfg), check_version):
+                 lambda: check_ha_availability(cfg, now), lambda: check_otbr(cfg, now),
+                 lambda: check_web(cfg), check_version):
         try:
             checks.extend(step())
         except Exception as exc:   # one broken check must not hide the rest

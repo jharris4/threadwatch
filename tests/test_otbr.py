@@ -220,6 +220,40 @@ class InventoryTest(unittest.TestCase):
                                        sample, 600)
         self.assertEqual(len(state["samples"]), 2)
 
+    def test_the_journal_gets_one_line_per_change_of_outcome(self):
+        import contextlib
+        import io
+
+        def outcome(status, at, **bad):
+            commands = {c: {"status": bad.get(c, "ok"), "output": "", "error": ""} for c in otbr.COMMANDS}
+            return {"status": status, "commands": commands, "completed_at": at, "started_at": at - 1}
+
+        def run(poller, at, sample=None, exc=None):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), \
+                    patch("threadwatch.otbr.collect", side_effect=exc, return_value=sample):
+                poller.tick(at)
+                poller.thread.join(timeout=2)
+            return out.getvalue()
+
+        # Wall-clock based: the backoff in the line is measured against now.
+        base = time.time()
+        down = {c: "unreachable" if c == "trel peers" else "skipped" for c in otbr.COMMANDS}
+        poller = otbr.InventoryPoller(self.cfg)
+        first = run(poller, base, outcome("ok", base))
+        self.assertIn("[threadwatch] otbr inventory test@ha: ok, all 7 commands answered", first)
+        self.assertNotIn("was", first)
+        self.assertEqual(run(poller, base + 700, outcome("ok", base + 700)), "")
+        broken = run(poller, base + 1400, outcome("failed", base + 1400, **down))
+        self.assertIn("failed: trel peers unreachable", broken)
+        self.assertIn("(was ok)", broken)
+        self.assertIn("next poll in 43 min", broken)          # 600 s * 2 ** 1 past a sample 23 min ahead
+        self.assertEqual(run(poller, base + 3000, outcome("failed", base + 3000, **down)), "")
+        crashed = run(poller, base + 6000, exc=OSError("no ssh binary"))
+        self.assertEqual(crashed, "")          # failed -> failed, a different reason, still one outcome
+        back = run(poller, base + 9000, outcome("ok", base + 9000))
+        self.assertIn("ok, all 7 commands answered (was failed)", back)
+
     def test_subprocess_timeout_and_output_are_bounded(self):
         with patch("threadwatch.otbr.TIMEOUT_S", .1):
             start = time.monotonic()

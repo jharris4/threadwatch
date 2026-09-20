@@ -461,11 +461,12 @@ the inventory is built at runtime by extended address, and a device with no
 inventory entry is watched under its HA name.
 
 The hold is `[ha_availability] hold_s` (default 10 min), or the device's
-own `hold_s` in `config/ha-availability.json`, keyed by HA device id so it
-survives renames: a sensor that goes unavailable for half an hour in the
-afternoon sun gets two hours there and still pages when it really fails. A
-device that recovers inside its hold produces nothing at all. `mute` makes
-every record for a device a notice and keeps it out of bursts. Several
+own `hold_s` in `devices.json` (`threadwatch hold`), the same hold
+`device_quiet` judges its silence by: a sensor that goes unavailable for
+half an hour in the afternoon sun gets two hours there and still pages
+when it really fails. A device that recovers inside its hold produces
+nothing at all. `mute` (`threadwatch mute`) makes every record for a
+device a notice, `device_quiet` included, and keeps it out of bursts. Several
 devices dropping together are a network problem, not a device:
 `burst_devices` (default 3) non-muted devices going unavailable within
 `burst_window_s` (10 min), the newest of them down for `burst_hold_s`

@@ -390,21 +390,50 @@ class QuietPolicyTest(unittest.TestCase):
         pipe.periodic(t + 2000)
         self.assertEqual(self._quiet(pipe), [SENSOR])
 
-    def test_one_quiet_window_for_every_device_whatever_the_inventory_says(self):
+    def test_a_device_with_its_own_hold_is_judged_by_it_and_the_rest_by_the_one_window(self):
+        d = Path(self.tmp.name)
+        (d / "devices.json").write_text(json.dumps([
+            {"name": "Living Room Apple TV", "extendedAddress": ROUTER.upper(), "hold_s": 7200,
+             "threadRole": "border-router-leader"},
+            {"name": "Living Room AQ", "extendedAddress": SENSOR, "threadRole": "sleepy-end-device"},
+        ]))
         pipe = self._pipe()
         t0 = 1_700_000_000.0
         for i in range(3):
             pipe.ingest(frame(t0 + i, ROUTER))
-            pipe.ingest(frame(t0 + i + 60, SENSOR))
+            pipe.ingest(frame(t0 + i, SENSOR))
         pipe.periodic(t0 + 29 * 60)
         self.assertEqual(self._quiet(pipe), [])
         pipe.periodic(t0 + 31 * 60)
-        self.assertEqual(self._quiet(pipe), [ROUTER])          # the inventory's "leader" label buys nothing
-        pipe.periodic(t0 + 32 * 60)
-        self.assertEqual(self._quiet(pipe), [ROUTER, SENSOR])
-        names = [r["name"] for r in pipe.events.records if r["event"] == "device_quiet"]
-        self.assertEqual(names, ["Living Room Apple TV", "Living Room AQ"])
+        self.assertEqual(self._quiet(pipe), [SENSOR])          # the inventory's "leader" label buys nothing ...
+        pipe.periodic(t0 + 119 * 60)
+        self.assertEqual(self._quiet(pipe), [SENSOR])          # ... its hold_s is what keeps the hub off the list
+        pipe.periodic(t0 + 121 * 60)
+        self.assertEqual(self._quiet(pipe), [SENSOR, ROUTER])
+        by_addr = {r["addr"]: r for r in pipe.events.records if r["event"] == "device_quiet"}
+        self.assertEqual((by_addr[SENSOR]["name"], by_addr[SENSOR]["hold_s"], by_addr[SENSOR]["muted"],
+                          by_addr[SENSOR]["severity"]), ("Living Room AQ", 1800, False, "warning"))
+        self.assertEqual((by_addr[ROUTER]["name"], by_addr[ROUTER]["hold_s"], by_addr[ROUTER]["muted"],
+                          by_addr[ROUTER]["severity"]), ("Living Room Apple TV", 7200, False, "warning"))
         self.assertNotIn("profile", pipe.events.records[-1])
+
+    def test_a_muted_device_is_logged_at_notice_and_the_record_says_so(self):
+        d = Path(self.tmp.name)
+        (d / "devices.json").write_text(json.dumps([
+            {"name": "Living Room Apple TV", "extendedAddress": ROUTER.upper(), "mute": True},
+            {"name": "Living Room AQ", "extendedAddress": SENSOR, "mute": "yes"},        # not a boolean: ignored
+        ]))
+        pipe = self._pipe()
+        t0 = 1_700_000_000.0
+        for i in range(3):
+            pipe.ingest(frame(t0 + i, ROUTER))
+            pipe.ingest(frame(t0 + i, SENSOR))
+        pipe.periodic(t0 + 31 * 60)
+        by_addr = {r["addr"]: r for r in pipe.events.records if r["event"] == "device_quiet"}
+        self.assertEqual((by_addr[ROUTER]["severity"], by_addr[ROUTER]["muted"], by_addr[ROUTER]["reception"]),
+                         ("notice", True, "good"))
+        self.assertIn("Muted in devices.json: logged, not paged", by_addr[ROUTER]["note"])
+        self.assertEqual((by_addr[SENSOR]["severity"], by_addr[SENSOR]["muted"]), ("warning", False))
 
     def test_malformed_inventory_address_is_skipped_not_fatal(self):
         d = Path(self.tmp.name)

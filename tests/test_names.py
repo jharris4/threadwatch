@@ -10,7 +10,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from threadwatch.names import DeviceNames, LastSeen, adopt, load_observed_names, rotation_hints, suggest_entries
+from threadwatch.names import (
+    DeviceNames,
+    LastSeen,
+    adopt,
+    fmt_hold,
+    load_observed_names,
+    parse_duration,
+    rotation_hints,
+    set_hold,
+    set_mute,
+    suggest_entries,
+)
 
 AQ = "26976e7f7d20964a"
 TV1 = "b62c32bf669272db"
@@ -300,6 +311,73 @@ class NameTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 adopt(inv, AQ, "   ")
             self.assertFalse(inv.exists())
+
+
+class ToleranceTest(unittest.TestCase):
+    """hold_s and mute: the person's two judgements of a device in the
+    inventory, read by any of its addresses, edited by `hold` and `mute`,
+    and ignored (never fatal) when they cannot be read."""
+
+    def test_durations(self):
+        for text, want in (("2h", 7200), ("30m", 1800), ("1h30m", 5400), ("7200", 7200), ("90s", 90),
+                           ("1h 5m 2s", 3902)):
+            self.assertEqual(parse_duration(text), want, text)
+        for bad in ("", "soon", "2 hours", "-5"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                parse_duration(bad)
+        self.assertEqual([fmt_hold(x) for x in (None, 7200, 1800, 90)], ["default", "2h", "30m", "90s"])
+
+    def test_the_inventory_answers_by_any_address_and_ignores_a_field_it_cannot_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            inv = Path(tmp) / "devices.json"
+            inv.write_text(json.dumps([
+                {"name": "Living Room Apple TV", "extendedAddresses": [TV1, TV2], "hold_s": 7200},
+                {"name": "Office Air Quality", "extendedAddress": AQ, "mute": True},
+                {"name": "Plug", "extendedAddress": PLUG, "hold_s": "2h", "mute": "yes"},
+            ]))
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                names = DeviceNames(inv)
+            self.assertEqual((names.hold_s(TV1), names.hold_s(TV2.upper()), names.muted(TV1)), (7200.0, 7200.0, False))
+            self.assertEqual((names.hold_s(AQ), names.muted(AQ)), (None, True))
+            self.assertEqual((names.hold_s(PLUG), names.muted(PLUG), names.name(PLUG)), (None, False, "Plug"))
+            self.assertEqual((names.hold_s("0" * 16), names.muted("0" * 16)), (None, False))
+            self.assertIn("hold_s must be a number of seconds, more than 0, not '2h' in the entry for 'Plug'",
+                          err.getvalue())
+
+    def test_hold_and_mute_edit_one_entry_under_the_lock_and_leave_the_rest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            inv = Path(tmp) / "devices.json"
+            inv.write_text(json.dumps([
+                {"name": "Living Room Apple TV", "extendedAddresses": [TV1, TV2], "model": "Apple TV 4K"},
+                {"name": "Office Air Quality", "extendedAddress": AQ},
+            ]))
+            self.assertEqual(set_hold(inv, "office air quality", 7200), "'Office Air Quality': hold 2h")
+            self.assertEqual(set_hold(inv, AQ, 1800.0), "'Office Air Quality': hold 30m (was 2h)")
+            self.assertEqual(set_mute(inv, "apple", True), "'Living Room Apple TV': muted")
+            self.assertEqual(set_mute(inv, TV2, True), "'Living Room Apple TV' is already muted")
+            self.assertEqual(json.loads(inv.read_text()), [
+                {"name": "Living Room Apple TV", "extendedAddresses": [TV1, TV2], "model": "Apple TV 4K", "mute": True},
+                {"name": "Office Air Quality", "extendedAddress": AQ, "hold_s": 1800},
+            ])
+            self.assertTrue(inv.with_name("devices.json.lock").exists())
+            self.assertEqual(set_hold(inv, "office", None), "'Office Air Quality': hold 30m -> default")
+            self.assertEqual(set_hold(inv, "office", None), "'Office Air Quality' already has the default hold")
+            self.assertEqual(set_mute(inv, "apple", False), "'Living Room Apple TV': unmuted")
+            self.assertEqual(set_mute(inv, "apple", False), "'Living Room Apple TV' is not muted")
+            self.assertEqual(json.loads(inv.read_text()), [
+                {"name": "Living Room Apple TV", "extendedAddresses": [TV1, TV2], "model": "Apple TV 4K"},
+                {"name": "Office Air Quality", "extendedAddress": AQ},
+            ])
+            for target, hold, want in (("nobody", 60, "not a name or address"), ("o", 60, "matches several"),
+                                       ("office", 0, "more than 0"), ("office", -1, "more than 0"),
+                                       ("office", True, "more than 0"), ("  ", 60, "required")):
+                with self.subTest(target=target, hold=hold), self.assertRaises(ValueError) as cm:
+                    set_hold(inv, target, hold)
+                self.assertIn(want, str(cm.exception))
+            inv.write_text("[1]")
+            with self.assertRaises(ValueError):
+                set_mute(inv, "office", True)
 
 
 class Rloc16RoleTest(unittest.TestCase):

@@ -328,17 +328,15 @@ class EventsKeepDaysTest(unittest.TestCase):
 
     def test_the_ha_availability_settings_are_off_by_default_and_checked(self):
         cfg = self._load("[network]\nchannel = 25\n")
-        self.assertEqual((cfg.ha_availability_enabled, cfg.ha_availability_settings, cfg.ha_availability_poll_s,
+        self.assertEqual((cfg.ha_availability_enabled, cfg.ha_availability_poll_s,
                           cfg.ha_availability_hold_s, cfg.ha_availability_burst_devices,
                           cfg.ha_availability_burst_window_s, cfg.ha_availability_burst_hold_s,
                           cfg.ha_availability_rearm_s, cfg.ha_availability_registry_refresh_s),
-                         (False, "ha-availability.json", 60, 600, 3, 600, 120, 3600, 3600))
+                         (False, 60, 600, 3, 600, 120, 3600, 3600))
         cfg = self._load("[ha_availability]\nenabled = true\nhold_s = 0\nrearm_s = 0\nburst_devices = 2\n")
         self.assertEqual((cfg.ha_availability_enabled, cfg.ha_availability_hold_s, cfg.ha_availability_rearm_s,
                           cfg.ha_availability_burst_devices), (True, 0, 0, 2))
         for body, want in (('enabled = "on"', "must be true or false"),
-                           ('settings = 3', "must be a file name"),
-                           ('settings = ""', "must be a file name"),
                            ('poll_s = 0', "must be more than 0"),
                            ('poll_s = nan', "must be a finite number"),
                            ('hold_s = -1', "must be 0 or more"),
@@ -350,7 +348,8 @@ class EventsKeepDaysTest(unittest.TestCase):
                            ('burst_devices = 1', "2 or more"),
                            ('burst_devices = 2.5', "2 or more"),
                            ('burst_devices = true', "2 or more"),
-                           ('mute = true', "unknown key 'mute' in [ha_availability]")):
+                           ('mute = true', "unknown key 'mute' in [ha_availability]"),
+                           ('settings = "holds.json"', "unknown key 'settings' in [ha_availability]")):
             with self.subTest(body=body), self.assertRaises(ValueError) as cm:
                 self._load(f"[ha_availability]\n{body}\n")
             self.assertIn(want, str(cm.exception))
@@ -450,7 +449,6 @@ class ExampleConfigTest(unittest.TestCase):
         ("ha_logs", "retry"): ("ha_logs_retry", True, False),
         ("ha_logs", "archive"): ("ha_logs_archive", False, True),
         ("ha_availability", "enabled"): ("ha_availability_enabled", True, False),
-        ("ha_availability", "settings"): ("ha_availability_settings", "ha-availability.json", "holds.json"),
         ("ha_availability", "poll_s"): ("ha_availability_poll_s", 60, 30),
         ("ha_availability", "hold_s"): ("ha_availability_hold_s", 600, 120),
         ("ha_availability", "burst_devices"): ("ha_availability_burst_devices", 3, 4),

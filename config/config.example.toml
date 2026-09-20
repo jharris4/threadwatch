@@ -184,15 +184,12 @@ poll_s = 600                       # 300..900 seconds; failures back off up to a
 # runtime by extended address, and devices.json stays HA-agnostic. Only
 # Matter-over-Thread devices HA knows are covered. Off by default.
 # enabled = true
-# Per-device hold and mute, keyed by HA device id (stable across renames):
-# config/ha-availability.json, docs/HOME-ASSISTANT.md. threadwatch
-# ha-availability set / list edit it; import --write refreshes its names.
-# settings = "ha-availability.json"
 # One small GET /api/states this often.
 # poll_s = 60
 # A device unavailable this long is a warning (once per episode); a device
 # that recovers inside the hold produces nothing. A flapping sensor gets a
-# longer hold of its own in the settings file, or mute.
+# longer hold of its own with threadwatch hold (hold_s in devices.json),
+# or mute (threadwatch mute); both apply to device_quiet as well.
 # hold_s = 600
 # This many non-muted devices going unavailable within burst_window_s is
 # one critical ha_unavailable_burst (plus the automatic snapshot); their

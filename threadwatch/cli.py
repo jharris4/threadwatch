@@ -166,21 +166,17 @@ def main(argv=None) -> int:
     p_imp.add_argument("--no-credentials", action="store_true", help="skip credentials.toml")
     p_imp.add_argument("--mdns-seconds", type=float, default=4.0, help="how long to wait for mDNS answers")
 
-    p_ha = sub.add_parser("ha-availability", help="per-device hold and mute for the Home Assistant availability "
-                                                  "check (config/ha-availability.json, keyed by HA device id)")
-    ha_sub = p_ha.add_subparsers(dest="ha_cmd", required=True)
-    p_set = ha_sub.add_parser("set", help="write or update one device's settings, resolving it through Home Assistant")
-    p_set.add_argument("device", help="an inventory name, a 16-hex extended address, or an HA device id")
-    how = p_set.add_mutually_exclusive_group(required=True)
-    how.add_argument("--hold", metavar="DURATION",
-                     help="unavailable this long before a warning, for a known flapper: 2h, 30m, 1h30m or seconds")
-    how.add_argument("--mute", action="store_true",
-                     help="always a notice, never paged, never counted toward a burst")
-    how.add_argument("--clear", action="store_true", help="remove the device's entry (default hold, not muted)")
-    ha_sub.add_parser("list", help="every entry with its current HA name, inventory name, address and settings, "
-                                   "marking ids Home Assistant no longer has")
-    p_ha.add_argument("--url", help="Home Assistant URL (default: HA_URL from config/ha.env)")
-    p_ha.add_argument("--env-file", type=Path, help="file holding HA_TOKEN and HA_URL (default: config/ha.env)")
+    p_hold = sub.add_parser("hold", help="give a device its own hold before a warning: silent on the air, or "
+                                         "unavailable in Home Assistant, this long (hold_s in devices.json)")
+    p_hold.add_argument("device", help="an inventory name (or a fragment of one) or a 16-hex extended address")
+    hold_how = p_hold.add_mutually_exclusive_group(required=True)
+    hold_how.add_argument("duration", nargs="?", help="2h, 30m, 1h30m or seconds; for a known flapper")
+    hold_how.add_argument("--clear", action="store_true", help="back to the configured default")
+
+    p_mute = sub.add_parser("mute", help="every record for a device a notice: logged, never paged, never counted "
+                                         "toward a burst (mute in devices.json)")
+    p_mute.add_argument("device", help="an inventory name (or a fragment of one) or a 16-hex extended address")
+    p_mute.add_argument("--off", action="store_true", help="lift the mute")
 
     p_br = sub.add_parser("border-routers", help="ask the LAN (mDNS) which Thread border routers it can see, "
                                                  "with their current extended addresses")
@@ -610,38 +606,18 @@ def main(argv=None) -> int:
         except (HAError, ValueError) as exc:     # ValueError: a malformed devices.json, named
             parser.exit(1, f"threadwatch import: {exc}\n")
 
-    if args.cmd == "ha-availability":
-        from . import ha as ha_mod
-        from .haavail import SettingsError, fmt_hold, list_settings, parse_duration, set_device, settings_path
-        from .names import read_inventory
-        path = settings_path(cfg)
+    if args.cmd in ("hold", "mute"):
+        from .names import parse_duration, set_hold, set_mute
+        path = _inventory_path(cfg)
         try:
-            url, token = ha_mod.connection_settings(args.env_file or (cfg.config_dir / "ha.env"), args.url)
-            with ha_mod.HomeAssistant(url, token) as ha:
-                devices = ha_mod.thread_devices(ha)
-            entries = read_inventory(_inventory_path(cfg))
-            if args.ha_cmd == "set":
-                hold = parse_duration(args.hold) if args.hold else None
-                done = set_device(path, devices, entries, args.device, hold_s=hold,
-                                  mute=True if args.mute else None, clear=args.clear)
-                print(f"{done} -> {path}")
-                print("(the recorder reads the file at start: restart it to apply)")
-                return 0
-            rows = list_settings(path, devices, entries)
-        except (ha_mod.HAError, SettingsError, ValueError) as exc:
-            parser.exit(1, f"threadwatch ha-availability: {exc}\n")
-        if not rows:
-            print(f"no entries in {path} (threadwatch ha-availability set <device> --hold 2h makes one)")
-            return 0
-        for r in rows:
-            flags = []
-            if r["stale"]:
-                flags.append("STALE: no longer in Home Assistant")
-            elif r["outdated"]:
-                flags.append("name/address out of date: run import --write")
-            print(f"{r['name'] or '?':32s} hold {fmt_hold(r['hold_s']):>7s}  {'muted' if r['mute'] else '     '}  "
-                  f"{r['extendedAddress'] or '?':16s}  HA: {r['ha_name'] or '-'}  {r['ha_device_id']}"
-                  + (f"  [{'; '.join(flags)}]" if flags else ""))
+            if args.cmd == "hold":
+                done = set_hold(path, args.device, None if args.clear else parse_duration(args.duration))
+            else:
+                done = set_mute(path, args.device, not args.off)
+        except ValueError as exc:
+            parser.exit(1, f"threadwatch {args.cmd}: {exc}\n")
+        print(f"{done} -> {path}")
+        print("(the recorder reads the inventory at start: restart it to apply)")
         return 0
 
     if args.cmd == "name":

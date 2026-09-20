@@ -320,7 +320,6 @@ class Pipeline:
         # websocket every registry_refresh_s); the next periodic pass
         # applies the result on this thread, where the device table lives.
         self._haavail = None
-        self._haavail_reason: str | None = None
         self._haavail_thread = None
         self._haavail_result: dict | None = None
         self._next_haavail = 0.0
@@ -1118,10 +1117,14 @@ class Pipeline:
     # ------------------------------------------------------- quiet policy
 
     def quiet_threshold_s(self, addr: str) -> float:
-        """One window for everyone: the 2026-09-02 soak showed routers and
-        sleepy devices alike never silent for long from the sniffer's chair.
-        (Kept as a method so a per-device rule has somewhere to go.)"""
-        return self.cfg.quiet_s
+        """The device's own hold_s from its inventory entry, else [quiet]
+        silence_s. One window serves everyone otherwise: the 2026-09-02
+        soak showed routers and sleepy devices alike never silent for long
+        from the sniffer's chair. The hold is a person's judgement of one
+        device (a sensor that drops out in the afternoon sun), the same
+        figure the Home Assistant availability check honours."""
+        hold = self.names.hold_s(addr)
+        return self.cfg.quiet_s if hold is None else hold
 
     # Without [network] pan_id the recorder guesses: a PAN is taken for ours
     # once it has this many frames, and gives way only to one with this
@@ -2661,21 +2664,13 @@ class Pipeline:
     # ------------------------------------------- Home Assistant availability
 
     def _init_ha_availability(self) -> None:
-        from .haavail import MAP_FILE, STATE_FILE, SettingsError, Tracker, load_map, load_settings, settings_path
-        try:
-            settings = load_settings(settings_path(self.cfg))
-        except SettingsError as exc:
-            # The file is the person's; a bad one stops this feature, not
-            # the recorder, and doctor says FAIL.
-            self._haavail_reason = f"{exc}; the HA availability check is off until it is fixed"
-            print(f"[threadwatch] {self._haavail_reason}", file=sys.stderr, flush=True)
-            return
+        from .haavail import MAP_FILE, STATE_FILE, Tracker, load_map
         mapping = load_map(self.cfg.state_dir)
         try:
             self._haavail_map_ts = (self.cfg.state_dir / MAP_FILE).stat().st_mtime if mapping else None
         except OSError:
             self._haavail_map_ts = None
-        self._haavail = Tracker(self.cfg, self.cfg.state_dir / STATE_FILE, settings, emit=self._emit,
+        self._haavail = Tracker(self.cfg, self.cfg.state_dir / STATE_FILE, emit=self._emit,
                                 rows=self.seen.table, names=self.names, mapping=mapping)
 
     def _poll_ha_availability(self, now: float) -> None:
@@ -2720,7 +2715,7 @@ class Pipeline:
         if not self.cfg.ha_availability_enabled or self.ephemeral:
             return None
         if self._haavail is None:
-            return {"enabled": False, "reason": self._haavail_reason}
+            return {"enabled": False}
         return {"enabled": True, **self._haavail.status()}
 
     def _poll_ha_archive(self, now: float) -> None:
@@ -3987,10 +3982,15 @@ class Pipeline:
             note += (f"; {what} {round((now - vouched) / 60)} min ago, "
                      f"{round((vouched - row['last_seen']) / 60)} min after its last frame heard here, "
                      "so it was alive then, out of the recorder's earshot")
+        # The inventory's mute: the person has said this device's silences
+        # are not worth a page. Logged all the same, and the record says so.
+        muted = self.names.muted(addr)
+        if muted:
+            note += " Muted in devices.json: logged, not paged."
         self._emit(
-            "device_quiet", "notice" if marginal or unheard else "warning", now, addr=addr,
+            "device_quiet", "notice" if marginal or unheard or muted else "warning", now, addr=addr,
             name=self.names.name(addr), silent_for_s=round(wall), unheard_s=round(unheard_s),
-            blind_s=round(blind), last_seen=row["last_seen"],
+            blind_s=round(blind), last_seen=row["last_seen"], hold_s=self.quiet_threshold_s(addr), muted=muted,
             rssi_dbm=rssi, reception="unheard" if unheard else "marginal" if marginal else "good",
             radio_down=unheard, note=note, **proxy)
 

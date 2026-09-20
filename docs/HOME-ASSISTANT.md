@@ -113,44 +113,26 @@ names is made at runtime by extended address, cached in
 `data/state/ha-map.json`, and a device with no inventory entry is
 watched under its HA name (`threadwatch doctor` lists those).
 
-**Per-device hold and mute: `config/ha-availability.json`.** Some
-devices go unavailable for a while on their own: a motion sensor in the
-afternoon sun, a plug behind a cupboard door. The file is a JSON object
-keyed by HA device id, which is stable across renames in HA and in
-`devices.json` and changes only if the device is removed and re-added in
-HA (`config/ha-availability.example.json` shows the shape):
-
-```json
-{
-  "3f9c2e7a...": {"name": "Front Path Motion", "extendedAddress": "C233A4A5BF8391C9", "hold_s": 7200},
-  "a81b07d4...": {"name": "Garden Sensor", "extendedAddress": "1669674DD15CF0FA", "mute": true}
-}
-```
-
-`hold_s` and `mute` are yours: a hold in seconds that replaces the
-default `[ha_availability] hold_s` for that device, and `mute`, which
-makes every record for it a notice (never paged) and keeps it out of
-bursts. `name` and `extendedAddress` are kept by the tools for
-readability and the link to `devices.json`; they are the link, not the
-key. Edit the file by hand or with the command, which resolves the device
-through HA by inventory name, extended address or HA device id:
+**Per-device hold and mute.** Some devices go unavailable for a while on
+their own: a motion sensor in the afternoon sun, a plug behind a
+cupboard door. That is a fact about the device, not about Home
+Assistant, so it lives on the device's entry in `devices.json`:
+`hold_s` (unavailable, or silent on the air, this long before a warning,
+replacing `[ha_availability] hold_s` and `[quiet] silence_s` for that
+device) and `mute` (every record for it a notice, never paged, never
+counted toward a burst). `device_quiet` honours both, so the sensor that
+drops out at four o'clock is one setting, not two (README, devices.json):
 
 ```bash
-bin/threadwatch ha-availability set "Front Path Motion" --hold 2h    # a known flapper: warn after two hours
-bin/threadwatch ha-availability set "Garden Sensor" --mute           # log it, never page it
-bin/threadwatch ha-availability set "Garden Sensor" --clear          # back to the defaults
-bin/threadwatch ha-availability list                                  # every entry, marking stale ids
+bin/threadwatch hold "Front Path Motion" 2h        # a known flapper: warn after two hours
+bin/threadwatch hold "Front Path Motion" --clear   # back to the default
+bin/threadwatch mute "Garden Sensor"               # log it, never page it
+bin/threadwatch mute "Garden Sensor" --off
 ```
 
-`threadwatch import --write` refreshes `name` and `extendedAddress` in
-the file for every existing entry when a device is renamed on either
-side, reporting the changes as it does for `devices.json`; it never
-touches `hold_s` or `mute`, adds no entries and removes none (a device HA
-no longer has is reported as stale, and stays until you delete it). The
-recorder only reads the file, at start, and `push-to-host.sh` ships it
-with the rest of `config/`; it is gitignored like `devices.json`. A file
-that does not parse, or a value of the wrong type, stops this check (not
-the recorder) with a journal line and a `FAIL` from `threadwatch doctor`.
+The recorder reads the inventory at start, so restart it after. A
+`hold_s` or `mute` it cannot read is ignored with a journal line and
+named by `threadwatch doctor`, and the entry keeps the defaults.
 
 If your HA automations already notify on unavailability, keep
 `ha_unavailable` off the phone sink with `ignore_events` (docs/ALERTING.md,

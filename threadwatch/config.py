@@ -210,11 +210,9 @@ class Config:
     # ha_unavailable). Off by default: it needs config/ha.env, and the
     # devices are linked to the inventory at runtime, never in devices.json.
     ha_availability_enabled: bool = False
-    # Per-device hold and mute, keyed by HA device id, relative to the
-    # config directory like [devices] inventory (config/ha-availability.json).
-    ha_availability_settings: str = "ha-availability.json"
     ha_availability_poll_s: float = 60.0          # one GET /api/states this often
-    ha_availability_hold_s: float = 10 * 60       # unavailable this long before a warning
+    ha_availability_hold_s: float = 10 * 60       # unavailable this long before a warning (a device's own
+                                                  # hold_s in devices.json replaces it)
     ha_availability_burst_devices: int = 3        # this many non-muted devices ...
     ha_availability_burst_window_s: float = 10 * 60   # ... within this window is one critical burst
     ha_availability_burst_hold_s: float = 120.0   # the newest must have stayed unavailable this long
@@ -323,7 +321,7 @@ SECTIONS: dict[str, frozenset[str] | None] = {
     "keys": frozenset(("confirm_s", "fresh_s", "census_delay_s", "rearm_s", "rotation_hours")),
     "otbr": frozenset(("enabled", "ssh_target", "ssh_port", "ssh_identity_file", "sudo", "container", "poll_s")),
     "ha_logs": frozenset(("enabled", "addons", "max_hours", "read_timeout_s", "deadline_s", "retry", "archive")),
-    "ha_availability": frozenset(("enabled", "settings", "poll_s", "hold_s", "burst_devices", "burst_window_s",
+    "ha_availability": frozenset(("enabled", "poll_s", "hold_s", "burst_devices", "burst_window_s",
                                   "burst_hold_s", "rearm_s", "registry_refresh_s")),
     "retransmissions": frozenset(("confirm_s",)),
     "border_routers": frozenset(("browse_s", "rotation")),
@@ -645,10 +643,6 @@ def load(path: Path | None) -> Config:
         if not isinstance(enabled, bool):
             raise ValueError(f"[ha_availability] enabled must be true or false, not {enabled!r}")
         cfg.ha_availability_enabled = enabled
-        settings = avail.get("settings", cfg.ha_availability_settings)
-        if not isinstance(settings, str) or not settings.strip():
-            raise ValueError(f"[ha_availability] settings must be a file name, not {settings!r}")
-        cfg.ha_availability_settings = settings
         for name, attr, positive in (("poll_s", "ha_availability_poll_s", True),
                                      ("hold_s", "ha_availability_hold_s", False),
                                      ("burst_window_s", "ha_availability_burst_window_s", True),

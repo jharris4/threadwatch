@@ -17,12 +17,16 @@ ever observed):
        "model": "Apple TV 4K", "note": "rotates its address"}
     ]
 
-The inventory is identity only: a name, the addresses it has used, and
-optionally a `model` and a free-text `note`. What a device is doing on
-the mesh (router or child, leader, parent) changes without anyone
-editing a file, so the recorder learns it from traffic and never reads
-it from here. Other fields are ignored, so a file produced by another
-tool loads as long as it has names and addresses.
+The inventory is identity plus the person's own judgement of a device: a
+name, the addresses it has used, optionally a `model` and a free-text
+`note`, and the two tolerances nothing on the air can tell the recorder,
+`hold_s` (silent, or unavailable in Home Assistant, this long before a
+warning) and `mute` (every record for the device a notice, never paged).
+What a device is doing on the mesh (router or child, leader, parent)
+changes without anyone editing a file, so the recorder learns it from
+traffic and never reads it from here. Other fields are ignored, so a
+file produced by another tool loads as long as it has names and
+addresses.
 
 Apple hubs (Apple TV, HomePod) change their Thread extended address on
 every reboot, so their entries would go stale within weeks. The recorder
@@ -41,7 +45,8 @@ Two helpers keep the file from being hand-written: `threadwatch devices
 --suggest` prints a ready-to-paste entry per unknown address, prefilled
 with any SRP hostname the credentialed pipeline harvested for it, and
 `threadwatch name <addr> <name>` appends one (or adds a rotated address
-to a device already listed under that name).
+to a device already listed under that name). `threadwatch hold <name>
+2h` and `threadwatch mute <name>` set the tolerances.
 """
 
 from __future__ import annotations
@@ -80,6 +85,56 @@ def entry_addresses(entry: dict) -> list[str]:
     if one and isinstance(one, (str, int, float)) and not isinstance(one, bool):
         addrs.append(str(one))
     return addrs
+
+
+def hold_value_error(hold) -> str | None:
+    """What is wrong with a `hold_s` value, or None for a usable one: a
+    number of seconds, more than 0. A bool is a number to Python and a
+    mistake to a person, so it is refused with the rest."""
+    if hold is None:
+        return None
+    if isinstance(hold, bool) or not isinstance(hold, (int, float)) or hold != hold or hold in (
+            float("inf"), float("-inf")) or hold <= 0:
+        return f"hold_s must be a number of seconds, more than 0, not {hold!r}"
+    return None
+
+
+def tolerance_field_error(entry: dict) -> str | None:
+    """What is wrong with an entry's `hold_s` or `mute`, or None when
+    both can be read. A bad one is ignored by the recorder and named by
+    doctor, like a mistyped address; the entry's name and addresses
+    stand."""
+    bad = hold_value_error(entry.get("hold_s"))
+    if bad:
+        return bad
+    mute = entry.get("mute")
+    if mute is not None and not isinstance(mute, bool):
+        return f"mute must be true or false, not {mute!r}"
+    return None
+
+
+_DURATION = re.compile(r"^\s*(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s?)?\s*$", re.I)
+
+
+def parse_duration(text: str) -> float:
+    """'2h', '30m', '1h30m', '7200' or '90s' -> seconds. A bare number is
+    seconds."""
+    m = _DURATION.match(text or "")
+    if not m or not any(m.groups()):
+        raise ValueError(f"{text!r} is not a duration (try 2h, 30m, 1h30m or 7200)")
+    h, mi, s = (int(g) if g else 0 for g in m.groups())
+    return float(h * 3600 + mi * 60 + s)
+
+
+def fmt_hold(seconds: float | None) -> str:
+    if seconds is None:
+        return "default"
+    seconds = int(seconds)
+    if seconds % 3600 == 0:
+        return f"{seconds // 3600}h"
+    if seconds % 60 == 0:
+        return f"{seconds // 60}m"
+    return f"{seconds}s"
 
 
 def address_field_error(entry: dict) -> str | None:
@@ -140,6 +195,13 @@ class DeviceNames:
             # entry must not stop the recorder or 500 every review page.
             self.entries = [e for e in raw if isinstance(e, dict)]
             for entry in self.entries:
+                bad = tolerance_field_error(entry)
+                if bad:
+                    # The tolerance is ignored, the entry is kept: a typo
+                    # in a hold must not make the device unknown.
+                    print(f"[threadwatch] {inventory_path.name}: {bad} in the entry for "
+                          f"{entry.get('name')!r}: the default hold applies and it is not muted "
+                          "until it is fixed (threadwatch doctor checks it)", file=sys.stderr, flush=True)
                 shape = address_field_error(entry)
                 if shape:
                     # The addresses of this one entry are lost; the file is
@@ -215,6 +277,20 @@ class DeviceNames:
     def name(self, addr: str) -> str | None:
         entry = self.by_addr.get(_norm(addr))
         return (str(entry["name"]) if entry and entry.get("name") else None)
+
+    def hold_s(self, addr: str) -> float | None:
+        """The entry's own hold before a warning (device_quiet, and
+        ha_unavailable), in seconds; None for the configured default. Any
+        address of the entry, an mDNS-learned one included: the tolerance
+        is the device's, whichever address it is using."""
+        entry = self.by_addr.get(_norm(addr))
+        hold = entry.get("hold_s") if entry else None
+        return None if hold is None or hold_value_error(hold) else float(hold)
+
+    def muted(self, addr: str) -> bool:
+        """Whether the entry says every record for the device is a notice."""
+        entry = self.by_addr.get(_norm(addr))
+        return bool(entry) and entry.get("mute") is True
 
     def addresses_of(self, addr: str) -> list[str]:
         """Every inventory address that belongs to the same device as
@@ -803,8 +879,82 @@ def _adopt(inventory_path: Path, n: str, name: str) -> str:
         entry = {"name": name, "extendedAddress": stored}
         entries.append(entry)
         what = f"added {name!r} = {n}"
+    _write_inventory(inventory_path, entries)
+    return what
+
+
+def _write_inventory(inventory_path: Path, entries: list[dict]) -> None:
+    """Rewrite the file whole, atomically. Callers hold inventory_lock."""
     inventory_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = inventory_path.with_suffix(".tmp")
     tmp.write_text(json.dumps(entries, indent=2, ensure_ascii=False) + "\n")
     tmp.replace(inventory_path)
+
+
+def _entry_for(entries: list[dict], target: str, inventory_path: Path) -> dict:
+    """The one entry a person means by an exact name (case-insensitive),
+    one of its addresses, or a fragment of its name. Raises ValueError
+    naming the candidates when the fragment matches several, or nothing."""
+    t = target.strip()
+    if not t:
+        raise ValueError("a device name or address is required")
+    n = _norm(t)
+    hits = [e for e in entries if n in [_norm(a) for a in entry_addresses(e)]]
+    if not hits:
+        hits = [e for e in entries if (e.get("name") or "").strip().lower() == t.lower()]
+    if not hits:
+        hits = [e for e in entries if t.lower() in (e.get("name") or "").lower()]
+    if len(hits) == 1:
+        return hits[0]
+    if hits:
+        raise ValueError(f"{target!r} matches several devices: "
+                         + ", ".join(sorted(str(e.get("name")) for e in hits)))
+    raise ValueError(f"{target!r} is not a name or address in {inventory_path.name} (threadwatch devices lists them)")
+
+
+def set_hold(inventory_path: Path, target: str, hold_s: float | None) -> str:
+    """`threadwatch hold`: give the device its own hold before a warning
+    (silent, or unavailable in Home Assistant, this long), or with None
+    remove it so the configured default applies again. Returns a one-line
+    description of what changed. Raises ValueError for a hold that is not
+    more than 0 seconds, or a device the file does not list."""
+    if hold_s is not None:
+        bad = hold_value_error(hold_s)
+        if bad:
+            raise ValueError(bad)
+        hold_s = int(hold_s) if float(hold_s).is_integer() else float(hold_s)     # 7200, not 7200.0, in the file
+    with inventory_lock(inventory_path):
+        entries = read_inventory(inventory_path)
+        entry = _entry_for(entries, target, inventory_path)
+        before = entry.get("hold_s")
+        if hold_s is None:
+            if entry.pop("hold_s", None) is None:
+                return f"{entry.get('name')!r} already has the default hold"
+            what = f"{entry.get('name')!r}: hold {fmt_hold(before)} -> default"
+        else:
+            entry["hold_s"] = hold_s
+            what = f"{entry.get('name')!r}: hold {fmt_hold(hold_s)}" + (
+                f" (was {fmt_hold(before)})" if isinstance(before, (int, float)) and not isinstance(before, bool)
+                else "")
+        _write_inventory(inventory_path, entries)
+    return what
+
+
+def set_mute(inventory_path: Path, target: str, mute: bool) -> str:
+    """`threadwatch mute`: make every record for the device a notice
+    (never paged, never counted toward a burst), or with False lift
+    that. Returns a one-line description of what changed."""
+    with inventory_lock(inventory_path):
+        entries = read_inventory(inventory_path)
+        entry = _entry_for(entries, target, inventory_path)
+        if mute:
+            if entry.get("mute") is True:
+                return f"{entry.get('name')!r} is already muted"
+            entry["mute"] = True
+            what = f"{entry.get('name')!r}: muted"
+        else:
+            if entry.pop("mute", None) is None:
+                return f"{entry.get('name')!r} is not muted"
+            what = f"{entry.get('name')!r}: unmuted"
+        _write_inventory(inventory_path, entries)
     return what

@@ -58,6 +58,20 @@ class DoctorTest(unittest.TestCase):
         level, _, text = doctor.check_inventory(self.cfg)[0]
         self.assertEqual(level, "warn")
         self.assertIn("entry 2 (Sensor): extendedAddresses is int, not a list", text)
+        # The person's hold_s and mute: counted when they read, named when
+        # they do not, never a FAIL (the recorder applies the defaults to
+        # that entry and keeps its name).
+        inv.write_text(json.dumps([{"name": "A", "extendedAddress": "0011223344556677", "hold_s": 7200},
+                                   {"name": "B", "extendedAddress": "8899aabbccddeeff", "mute": True}]))
+        level, _, text = doctor.check_inventory(self.cfg)[0]
+        self.assertEqual((level, text), ("ok", "2 devices, 2 addresses, 1 with a hold of their own, 1 muted"))
+        inv.write_text(json.dumps([{"name": "A", "extendedAddress": "0011223344556677", "hold_s": 0},
+                                   {"name": "B", "extendedAddress": "8899aabbccddeeff", "mute": "yes"}]))
+        level, _, text = doctor.check_inventory(self.cfg)[0]
+        self.assertEqual(level, "warn")
+        self.assertIn("2 devices, 2 addresses; default hold and not muted, the field cannot be read: "
+                      "entry 1 (A): hold_s must be a number of seconds, more than 0, not 0, "
+                      "entry 2 (B): mute must be true or false, not 'yes'", text)
 
     def test_credentials_permissions_and_key(self):
         self.cfg.credentials_path = self.d / "absent.toml"
@@ -485,8 +499,8 @@ class HaLogsCheckTest(unittest.TestCase):
 
 
 class HaAvailabilityCheckTest(unittest.TestCase):
-    """With [ha_availability] on, doctor checks the settings file, the
-    states endpoint, the registry lookup and what matched."""
+    """With [ha_availability] on, doctor checks the states endpoint, the
+    registry lookup and what matched."""
 
     def setUp(self):
         import json
@@ -534,35 +548,23 @@ class HaAvailabilityCheckTest(unittest.TestCase):
         self.httpd.server_close()
         self.tmp.cleanup()
 
-    def test_the_checks_name_what_matched_what_did_not_and_what_is_stale(self):
-        import json
-        (self.d / "ha-availability.json").write_text(json.dumps({
-            "id-motion": {"name": "Old Name", "extendedAddress": "C233A4A5BF8391C9", "hold_s": 7200},
-            "id-gone": {"name": "Gone", "mute": True}}))
+    def test_the_checks_name_what_matched_and_what_did_not(self):
         checks = doctor.check_ha_availability(self.cfg)
         levels = [(c[0], c[2].split(":")[0]) for c in checks]
-        self.assertEqual([c[0] for c in checks], ["ok", "ok", "ok", "warn", "warn", "warn", "warn"], levels)
+        self.assertEqual([c[0] for c in checks], ["ok", "ok", "warn", "warn"], levels)
         texts = [c[2] for c in checks]
-        self.assertIn("2 per-device entries", texts[0])
-        self.assertIn("GET /api/states: 1 entities", texts[1])
-        self.assertIn("2 Thread devices in Home Assistant, 1 matched", texts[2])
-        self.assertIn("not in devices.json, watched under their HA names: Garden Sensor", texts[3])
-        self.assertIn("no usable entity, so never judged: Garden Sensor", texts[4])
-        self.assertIn("device id(s) Home Assistant no longer has: Gone", texts[5])
-        self.assertIn("out of date for Old Name: run threadwatch import --write", texts[6])
+        self.assertIn("GET /api/states: 1 entities", texts[0])
+        self.assertIn("2 Thread devices in Home Assistant, 1 matched", texts[1])
+        self.assertIn("not in devices.json, watched under their HA names: Garden Sensor", texts[2])
+        self.assertIn("no usable entity, so never judged: Garden Sensor", texts[3])
         for t in texts:
             self.assertNotIn("tk_SECRET", t)
 
-    def test_a_bad_settings_file_is_a_fail_and_no_token_a_warning(self):
-        (self.d / "ha-availability.json").write_text('{"x": {"hold": 5}}')
-        checks = doctor.check_ha_availability(self.cfg)
-        self.assertEqual(checks[0][0], "FAIL")
-        self.assertIn("unknown field(s) hold", checks[0][2])
-        (self.d / "ha-availability.json").unlink()
+    def test_no_token_is_a_warning_and_off_is_nothing(self):
         (self.d / "ha.env").write_text("HA_URL=http://x\n")
         checks = doctor.check_ha_availability(self.cfg)
-        self.assertEqual([c[0] for c in checks], ["ok", "warn"])
-        self.assertIn("no HA_TOKEN", checks[1][2])
+        self.assertEqual([c[0] for c in checks], ["warn"])
+        self.assertIn("no HA_TOKEN", checks[0][2])
         self.cfg.ha_availability_enabled = False
         self.assertEqual(doctor.check_ha_availability(self.cfg), [])
 

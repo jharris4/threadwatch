@@ -40,11 +40,6 @@ STATE_FILES = ("status.json", "last-seen.json", "observed-names.json", "frames-b
                "border-routers.json", "blind-spans.json", "retransmissions.json",
                "storm.json", "key-generations.json", "key-journal.json", "otbr-inventory.json",
                "ha-availability.json", "ha-map.json")
-# The per-device hold and mute for the HA availability check
-# (config/<[ha_availability] settings>) travels beside devices.json under
-# this name: no secrets in it, and the state file above already takes
-# the name ha-availability.json in the bundle.
-SETTINGS_COPY = "ha-availability-settings.json"
 # The configuration goes along with its secrets blanked: it is parsed as
 # TOML and written back out, and a value whose key contains one of these
 # words - at any depth, written as a plain key, a dotted one, an inline
@@ -356,9 +351,6 @@ def save_snapshot(cfg, label: str = "snapshot", now: float | None = None,
                     shutil.copy2(src, dest / extra)
             if cfg.events_dir.exists():
                 shutil.copytree(cfg.events_dir, dest / "events", dirs_exist_ok=True)
-            settings = cfg.config_dir / getattr(cfg, "ha_availability_settings", "ha-availability.json")
-            if settings.is_file():
-                shutil.copy2(settings, dest / SETTINGS_COPY)
             provenance = capture_provenance(cfg)
             if provenance:
                 (dest / "devices.json").write_text(json.dumps(provenance["inventory"], indent=2))

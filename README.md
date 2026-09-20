@@ -175,6 +175,8 @@ returns, then name it:
 
     bin/threadwatch name 66417fe110ed6950 "Office Air Quality"
     bin/threadwatch devices --suggest   # ready-to-paste entries for every unknown
+    bin/threadwatch hold "Front Path Motion" 2h   # a known flapper: warn after two hours, not 30 min
+    bin/threadwatch mute "Garden Sensor"          # log its silences, never page them
 
 `name` appends to `config/devices.json` (an existing name gains the
 address, which is how a rotation is recorded: from then on the device is
@@ -200,16 +202,20 @@ credentials.toml too (docs/HOME-ASSISTANT.md).
 | `model` | no | free text (`threadwatch import` fills it from Home Assistant or mDNS) |
 | `note` | no | free text for the person editing the file |
 | `borderRouter` | no | the mDNS hostname of a border router (`appletv-living-room.local`), so a new address announced under that hostname is named from this entry without an edit (docs/HOME-ASSISTANT.md) |
+| `hold_s` | no | seconds, more than 0: this device's own hold before a warning, replacing `[quiet] silence_s` for `device_quiet` and `[ha_availability] hold_s` for `ha_unavailable`; for a device that drops out on its own for a while and comes back (`threadwatch hold NAME 2h`, `--clear` to remove) |
+| `mute` | no | `true`: every record for this device is a notice, logged and never paged, and it never counts toward a burst (`threadwatch mute NAME`, `--off` to lift) |
 
 Anything else is ignored, so a file produced by another tool loads as
 long as it has names and addresses. What a device is doing on the mesh
 (router, child, leader, parent) is learned from traffic and never read
-from here. Nothing Home Assistant-specific lives here either: the
-availability check's per-device hold and mute are in
-`config/ha-availability.json`, keyed by HA device id and linked to these
-entries by address (docs/HOME-ASSISTANT.md). The rules when the file is not quite right: an address that is
+from here; `hold_s` and `mute` are the one kind of thing that is read
+from here and nowhere else, a person's judgement of a device that no
+traffic can supply. Nothing Home Assistant-specific lives here either:
+the availability check links HA's devices to these entries by address at
+runtime (docs/HOME-ASSISTANT.md). The rules when the file is not quite right: an address that is
 not 16 hex digits is dropped with a journal line and the rest of the
-entry stands; an entry that is not an object is skipped; a file that is
+entry stands; a `hold_s` or `mute` of the wrong type is ignored the same
+way, and the entry keeps the defaults; an entry that is not an object is skipped; a file that is
 not a list, or not valid JSON, is ignored whole, with a journal line and
 a `FAIL` from `threadwatch doctor`, and every device is unknown until it
 is fixed. One address may belong to one entry: `name` refuses to move an
@@ -315,7 +321,7 @@ default in them is checked against `--help` and the source).
       otbr.py      archived OTBR evidence and optional read-only SSH inventory
       snapshot.py  ring buffer -> snapshot (threadwatch snapshot, snapshot_on_critical)
       halogs.py    the Home Assistant add-on logs (OTBR, Matter Server) copied into each snapshot
-      haavail.py   the Home Assistant availability poll, its episodes, and the per-device settings file
+      haavail.py   the Home Assistant availability poll and its episodes
       hacause.py   why HA lost a device, from the radio evidence (one pure function)
       device.py    per-device history reconstruction (threadwatch device)
       doctor.py    preflight checks (threadwatch doctor)

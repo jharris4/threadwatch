@@ -72,7 +72,7 @@ sudo systemctl start threadwatch
 (Docker: `docker compose stop recorder`.) Everything else is safe beside
 a running recorder: `doctor`, `status`, `devices`, `device`, `replay`,
 `events`, `snapshots`, `snapshot`, `otbr-evidence`, `key-journal`, `border-routers`, `alert-test`, `serve`,
-and `name` and `import`, which write `config/` files the recorder reads
+and `name`, `hold`, `mute` and `import`, which write `config/` files the recorder reads
 only at its next start. `replay` and `device` run the pipeline in a mode that
 writes nothing to `data/state` and sends nothing to any sink.
 
@@ -132,11 +132,12 @@ each of these too.
 | `record` | | the same, or a config value out of range |
 | `replay`, `device`, `snapshots --delete` | `--snapshot NAME` matches no snapshot, or more than one | |
 
-`ha-availability set <device> (--hold DURATION | --mute | --clear)` and
-`ha-availability list` edit and show `config/ha-availability.json`
-(docs/HOME-ASSISTANT.md), resolving `<device>` through Home Assistant by
-inventory name, extended address or HA device id; exit 1 when HA refuses,
-the device is unknown or ambiguous, or the duration does not parse.
+`hold <device> (DURATION | --clear)` and `mute <device> [--off]` set a
+device's own `hold_s` and `mute` in `config/devices.json` (README,
+devices.json), resolving `<device>` by inventory name, a fragment of one,
+or extended address; exit 1 when the device is unknown or ambiguous, the
+duration does not parse or is not more than 0, or the file will not
+parse.
 
 `snapshot [label]` exits 0 once the ring is copied, whatever became of the
 Home Assistant add-on logs it copies afterwards with `[ha_logs] enabled`
@@ -163,6 +164,7 @@ non-`ok` line means and what to do about it:
 | `inventory` is not valid JSON / must be a JSON list | the recorder ignores the file, so every device is unknown until it is fixed | `python3 -m json.tool config/devices.json` names the line; fix it, restart |
 | `inventory` ignored (not 16 hex digits) | that address is dropped and its device unnamed | fix the address (16 hex digits, no `0x`, no colons) |
 | `inventory` with a blank name | those addresses still count as unknown | fill the names in |
+| `inventory` default hold and not muted, the field cannot be read | that entry's `hold_s` is not a number more than 0, or its `mute` not true/false; the recorder applies the defaults to it | fix the field (`threadwatch hold` and `mute` write it correctly), restart |
 | `credentials` the 'cryptography' package is missing | the interpreter doctor ran under cannot decrypt, and neither can the recorder | `sudo bin/setup-host.sh`, or `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt` (`bin/threadwatch` prefers `.venv`) |
 | `credentials` missing | no Thread network key: the recorder does not start | docs/CREDENTIALS.md, or `bin/threadwatch import --write` with Home Assistant |
 | `credentials` is mode NNNN: readable by others | the key is world- or group-readable | `chmod 600 config/credentials.toml` |
@@ -195,13 +197,10 @@ non-`ok` line means and what to do about it:
 | `ha-logs` HTTP 404: no such add-on | an `[ha_logs] addons` slug HA does not know | `ha addons` on the HA host lists the slugs; the defaults are `core_openthread_border_router` and `core_matter_server` |
 | `ha-logs` not reachable | HA did not answer at `HA_URL` within 10 s | check `HA_URL` in `config/ha.env` and that HA is up; the recorder retries snapshot fetches by itself |
 | `ha-logs` newest line N min ago: the add-on looks stopped | the add-on's log has not moved in over ten minutes | start the add-on in HA; a stopped OTBR is a mesh with no border router |
-| `ha-avail` ha-availability.json ... : the availability check is off | the per-device settings file does not parse or has a wrong type; the recorder runs without the check | fix the entry named (`hold_s` a number, `mute` true/false), restart |
 | `ha-avail` enabled but config/ha.env has no HA_TOKEN | nothing is polled | put a token in `config/ha.env` (docs/HOME-ASSISTANT.md) |
 | `ha-avail` GET /api/states ... failed | HA did not answer the poll endpoint | check `HA_URL` and that HA is up; the recorder logs `ha_unreachable` after five minutes of this |
 | `ha-avail` N not in devices.json, watched under their HA names | HA has Thread devices the inventory does not | `threadwatch import --write` adds them |
 | `ha-avail` device(s) with no usable entity, so never judged | every entity of the device is disabled, or HA lists none | enable one in HA, or accept that the device is not judged |
-| `ha-avail` entries for device id(s) Home Assistant no longer has | stale settings for a removed device | delete them from `config/ha-availability.json`, or leave them: they do nothing |
-| `ha-avail` name or extendedAddress out of date | a device was renamed in HA or in devices.json | `threadwatch import --write` refreshes them |
 | `ha-logs` the hourly archive has nothing yet | `[ha_logs] archive` is on and no hour has been archived | it fills two minutes after the next hour while the recorder runs; check the recorder is up |
 | `ha-logs` archive up to H UTC (N min behind): the archive has not kept up | the newest archived hour ended more than two hours ago | the recorder is down, or HA has not answered (the `ha_logs_archive_stalled` event says since when); the pending hours are retried every 15 min while the journal can still have them |
 | `otbr` ssh_identity_file ... does not exist on this host | `[otbr]` is on but the recorder's key is not where `ssh_identity_file` says | make the key on the capture host and authorize it on the HA SSH add-on ("Optional OTBR inventory over SSH" below) |
@@ -332,7 +331,7 @@ file.) The fields:
 | `partition` | null until the MLE layer has seen an advertisement, then `id`, `leader_router` (the leader's router id), `leader_rloc16`, and `leader_addr` / `leader_name` once that router id has been matched to a device |
 | `detector` | the storm detector: `baseline_frames_per_window` (calm frames per 10 s), `recent_windows` (the last six counts), `storm_active`, `flood_onsets_recent`, `alerts_sent` |
 | `crypto` | the decryption counters, below, and `key_sequence`, the highest Thread key sequence a frame has decrypted under (null until one has) |
-| `ha_availability` | null unless `[ha_availability]` is on; then `enabled` (false with a `reason` when the settings file would not load), `reachable`, `last_poll_ts`, `last_ok_ts`, `devices_mapped`, `burst` (the live burst's id) and `open`: the devices unavailable in HA right now, each with `name`, `addr`, `since`, `paged`, `severity`, `burst_id` |
+| `ha_availability` | null unless `[ha_availability]` is on; then `enabled`, `reachable`, `last_poll_ts`, `last_ok_ts`, `devices_mapped`, `burst` (the live burst's id) and `open`: the devices unavailable in HA right now, each with `name`, `addr`, `since`, `paged`, `severity`, `burst_id` |
 | `otbr_inventory` | null when disabled or not yet sampled; otherwise the latest optional SSH inventory sample status, start/completion times and per-command outcomes (see below) |
 | `ha_logs_archive` | null unless `[ha_logs] archive` is on; then per add-on `last_archived` (the newest hour in `data/ha-logs/`, a UTC hour name), `hours_on_disk`, `pending` (hours a fetch has failed for and will be retried) and `lost` (hours that rolled out of HA's journal before they could be fetched) |
 | `keys` | the key generations as the recorder records them (docs/ALERTING.md, `key_sequence_advanced`): `highest` and `previous`, `highest_first_ts` and `previous_first_ts` (when each was first heard), `first_sender` (which address was heard first under the highest), `suspects` (unconfirmed origin candidates: the first sender, and every device since whose first frame on the new generation came while its parent was still on the old one; each with `evidence`, `parent` and `parent_generation`, as `key_sequence_advanced` records them) and `scope`, `confidence`, `reasons` (observation provenance; legacy state defaults to unknown), the interval facts of the last advance (`observed_interval_s`, `sequence_delta`, `observation_kind`, `coverage`, `scheduled_expectation`, `early_against_configured_interval`, as `key_sequence_advanced` records them; absent in legacy state), plus `census_at` (when the census for it is due, null once sent) and optional `snapshot_pair` (`sequence`, `observed_at`, `census_claimed`: the persisted automatic pair reservation). Empty until a frame has been accepted under any generation. `highest` can trail `crypto.key_sequence` for a moment: the decryptor's value moves on any frame that decrypts, this one on a frame the pipeline accepted as a sighting |

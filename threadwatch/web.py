@@ -128,7 +128,7 @@ LEGEND = [
      "a rejoin row just before this one says so."),
     ("ha_unavailable", "Unavailable in Home Assistant / available again",
      "Home Assistant marked the device unavailable and it stayed so for its hold (10 min by default, "
-     "[ha_availability] hold_s, or the device's own hold in config/ha-availability.json). The row "
+     "[ha_availability] hold_s, or the device's own hold_s in devices.json). The row "
      "carries the recorder's radio evidence for why: cut off by a key change, polling a parent that "
      "no longer answers, gone silent before HA lost it, or radio fine and the fault on the Matter or "
      "HA side. A warning, or a notice when the device is muted, part of a burst, flapping, or was "
@@ -868,7 +868,7 @@ class Site:
             avail = st.get("ha_availability")
             if isinstance(avail, dict):
                 if not avail.get("enabled"):
-                    row("HA availability", f'<span class="bad">off: {esc(avail.get("reason") or "?")}</span>')
+                    row("HA availability", '<span class="bad">off</span>')
                 else:
                     reach = ('<span class="ok">reachable</span>' if avail.get("reachable")
                              else '<span class="bad">unreachable</span>')

@@ -48,9 +48,9 @@ def check_inventory(cfg) -> list[Check]:
         return [(FAIL, "inventory", f"{path.name} is not valid JSON: {exc}")]
     if not isinstance(entries, list):
         return [(FAIL, "inventory", f"{path.name} must be a JSON list")]
-    from .names import _EXT_ADDR, _norm, address_field_error, entry_addresses
+    from .names import _EXT_ADDR, _norm, address_field_error, entry_addresses, tolerance_field_error
     bad, addrs, unnamed, wrong_shape = [], 0, 0, []
-    bad_fields = []
+    bad_fields, bad_tolerance, held, muted = [], [], 0, 0
     for i, e in enumerate(entries, 1):
         # A null an editor left, or a bare string: the recorder skips it
         # and keeps recording, and naming it is this check's whole job.
@@ -68,11 +68,21 @@ def check_inventory(cfg) -> list[Check]:
         shape = address_field_error(e)
         if shape:
             bad_fields.append(f"entry {i} ({e.get('name') or 'unnamed'}): {shape}")
+        # The person's hold_s and mute (docs/ALERTING.md): the recorder
+        # ignores a bad one and applies the defaults, so name it here.
+        tolerance = tolerance_field_error(e)
+        if tolerance:
+            bad_tolerance.append(f"entry {i} ({e.get('name') or 'unnamed'}): {tolerance}")
+        else:
+            held += e.get("hold_s") is not None
+            muted += e.get("mute") is True
         for a in entry_addresses(e):
             addrs += 1
             if not _EXT_ADDR.match(_norm(a)):
                 bad.append(a)
     text = f"{len(entries) - len(wrong_shape)} devices, {addrs} addresses"
+    if held or muted:
+        text += f", {held} with a hold of their own, {muted} muted"
     if wrong_shape:
         return [(WARN, "inventory", f"{text}; skipped, not device objects: {', '.join(wrong_shape[:5])}"
                                     " (adopt and import refuse to rewrite the file until it is fixed)")]
@@ -81,6 +91,9 @@ def check_inventory(cfg) -> list[Check]:
                                     f"{', '.join(bad_fields[:5])}")]
     if bad:
         return [(WARN, "inventory", f"{text}; ignored (not 16 hex digits): {', '.join(bad[:5])}")]
+    if bad_tolerance:
+        return [(WARN, "inventory", f"{text}; default hold and not muted, the field cannot be read: "
+                                    f"{', '.join(bad_tolerance[:5])}")]
     if unnamed:
         return [(WARN, "inventory", f"{text}; {unnamed} with a blank name (still unknown)")]
     return [(OK, "inventory", text)]
@@ -542,36 +555,18 @@ def _check_archive(cfg, slug: str, now: float) -> list[Check]:
 
 
 def check_ha_availability(cfg, now: float | None = None) -> list[Check]:
-    """With [ha_availability] enabled: the settings file loads (FAIL if
-    not), HA answers /api/states, the websocket registry lookup works,
-    which HA Thread devices match the inventory (WARN naming the
-    unmatched, watched under their HA names), devices with no usable
-    entity (WARN), and settings entries whose id HA no longer has or
-    whose kept name or address is out of date (WARN)."""
+    """With [ha_availability] enabled: HA answers /api/states, the
+    websocket registry lookup works, which HA Thread devices match the
+    inventory (WARN naming the unmatched, watched under their HA names),
+    and devices with no usable entity (WARN). A device's own hold and
+    mute are inventory fields, checked by check_inventory."""
     if not getattr(cfg, "ha_availability_enabled", False):
         return []
     from .ha import HAError
-    from .haavail import (
-        SettingsError,
-        credentials_or_none,
-        link_fields,
-        load_settings,
-        poll_states,
-        refresh_map,
-        settings_path,
-    )
+    from .haavail import credentials_or_none, poll_states, refresh_map
     from .httpclient import redact_text, redact_url
     from .names import read_inventory
     out: list[Check] = []
-    path = settings_path(cfg)
-    try:
-        settings = load_settings(path)
-        n = len(settings)
-        out.append((OK, "ha-avail", f"{path.name}: {n} per-device entr{'y' if n == 1 else 'ies'}" if path.exists()
-                                    else f"{path.name}: not present (default hold for every device)"))
-    except SettingsError as exc:
-        out.append((FAIL, "ha-avail", f"{exc}: the availability check is off until it is fixed"))
-        settings = {}
     creds = credentials_or_none(cfg)
     if creds is None:
         out.append((WARN, "ha-avail", "[ha_availability] enabled but config/ha.env has no HA_TOKEN: nothing is polled"))
@@ -603,25 +598,6 @@ def check_ha_availability(cfg, now: float | None = None) -> list[Check]:
     if empty:
         out.append((WARN, "ha-avail", f"{len(empty)} device(s) with no usable entity, so never judged: "
                                       + ", ".join(empty)))
-    by_id = {}
-    for device_id, m in mapping.items():
-        by_id[device_id] = {"addr": m.get("addr"), "name": m.get("ha_name")}
-    stale = [entry.get("name") or device_id for device_id, entry in settings.items() if device_id not in by_id]
-    if stale:
-        out.append((WARN, "ha-avail", f"{path.name}: {len(stale)} entr{'y' if len(stale) == 1 else 'ies'} for "
-                                      f"device id(s) Home Assistant no longer has: " + ", ".join(stale)
-                                      + " (remove them, or leave them: they do nothing)"))
-    outdated = []
-    for device_id, entry in settings.items():
-        dev = by_id.get(device_id)
-        if dev is None:
-            continue
-        fresh = link_fields(dev, entries)
-        if fresh["name"] != entry.get("name") or fresh["extendedAddress"] != entry.get("extendedAddress"):
-            outdated.append(entry.get("name") or device_id)
-    if outdated:
-        out.append((WARN, "ha-avail", f"{path.name}: name or extendedAddress out of date for "
-                                      + ", ".join(outdated) + ": run threadwatch import --write"))
     return out
 
 

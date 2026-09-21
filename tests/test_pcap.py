@@ -553,3 +553,12 @@ class FormatRejectionTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FramePendingBitTest(unittest.TestCase):
+    def test_the_pending_bit_is_read_from_the_frame_control_field(self):
+        from threadwatch.pcap import parse_frame
+        promised = parse_frame(1.0, bytes([0x12, 0x00, 0x2a]), 230)      # an ACK, Frame Pending set
+        plain = parse_frame(1.0, bytes([0x02, 0x00, 0x2a]), 230)
+        self.assertEqual((promised.ftype, promised.seq, promised.pending), (2, 0x2a, True))
+        self.assertEqual((plain.ftype, plain.pending), (2, False))

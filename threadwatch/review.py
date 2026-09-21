@@ -78,6 +78,7 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
     rejoin: dict[str, dict] = {}
     open_link: dict[str, dict] = {}
     open_starved: dict[str, dict] = {}
+    open_unserved: dict[str, dict] = {}
     open_keylag: dict[str, dict] = {}
     open_ha: dict[str, dict] = {}
     open_visit: dict[str, dict] = {}
@@ -170,7 +171,8 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
             if quiet is not None:
                 episodes.remove(quiet)
                 ep["events"] = quiet["events"] + ep["events"]
-            for table, since_key in ((open_starved, "starved_since"), (open_link, "low_since"),
+            for table, since_key in ((open_starved, "starved_since"), (open_unserved, "unserved_since"),
+                                     (open_link, "low_since"),
                                      (open_keylag, "lag_since")):
                 left = table.pop(addr, None)
                 if left is not None:
@@ -186,6 +188,24 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
             open_starved[addr] = new("starved", rec, f"{_label(rec)} polls unanswered",
                                      f"{rec.get('unanswered_polls')} polls, {rec.get('acked_polls')} answered before",
                                      end=None, starved_since=rec.get("since", rec["ts"]))
+        elif ev == "poll_unserved":
+            addr = _addr(rec) or ""
+            ep = open_unserved.get(addr)
+            if ep is not None:
+                bump(ep, rec)
+                continue
+            open_unserved[addr] = new("unserved", rec, f"{_label(rec)} polls acknowledged, nothing delivered",
+                                      f"{rec.get('unserved_polls')} polls, {rec.get('served_polls')} served before",
+                                      end=None, unserved_since=rec.get("since", rec["ts"]))
+        elif ev == "poll_served":
+            addr = _addr(rec) or ""
+            ep = open_unserved.pop(addr, None)
+            if ep is not None:
+                ep["end"] = rec["ts"]
+                ep["events"].append(rec)
+                ep["title"] += f" for {fmt_duration(rec['ts'] - ep['unserved_since'])}"
+            else:
+                new("unserved", rec, f"{_label(rec)} polls served again", rec.get("note", ""))
         elif ev == "poll_answered":
             addr = _addr(rec) or ""
             ep = open_starved.pop(addr, None)
@@ -389,6 +409,8 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
             ep["title"] += f" for {fmt_duration(now - ep['low_since'])} (still down)"
         elif ep["kind"] == "starved" and ep["end"] is None:
             ep["title"] += f" for {fmt_duration(now - ep['starved_since'])} (still unanswered)"
+        elif ep["kind"] == "unserved" and ep["end"] is None:
+            ep["title"] += f" for {fmt_duration(now - ep['unserved_since'])} (still undelivered)"
         elif ep["kind"] == "key_lag" and ep["end"] is None:
             ep["title"] += f" for {fmt_duration(now - ep['lag_since'])} (still behind)"
         elif ep["kind"] == "ha_unavailable" and ep["end"] is None:
@@ -425,7 +447,7 @@ def episode_onset(ep: dict) -> float:
     starvation at the first unanswered poll, a signal drop at the first low
     reading -- each of them before the threshold that logged the event. The
     alert time stays in ``start``."""
-    for key in ("silent_since", "starved_since", "low_since"):
+    for key in ("silent_since", "starved_since", "unserved_since", "low_since"):
         since = ep.get(key)
         if isinstance(since, (int, float)) and not isinstance(since, bool):
             return float(since)

@@ -67,6 +67,15 @@ class MleInfo:
     # when the network rotates its key, so one is only comparable with
     # another under the same generation.
     key_sequence: int | None = None
+    # What the sender advertised its counters to be (Link Layer Frame
+    # Counter and MLE Frame Counter TLVs, in a Child ID Request, a Link
+    # Request or Accept, a Child Update): the receiver takes each as the
+    # floor below which the sender's later frames are replays. The stack
+    # writes these; the radio driver writes the counter on the frames
+    # that follow. When the two disagree, the pipeline says so
+    # (frame_counter_mismatch).
+    link_frame_counter: int | None = None
+    mle_frame_counter: int | None = None
 
 
 @dataclass
@@ -466,6 +475,10 @@ class Decryptor:
                 info.leader_router_id = val[7]
             elif t == 0 and l >= 2:  # Source Address (sender's RLOC16)
                 info.source_addr16 = struct.unpack(">H", val[0:2])[0]
+            elif t == 5 and l >= 4:  # Link Layer Frame Counter
+                info.link_frame_counter = struct.unpack(">L", val[0:4])[0]
+            elif t == 8 and l >= 4:  # MLE Frame Counter
+                info.mle_frame_counter = struct.unpack(">L", val[0:4])[0]
             off += 2 + l
         # Learn the short->extended mapping from the sender itself, which
         # unlocks MAC decryption of its short-source data frames.

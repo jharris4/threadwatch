@@ -65,3 +65,14 @@ class ClassifyTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DroppedPollsAndMismatchTest(unittest.TestCase):
+    def test_the_two_causes_sit_between_key_lag_and_lost_parent(self):
+        parent = row(counter_seq=86, counter_ts=NOW - 30)
+        self.assertEqual(classify(row(unserved=True, starved=True), None, SINCE, NOW)[0], "dropped_polls")
+        self.assertEqual(classify(row(counter_mismatch_ts=NOW - 60, unserved=True), None, SINCE, NOW)[0],
+                         "counter_mismatch")
+        self.assertEqual(classify(row(counter_mismatch_ts=NOW - 3 * 3600), None, SINCE, NOW)[0], "radio_ok")
+        self.assertEqual(classify(row(counter_seq=84, counter_ts=NOW - 30, counter_mismatch_ts=NOW - 60),
+                                  parent, SINCE, NOW)[0], "key_lag")

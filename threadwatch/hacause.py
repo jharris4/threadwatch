@@ -22,9 +22,17 @@ RADIO_OK_S = 5 * 60
 # first: the device died, lost power or left the mesh.
 SILENT_BEFORE_S = 120.0
 
+# frame_counter_mismatch is said again once an hour while the device keeps
+# sending below its advertisement; a stamp older than this is a past episode.
+MISMATCH_FRESH_S = 2 * 3600.0
+
 SENTENCES = {
     "key_lag": ("Cut off by a key change: radio alive on generation {generation}, parent on {parent}. "
                 "A battery pull or power cycle forces a rejoin."),
+    "counter_mismatch": "Advertised a frame counter above the ones it sends with: its parent "
+                        "drops everything it sends as stale (frame_counter_mismatch).",
+    "dropped_polls": "Its polls are acknowledged with data pending and nothing follows: the "
+                     "parent's stack is dropping them (poll_unserved).",
     "lost_parent": "Still polling its parent with no answer: parent gone or link broken.",
     "silent": "Radio went silent at {when}: device died, lost power or left the mesh.",
     "radio_ok": "Radio and key look fine: likely the Matter, IP or HA side. Check the Matter Server log.",
@@ -52,6 +60,12 @@ def classify(row: dict | None, parent_row: dict | None, episode_since: float, no
             and parent_ts is not None and 0 <= now - parent_ts <= fresh_s
             and parent_gen is not None and parent_gen >= generation + 2):
         return "key_lag", SENTENCES["key_lag"].format(generation=generation, parent=parent_gen)
+    mismatch = row.get("counter_mismatch_ts")
+    if (isinstance(mismatch, (int, float)) and not isinstance(mismatch, bool)
+            and 0 <= now - mismatch <= MISMATCH_FRESH_S):
+        return "counter_mismatch", SENTENCES["counter_mismatch"]
+    if row.get("unserved"):
+        return "dropped_polls", SENTENCES["dropped_polls"]
     if row.get("starved"):
         return "lost_parent", SENTENCES["lost_parent"]
     last = row.get("last_seen")

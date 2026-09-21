@@ -78,6 +78,9 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `visitor_returned` | info | `addr`, `name` (label from `config/visitors.json`, else null), `visit`, `last_visit`, `note`: an address that has visited before is heard again (phones keep their extended address, even across a reboot); raised in place of `device_first_seen`, whose row the last visit dropped |
 | `poll_starvation` | notice when first logged, warning once `[polls] confirm_s` later the polls are still unanswered (`confirmed`); notice only when `reception` is `marginal` or `episode` > 1 | `addr`, `name`, `unanswered_polls`, `since`, `starved_for_s`, `acked_polls`, `rssi_dbm`, `reception`, `episode`, `since_previous_s`, `confirmed`, `parent`, `parent_rloc16`, `parent_addr`, `note` |
 | `poll_answered` | notice | `addr`, `name`, `note` |
+| `poll_unserved` | notice when first logged, warning once `[polls] confirm_s` later the polls are still unserved (`confirmed`); notice only when `reception` is `marginal` or `episode` > 1 | `addr`, `name`, `unserved_polls`, `since`, `unserved_for_s`, `served_polls`, `rssi_dbm`, `reception`, `episode`, `since_previous_s`, `confirmed`, `parent`, `parent_rloc16`, `parent_addr`, `note` |
+| `poll_served` | notice | `addr`, `name`, `note` |
+| `frame_counter_mismatch` | warning | `addr`, `name`, `layer` (`mac` or `mle`), `key_sequence`, `advertised`, `advertised_ts`, `advertised_in` (the MLE command that carried it), `counter`, `lowest`, `shortfall`, `frames_below`, `note` |
 | `rssi_degradation` | notice | `addr`, `name`, `rssi_dbm`, `reference_dbm`, `drop_db`, `since`, `low_for_s`, `note` |
 | `rssi_recovered` | info | `addr`, `name`, `rssi_dbm`, `reference_dbm`, `note` |
 | `key_sequence_advanced` | info | `sequence`, `previous`, `first_sender`, `name`, `rloc16`, `role`, `frame`, `since_previous_s`, `observed_interval_s`, `sequence_delta`, `observation_kind`, `previous_first_ts`, `coverage`, `scheduled_expectation`, `early_against_configured_interval`, `scope`, `confidence`, `reasons`, `suspects`, `note`. The first frame accepted under a new generation; the census says whether the mesh followed. Suspects retain `addr`, `name`, `rloc16`, `role`, `ts`, `frame`, legacy `evidence`, parent fields, and add candidate `confidence`/`reasons`. See the key-generation section below. |
@@ -103,7 +106,7 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `snapshot_logs_failed` | notice | `label`, `addons`, `errors`, `status` (`failed`, `partial` or `skipped`), `note` (whether and when the recorder retries) |
 | `ha_logs_archive_stalled` | notice | `addons`, `pending_hours` (`<slug>/<YYYYMMDD-HH>`, UTC), `since`, `last_error`, `note`; once per outage, when the hourly archive (`[ha_logs] archive`) has had hours pending for an hour |
 | `ha_logs_archive_resumed` | info | `archived`, `lost` (hour names), `since`, `note`; once, when the catch-up after an outage completes |
-| `ha_unavailable` | warning once a device has been unavailable in Home Assistant for its hold; notice when `muted`, part of a burst (`burst_id`), reopened within `[ha_availability] rearm_s` (`episode` > 1) or `already_unavailable_at_start` | `addr`, `name`, `ha_device_id`, `entities`, `since`, `unavailable_for_s`, `hold_s`, `muted`, `burst_id`, `episode`, `cause` (`key_lag`, `lost_parent`, `silent`, `radio_ok`, `unheard`), the radio evidence (`last_seen`, `silent_for_s`, `rssi_dbm`, `reception`, `starved`, `role`, `parent`, `generation`, `parent_generation`, `rejoin_ts`), `note` (with `[ha_availability] enabled`) |
+| `ha_unavailable` | warning once a device has been unavailable in Home Assistant for its hold; notice when `muted`, part of a burst (`burst_id`), reopened within `[ha_availability] rearm_s` (`episode` > 1) or `already_unavailable_at_start` | `addr`, `name`, `ha_device_id`, `entities`, `since`, `unavailable_for_s`, `hold_s`, `muted`, `burst_id`, `episode`, `cause` (`key_lag`, `counter_mismatch`, `dropped_polls`, `lost_parent`, `silent`, `radio_ok`, `unheard`), the radio evidence (`last_seen`, `silent_for_s`, `rssi_dbm`, `reception`, `starved`, `unserved`, `role`, `parent`, `generation`, `parent_generation`, `rejoin_ts`), `note` (with `[ha_availability] enabled`) |
 | `ha_unavailable_burst` | critical | `burst_id`, `devices` (each `name`, `addr`, `since`, `cause`), `count`, `window_s`, `first_since`, `note` (the causes, and "HA or Matter Server side" when most mapped devices dropped at once while the recorder still heard them); once per burst, with the automatic snapshot |
 | `ha_available` | info | `addr`, `name`, `ha_device_id`, `since`, `down_for_s`, `rejoined`, `generation`, `note`; only after an `ha_unavailable` went out |
 | `ha_unreachable` | notice | `failing_for_s`, `error`, `note`; once, after five minutes of failed polls |
@@ -202,6 +205,59 @@ recorder has matched that short address to a device), which is the first
 thing to look at: is it the parent that died, or a link the sniffer
 cannot hear? The close time is kept with the last-seen rows,
 so a restart does not re-page a flapping device.
+
+`poll_unserved` is the failure starvation cannot see, because the polls
+*are* acknowledged. A parent's radio answers a poll from its own
+source-match table before the poll reaches the parent's stack, and when
+it has a frame queued for the child the ACK carries Frame Pending: a
+promise that the stack will now send it. When the stack drops the poll
+instead, the promise is never kept, the child polls again, is promised
+again, and so on: acknowledged every time, served never. That is what the
+sniffer saw on 2026-09-13, when a key rotation left four sleepy children
+two generations behind their parents (the parents' stacks rejected their
+polls as unauthenticated, the radios kept acknowledging them) and the
+recorder raised nothing; it is also what a child looks like when it has
+advertised a frame counter above the ones it sends with
+(`frame_counter_mismatch`), and what a parent looks like whose stack has
+hung while its radio still answers. The rule mirrors starvation's: ten
+distinct polls in a row acknowledged with Frame Pending and followed by no
+frame to the child before its next poll, over at least a minute, from a
+device whose promised frames used to arrive (`served_polls`, kept with
+the last-seen rows across a restart). Over the hour before the 09-13
+rotation no child ran to more than two such polls; the stranded ones ran
+to 1,700 in the hour after it. The record names the parent as
+`poll_starvation`'s does, and is logged at notice, paged `[polls]
+confirm_s` later if still going (`confirmed`), demoted for a marginal
+signal or an episode that reopens within `[polls] rearm_s`, and closed
+by `poll_served` on the first frame the parent delivers. It says that the
+parent is dropping the polls, not why: read it beside `key_lag` and
+`frame_counter_mismatch` for the device, and when neither is there, the
+parent's stack has hung (its own `device_quiet` follows if its radio
+goes too) or the sniffer cannot hear the parent's frames.
+
+`frame_counter_mismatch` is the one device-side defect the sniffer can
+prove. An attaching child (Child ID Request), a router establishing a
+link (Link Request, Link Accept) and a child updating its parent (Child
+Update) advertise their current frame counters in Link Layer Frame
+Counter and MLE Frame Counter TLVs, and the receiver takes each as the
+floor below which the sender's later frames are replays. The recorder
+reads the TLVs from the decrypted message and then judges the device's
+own accepted frames under the same key generation against them
+(`layer` is `mac` for the link-layer counter on secured MAC frames, `mle`
+for the counter on secured MLE messages). Three accepted frames below the
+advertisement (one or two can be frames the device had queued when it
+advertised) are the record: `advertised`, `advertised_in` and
+`advertised_ts` say what the device claimed and where, `counter` and
+`shortfall` what it then sent, `frames_below` how many. Every parent
+that takes such an advertisement drops everything the device sends
+until it reboots, so `poll_unserved` follows for a sleepy device. The
+stack writes the advertisement and the radio driver writes the counters,
+so the two have lost sync inside the device, which is a firmware defect
+to report to the vendor: openthread/openthread#13599 documents one on an
+IKEA MYGGSPRAY (a Child ID Request advertising 1,280,176,180, then polls
+at 4,708). Said again at most once an hour while it goes on; the last
+advertisement is kept with the last-seen rows (`adv_mac`, `adv_mle`), so
+the floor survives a restart.
 
 `key_sequence_advanced`, `key_lag_census`, `key_lag` and `key_lag_cleared`
 are the key-generation detectors, for the failure neither of the two above
@@ -450,7 +506,10 @@ healthy. So the recorder polls HA's states once a minute (one small
 `GET /api/states`; the device map behind it is rebuilt over the websocket
 once an hour) and, when a device has been unavailable for its hold, says
 so with the recorder's own evidence for why: `cause` is `key_lag` (cut off
-by a key change, radio alive on an old generation), `lost_parent` (polling
+by a key change, radio alive on an old generation), `counter_mismatch`
+(a `frame_counter_mismatch` in the last two hours: its parent drops
+everything it sends), `dropped_polls` (an open `poll_unserved`: its polls
+are acknowledged with data pending and nothing follows), `lost_parent` (polling
 a parent that no longer answers), `silent` (the radio went quiet before HA
 lost it: the device died, lost power or left the mesh), `radio_ok` (heard
 in the last five minutes, so the fault is the Matter, IP or HA side) or

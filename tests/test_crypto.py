@@ -149,3 +149,14 @@ class ParseMleTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FrameCounterTlvTest(unittest.TestCase):
+    def test_link_and_mle_frame_counter_tlvs_are_read(self):
+        d = Decryptor(network_key=KEY)
+        body = bytes([11]) + bytes([5, 4]) + struct.pack(">L", 1_280_176_180) + bytes([8, 4]) + struct.pack(">L", 1029)
+        info = d.parse_mle(mle_mode1(SED, 15, 1029, body), SED, SRC_IP, DST_IP)
+        self.assertEqual((info.command_name, info.link_frame_counter, info.mle_frame_counter, info.counter),
+                         ("Child ID Request", 1_280_176_180, 1029, 1029))
+        plain = d.parse_mle(mle_mode1(SED, 15, 1030, advertisement()), SED, SRC_IP, DST_IP)
+        self.assertEqual((plain.link_frame_counter, plain.mle_frame_counter), (None, None))

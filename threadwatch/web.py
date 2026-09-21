@@ -118,6 +118,14 @@ LEGEND = [
      "device that moved, a door or appliance now in the way, a failing antenna, or interference "
      "near it. Notice, logged only. A silence without a rejoin attempt often follows; a drop "
      "that lasts a day becomes the new normal."),
+    ("unserved", "Polls acknowledged, nothing delivered / delivering again",
+     "A sleepy end device polls its parent, the parent's radio acknowledges with data pending, and no "
+     "frame follows, ten polls in a row over at least a minute, after its polls used to be served. The "
+     "radio answers from its own table before the poll reaches the parent's stack, and the stack is "
+     "dropping it: the child is two or more key generations behind (a key_lag row says so), it advertised "
+     "a frame counter above the ones it sends with (a frame_counter_mismatch row says so), or the parent's "
+     "stack has hung behind a live radio. The device looks alive here and Home Assistant loses it. Logged "
+     "at notice when it starts, warning if still going ten minutes later ([polls] confirm_s)."),
     ("starved", "Polls unanswered / answered again",
      "A sleepy end device keeps polling its parent and nothing acknowledges it, after its polls "
      "used to be answered (credentials needed: polls carry a short address). Its parent died or "

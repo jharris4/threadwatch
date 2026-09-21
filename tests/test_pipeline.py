@@ -4861,3 +4861,248 @@ class RadiosTest(unittest.TestCase):
             if i % 30 == 0:
                 self.pipe.periodic(t0 + 400 + i)
         self.assertEqual([r["event"] for r in self.pipe.events.records if r["event"] == "rssi_degradation"], [])
+
+
+def pending_ack(ts, seq):
+    """An ACK with Frame Pending set: the parent's radio promising a frame."""
+    return Frame(ts=ts, raw=b"", psdu=b"", rssi=-40.0, channel=None, lqi=None, ftype=2, seq=seq, pending=True)
+
+
+def mle_frame(ts, src_ext, sequence, body, mle_counter=None, mac_counter=None):
+    """A MAC-secured frame from ``src_ext`` carrying a secured MLE message
+    with the given body (command byte plus TLVs) under one key generation.
+    The counters default to the next for the source; a test that wants the
+    message to advertise something other than the truth sets them."""
+    import struct
+
+    from cryptography.hazmat.primitives.ciphers.aead import AESCCM
+
+    from tests.frames import KEY, next_counter, secured_psdu
+    from tests.test_identity import ALL_NODES, LINK_LOCAL, lowpan_udp
+    from threadwatch.crypto import derive_keys
+    from threadwatch.pcap import parse_frame
+    mac_counter = next_counter(src_ext) if mac_counter is None else mac_counter
+    mle_counter = mac_counter if mle_counter is None else mle_counter
+    src_ip = LINK_LOCAL + Decryptor._iid_from_ext(src_ext)
+    aux = bytes([5 | (2 << 3)]) + struct.pack("<L", mle_counter) + struct.pack(">L", sequence) \
+        + bytes([(sequence & 0x7f) + 1])
+    mle_key, _mac = derive_keys(KEY, sequence)
+    nonce = bytes.fromhex(src_ext) + struct.pack(">L", mle_counter) + bytes([5])
+    msg = bytes([0]) + aux + AESCCM(mle_key, tag_length=4).encrypt(nonce, body, src_ip + ALL_NODES + aux)
+    psdu = secured_psdu(src_ext, mac_counter, dst="ffff", seq=int(ts) & 0xFF,
+                        payload=lowpan_udp(19788, 19788, msg), sequence=sequence)
+    return parse_frame(ts, psdu, 230)
+
+
+def child_id_request(link_counter, mle_counter):
+    """An MLE Child ID Request body advertising the two frame counters."""
+    import struct
+    return (bytes([11]) + bytes([5, 4]) + struct.pack(">L", link_counter)
+            + bytes([8, 4]) + struct.pack(">L", mle_counter))
+
+
+class PollUnservedTest(unittest.TestCase):
+    """poll_unserved / poll_served: polls the parent's radio acknowledges
+    with Frame Pending and the parent's stack never follows up on
+    (docs/ALERTING.md). The child is Porch Sensor; its parent is Hall
+    Router, whose data frames to the child are the deliveries."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        (d / "devices.json").write_text(json.dumps([{"name": "Porch Sensor", "extendedAddress": SENSOR},
+                                                    {"name": "Hall Router", "extendedAddress": ROUTER}]))
+        self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    @staticmethod
+    def _events(pipe, name):
+        return [r for r in pipe.events.records if r["event"] == name]
+
+    def _served_polls(self, pipe, t, n, seq0=0):
+        """n polls, each acknowledged with data pending and then served."""
+        for i in range(n):
+            seq = (seq0 + i) & 0xFF
+            pipe.ingest(poll(t + 5 * i, SENSOR, seq))
+            pipe.ingest(pending_ack(t + 5 * i + 0.001, seq))
+            pipe.ingest(frame(t + 5 * i + 0.02, ROUTER, dst=SENSOR))
+        return t + 5 * n
+
+    def _unserved_polls(self, pipe, t, n, seq0=100, gap=10.0):
+        """n polls acknowledged with data pending and nothing after."""
+        for i in range(n):
+            seq = (seq0 + i) & 0xFF
+            pipe.ingest(poll(t + gap * i, SENSOR, seq))
+            pipe.ingest(pending_ack(t + gap * i + 0.001, seq))
+        return t + gap * n
+
+    def test_served_polls_and_plain_acknowledgements_report_nothing(self):
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t = self._served_polls(pipe, 1_700_000_000.0, 20)
+        for i in range(20):                              # nothing pending: nothing owed
+            pipe.ingest(poll(t + 5 * i, SENSOR, 50 + i))
+            pipe.ingest(ack(t + 5 * i + 0.001, 50 + i))
+        self.assertEqual(self._events(pipe, "poll_unserved"), [])
+        stats = pipe.devices[SENSOR]
+        self.assertEqual((stats.served_polls, stats.unserved_polls, stats.unserved), (20, 0, False))
+        self.assertTrue(pipe.seen.table[SENSOR]["polls_served"])
+
+    def test_pending_acknowledgements_nothing_follows_is_logged_then_paged_then_closed(self):
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t0 = 1_700_000_000.0
+        t = self._served_polls(pipe, t0, 5)
+        t = self._unserved_polls(pipe, t, 12)            # each judged by the next: 11 unserved by the 12th
+        evs = self._events(pipe, "poll_unserved")
+        self.assertEqual(len(evs), 1)
+        ev = evs[0]
+        self.assertEqual((ev["severity"], ev["confirmed"], ev["name"], ev["served_polls"], ev["unserved_polls"],
+                          ev["parent_rloc16"], ev["episode"], ev["reception"]),
+                         ("notice", False, "Porch Sensor", 5, 10, "0000", 1, "good"))
+        self.assertEqual(ev["since"], t0 + 25 + 0.001)   # the first pending ACK nothing followed
+        self.assertIn("acknowledged 10 polls over 100 s with data pending", ev["note"])
+        self.assertIn("frame_counter_mismatch", ev["note"])
+        row = pipe.seen.table[SENSOR]
+        self.assertTrue(row["unserved"])
+        self.assertEqual(row["unserved_confirm_at"], ev["ts"] + self.cfg.poll_confirm_s)
+        # Still going past the mark: the page, on a poll acknowledged after it.
+        t = self._unserved_polls(pipe, t, 70, seq0=120)
+        evs = self._events(pipe, "poll_unserved")
+        self.assertEqual(len(evs), 2)
+        self.assertEqual((evs[1]["severity"], evs[1]["confirmed"], evs[1]["since"]), ("warning", True, ev["since"]))
+        self.assertGreaterEqual(evs[1]["unserved_for_s"], self.cfg.poll_confirm_s)
+        self.assertNotIn("unserved_confirm_at", row)
+        # The parent delivers: closed, and the close time is kept.
+        pipe.ingest(poll(t, SENSOR, 200))
+        pipe.ingest(pending_ack(t + 0.001, 200))
+        pipe.ingest(frame(t + 0.02, ROUTER, dst=SENSOR))
+        served = self._events(pipe, "poll_served")
+        self.assertEqual(len(served), 1)
+        self.assertEqual(served[0]["name"], "Porch Sensor")
+        self.assertNotIn("unserved", row)
+        self.assertEqual(row["unserved_closed"], t + 0.02)
+        self.assertEqual(len(self._events(pipe, "poll_unserved")), 2)
+        # A delivery to the child's short address counts too.
+        pipe.ingest(short_frame(t + 1, "0401", SENSOR))
+        pipe.ingest(poll(t + 2, SENSOR, 201, dst="0400"))
+        pipe.ingest(pending_ack(t + 2.001, 201))
+        pipe.ingest(frame(t + 2.02, ROUTER, dst="0401"))
+        self.assertEqual(pipe.devices[SENSOR].served_polls, 7)
+
+    def test_a_restart_keeps_the_open_episode_and_the_first_delivery_closes_it(self):
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t = self._served_polls(pipe, 1_700_000_000.0, 5)
+        t = self._unserved_polls(pipe, t, 12)
+        self.assertEqual(len(self._events(pipe, "poll_unserved")), 1)
+        pipe.seen.save()
+        pipe2 = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        self.assertTrue(pipe2.devices[SENSOR].unserved)
+        t = self._unserved_polls(pipe2, t, 12, seq0=150)       # not announced again
+        self.assertEqual(self._events(pipe2, "poll_unserved"), [])
+        pipe2.ingest(poll(t, SENSOR, 200))
+        pipe2.ingest(pending_ack(t + 0.001, 200))
+        pipe2.ingest(frame(t + 0.02, ROUTER, dst=SENSOR))
+        self.assertEqual(len(self._events(pipe2, "poll_served")), 1)
+        self.assertIn("before it was confirmed", self._events(pipe2, "poll_served")[0]["note"])
+
+    def test_a_child_never_served_before_is_not_reported(self):
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        self._unserved_polls(pipe, 1_700_000_000.0, 30)
+        self.assertEqual(self._events(pipe, "poll_unserved"), [])
+
+    def test_the_ha_cause_reads_the_open_episode(self):
+        from threadwatch.hacause import classify
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t = self._served_polls(pipe, 1_700_000_000.0, 5)
+        t = self._unserved_polls(pipe, t, 12)
+        cause, sentence = classify(pipe.seen.table[SENSOR], None, t - 900, t)
+        self.assertEqual(cause, "dropped_polls")
+        self.assertIn("poll_unserved", sentence)
+
+
+class FrameCounterMismatchTest(unittest.TestCase):
+    """frame_counter_mismatch: a device's accepted frames run below the
+    counter it advertised for them (docs/ALERTING.md)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        (d / "devices.json").write_text(json.dumps([{"name": "Porch Sensor", "extendedAddress": SENSOR}]))
+        self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    @staticmethod
+    def _events(pipe, name):
+        return [r for r in pipe.events.records if r["event"] == name]
+
+    def test_polls_below_the_advertised_link_counter_are_reported_once_an_hour(self):
+        from tests.frames import next_counter
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t0 = 1_700_000_000.0
+        pipe.ingest(frame(t0, SENSOR))                                    # known before it attaches
+        c0 = next_counter(SENSOR)
+        pipe.ingest(mle_frame(t0 + 1, SENSOR, 0, child_id_request(1_280_176_180, 1029),
+                              mac_counter=c0, mle_counter=1029))
+        row = pipe.seen.table[SENSOR]
+        self.assertEqual(row["adv_mac"], [1_280_176_180, 0, t0 + 1, "Child ID Request"])
+        self.assertEqual(row["adv_mle"], [1029, 0, t0 + 1, "Child ID Request"])
+        for i in range(2):                                                # two below: queued frames, maybe
+            pipe.ingest(poll(t0 + 2 + i, SENSOR, i, counter=c0 + 1 + i))
+        self.assertEqual(self._events(pipe, "frame_counter_mismatch"), [])
+        pipe.ingest(poll(t0 + 4, SENSOR, 2, counter=c0 + 3))
+        evs = self._events(pipe, "frame_counter_mismatch")
+        self.assertEqual(len(evs), 1)
+        ev = evs[0]
+        self.assertEqual((ev["severity"], ev["name"], ev["layer"], ev["key_sequence"], ev["advertised"],
+                          ev["advertised_in"], ev["advertised_ts"], ev["counter"], ev["lowest"],
+                          ev["shortfall"], ev["frames_below"]),
+                         ("warning", "Porch Sensor", "mac", 0, 1_280_176_180, "Child ID Request", t0 + 1,
+                          c0 + 3, c0 + 1, 1_280_176_180 - c0 - 3, 3))
+        self.assertIn("openthread/openthread#13599", ev["note"])
+        self.assertEqual(row["counter_mismatch_ts"], t0 + 4)
+        for i in range(20):                                               # it goes on: said again after an hour
+            pipe.ingest(poll(t0 + 10 + 300 * i, SENSOR, 10 + i, counter=c0 + 10 + i))
+        evs = self._events(pipe, "frame_counter_mismatch")
+        self.assertEqual(len(evs), 2)                                     # once, then the hour mark
+        self.assertEqual((evs[1]["frames_below"], evs[1]["ts"]), (16, t0 + 10 + 300 * 12))
+        # Advertised again, this time truthfully: the floor moves, nothing more.
+        c1 = c0 + 100
+        pipe.ingest(mle_frame(t0 + 7000, SENSOR, 0, child_id_request(c1 + 1, 1030), mac_counter=c1, mle_counter=1030))
+        for i in range(5):
+            pipe.ingest(poll(t0 + 7001 + i, SENSOR, 40 + i, counter=c1 + 1 + i))
+        self.assertEqual(len(self._events(pipe, "frame_counter_mismatch")), 2)
+        from threadwatch.hacause import classify
+        self.assertEqual(classify(row, None, t0 + 7000, t0 + 7010)[0], "counter_mismatch")
+        self.assertNotEqual(classify(row, None, t0 + 20000, t0 + 20010)[0], "counter_mismatch")
+
+    def test_mle_messages_below_the_advertised_mle_counter_are_reported(self):
+        from tests.frames import next_counter
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t0 = 1_700_000_000.0
+        pipe.ingest(frame(t0, SENSOR))
+        pipe.ingest(mle_frame(t0 + 1, SENSOR, 0, child_id_request(next_counter(SENSOR) + 1, 5000), mle_counter=100))
+        for i in range(3):
+            pipe.ingest(mle_frame(t0 + 2 + i, SENSOR, 0, bytes([13]), mle_counter=101 + i))   # Child Update Requests
+        evs = self._events(pipe, "frame_counter_mismatch")
+        self.assertEqual([(e["layer"], e["advertised"], e["counter"], e["frames_below"]) for e in evs],
+                         [("mle", 5000, 103, 3)])
+
+    def test_the_floor_survives_a_restart_and_a_new_generation_is_judged_apart(self):
+        from tests.frames import next_counter
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t0 = 1_700_000_000.0
+        pipe.ingest(frame(t0, SENSOR))
+        c0 = next_counter(SENSOR)
+        pipe.ingest(mle_frame(t0 + 1, SENSOR, 0, child_id_request(1_000_000_000, 7), mac_counter=c0, mle_counter=7))
+        pipe.seen.save()
+        pipe2 = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        self.assertEqual(pipe2._advertised[SENSOR]["mac"]["value"], 1_000_000_000)
+        for i in range(3):                                               # under generation 1: another floor
+            pipe2.ingest(poll(t0 + 2 + i, SENSOR, i, counter=c0 + 1 + i, sequence=1))
+        self.assertEqual(self._events(pipe2, "frame_counter_mismatch"), [])
+        for i in range(3):
+            pipe2.ingest(poll(t0 + 10 + i, SENSOR, 10 + i, counter=c0 + 10 + i))
+        self.assertEqual(len(self._events(pipe2, "frame_counter_mismatch")), 1)

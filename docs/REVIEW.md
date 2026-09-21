@@ -133,6 +133,7 @@ The raw log is the wrong unit for people, so the pages group it:
 | `mle_rejoin_attempt` x N, same device | one row listing the MLE commands seen |
 | `device_first_seen` burst (daemon start) | one row: *24 devices first seen* |
 | `poll_starvation` ... `poll_answered` | one row: *X polls unanswered for 12m* (or *still unanswered*) |
+| `poll_unserved` ... `poll_served` | one row: *X polls acknowledged, nothing delivered for 12m* (or *still undelivered*) |
 | `rssi_degradation` ... `rssi_recovered` | one row: *X signal down 9 dB for 2h10m* (or *still down*) |
 | `key_lag` ... `key_lag_cleared` | one row: *X 2 key generations behind Y for 40m* (or *still behind*) |
 | `ha_unavailable` ... `ha_available` | one row: *X unavailable in Home Assistant for 25m* (or *still unavailable*), with the cause |

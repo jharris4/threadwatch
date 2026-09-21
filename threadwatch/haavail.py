@@ -274,6 +274,7 @@ class Tracker:
                   "rssi_dbm": row.get("rssi") if row else None,
                   "reception": reception(row.get("rssi"), self.cfg.quiet_min_rssi_dbm) if row else "unknown",
                   "starved": bool(row.get("starved")) if row else False,
+                  "unserved": bool(row.get("unserved")) if row else False,
                   "role": live.get("role") if live else None,
                   "parent": (self.names.name(parent) or parent) if parent else None,
                   "generation": generation, "parent_generation": parent_generation,

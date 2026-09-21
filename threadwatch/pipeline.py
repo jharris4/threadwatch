@@ -82,7 +82,9 @@ class DeviceStats:
     __slots__ = ("rssi_ewma", "rssi_min", "rssi_max", "polls", "last_poll_ts",
                  "poll_intervals", "tx", "acked", "ack_pending_seq",
                  "ack_pending_ts", "beacons", "poll_pending_seq", "poll_pending_ts",
-                 "acked_polls", "unanswered_polls", "unanswered_since", "starved", "confirm_at")
+                 "acked_polls", "unanswered_polls", "unanswered_since", "starved", "confirm_at",
+                 "served_wait_seq", "served_wait_ts", "served_wait_keys", "served_polls",
+                 "unserved_polls", "unserved_since", "unserved", "unserved_confirm_at")
 
     def __init__(self):
         self.rssi_ewma = None
@@ -103,6 +105,16 @@ class DeviceStats:
         self.unanswered_since = None
         self.starved = False
         self.confirm_at = None            # when a logged starvation becomes a page, if still unanswered
+        # A poll the parent's radio acknowledged with Frame Pending set,
+        # whose frame the parent's stack has not yet sent (_delivery_expected).
+        self.served_wait_seq = None
+        self.served_wait_ts = None
+        self.served_wait_keys = ()        # the child's addresses registered in _awaiting_delivery
+        self.served_polls = 0             # pending acknowledgements a frame did follow
+        self.unserved_polls = 0           # ...and, since the last one, those nothing followed
+        self.unserved_since = None
+        self.unserved = False             # announced (poll_unserved), not yet closed
+        self.unserved_confirm_at = None
 
     def as_dict(self):
         ivals = sorted(self.poll_intervals)
@@ -115,6 +127,8 @@ class DeviceStats:
             "median_poll_interval_s": round(ivals[len(ivals) // 2], 1) if ivals else None,
             "acked_polls": self.acked_polls, "unanswered_polls": self.unanswered_polls,
             "starved": self.starved,
+            "served_polls": self.served_polls, "unserved_polls": self.unserved_polls,
+            "unserved": self.unserved,
             "beacons": self.beacons,
         }
 
@@ -364,6 +378,23 @@ class Pipeline:
                     gens.setdefault(_whole(prev[2]), (prev[0], _seconds(prev[1])))
                 if gens:
                     table[addr] = gens
+        # What each device last advertised its counters to be, per layer
+        # (_note_advertised), seeded from the rows so the floor a parent
+        # holds survives a restart.
+        self._advertised: dict[str, dict[str, dict]] = {}
+        for addr, row in self.seen.table.items():
+            for layer in ("mac", "mle"):
+                adv = row.get(f"adv_{layer}")
+                if (isinstance(adv, list) and len(adv) == 4 and _whole(adv[0]) is not None
+                        and _whole(adv[1]) is not None):
+                    self._advertised.setdefault(addr, {})[layer] = {
+                        "value": adv[0], "sequence": adv[1], "ts": _seconds(adv[2]), "command": str(adv[3]),
+                        "below": 0, "lowest": None, "said_ts": None}
+        # A child's addresses (extended, and the short one it polled with)
+        # while its parent owes it a frame: a data frame to either is the
+        # delivery (_delivered).
+        self._awaiting_delivery: dict[str, str] = {}
+        self._last_mac_counter: int | None = None
         self._auth_addresses = set(self._mac_counter) | set(self._mle_counter)
         if len(self._auth_addresses) > self.AUTH_MAX:
             raise ValueError("saved authentication history exceeds AUTH_MAX; increase the cap before restarting")
@@ -452,6 +483,12 @@ class Pipeline:
                     stats = self.devices.setdefault(addr, DeviceStats())
                     stats.starved = True
                     stats.confirm_at = row.get("starve_confirm_at")
+                if row.get("unserved"):
+                    # The same for polls acknowledged and not served: the
+                    # first delivered frame closes it.
+                    stats = self.devices.setdefault(addr, DeviceStats())
+                    stats.unserved = True
+                    stats.unserved_confirm_at = row.get("unserved_confirm_at")
             last_alive = self._last_frame_heard()
             if last_alive is not None:
                 # A span an earlier start recorded from this same last frame
@@ -990,8 +1027,10 @@ class Pipeline:
     # discard the flag, and page the same unbroken silence a second time.
     ROW_STAMPS = ("first_seen", "last_seen", "rloc16_ts", "rssi_heard_ts", "rssi_ref_ts",
                   "starve_confirm_at", "resumed_ts", "vouched_ts", "rejoin_ts",
-                  "keylag_since", "keylag_confirm_at", "keylag_closed")
-    STATS_STAMPS = ("last_poll_ts", "ack_pending_ts", "poll_pending_ts", "unanswered_since", "confirm_at")
+                  "keylag_since", "keylag_confirm_at", "keylag_closed",
+                  "unserved_confirm_at", "counter_mismatch_ts")
+    STATS_STAMPS = ("last_poll_ts", "ack_pending_ts", "poll_pending_ts", "unanswered_since", "confirm_at",
+                    "served_wait_ts", "unserved_since", "unserved_confirm_at")
 
     def _rewind(self, now: float, back: float, since_check: float) -> None:
         """Move every stamp taken before a backward step of ``back`` seconds
@@ -1272,11 +1311,13 @@ class Pipeline:
         inside one may (ingest asks _deep_inspect)."""
         self._counter_was_retry = False      # cleared here too: _verify has early returns
         self._last_mac_sequence = None
+        self._last_mac_counter = None
         if not who or not f.psdu:
             return None, False
         plain, counter, sequence = self.decryptor.decrypt_frame_counter(f.psdu, who, None)
         if counter is None:
             return plain, False
+        self._last_mac_counter = counter
         live = self._counter_advances(self._mac_counter, who, counter, f.ts, "frame", sequence)
         self._key_observations.append(("mac", sequence, f.ts, live,
                                        self._counter_was_retry, self._counter_rejection_reason))
@@ -1592,17 +1633,26 @@ class Pipeline:
                 stats.ack_pending_seq = None
                 if stats.poll_pending_seq == f.seq:
                     self._poll_answered(self._last_who or prev.src, stats, ts)
+                    if f.pending:
+                        self._delivery_expected(self._last_who or prev.src, stats, prev.src, f.seq, ts)
             # The radio that answered is the frame's destination: alive at
             # this moment, whether or not the recorder hears its own frames.
             if prev.dst not in (None, "ffff"):
                 self._vouch(prev.dst, ts, "ack")
         self._last_who = who
+        if f.ftype == 1 and f.dst and self._awaiting_delivery:
+            # A data frame to a child whose parent owes it one: served.
+            child = self._awaiting_delivery.get(f.dst)
+            if child is not None:
+                self._delivered(child, ts)
 
         # Only a frame that vouches for its sender (_verify) feeds the row
         # and the stats below: the sender's liveness, signal and polls are
         # its own, not those of whatever put its address on the air.
         plain, live = self._verify(f, who)
         retry = self._counter_was_retry
+        if who and live and self._last_mac_counter is not None:
+            self._check_advertised(who, "mac", self._last_mac_sequence, self._last_mac_counter, ts)
         info, src_for_mle, names = (self._deep_inspect(f, plain) if f.ftype == 1 and plain is not None
                                     else (None, None, ()))
         # A secured MLE message vouches for the sender of the unsecured
@@ -1619,6 +1669,8 @@ class Pipeline:
                                            self._counter_was_retry, self._counter_rejection_reason))
             retry = retry or self._counter_was_retry
             live = live or fresh_mle
+            if fresh_mle:
+                self._check_advertised(who, "mle", info.key_sequence, info.counter, ts)
         if info is not None and info.secured and fresh_mle:
             self._apply_mle(f, info, src_for_mle)
         if who and live and who not in self.seen.table and not self._admit(who, ts):
@@ -1883,6 +1935,10 @@ class Pipeline:
         and this is not a MAC retry of it (same seq), that one went
         unanswered; enough of those in a row, from a device whose polls
         used to be answered, is starvation."""
+        if stats.served_wait_ts is not None and seq != stats.served_wait_seq:
+            # The last poll was acknowledged with data pending, and here is
+            # the next distinct poll with no frame in between.
+            self._poll_unserved(who, stats, ts, dst)
         if (stats.poll_pending_seq is not None and seq != stats.poll_pending_seq
                 and not 0.0 <= ts - stats.poll_pending_ts <= self.quiet_threshold_s(who)):
             # The pending poll is from the far side of a silence (the
@@ -2056,6 +2112,235 @@ class Pipeline:
                        note="its polls are acknowledged again"
                        + (" (before the starvation was confirmed: it was logged, not paged)"
                           if unconfirmed else ""))
+
+    # ------------------------------ polls acknowledged, nothing delivered
+    #
+    # The failure the starvation detector cannot see. A parent's radio
+    # answers a poll from its source-match table, before the poll reaches
+    # the parent's stack: the ACK, Frame Pending set, promises a frame the
+    # stack then has to send. When the stack drops the poll instead (a
+    # child two or more key generations behind, 2026-09-13; a child that
+    # advertised a link frame counter above the ones it polls with,
+    # openthread/openthread#13599; a stack that has hung behind a live
+    # radio), the child is acknowledged every time and served never, looks
+    # alive here, and Home Assistant loses it. Over the hour before the
+    # 09-13 rotation no child had more than two pending acknowledgements
+    # in a row without a frame; the three stranded children had 1,700 each
+    # in the hour after it.
+
+    def _delivery_expected(self, who: str, stats: DeviceStats, poll_src: str | None,
+                           seq: int | None, ts: float) -> None:
+        """The parent's radio acknowledged the poll with Frame Pending set:
+        a frame is owed. Remembered until one arrives, or until the child's
+        next distinct poll says none did."""
+        self._clear_wait(who, stats)
+        stats.served_wait_seq, stats.served_wait_ts = seq, ts
+        row = self.seen.table.get(who)
+        short = row.get("rloc16") if row else None
+        stats.served_wait_keys = tuple(k for k in dict.fromkeys((who, poll_src, short)) if k)
+        for key in stats.served_wait_keys:
+            self._awaiting_delivery[key] = who
+
+    def _clear_wait(self, who: str, stats: DeviceStats) -> None:
+        for key in stats.served_wait_keys:
+            if self._awaiting_delivery.get(key) == who:
+                del self._awaiting_delivery[key]
+        stats.served_wait_seq = stats.served_wait_ts = None
+        stats.served_wait_keys = ()
+
+    def _delivered(self, who: str, ts: float) -> None:
+        """A frame reached the child while its parent owed it one."""
+        stats = self.devices.get(who)
+        if stats is None or stats.served_wait_ts is None:
+            return
+        self._clear_wait(who, stats)
+        stats.served_polls += 1
+        stats.unserved_polls, stats.unserved_since = 0, None
+        row = self.seen.table.get(who)
+        announced = stats.unserved or (row is not None and bool(row.get("unserved")))
+        unconfirmed = stats.unserved_confirm_at is not None or bool(row and row.get("unserved_confirm_at"))
+        stats.unserved = False
+        stats.unserved_confirm_at = None
+        if row is not None:
+            for key in ("unserved", "unserved_confirm_at", "unserved_since"):
+                if row.pop(key, None) is not None:
+                    self.seen._dirty = True
+            if announced:
+                row["unserved_closed"] = ts
+                self.seen._dirty = True
+            if not row.get("polls_served"):
+                row["polls_served"] = True
+                self.seen._dirty = True
+        if announced:
+            self._emit("poll_served", "notice", ts, addr=who, name=self.names.name(who),
+                       note="its parent delivers again after acknowledging its polls with data pending"
+                       + (" (before it was confirmed: it was logged, not paged)" if unconfirmed else ""))
+
+    def _poll_unserved(self, who: str, stats: DeviceStats, ts: float, dst: str | None) -> None:
+        """The child polled again with the last pending acknowledgement
+        still owed a frame: that poll was acknowledged and never served.
+        Enough of those in a row, from a child whose parent used to follow
+        through, is a parent whose stack drops what its radio accepts."""
+        waited = stats.served_wait_ts
+        self._clear_wait(who, stats)
+        if not 0.0 <= ts - waited <= self.quiet_threshold_s(who):
+            # From the far side of a silence: it says nothing about now
+            # (_poll_sent applies the same rule to an unanswered poll).
+            stats.unserved_polls, stats.unserved_since = 0, None
+            return
+        stats.unserved_polls += 1
+        if stats.unserved_since is None:
+            stats.unserved_since = waited
+        row = self.seen.table.get(who)
+        served_before = stats.served_polls > 0 or bool(row and row.get("polls_served"))
+        if stats.unserved and stats.unserved_confirm_at is not None and waited >= stats.unserved_confirm_at:
+            self._confirm_unserved(who, stats, row, ts, dst)
+            return
+        if (stats.unserved or not served_before or stats.unserved_polls < STARVED_POLLS
+                or ts - stats.unserved_since < STARVED_MIN_S):
+            return
+        stats.unserved = True
+        if row is not None:
+            row["unserved"] = True
+            row["unserved_since"] = stats.unserved_since
+            self.seen._dirty = True
+        span = round(ts - stats.unserved_since)
+        history = (f"after {stats.served_polls} served polls" if stats.served_polls
+                   else "after served polls before the recorder's last restart")
+        parent, parent_addr, whom = self._parent_of(dst)
+        note = (f"{whom} acknowledged {stats.unserved_polls} polls over {span} s with data pending and sent "
+                f"nothing after any of them, {history}: the parent's radio accepts the polls and its stack "
+                "drops them. A child two or more key generations behind its parent looks like this (key_lag "
+                "says so), so does a child that advertised a frame counter above the ones it sends with "
+                "(frame_counter_mismatch), and so does a parent whose stack has hung while its radio still "
+                "answers. Home Assistant loses the device while it still looks alive here. (If the sniffer "
+                "simply cannot hear the parent, the frames are missing here, not on air.)")
+        rssi = row.get("rssi") if row else stats.rssi_ewma
+        marginal = reception(rssi, self.cfg.quiet_min_rssi_dbm) == "marginal"
+        closed = row.get("unserved_closed") if row else None
+        gap = stats.unserved_since - closed if closed is not None else None
+        flapping = gap is not None and self.cfg.poll_rearm_s > 0 and gap < self.cfg.poll_rearm_s
+        episode = ((row.get("unserved_episodes") or 0) + 1) if flapping else 1
+        if row is not None and row.get("unserved_episodes") != episode:
+            row["unserved_episodes"] = episode
+            self.seen._dirty = True
+        if marginal:
+            note += (f" The sniffer hears this device at {rssi:.0f} dBm, the edge of its range, so the "
+                     "parent's frames are more likely out of earshot here than missing on air: logged, not paged.")
+        if flapping:
+            note += (f" Episode {episode} since the last page, {gap / 60:.0f} min after the previous one ended "
+                     "with a delivered frame: a parent the sniffer only sometimes hears; logged, not paged, "
+                     f"until its polls have stayed served for {self.cfg.poll_rearm_s / 60:.0f} min.")
+        hold = 0.0 if (marginal or flapping) else self.cfg.poll_confirm_s
+        extra = {}
+        if hold > 0:
+            stats.unserved_confirm_at = ts + hold
+            if row is not None:
+                row["unserved_confirm_at"] = stats.unserved_confirm_at
+                self.seen._dirty = True
+            extra["confirmed"] = False
+            note += f" Logged now; paged if its polls are still unserved in {hold / 60:.0f} min."
+        self._emit("poll_unserved", "notice" if (marginal or flapping or hold > 0) else "warning", ts,
+                   addr=who, name=self.names.name(who),
+                   unserved_polls=stats.unserved_polls, since=stats.unserved_since, unserved_for_s=span,
+                   served_polls=stats.served_polls, rssi_dbm=rssi,
+                   reception="marginal" if marginal else "good", episode=episode,
+                   since_previous_s=round(gap) if gap is not None else None,
+                   parent_rloc16=dst if dst and len(dst) == 4 else None, parent_addr=parent_addr,
+                   parent=parent, note=note, **extra)
+
+    def _confirm_unserved(self, who: str, stats: DeviceStats, row: dict | None,
+                          ts: float, dst: str | None) -> None:
+        """The page behind [polls] confirm_s: the episode logged at notice is
+        still open and another acknowledged poll has just gone unserved."""
+        held = ts - (stats.unserved_confirm_at - self.cfg.poll_confirm_s)
+        stats.unserved_confirm_at = None
+        since = (row.get("unserved_since") if row else None) or stats.unserved_since or ts
+        if row is not None:
+            row.pop("unserved_confirm_at", None)
+            self.seen._dirty = True
+        parent, parent_addr, whom = self._parent_of(dst)
+        rssi = row.get("rssi") if row else stats.rssi_ewma
+        note = (f"{whom} is still acknowledging its polls with data pending and sending nothing "
+                f"{held / 60:.0f} min after this was logged ({round(ts - since)} s in all): the parent's stack "
+                "is dropping polls its radio accepts. A key_lag or frame_counter_mismatch record for this "
+                "device names the cause when the recorder can see it; otherwise the parent's stack has hung "
+                "behind a live radio, or the sniffer cannot hear the parent's frames.")
+        unheard = self._unheard_radio(row) if row else None
+        if unheard:
+            note += (f" The only radio that heard this device lately ({unheard}) is down, so the "
+                     "parent's frames may be missing here and not on air: logged, not paged.")
+        self._emit(
+            "poll_unserved", "notice" if unheard else "warning", ts, addr=who, name=self.names.name(who),
+            unserved_polls=stats.unserved_polls, since=since, unserved_for_s=round(ts - since),
+            served_polls=stats.served_polls, rssi_dbm=rssi,
+            reception="unheard" if unheard else reception(rssi, self.cfg.quiet_min_rssi_dbm),
+            radio_down=unheard, episode=(row.get("unserved_episodes") if row else None) or 1,
+            since_previous_s=None, confirmed=True,
+            parent_rloc16=dst if dst and len(dst) == 4 else None, parent_addr=parent_addr,
+            parent=parent, note=note)
+
+    # ------------------------------------------------ advertised counters
+    #
+    # An attaching child, a router establishing a link and a child
+    # updating its parent each advertise their frame counters (Link Layer
+    # Frame Counter and MLE Frame Counter TLVs); the receiver takes them as
+    # the floor below which the sender's later frames are replays and
+    # drops them. The stack writes the advertisement and the radio driver
+    # the counters on the frames, and a device whose two have parted
+    # (openthread/openthread#13599: a Child ID Request advertising
+    # 1,280,176,180, then polls at 4,708) is refused by every parent until
+    # it reboots. Only the sniffer sees both numbers side by side.
+
+    # Accepted frames below the advertisement before it is said: one or
+    # two can be frames the device had queued when it advertised.
+    COUNTER_BELOW_FRAMES = 3
+
+    def _note_advertised(self, who: str, layer: str, sequence: int | None, value: int,
+                         command: str, ts: float) -> None:
+        if sequence is None:
+            return
+        self._advertised.setdefault(who, {})[layer] = {
+            "value": value, "sequence": sequence, "ts": ts, "command": command,
+            "below": 0, "lowest": None, "said_ts": None}
+        row = self.seen.table.get(who)
+        if row is not None:
+            row[f"adv_{layer}"] = [value, sequence, ts, command]
+            self.seen._dirty = True
+
+    def _check_advertised(self, who: str, layer: str, sequence: int | None, counter: int, ts: float) -> None:
+        """An accepted frame from the device: is its counter below what the
+        device last advertised under the same key generation?"""
+        adv = self._advertised.get(who, {}).get(layer)
+        if adv is None or sequence is None or adv["sequence"] != sequence or counter >= adv["value"]:
+            return
+        adv["below"] += 1
+        adv["lowest"] = counter if adv["lowest"] is None else min(adv["lowest"], counter)
+        if adv["below"] < self.COUNTER_BELOW_FRAMES:
+            return
+        if adv["said_ts"] is not None and ts - adv["said_ts"] < 3600.0:
+            return
+        adv["said_ts"] = ts
+        row = self.seen.table.get(who)
+        if row is not None:
+            row["counter_mismatch_ts"] = ts
+            self.seen._dirty = True
+        what = "link-layer" if layer == "mac" else "MLE"
+        when = time.strftime("%H:%M:%S", time.localtime(adv["ts"]))
+        shortfall = adv["value"] - counter
+        note = (f"advertised a {what} frame counter of {adv['value']} in its {adv['command']} at {when} under "
+                f"key generation {sequence}, then sent {adv['below']} secured {what} frames with counters "
+                f"below it (this one {counter}, {shortfall} below): a parent or neighbour that took the "
+                "advertisement as the device's replay floor rejects every one of these frames as stale, so "
+                "its polls are acknowledged by the radio and dropped by the stack, and nothing it sends gets "
+                "through until it reboots. The advertisement comes from the device's stack and the counters "
+                "from its radio driver, so the two have lost sync inside the device: a device-side defect "
+                "(openthread/openthread#13599 describes one on an IKEA sensor). Said at most once an hour "
+                "while it goes on.")
+        self._emit("frame_counter_mismatch", "warning", ts, addr=who, name=self.names.name(who),
+                   layer=layer, key_sequence=sequence, advertised=adv["value"], advertised_ts=adv["ts"],
+                   advertised_in=adv["command"], counter=counter, lowest=adv["lowest"],
+                   shortfall=shortfall, frames_below=adv["below"], note=note)
 
     def leader_device(self, router_id: int | None = None) -> dict:
         """Which device holds a router id (the leader's, by default), as far
@@ -2287,6 +2572,10 @@ class Pipeline:
             for addr in (src_for_mle, peer):
                 if addr and (addr in self._journal_exchanges or len(self._journal_exchanges) < 1024):
                     self._journal_exchanges.setdefault(addr, deque(maxlen=8)).append(exchange)
+        if src_for_mle and src_for_mle in self.seen.table:
+            for layer, value in (("mac", info.link_frame_counter), ("mle", info.mle_frame_counter)):
+                if value is not None:
+                    self._note_advertised(src_for_mle, layer, info.key_sequence, value, info.command_name, f.ts)
         if info.source_addr16 is not None and src_for_mle:
             short = f"{info.source_addr16:04x}"
             self._note_rloc16(src_for_mle, short, f.ts)

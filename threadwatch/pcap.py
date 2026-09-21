@@ -53,6 +53,12 @@ class Frame:
     src_pan: int | None = None
     src: str | None = None
     cmd: int | None = None        # MAC command id, unsecured command frames only
+    # The Frame Pending bit. On the ACK a parent's radio returns for a
+    # poll it says "I have a frame queued for you": the child then waits
+    # for it. The radio sets it from its source-match table before the
+    # poll ever reaches the parent's stack, so a poll the stack goes on
+    # to drop is acknowledged with it just the same.
+    pending: bool = False
     # Which radio heard this copy (a [record] radios label; None for a
     # single, unnamed dongle), and, on a frame the merger built from what
     # several radios heard, every radio's own copy by label, each with its
@@ -420,6 +426,7 @@ def _parse_mac(f: Frame) -> None:
     fcf = struct.unpack("<H", p[0:2])[0]
     f.ftype = fcf & 0x7
     f.seq = p[2]
+    f.pending = bool(fcf & 0x0010)
     pan_comp = bool(fcf & 0x0040)
     dst_mode = (fcf >> 10) & 0x3
     src_mode = (fcf >> 14) & 0x3

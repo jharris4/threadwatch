@@ -2121,7 +2121,7 @@ class Pipeline:
     # stack then has to send. When the stack drops the poll instead (a
     # child two or more key generations behind, 2026-09-13; a child that
     # advertised a link frame counter above the ones it polls with,
-    # openthread/openthread#13599; a stack that has hung behind a live
+    # frame_counter_mismatch; a stack that has hung behind a live
     # radio), the child is acknowledged every time and served never, looks
     # alive here, and Home Assistant loses it. Over the hour before the
     # 09-13 rotation no child had more than two pending acknowledgements
@@ -2210,11 +2210,10 @@ class Pipeline:
         parent, parent_addr, whom = self._parent_of(dst)
         note = (f"{whom} acknowledged {stats.unserved_polls} polls over {span} s with data pending and sent "
                 f"nothing after any of them, {history}: the parent's radio accepts the polls and its stack "
-                "drops them. A child two or more key generations behind its parent looks like this (key_lag "
-                "says so), so does a child that advertised a frame counter above the ones it sends with "
-                "(frame_counter_mismatch), and so does a parent whose stack has hung while its radio still "
-                "answers. Home Assistant loses the device while it still looks alive here. (If the sniffer "
-                "simply cannot hear the parent, the frames are missing here, not on air.)")
+                "drops them, so Home Assistant loses the device while it still looks alive here. Read it "
+                "beside key_lag and frame_counter_mismatch for this device; with neither, the parent's stack "
+                "has hung. (If the sniffer simply cannot hear the parent, the frames are missing here, not "
+                "on air.)")
         rssi = row.get("rssi") if row else stats.rssi_ewma
         marginal = reception(rssi, self.cfg.quiet_min_rssi_dbm) == "marginal"
         closed = row.get("unserved_closed") if row else None
@@ -2263,9 +2262,8 @@ class Pipeline:
         rssi = row.get("rssi") if row else stats.rssi_ewma
         note = (f"{whom} is still acknowledging its polls with data pending and sending nothing "
                 f"{held / 60:.0f} min after this was logged ({round(ts - since)} s in all): the parent's stack "
-                "is dropping polls its radio accepts. A key_lag or frame_counter_mismatch record for this "
-                "device names the cause when the recorder can see it; otherwise the parent's stack has hung "
-                "behind a live radio, or the sniffer cannot hear the parent's frames.")
+                "is dropping polls its radio accepts. Read it beside key_lag and frame_counter_mismatch for "
+                "this device; with neither, the parent's stack has hung or the sniffer cannot hear it.")
         unheard = self._unheard_radio(row) if row else None
         if unheard:
             note += (f" The only radio that heard this device lately ({unheard}) is down, so the "
@@ -2287,10 +2285,10 @@ class Pipeline:
     # Frame Counter and MLE Frame Counter TLVs); the receiver takes them as
     # the floor below which the sender's later frames are replays and
     # drops them. The stack writes the advertisement and the radio driver
-    # the counters on the frames, and a device whose two have parted
-    # (openthread/openthread#13599: a Child ID Request advertising
-    # 1,280,176,180, then polls at 4,708) is refused by every parent until
-    # it reboots. Only the sniffer sees both numbers side by side.
+    # the counters on the frames, and a device whose two have parted (a
+    # Child ID Request advertising 1,280,176,180, then polls at 4,708) is
+    # refused by every parent until it reboots. Only the sniffer sees both
+    # numbers side by side; docs/ALERTING.md has the reported case.
 
     # Accepted frames below the advertisement before it is said: one or
     # two can be frames the device had queued when it advertised.
@@ -2329,14 +2327,11 @@ class Pipeline:
         when = time.strftime("%H:%M:%S", time.localtime(adv["ts"]))
         shortfall = adv["value"] - counter
         note = (f"advertised a {what} frame counter of {adv['value']} in its {adv['command']} at {when} under "
-                f"key generation {sequence}, then sent {adv['below']} secured {what} frames with counters "
-                f"below it (this one {counter}, {shortfall} below): a parent or neighbour that took the "
-                "advertisement as the device's replay floor rejects every one of these frames as stale, so "
-                "its polls are acknowledged by the radio and dropped by the stack, and nothing it sends gets "
-                "through until it reboots. The advertisement comes from the device's stack and the counters "
-                "from its radio driver, so the two have lost sync inside the device: a device-side defect "
-                "(openthread/openthread#13599 describes one on an IKEA sensor). Said at most once an hour "
-                "while it goes on.")
+                f"key generation {sequence}, then sent {adv['below']} secured {what} frames below it (this one "
+                f"{counter}, {shortfall} below): its parent rejects every frame it sends as stale until it "
+                "reboots. The advertisement and the counters come from different parts of the device's "
+                "firmware, so this is a device-side defect to report to the vendor (frame_counter_mismatch in "
+                "docs/ALERTING.md). Said at most once an hour while it goes on.")
         self._emit("frame_counter_mismatch", "warning", ts, addr=who, name=self.names.name(who),
                    layer=layer, key_sequence=sequence, advertised=adv["value"], advertised_ts=adv["ts"],
                    advertised_in=adv["command"], counter=counter, lowest=adv["lowest"],

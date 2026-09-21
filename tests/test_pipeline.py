@@ -5061,7 +5061,7 @@ class FrameCounterMismatchTest(unittest.TestCase):
                           ev["shortfall"], ev["frames_below"]),
                          ("warning", "Porch Sensor", "mac", 0, 1_280_176_180, "Child ID Request", t0 + 1,
                           c0 + 3, c0 + 1, 1_280_176_180 - c0 - 3, 3))
-        self.assertIn("openthread/openthread#13599", ev["note"])
+        self.assertIn("device-side defect to report to the vendor", ev["note"])
         self.assertEqual(row["counter_mismatch_ts"], t0 + 4)
         for i in range(20):                                               # it goes on: said again after an hour
             pipe.ingest(poll(t0 + 10 + 300 * i, SENSOR, 10 + i, counter=c0 + 10 + i))

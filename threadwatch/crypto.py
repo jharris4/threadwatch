@@ -55,6 +55,11 @@ class MleInfo:
     command_name: str
     partition_id: int | None = None
     leader_router_id: int | None = None
+    # The Route64 TLV's ID sequence number: the leader bumps it every few
+    # seconds while it is doing its job, and every router repeats the newest
+    # it has seen. A partition whose sequence stops advancing has lost its
+    # leader's timer, whether or not the leader still answers.
+    route_id_sequence: int | None = None
     source_addr16: int | None = None
     # False for a security-suite-255 message: it carried no MIC, so it
     # came from anything on the channel and proves nothing. Only the
@@ -475,6 +480,8 @@ class Decryptor:
                 info.leader_router_id = val[7]
             elif t == 0 and l >= 2:  # Source Address (sender's RLOC16)
                 info.source_addr16 = struct.unpack(">H", val[0:2])[0]
+            elif t == 9 and l >= 1:  # Route64: ID sequence, then the router mask and links
+                info.route_id_sequence = val[0]
             elif t == 5 and l >= 4:  # Link Layer Frame Counter
                 info.link_frame_counter = struct.unpack(">L", val[0:4])[0]
             elif t == 8 and l >= 4:  # MLE Frame Counter

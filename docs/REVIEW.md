@@ -139,7 +139,8 @@ The raw log is the wrong unit for people, so the pages group it:
 | `ha_unavailable` ... `ha_available` | one row: *X unavailable in Home Assistant for 25m* (or *still unavailable*), with the cause |
 | `ha_unavailable_burst`, `ha_unreachable`, `ha_reachable` | one row each, always |
 | `key_sequence_advanced`, `key_lag_census` | one row each, always: *key sequence 85 -> 86*, *key generation census* |
-| `partition_or_leader_change`, `phase_locked_storm`, `daily_summary` | one row each, always |
+| `partition_or_leader_change`, `partition_storm`, `phase_locked_storm`, `daily_summary` | one row each, always |
+| `leader_stalled` | one row per stall, closed by `leader_resumed` |
 
 A quiet spell that started yesterday and ended today appears on both days
 with its real duration, because the day page reads a month either side of

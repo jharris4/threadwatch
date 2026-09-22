@@ -88,7 +88,10 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `key_lag` | warning for a child, critical for a router; notice when `episode` > 1 (reopened within `[keys] rearm_s`) | `addr`, `name`, `role`, `generation`, `parent`, `parent_addr`, `parent_generation` (a child) or `mesh_generation` (a router), `lag`, `since`, `lagged_for_s`, `rssi_dbm`, `reception`, `polls_acked`, `episode`, `since_previous_s`, `note` |
 | `key_lag_cleared` | info | `addr`, `name`, `role`, `generation`, `parent`, `parent_addr`, `parent_generation` or `mesh_generation`, `since`, `lagged_for_s`, `rejoined`, `rejoin_ts`, `note`; only after a `key_lag` went out |
 | `retransmission_elevation` | notice for the first elevated minute, warning once the rate has stayed up for `[retransmissions] confirm_s` (`confirmed`); notice regardless when one sender-target pair is `top_share` >= 0.5 of the retries (a chronic bad link, not a storm precursor) | `rate`, `baseline`, `addr`, `name`, `top_sender`, `top_target`, `top_share`, `confirmed`, `sustained_s`, `note` |
-| `partition_or_leader_change` | warning | `previous`, `current`, each with `partition`, `leader_router` and `leader` (the router id with the device's name once the MLE layer has matched it) |
+| `partition_or_leader_change` | warning | `previous`, `current`, each with `partition`, `leader_router` and `leader` (the router id with the device's name once the MLE layer has matched it); logged once the change has held for `[partition] settle_s` |
+| `partition_storm` | warning | `previous`, `current` (as above), `partitions` (distinct states seen), `leaders`, `changes` (flips), `since`, `until`, `duration_s`, `note`; several changes inside `[partition] settle_s`, logged as one |
+| `leader_stalled` | warning | `partition`, `leader_router`, `leader`, `addr`, `name`, `id_sequence`, `since`, `stalled_for_s`, `last_carried_by`, `leader_last_seen`, `leader_silent_for_s`, `note` |
+| `leader_resumed` | info | `partition`, `leader_router`, `leader`, `addr`, `name`, `since`, `stalled_for_s`, `note`; closes a `leader_stalled` |
 | `credentials_stale` | warning | `failed`, `note` |
 | `clock_step` | info | `step_s` (signed), `note`. The host clock jumped, NTP correcting a boot without an RTC. Forward: silences spanning the jump are not counted against any device. Backward: every timestamp the recorder holds, `last-seen.json` included, is moved back with it |
 | `recorder_started` | info after a requested stop or on the first start ever, notice when the last run ended any other way | `cause` (`stopped`, `stalled`, `sniffer_died`, `stream_ended`, `crashed`, `unknown` for a run that left no note: a power cut or a kill, `first_start`), `gap_s` (since the last frame any run heard), `last_frame_ts`, `stopped_ts` (when the last run ended, if it left the note), `exit_code`, `note` |
@@ -396,6 +399,35 @@ cycled. If only the critical should reach the phone, give the phone sink
 the devices page and `threadwatch device` (which prints the generations a
 device has sent under, with the first and last frame under each) carry the
 rest.
+
+`leader_stalled` is the leader failing while it still answers. The leader
+increments the Route64 ID sequence every few seconds as long as its timers
+run, and every router repeats the newest it has heard in its own
+Advertisements, so the sniffer sees the sequence advance from wherever it
+sits. When it stops for `[partition] stall_s` (default 60 s) while the
+mesh is still heard, the warning names the leader, the stuck sequence,
+which router last carried it, and when the leader itself was last heard:
+"its stack still answers while its leader timer has stopped" when its own
+frames are recent, "it is gone" when they are not. Routers give a leader up
+120 s after the last advance they saw and each becomes the leader of a
+partition of its own, so the warning lands about a minute before that
+storm. On 2026-09-22 an ALPSTUGA leader stopped advertising at 11:44:32,
+kept its sequence at 164 from 11:46 and answered Link Requests until it
+died at 11:48:25; every router timed out at 11:48:13. `leader_resumed`
+(info) closes the episode when the sequence moves again or the partition
+changes.
+
+`partition_or_leader_change` and `partition_storm` are the same detector
+with a settling window. A change of partition id or leader router id is
+held for `[partition] settle_s` (default 30 s). If nothing else changes in
+that time it is logged as `partition_or_leader_change`, as before but 30 s
+later. If more changes arrive inside the window they are one
+`partition_storm`: `partitions` distinct states, `leaders` in the order
+seen, `changes` flips, `since`/`until`/`duration_s`, and a note that says
+whether the mesh split and merged back under the same leader or lost its
+leader to a successor. The 09-22 storm was 90 warnings in three seconds
+for 14 partitions; it is one record now. `settle_s = 0` logs every flip at
+once, as before.
 
 `retransmission_elevation` is the storm precursor: in one minute more than
 20% of frames were repeats (same sender and sequence number within 2 s, a

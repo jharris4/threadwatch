@@ -4167,7 +4167,8 @@ class PartitionLeaderTest(unittest.TestCase):
         pipe.partition = (976341733, 60)
         self.assertEqual(pipe.partition_status(),
                          {"id": 976341733, "leader_router": 60, "leader_rloc16": "f000",
-                          "leader_addr": None, "leader_name": None})      # no credentials: unmatched
+                          "leader_addr": None, "leader_name": None,        # no credentials: unmatched
+                          "id_sequence": None, "sequence_advanced_ts": None, "stalled": False})
         self.assertEqual(pipe.leader_label(60), "r60")
         pipe.decryptor = SimpleNamespace(short_to_ext={"f000": self.LEADER})   # the leader's MLE advert
         self.assertEqual(pipe.partition_status()["leader_addr"], self.LEADER)
@@ -5106,3 +5107,164 @@ class FrameCounterMismatchTest(unittest.TestCase):
         for i in range(3):
             pipe2.ingest(poll(t0 + 10 + i, SENSOR, 10 + i, counter=c0 + 10 + i))
         self.assertEqual(len(self._events(pipe2, "frame_counter_mismatch")), 1)
+
+
+def leader_data(partition_id, router_id):
+    """An MLE Leader Data TLV."""
+    import struct
+    return bytes([11, 8]) + struct.pack(">L", partition_id) + b"\x00\x00\x00" + bytes([router_id])
+
+
+def route64(id_sequence):
+    """An MLE Route64 TLV with just the ID sequence and an empty router mask."""
+    return bytes([9, 9, id_sequence]) + bytes(8)
+
+
+def advertisement(partition_id, router_id, id_sequence=None):
+    body = b"\x04" + leader_data(partition_id, router_id)
+    return body if id_sequence is None else body + route64(id_sequence)
+
+
+class LeaderAndPartitionTest(unittest.TestCase):
+    """leader_stalled / leader_resumed and the settled partition events
+    (docs/ALERTING.md). Hall Router is the leader, router id 60 (RLOC16
+    0xf000); Porch Sensor and two more routers repeat its sequence."""
+
+    R2 = "a2a2a2a2a2a2a2a2"
+    R3 = "a3a3a3a3a3a3a3a3"
+    PART = 0x3a31cae5
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        (d / "devices.json").write_text(json.dumps([{"name": "Hall Router", "extendedAddress": ROUTER},
+                                                    {"name": "Den Router", "extendedAddress": self.R2},
+                                                    {"name": "Loft Router", "extendedAddress": self.R3}]))
+        self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json")
+        self.pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _events(self, name):
+        return [r for r in self.pipe.events.records if r["event"] == name]
+
+    def _adv(self, ts, src, seq, partition=PART, leader=60):
+        # The leader's own advertisement carries its RLOC16 so the pipeline can name it.
+        body = advertisement(partition, leader, seq)
+        if src == ROUTER:
+            body += bytes([0, 2]) + bytes.fromhex("f000")
+        self.pipe.ingest(mle_frame(ts, src, 0, body))
+
+    def test_a_leader_whose_sequence_stops_is_named_before_the_routers_give_it_up(self):
+        t0 = 1_700_000_000.0
+        for i, seq in enumerate((160, 162, 164)):
+            self._adv(t0 + 30 * i, ROUTER, seq)
+            self._adv(t0 + 30 * i + 5, self.R2, seq)
+        self.pipe.periodic(t0 + 65)
+        self.assertEqual(self._events("leader_stalled"), [])
+        # From here the other routers keep repeating 164 and the leader is heard
+        # (a Link Accept, say) without advancing it.
+        for i in range(1, 5):
+            self._adv(t0 + 60 + 20 * i, self.R2, 164)
+            self._adv(t0 + 60 + 20 * i + 3, self.R3, 164)
+            self._adv(t0 + 60 + 20 * i + 6, ROUTER, 164)
+        self.pipe.periodic(t0 + 60 + 55)
+        self.assertEqual(self._events("leader_stalled"), [])           # 55 s: under the threshold
+        self.pipe.periodic(t0 + 60 + 62)
+        stalled = self._events("leader_stalled")
+        self.assertEqual(len(stalled), 1)
+        rec = stalled[0]
+        self.assertEqual((rec["leader_router"], rec["leader"], rec["addr"], rec["name"], rec["id_sequence"]),
+                         (60, "r60 (Hall Router)", ROUTER, "Hall Router", 164))
+        self.assertEqual(rec["since"], t0 + 60)
+        self.assertEqual(rec["stalled_for_s"], 62)
+        self.assertIn("has not advanced the router-id sequence (164) for 62 s", rec["note"])
+        self.assertIn("its stack still answers while its leader timer has stopped", rec["note"])
+        self.assertIn("120 s after the last advance", rec["note"])
+        self.assertTrue(self.pipe.partition_status()["stalled"])
+        self.pipe.periodic(t0 + 60 + 92)
+        self.assertEqual(len(self._events("leader_stalled")), 1)      # said once per stall
+        # The sequence moves again: the episode closes.
+        self._adv(t0 + 60 + 100, self.R3, 165)
+        resumed = self._events("leader_resumed")
+        self.assertEqual(len(resumed), 1)
+        self.assertEqual(resumed[0]["stalled_for_s"], 100)
+        self.assertIn("the sequence is advancing again after 100 s", resumed[0]["note"])
+        self.assertFalse(self.pipe.partition_status()["stalled"])
+        self.assertEqual(self.pipe.partition_status()["id_sequence"], 165)
+
+    def test_a_leader_not_heard_at_all_is_called_gone(self):
+        t0 = 1_700_000_000.0
+        self._adv(t0, ROUTER, 10)
+        self._adv(t0 + 30, self.R2, 12)
+        for i in range(1, 6):
+            self._adv(t0 + 30 + 20 * i, self.R2, 12)
+        self.pipe.periodic(t0 + 30 + 100)
+        rec = self._events("leader_stalled")[0]
+        self.assertIn("has not been heard for 130 s: it is gone", rec["note"])
+        self.assertEqual(rec["leader_silent_for_s"], 130)
+
+    def test_a_stalled_sequence_is_not_judged_while_the_sniffer_hears_nothing(self):
+        t0 = 1_700_000_000.0
+        self._adv(t0, ROUTER, 10)
+        self._adv(t0 + 10, self.R2, 10)
+        self.pipe.periodic(t0 + 10 + 300)                                 # silence all round: the sniffer's problem
+        self.assertEqual(self._events("leader_stalled"), [])
+
+    def test_one_change_that_holds_is_a_partition_or_leader_change_after_the_window(self):
+        t0 = 1_700_000_000.0
+        self._adv(t0, ROUTER, 10)
+        self._adv(t0 + 30, self.R2, 12, partition=0x51119999, leader=11)
+        self.assertEqual(self._events("partition_or_leader_change"), [])  # held
+        self._adv(t0 + 45, self.R3, 12, partition=0x51119999, leader=11)
+        self.assertEqual(self._events("partition_or_leader_change"), [])
+        self.pipe.periodic(t0 + 30 + 31)
+        chg = self._events("partition_or_leader_change")
+        self.assertEqual(len(chg), 1)
+        self.assertEqual(chg[0]["ts"], t0 + 30)
+        self.assertEqual((chg[0]["previous"]["leader"], chg[0]["current"]["leader"]),
+                         ("r60 (Hall Router)", "r11"))
+        self.assertEqual(self._events("partition_storm"), [])
+        self.assertEqual(self.pipe._lost_leader["addr"], ROUTER)
+        # The new partition's own sequence is followed from the change on.
+        self.assertEqual(self.pipe.partition_status()["id_sequence"], 12)
+        self.assertEqual(self.pipe.partition_status()["sequence_advanced_ts"], t0 + 30)
+
+    def test_many_changes_inside_the_window_are_one_storm(self):
+        t0 = 1_700_000_000.0
+        self._adv(t0, ROUTER, 10)
+        flips = [(0x7ff4debb, 49), (0x1d3b3701, 51), (self.PART, 60), (0x709985ad, 57),
+                 (0x1d3b3701, 51), (0x709985ad, 57)]
+        for i, (pid, rid) in enumerate(flips):
+            self._adv(t0 + 100 + 0.5 * i, self.R2 if i % 2 else self.R3, 0, partition=pid, leader=rid)
+        self.pipe.periodic(t0 + 100 + 20)
+        self.assertEqual(self._events("partition_storm"), [])            # still settling
+        self._adv(t0 + 100 + 25, self.R2, 1, partition=0x709985ad, leader=57)   # same state: no flip
+        self.pipe.periodic(t0 + 100 + 60)
+        self.assertEqual(self._events("partition_or_leader_change"), [])
+        storm = self._events("partition_storm")
+        self.assertEqual(len(storm), 1)
+        rec = storm[0]
+        self.assertEqual(rec["ts"], t0 + 100)
+        self.assertEqual((rec["partitions"], rec["changes"], rec["duration_s"]), (4, 6, 2.5))
+        self.assertEqual(rec["previous"]["leader"], "r60 (Hall Router)")
+        self.assertEqual(rec["current"], {"partition": 0x709985ad, "leader_router": 57, "leader": "r57"})
+        self.assertEqual(rec["leaders"], ["r60 (Hall Router)", "r49", "r51", "r57"])
+        self.assertIn("leader r60 (Hall Router) lost: 4 partitions each led by a router of its own for 2 s "
+                      "(6 flips) before the mesh merged under r57", rec["note"])
+        self.assertEqual(self.pipe._lost_leader["name"], "Hall Router")
+        # A split that comes back under the same leader says so.
+        self._adv(t0 + 400, self.R2, 2, partition=0x11111111, leader=3)
+        self._adv(t0 + 401, self.R3, 2, partition=0x709985ad, leader=57)
+        self.pipe.periodic(t0 + 440)
+        rec = self._events("partition_storm")[1]
+        self.assertIn("split into 2 partitions and merged back under r57 after 1 s (2 flips)", rec["note"])
+
+    def test_settle_zero_logs_every_flip_at_once(self):
+        self.cfg.partition_settle_s = 0
+        t0 = 1_700_000_000.0
+        self._adv(t0, ROUTER, 10)
+        self._adv(t0 + 1, self.R2, 0, partition=0x7ff4debb, leader=49)
+        self._adv(t0 + 2, self.R2, 0, partition=0x7ff4debb, leader=49)
+        self.assertEqual(len(self._events("partition_or_leader_change")), 1)

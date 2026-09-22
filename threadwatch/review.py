@@ -77,6 +77,7 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
     foreign: dict[tuple, dict] = {}
     rejoin: dict[str, dict] = {}
     open_link: dict[str, dict] = {}
+    open_leader: dict[str, dict] = {}
     open_starved: dict[str, dict] = {}
     open_unserved: dict[str, dict] = {}
     open_keylag: dict[str, dict] = {}
@@ -366,6 +367,26 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
             new("partition", rec, "partition or leader change",
                 f"partition {prev.get('partition')} leader r{prev.get('leader_router')} -> "
                 f"partition {cur.get('partition')} leader r{cur.get('leader_router')}")
+        elif ev == "partition_storm":
+            prev, cur = rec.get("previous", {}), rec.get("current", {})
+            ep = new("partition", rec, f"partition storm: {rec.get('partitions')} partitions",
+                     f"leader {prev.get('leader')} -> {cur.get('leader')} in "
+                     f"{fmt_duration(rec.get('duration_s') or 0)}, {rec.get('changes')} flips")
+            ep["end"] = rec.get("until", rec["ts"])
+        elif ev == "leader_stalled":
+            addr = _addr(rec) or f"r{rec.get('leader_router')}"
+            open_leader[addr] = new("partition", rec, f"leader stalled: {rec.get('leader')}",
+                                    f"sequence {rec.get('id_sequence')} stuck for "
+                                    f"{fmt_duration(rec.get('stalled_for_s') or 0)}", end=None)
+        elif ev == "leader_resumed":
+            addr = _addr(rec) or f"r{rec.get('leader_router')}"
+            ep = open_leader.pop(addr, None)
+            if ep is not None:
+                ep["end"] = rec["ts"]
+                ep["events"].append(rec)
+                ep["title"] += f" for {fmt_duration(rec.get('stalled_for_s') or 0)}"
+            else:
+                new("partition", rec, f"leader resumed: {rec.get('leader')}", rec.get("note", ""))
         elif ev == "phase_locked_storm":
             new("storm", rec, "phase-locked storm",
                 f"period {rec.get('period_s')}s, onsets {rec.get('onsets')}, "

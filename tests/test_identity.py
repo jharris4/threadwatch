@@ -576,6 +576,8 @@ class MleThroughThePipelineTest(unittest.TestCase):
             self.assertIn("trying to get back", ev[0]["note"])
             # ...and comes back in a different partition.
             pipe.ingest(self._mle_frame(t + 120, b"\x04" + self._leader_data(0x51119999, 11), 3))
+            # Held for [partition] settle_s: one change inside the window is a change.
+            pipe.periodic(t + 120 + 31)
             chg = [r for r in pipe.events.records if r["event"] == "partition_or_leader_change"]
             self.assertEqual(len(chg), 1)
             self.assertEqual((chg[0]["previous"]["partition"], chg[0]["current"]["partition"]),
@@ -863,6 +865,7 @@ class SightingAuthenticityTest(unittest.TestCase):
             pipe.ingest(parse_frame(t0 + 1, advert(2, 222, "cc00"), 230))
             self.assertEqual(pipe.partition[0], 222)
             self.assertEqual(pipe.seen.table[OTHER]["rloc16"], "cc00")
+            pipe.periodic(t0 + 1 + 31)                                       # the change has held: logged
             changes = [r for r in pipe.events.records if r["event"] == "partition_or_leader_change"]
             self.assertEqual(len(changes), 1)                                # 111 -> 222, the real one
             out = io.StringIO()

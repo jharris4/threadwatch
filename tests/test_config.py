@@ -457,6 +457,8 @@ class ExampleConfigTest(unittest.TestCase):
         ("ha_availability", "rearm_s"): ("ha_availability_rearm_s", 3600, 120),
         ("ha_availability", "registry_refresh_s"): ("ha_availability_registry_refresh_s", 3600, 600),
         ("retransmissions", "confirm_s"): ("retrans_confirm_s", 300, 60),
+        ("partition", "stall_s"): ("partition_stall_s", 60, 45),
+        ("partition", "settle_s"): ("partition_settle_s", 30, 0),
         ("link", "drop_db"): ("link_drop_db", 8, 3),
         ("link", "hold_s"): ("link_hold_s", 1800, 120),
         ("summary", "hour"): ("summary_hour", 8, 6),

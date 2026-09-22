@@ -223,6 +223,17 @@ class Config:
     # elevation is a microwave; a storm building keeps the rate up. 0 pages
     # at the first minute, as before.
     retrans_confirm_s: float = 5 * 60
+    # [partition] the leader bumps the Route64 ID sequence every few seconds
+    # and every router repeats the newest it has heard; the routers give the
+    # leader up 120 s after the last advance and each starts a partition of
+    # its own. A sequence that has not advanced for stall_s is logged as
+    # leader_stalled (warning), a minute before that storm on 2026-09-22.
+    partition_stall_s: float = 60.0
+    # A partition change is held this long before it is logged: one change
+    # inside the window is partition_or_leader_change, several are one
+    # partition_storm rather than one warning per flip (90 in three seconds
+    # on 2026-09-22).
+    partition_settle_s: float = 30.0
     # [border_routers] how often the recorder asks the LAN (mDNS, the
     # _meshcop._udp service every border router advertises) which extended
     # address each border router has now. Apple hubs change theirs on every
@@ -324,6 +335,7 @@ SECTIONS: dict[str, frozenset[str] | None] = {
     "ha_availability": frozenset(("enabled", "poll_s", "hold_s", "burst_devices", "burst_window_s",
                                   "burst_hold_s", "rearm_s", "registry_refresh_s")),
     "retransmissions": frozenset(("confirm_s",)),
+    "partition": frozenset(("stall_s", "settle_s")),
     "border_routers": frozenset(("browse_s", "rotation")),
     "summary": frozenset(("hour", "severity")),
     "detect": frozenset(("flood_multiplier", "flood_min_frames", "period_min_s",
@@ -665,6 +677,16 @@ def load(path: Path | None) -> Config:
         if cfg.retrans_confirm_s < 0:
             raise ValueError("[retransmissions] confirm_s must be 0 (page at the first minute) or more, "
                              f"not {cfg.retrans_confirm_s:g}")
+        partition = raw.get("partition", {})
+        cfg.partition_stall_s = float(_finite("partition", "stall_s",
+                                              partition.get("stall_s", cfg.partition_stall_s)))
+        if not cfg.partition_stall_s > 0:
+            raise ValueError(f"[partition] stall_s must be more than 0 seconds, not {cfg.partition_stall_s:g}")
+        cfg.partition_settle_s = float(_finite("partition", "settle_s",
+                                               partition.get("settle_s", cfg.partition_settle_s)))
+        if cfg.partition_settle_s < 0:
+            raise ValueError("[partition] settle_s must be 0 (log every change at once) or more, "
+                             f"not {cfg.partition_settle_s:g}")
         brs = raw.get("border_routers", {})
         cfg.border_router_browse_s = float(_finite("border_routers", "browse_s",
                                                   brs.get("browse_s", cfg.border_router_browse_s)))

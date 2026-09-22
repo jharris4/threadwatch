@@ -215,6 +215,20 @@ poll_s = 600                       # 300..900 seconds; failures back off up to a
 # link between two devices, not the mesh.)
 confirm_s = 300            # 5 min
 
+[partition]
+# The leader bumps the router-id sequence every few seconds while its timers
+# run and every router repeats the newest it has heard. A sequence that has
+# not advanced this long while the mesh is still heard is leader_stalled
+# (warning): the routers give the leader up 120 s after the last advance and
+# each starts a partition of its own, so this lands about a minute before
+# that storm, with the leader named.
+stall_s = 60
+# A change of partition or leader is held this long before it is logged: one
+# change inside the window is partition_or_leader_change, several are one
+# partition_storm (90 warnings in three seconds on 2026-09-22 are one
+# record). 0 logs every flip at once.
+settle_s = 30
+
 [link]
 # Slow link degradation: a device still heard, but with its average RSSI at
 # the sniffer this far below its own daily reference for this long, is

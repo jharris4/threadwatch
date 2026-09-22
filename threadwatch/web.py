@@ -181,9 +181,12 @@ LEGEND = [
      "Traffic floods recurring with a stable period: the signature of the mesh-wide broadcast "
      "storm that took the network down before. Critical. This is what the ring buffer is for: "
      "run 'threadwatch snapshot' to keep the packets."),
-    ("partition", "Partition or leader change",
+    ("partition", "Partition, leader change, leader stalled",
      "The Thread mesh split, merged, or elected a new leader (credentials needed to see this). "
-     "Routine after a border router reboots; a problem if it keeps happening."),
+     "Routine after a border router reboots; a problem if it keeps happening. A leader stalled row "
+     "names the leader whose router-id sequence stopped advancing: the storm follows about a minute "
+     "later unless it recovers, and a partition storm row is that storm, every router briefly "
+     "leading a partition of its own before the merge."),
     ("rejoin", "Rejoin attempt",
      "A device sent MLE Parent Request, Child ID Request or Announce: it lost its parent or its "
      "network and is trying to get back (credentials needed). Expected after a device or router "

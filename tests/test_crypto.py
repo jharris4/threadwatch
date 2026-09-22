@@ -54,7 +54,10 @@ class ParseMleTest(unittest.TestCase):
         self.assertEqual((info.command, info.command_name, info.secured), (4, "Advertisement", True))
         self.assertEqual((info.partition_id, info.leader_router_id, info.source_addr16, info.counter),
                          (0x0a0b0c0d, 60, 0xc800, 7))
-        self.assertEqual(d.stats["mle_decrypted"], 1)
+        self.assertIsNone(info.route_id_sequence)                     # no Route64 TLV in this one
+        with_route = advertisement() + bytes([9, 9, 164]) + bytes(8)  # Route64: ID sequence, empty mask
+        self.assertEqual(self._parse(d, mle_mode1(SED, 1000, 8, with_route)).route_id_sequence, 164)
+        self.assertEqual(d.stats["mle_decrypted"], 2)
         self.assertEqual(d.stats["mle_failed"], 0)
         # The sender told us which short address it holds, which unlocks
         # MAC decryption of its short-source data frames.

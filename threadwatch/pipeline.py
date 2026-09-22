@@ -71,6 +71,18 @@ def _whole(value) -> int | None:
     return None if isinstance(value, bool) or not isinstance(value, int) else value
 
 
+def fmt_span(seconds: float) -> str:
+    """'42 s', '3 min', '2 h 05 min': the spans the notes quote."""
+    seconds = max(0, int(round(seconds)))
+    if seconds < 180:
+        return f"{seconds} s"
+    minutes = seconds // 60
+    if minutes < 120:
+        return f"{minutes} min"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours} h {minutes:02d} min"
+
+
 def _seconds(value) -> float:
     """A timestamp from a state file, or 0.0 when it is not a number."""
     return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
@@ -196,6 +208,20 @@ class Pipeline:
         self._conflict_logged: set[tuple] = set()   # (hostname, address) claims on another entry's device, said once
         self._pending_routers: dict[str, dict] = {}  # ext -> the mDNS record waiting for that address to be heard
         self.partition: tuple | None = None
+        # The leader's pulse: the newest Route64 ID sequence heard for the
+        # current partition, when it last advanced (frame time) and who
+        # carried it. _leader_stalled holds the open leader_stalled episode.
+        self._leader_seq: int | None = None
+        self._leader_seq_ts: float | None = None
+        self._leader_seq_from: str | None = None
+        self._leader_stalled: dict | None = None
+        # Partition changes held for [partition] settle_s: previous state,
+        # the states seen since, the count of flips and when the last one
+        # was. One state inside the window is a change; more is a storm.
+        self._partition_hold: dict | None = None
+        # The leader a change or storm replaced, for the detectors that
+        # judge that device's silence afterwards (device_quiet, ha causes).
+        self._lost_leader: dict | None = None
         self._crypto_mark = (0, 0)          # (decrypted, failed) when decryption last worked
         self._stale_evt = 0.0
         # Border routers on the LAN: hostname -> current address (mDNS).
@@ -2368,7 +2394,10 @@ class Pipeline:
         part = self.partition
         if not part:
             return None
-        return {"id": part[0], "leader_router": part[1], **self.leader_device()}
+        seq_ts = self._leader_seq_ts
+        return {"id": part[0], "leader_router": part[1], **self.leader_device(),
+                "id_sequence": self._leader_seq, "sequence_advanced_ts": seq_ts,
+                "stalled": self._leader_stalled is not None}
 
     def _label(self, addr: str | None) -> str | None:
         """Name for any address form: extended, or a short one the decryptor
@@ -2594,18 +2623,8 @@ class Pipeline:
                        note=f"{info.command_name} from {name or src_for_mle or f.src}: "
                             "it lost its parent or its network and is trying to get back")
         if info.partition_id is not None:
-            cur = (info.partition_id, info.leader_router_id)
-            if self.partition is not None and cur != self.partition:
-                before, after = self.leader_label(self.partition[1]), self.leader_label(cur[1])
-                self._emit("partition_or_leader_change", "warning", f.ts,
-                           previous={"partition": self.partition[0],
-                                     "leader_router": self.partition[1], "leader": before},
-                           current={"partition": cur[0],
-                                    "leader_router": cur[1], "leader": after},
-                           note=f"partition {self.partition[0]} leader {before} -> "
-                                f"partition {cur[0]} leader {after}: the mesh split, merged "
-                                "or elected a new leader")
-            self.partition = cur
+            self._note_partition((info.partition_id, info.leader_router_id), f.ts,
+                                 src_for_mle, info.route_id_sequence)
 
     # The name scraper is a regex over decrypted UDP payloads, most of
     # which are ciphertext: it fires on random bytes now and then, and an
@@ -2615,6 +2634,145 @@ class Pipeline:
     # and each address keeps at most this many, the least-sighted going
     # first when a new one arrives.
     OBSERVED_NAMES_MAX = 16
+
+    # ------------------------------------------------- partition and leader
+
+    def _note_partition(self, cur: tuple, ts: float, sender: str | None, sequence: int | None) -> None:
+        """A fresh MLE message's Leader Data (partition id, leader router
+        id) and Route64 ID sequence. A change of partition or leader is
+        held for [partition] settle_s and judged in _settle_partition: one
+        state inside the window is a change, several are a storm. The ID
+        sequence is followed only while the partition is stable, since a
+        storm's flips each carry their own leader's count."""
+        if self.partition is None:
+            self.partition = cur
+            self._reset_leader_pulse(sequence, ts, sender)
+            return
+        hold = self._partition_hold
+        if cur != self.partition:
+            if hold is None:
+                hold = self._partition_hold = {"previous": self.partition, "first_ts": ts,
+                                               "last_ts": ts, "states": [], "changes": 0}
+            if cur not in (state for state, _ in hold["states"]):
+                hold["states"].append((cur, ts))
+            hold["changes"] += 1
+            hold["last_ts"] = ts
+            self.partition = cur
+            self._close_leader_stall(ts, "the partition or its leader changed")
+            self._reset_leader_pulse(sequence, ts, sender)
+            return
+        if hold is not None and ts - hold["last_ts"] >= self.cfg.partition_settle_s:
+            self._settle_partition(ts)
+        elif hold is None:
+            self._note_route_sequence(sequence, ts, sender)
+
+    def _reset_leader_pulse(self, sequence: int | None, ts: float, sender: str | None) -> None:
+        self._leader_seq = sequence
+        self._leader_seq_ts = ts if sequence is not None else None
+        self._leader_seq_from = sender if sequence is not None else None
+
+    def _note_route_sequence(self, sequence: int | None, ts: float, sender: str | None) -> None:
+        """The ID sequence is a byte that wraps: newer is one to 127 ahead."""
+        if sequence is None:
+            return
+        if self._leader_seq is None or 0 < ((sequence - self._leader_seq) & 0xFF) < 128:
+            self._leader_seq, self._leader_seq_ts, self._leader_seq_from = sequence, ts, sender
+            self._close_leader_stall(ts, "the sequence is advancing again")
+
+    def _close_leader_stall(self, ts: float, how: str) -> None:
+        ep = self._leader_stalled
+        if ep is None:
+            return
+        self._leader_stalled = None
+        self._emit("leader_resumed", "info", ts, partition=ep["partition"],
+                   leader_router=ep["leader_router"], leader=ep["leader"], addr=ep.get("addr"),
+                   name=ep.get("name"), since=ep["since"], stalled_for_s=round(ts - ep["since"]),
+                   note=f"leader {ep['leader']}: {how} after {fmt_span(ts - ep['since'])}")
+
+    def _check_leader(self, now: float) -> None:
+        """leader_stalled: the current partition's ID sequence has not
+        advanced for [partition] stall_s although the mesh is still heard.
+        The leader increments it every few seconds while its timers run;
+        the routers give it up 120 s after the last advance they saw and
+        each starts a partition of its own, so this is the warning before
+        that storm, with the leader named."""
+        part = self.partition
+        seq_ts = self._leader_seq_ts
+        if part is None or seq_ts is None or self._partition_hold is not None or self._leader_stalled is not None:
+            return
+        stalled = now - seq_ts
+        if stalled < self.cfg.partition_stall_s:
+            return
+        heard = self._last_frame_heard()
+        if heard is None or now - heard > self.cfg.partition_stall_s:
+            return                      # nothing is heard: the sniffer is the one that is silent
+        who = self.leader_device(part[1])
+        addr = who.get("leader_addr")
+        row = self.seen.table.get(addr) if addr else None
+        last_seen = row.get("last_seen") if row else None
+        label = self.leader_label(part[1])
+        silent = None if last_seen is None else max(0.0, now - last_seen)
+        if silent is None:
+            tail = "the sniffer has no frame from the leader itself to date it by"
+        elif silent > self.cfg.partition_stall_s:
+            tail = f"the leader itself has not been heard for {fmt_span(silent)}: it is gone"
+        else:
+            tail = (f"the leader's own last frame was {fmt_span(silent)} ago: its stack still answers "
+                    "while its leader timer has stopped")
+        self._leader_stalled = {"partition": part[0], "leader_router": part[1], "leader": label,
+                                "addr": addr, "name": who.get("leader_name"), "since": seq_ts}
+        self._emit("leader_stalled", "warning", now, partition=part[0], leader_router=part[1],
+                   leader=label, addr=addr, name=who.get("leader_name"), id_sequence=self._leader_seq,
+                   since=seq_ts, stalled_for_s=round(stalled), last_carried_by=self._label(self._leader_seq_from),
+                   leader_last_seen=last_seen, leader_silent_for_s=None if silent is None else round(silent),
+                   note=f"leader {label} has not advanced the router-id sequence ({self._leader_seq}) for "
+                        f"{fmt_span(stalled)} while the mesh is still heard; {tail}. The routers give a "
+                        "leader up 120 s after the last advance and each starts a partition of its own")
+
+    def _settle_partition(self, now: float) -> None:
+        """Log the held partition change(s): one state is a change, more
+        is a storm. Called once the window has passed without a flip."""
+        hold = self._partition_hold
+        if hold is None:
+            return
+        self._partition_hold = None
+        prev, cur = hold["previous"], self.partition
+        before, after = self.leader_label(prev[1]), self.leader_label(cur[1])
+        previous = {"partition": prev[0], "leader_router": prev[1], "leader": before}
+        current = {"partition": cur[0], "leader_router": cur[1], "leader": after}
+        if prev[1] != cur[1]:
+            who = self.leader_device(prev[1])
+            self._lost_leader = {"addr": who.get("leader_addr"), "name": who.get("leader_name"),
+                                 "leader_router": prev[1], "partition": prev[0], "ts": hold["first_ts"],
+                                 "leader": before, "successor": after}
+        states = hold["states"]
+        if len(states) == 1 and hold["changes"] == 1:
+            self._emit("partition_or_leader_change", "warning", hold["first_ts"],
+                       previous=previous, current=current,
+                       note=f"partition {prev[0]} leader {before} -> partition {cur[0]} leader {after}: "
+                            "the mesh split, merged or elected a new leader")
+            return
+        seen = [prev] + [state for state, _ in states]
+        leaders = []
+        for state in seen:
+            label = self.leader_label(state[1])
+            if label not in leaders:
+                leaders.append(label)
+        duration = hold["last_ts"] - hold["first_ts"]
+        if prev[1] == cur[1] and prev[0] == cur[0]:
+            what = (f"the mesh split into {len(states)} partitions and merged back under {after} "
+                    f"after {fmt_span(duration)} ({hold['changes']} flips)")
+        elif prev[1] == cur[1]:
+            what = (f"the mesh split into {len(states)} partitions and merged under the same leader {after}, "
+                    f"partition {cur[0]}, after {fmt_span(duration)} ({hold['changes']} flips)")
+        else:
+            what = (f"leader {before} lost: {len(states)} partitions each led by a router of its own "
+                    f"for {fmt_span(duration)} ({hold['changes']} flips) before the mesh merged under {after}")
+        self._emit("partition_storm", "warning", hold["first_ts"], previous=previous, current=current,
+                   partitions=len(states), leaders=leaders, changes=hold["changes"],
+                   since=hold["first_ts"], until=hold["last_ts"], duration_s=round(duration, 1),
+                   note=f"{what}: every router hit the leader-age timeout together and re-elected; "
+                        "sleepy children re-attach in the minute after")
 
     def _note_observed_name(self, owner: str, name: str, repeat: bool = False) -> None:
         """``repeat`` marks a frame the MAC layer accepted as a retry: the
@@ -2644,6 +2802,10 @@ class Pipeline:
     def periodic(self, now: float) -> None:
         """Run every ~30 s in live capture: quiet checks, persistence."""
         self._check_clock(now)
+        hold = self._partition_hold
+        if hold is not None and now - hold["last_ts"] >= self.cfg.partition_settle_s:
+            self._settle_partition(now)
+        self._check_leader(now)
         self.seen.maybe_save()
         self.journal.save(now)
         self._check_credentials(now)

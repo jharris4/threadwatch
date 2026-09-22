@@ -74,7 +74,7 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `configured_pan_silent` | warning | `pan`, `heard_frames`, `window_s`, `busiest_pan`, `note` |
 | `mle_rejoin_attempt` | notice | `command`, `src`, `addr`, `name`; logged once `[rejoins] wave_s` has passed without another attempt, unless the batch became a `rejoin_wave` |
 | `rejoin_wave` | notice | `devices`, `attempts`, `commands` (count per MLE command), `names`, `since`, `until`, `duration_s`, `trigger` (the partition change it followed, or null), `note`; replaces the batch's individual `mle_rejoin_attempt` records in the log (the key journal still gets each attempt) |
-| `device_quiet` | warning, or notice when `reception` is `marginal` | `addr`, `name`, `silent_for_s` (wall clock since the device's last frame, as the pages show it), `unheard_s` (the part the recorder was listening for, the figure judged against `[quiet] silence_s`), `blind_s` (the difference: the recorder's own outage or clock step), `last_seen`, `rssi_dbm`, `reception`, `note`; when something proved the device alive after its last frame, `vouched_ts` and `vouched_by` (`parent`: its parent answered its keep-alive; `ack`: its radio acknowledged a frame) |
+| `device_quiet` | warning, or notice when `reception` is `marginal` unless corroborated (`was_leader`, `ha_unavailable_since`) | `addr`, `name`, `silent_for_s` (wall clock since the device's last frame, as the pages show it), `unheard_s` (the part the recorder was listening for, the figure judged against `[quiet] silence_s`), `blind_s` (the difference: the recorder's own outage or clock step), `last_seen`, `rssi_dbm`, `reception`, `was_leader` (the leader a partition change replaced, silent since around then), `ha_unavailable_since` (Home Assistant's open episode, when the check is on), `note`; when something proved the device alive after its last frame, `vouched_ts` and `vouched_by` (`parent`: its parent answered its keep-alive; `ack`: its radio acknowledged a frame) |
 | `visitor_left` | info | `addr` (never in `devices.json`; `name` is its label from `config/visitors.json`, else null), `first_seen`, `last_seen`, `heard_for_s`, `silent_for_s`, `frames`, `rloc16`, `parent`, `parent_addr`, `rssi_dbm`, `generations` (each key generation the address sent under, with the highest MAC `counter` and `mle_counter` heard), `note`. An address not in the inventory, heard for under 5 min as a child in its latest stretch of presence (a gap of over 5 min between frames starts a new stretch, so a phone that attaches twice in an evening is two visits), then silent for `[quiet] silence_s`: a phone or tablet reaching a HomeKit accessory. `visit` counts the address's visits (`data/state/visits.json`, kept by the recorder). Filed instead of `device_quiet`; the address is dropped from the device table at the same time, so it is never counted quiet or unnamed |
 | `visitor_returned` | info | `addr`, `name` (label from `config/visitors.json`, else null), `visit`, `last_visit`, `note`: an address that has visited before is heard again (phones keep their extended address, even across a reboot); raised in place of `device_first_seen`, whose row the last visit dropped |
 | `poll_starvation` | notice when first logged, warning once `[polls] confirm_s` later the polls are still unanswered (`confirmed`); notice only when `reception` is `marginal` or `episode` > 1 | `addr`, `name`, `unanswered_polls`, `since`, `starved_for_s`, `acked_polls`, `rssi_dbm`, `reception`, `episode`, `since_previous_s`, `confirmed`, `parent`, `parent_rloc16`, `parent_addr`, `note` |
@@ -92,6 +92,7 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `partition_or_leader_change` | warning | `previous`, `current`, each with `partition`, `leader_router` and `leader` (the router id with the device's name once the MLE layer has matched it); logged once the change has held for `[partition] settle_s` |
 | `partition_storm` | warning | `previous`, `current` (as above), `partitions` (distinct states seen), `leaders`, `changes` (flips), `since`, `until`, `duration_s`, `note`; several changes inside `[partition] settle_s`, logged as one |
 | `leader_stalled` | warning | `partition`, `leader_router`, `leader`, `addr`, `name`, `id_sequence`, `since`, `stalled_for_s`, `last_carried_by`, `leader_last_seen`, `leader_silent_for_s`, `note` |
+| `router_set_changed` | notice | `promoted`, `demoted` (each a list of `router_id`, `rloc16`, `addr`, `name`, `label`), `routers`, `previous_routers`, `previous_sample_ts`, `sample_ts`, `note`; from the `[otbr]` inventory's router table, one per pair of samples that differ |
 | `leader_resumed` | info | `partition`, `leader_router`, `leader`, `addr`, `name`, `since`, `stalled_for_s`, `note`; closes a `leader_stalled` |
 | `srp_refused` | warning | `addr`, `name`, `rcode`, `rcode_name`, `refusals`, `since`, `refused_for_s`, `accepted_ts` (the last accepted registration, if one was heard), `server` (the anycast locator answered from, when readable), `note`; once per streak |
 | `srp_accepted` | info | `addr`, `name`, `refusals`, `since`, `refused_for_s`, `server`, `note`; only after an `srp_refused` went out |
@@ -112,7 +113,7 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `snapshot_logs_failed` | notice | `label`, `addons`, `errors`, `status` (`failed`, `partial` or `skipped`), `note` (whether and when the recorder retries) |
 | `ha_logs_archive_stalled` | notice | `addons`, `pending_hours` (`<slug>/<YYYYMMDD-HH>`, UTC), `since`, `last_error`, `note`; once per outage, when the hourly archive (`[ha_logs] archive`) has had hours pending for an hour |
 | `ha_logs_archive_resumed` | info | `archived`, `lost` (hour names), `since`, `note`; once, when the catch-up after an outage completes |
-| `ha_unavailable` | warning once a device has been unavailable in Home Assistant for its hold; notice when `muted`, part of a burst (`burst_id`), reopened within `[ha_availability] rearm_s` (`episode` > 1) or `already_unavailable_at_start` | `addr`, `name`, `ha_device_id`, `entities`, `since`, `unavailable_for_s`, `hold_s`, `muted`, `burst_id`, `episode`, `cause` (`key_lag`, `counter_mismatch`, `dropped_polls`, `lost_parent`, `silent`, `radio_ok`, `unheard`), the radio evidence (`last_seen`, `silent_for_s`, `rssi_dbm`, `reception`, `starved`, `unserved`, `role`, `parent`, `generation`, `parent_generation`, `rejoin_ts`), `note` (with `[ha_availability] enabled`) |
+| `ha_unavailable` | warning once a device has been unavailable in Home Assistant for its hold; notice when `muted`, part of a burst (`burst_id`), reopened within `[ha_availability] rearm_s` (`episode` > 1) or `already_unavailable_at_start` | `addr`, `name`, `ha_device_id`, `entities`, `since`, `unavailable_for_s`, `hold_s`, `muted`, `burst_id`, `episode`, `cause` (`key_lag`, `counter_mismatch`, `dropped_polls`, `lost_parent`, `leader_lost`, `silent`, `radio_ok`, `unheard`), the radio evidence (`last_seen`, `silent_for_s`, `rssi_dbm`, `reception`, `starved`, `unserved`, `role`, `parent`, `generation`, `parent_generation`, `rejoin_ts`), `note` (with `[ha_availability] enabled`) |
 | `ha_unavailable_burst` | critical | `burst_id`, `devices` (each `name`, `addr`, `since`, `cause`), `count`, `window_s`, `first_since`, `note` (the causes, and "HA or Matter Server side" when most mapped devices dropped at once while the recorder still heard them); once per burst, with the automatic snapshot |
 | `ha_available` | info | `addr`, `name`, `ha_device_id`, `since`, `down_for_s`, `rejoined`, `generation`, `note`; only after an `ha_unavailable` went out |
 | `ha_unreachable` | notice | `failing_for_s`, `error`, `note`; once, after five minutes of failed polls |
@@ -151,7 +152,7 @@ never listed quiet or unnamed and does not grow the table by one row per
 visit. An unnamed address that held a router id is a device missing from
 the inventory, however briefly it was heard, and still pages. A start-up
 finds any visit an earlier run announced as `device_quiet` and files it
-the same way, closing that row on the day pages.
+the same way, closing that row on the day pages. A silence the rest of the recorder can already explain is not softened by reception: the leader a partition change or storm replaced, silent since around then, or a device Home Assistant has marked unavailable, is a warning with the corroboration in its note and in `was_leader` / `ha_unavailable_since`, however faintly the sniffer heard it. On 2026-09-22 the dead leader was heard at -87 dBm and its quiet was a notice blaming reception, twenty minutes after the storm had named it.
 
 Which PAN is yours comes from `[network] pan_id` in config.toml (`threadwatch
 import` prints it). Without it the recorder guesses: the PAN it has heard
@@ -466,6 +467,18 @@ smoke sensor's registrations started coming back SERVFAIL, hourly, from
 the same server that accepted its siblings; Apple Home lost it five days
 later, after a partition change broke the session it still had.
 
+`router_set_changed` is the mesh's router roster moving. The `[otbr]`
+inventory reads `ot-ctl router table` every `poll_s`, and that table
+lists every router id the leader has allocated, not just the OTBR's
+neighbours; each new sample is compared with the one before it and a
+router id that appeared or vanished is logged with the device's name
+(from its extended address), as a promotion or a demotion. The 09-22
+storm demoted three routers to children and promoted three others, which
+only a reading of two samples by hand showed at the time. The note names
+the partition change when one fell in the half hour before the sample.
+The first sample after a start is only remembered, so a restart announces
+nothing that happened while it was down.
+
 `retransmission_elevation` is the storm precursor: in one minute more than
 20% of frames were repeats (same sender and sequence number within 2 s, a
 frame whose ACK never came) and that is over twice the baseline, the median
@@ -579,7 +592,9 @@ by a key change, radio alive on an old generation), `counter_mismatch`
 (a `frame_counter_mismatch` in the last two hours: its parent drops
 everything it sends), `dropped_polls` (an open `poll_unserved`: its polls
 are acknowledged with data pending and nothing follows), `lost_parent` (polling
-a parent that no longer answers), `silent` (the radio went quiet before HA
+a parent that no longer answers), `leader_lost` (it was the leader a partition
+change or storm replaced and its radio went quiet around then: the leader's
+stack hung, then died), `silent` (the radio went quiet before HA
 lost it: the device died, lost power or left the mesh), `radio_ok` (heard
 in the last five minutes, so the fault is the Matter, IP or HA side) or
 `unheard` (the sniffer cannot hear it). Only Matter-over-Thread devices HA

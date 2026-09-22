@@ -210,9 +210,12 @@ class Tracker:
     written; ``names`` the inventory, for the device's own hold and mute."""
 
     def __init__(self, cfg, state_path: Path | None, *, emit, rows: dict, names,
-                 mapping: dict | None = None):
+                 mapping: dict | None = None, lost_leader=None):
         self.cfg, self.state_path = cfg, state_path
         self.emit, self.rows, self.names = emit, rows, names
+        # addr -> the pipeline's record of the leader a partition change
+        # replaced, when it is that device (Pipeline.lost_leader_for).
+        self.lost_leader = lost_leader or (lambda addr: None)
         self.mapping: dict = mapping or {}
         self.state = load_state(state_path)
         # Every start is a baseline: an episode carried over that was not
@@ -267,7 +270,8 @@ class Tracker:
         generation = newest_generation(row)[0] if row else None
         parent_generation = newest_generation(parent_row)[0] if parent_row else None
         cause = classify(row, parent_row, since, now, fresh_s=self.cfg.key_fresh_s,
-                         min_rssi_dbm=self.cfg.quiet_min_rssi_dbm)
+                         min_rssi_dbm=self.cfg.quiet_min_rssi_dbm,
+                         lost_leader=self.lost_leader(addr) if addr else None)
         last = row.get("last_seen") if row else None
         fields = {"addr": addr, "last_seen": last,
                   "silent_for_s": round(now - last) if isinstance(last, (int, float)) else None,

@@ -5496,3 +5496,141 @@ class SrpRefusedTest(unittest.TestCase):
             self.pipe.ingest(self._frame(t0 + i + 0.1, ROUTER, SENSOR, 53, 49153, answer))
         self.assertEqual(self._events("srp_refused"), [])
         self.assertNotIn("srp", self.pipe.seen.table[SENSOR])
+
+
+class CorroboratedQuietTest(unittest.TestCase):
+    """device_quiet keeps its warning for a marginal device when the rest
+    of the recorder already knows it failed: the leader the mesh lost, or
+    a device Home Assistant has marked unavailable (docs/ALERTING.md)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        (d / "devices.json").write_text(json.dumps([{"name": "Hall Router", "extendedAddress": ROUTER}]))
+        self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json")
+        self.pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _quiet(self):
+        return [r for r in self.pipe.events.records if r["event"] == "device_quiet"]
+
+    def _marginal_silence(self, t0):
+        for i in range(20):
+            self.pipe.ingest(frame(t0 + i, ROUTER, rssi=-88.0))
+        self.pipe.periodic(t0 + 20 + self.cfg.quiet_s + 1)
+
+    def test_a_marginal_silence_alone_is_a_notice(self):
+        t0 = 1_700_000_000.0
+        self._marginal_silence(t0)
+        rec = self._quiet()[0]
+        self.assertEqual((rec["severity"], rec["reception"], rec["was_leader"], rec["ha_unavailable_since"]),
+                         ("notice", "marginal", False, None))
+        self.assertTrue(rec["note"].startswith("sniffer hears this device at the edge of its range"))
+
+    def test_the_leader_the_mesh_lost_is_a_warning_however_faint(self):
+        t0 = 1_700_000_000.0
+        self.pipe._lost_leader = {"addr": ROUTER, "name": "Hall Router", "leader_router": 60,
+                                  "partition": 1, "ts": t0 + 25, "leader": "r60 (Hall Router)",
+                                  "successor": "r57 (Den Router)"}
+        self._marginal_silence(t0)
+        rec = self._quiet()[0]
+        self.assertEqual((rec["severity"], rec["reception"], rec["was_leader"]), ("warning", "marginal", True))
+        self.assertTrue(rec["note"].startswith(
+            "it was the mesh leader: it stopped leading at " + time.strftime("%H:%M:%S", time.localtime(t0 + 25))
+            + " and the routers re-elected r57 (Den Router): the device failed, whatever the signal here. "
+            "sniffer hears this device at the edge of its range"))
+        # A leader lost long before this silence is a different story.
+        self.pipe.events.records.clear()
+        self.pipe.quiet_reported.discard(ROUTER)
+        self.pipe._lost_leader["ts"] = t0 - 7200
+        self.pipe.seen.table[ROUTER]["quiet_reported"] = False
+        self.pipe._report_quiet(ROUTER, self.pipe.seen.table[ROUTER], t0 + 4000)
+        rec = self._quiet()[0]
+        self.assertEqual((rec["severity"], rec["was_leader"]), ("notice", False))
+
+    def test_a_device_home_assistant_has_lost_is_a_warning(self):
+        t0 = 1_700_000_000.0
+        self.pipe._ha_unavailable_since = lambda addr: t0 + 600 if addr == ROUTER else None
+        self._marginal_silence(t0)
+        rec = self._quiet()[0]
+        self.assertEqual((rec["severity"], rec["ha_unavailable_since"]), ("warning", t0 + 600))
+        self.assertIn("Home Assistant has had it unavailable since "
+                      + time.strftime("%H:%M:%S", time.localtime(t0 + 600)) + ": the device failed", rec["note"])
+
+
+class RouterSetChangedTest(unittest.TestCase):
+    """router_set_changed: router ids appearing or vanishing between two
+    OTBR inventory samples (docs/ALERTING.md)."""
+
+    R2 = "a2a2a2a2a2a2a2a2"
+    R3 = "a3a3a3a3a3a3a3a3"
+    HEADER = ("| ID | RLOC16 | Next Hop | Path Cost | LQ In | LQ Out | Age | Extended MAC     | Link |\n"
+              "+----+--------+----------+-----------+-------+--------+-----+------------------+------+\n")
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        (d / "devices.json").write_text(json.dumps([{"name": "Hall Router", "extendedAddress": ROUTER},
+                                                    {"name": "Den Router", "extendedAddress": self.R2}]))
+        self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json")
+        self.pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        self.samples = []
+
+        class Inventory:
+            history = {"samples": self.samples}
+
+            def tick(self, now):
+                pass
+        self.pipe._otbr_inventory = Inventory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _sample(self, ts, routers, status="ok"):
+        from threadwatch.otbr import table_rows
+        text = self.HEADER + "".join(f"| {rid:2d} | 0x{rid << 10:04x} |       57 |         1 |     3 |     3 |   5 | "
+                                     f"{ext} |    1 |\n" for rid, ext in routers)
+        self.samples.append({"started_at": ts, "status": status,
+                             "commands": {"router table": {"status": status, "output": text,
+                                                           "rows": table_rows(text) if status == "ok" else []}}})
+
+    def _events(self):
+        return [r for r in self.pipe.events.records if r["event"] == "router_set_changed"]
+
+    def test_promotions_and_demotions_between_two_samples_are_one_notice(self):
+        t0 = 1_700_000_000.0
+        self._sample(t0, [(60, ROUTER), (57, self.R2), (51, "0" * 16)])
+        self.pipe.periodic(t0 + 1)                                   # the first sample: remembered, not judged
+        self.assertEqual(self._events(), [])
+        self.pipe.periodic(t0 + 30)                                  # the same sample again: nothing
+        self._sample(t0 + 600, [(57, self.R2), (51, "0" * 16), (36, self.R3)])
+        self.pipe.periodic(t0 + 601)
+        ev = self._events()
+        self.assertEqual(len(ev), 1)
+        rec = ev[0]
+        self.assertEqual(rec["ts"], t0 + 600)
+        self.assertEqual([d["label"] for d in rec["promoted"]], [self.R3 + " r36"])
+        self.assertEqual([d["label"] for d in rec["demoted"]], ["Hall Router r60"])
+        self.assertEqual((rec["routers"], rec["previous_routers"], rec["demoted"][0]["rloc16"]), (3, 3, "f000"))
+        self.assertIn("1 promoted (" + self.R3 + " r36), 1 demoted (Hall Router r60); 3 routers now", rec["note"])
+        self.assertNotIn("partition change", rec["note"])
+        self.pipe.periodic(t0 + 700)                                 # judged once
+        self.assertEqual(len(self._events()), 1)
+
+    def test_an_unchanged_or_failed_sample_says_nothing_and_a_storm_is_named(self):
+        t0 = 1_700_000_000.0
+        self._sample(t0, [(60, ROUTER), (57, self.R2)])
+        self.pipe.periodic(t0 + 1)
+        self._sample(t0 + 600, [(60, ROUTER), (57, self.R2)])
+        self._sample(t0 + 1200, [], status="failed")
+        self.pipe.periodic(t0 + 1201)
+        self.assertEqual(self._events(), [])
+        self.pipe._partition_changed_ts = t0 + 1500
+        self._sample(t0 + 1800, [(57, self.R2)])
+        self.pipe.periodic(t0 + 1801)
+        rec = self._events()[0]
+        self.assertEqual(rec["previous_sample_ts"], t0 + 600)        # the failed sample was skipped over
+        self.assertIn("after the partition change at " + time.strftime("%H:%M:%S", time.localtime(t0 + 1500)),
+                      rec["note"])

@@ -48,6 +48,26 @@ class ClassifyTest(unittest.TestCase):
                                                                           row(counter_seq=86, counter_ts=NOW),
                                                                           SINCE, NOW)[1]))
 
+    def test_the_leader_the_mesh_lost_outranks_a_plain_silence(self):
+        lost = {"addr": "aa", "ts": SINCE - 300, "successor": "r57 (Basement Apple TV)"}
+        silent_leader = row(last_seen=SINCE - 320, quiet_reported=True, rssi=-87.0)
+        cause, text = classify(silent_leader, None, SINCE, NOW, lost_leader=lost)
+        self.assertEqual(cause, "leader_lost")
+        self.assertIn("it stopped leading at " + time.strftime("%H:%M:%S", time.localtime(SINCE - 300)), text)
+        self.assertIn("re-elected r57 (Basement Apple TV)", text)
+        self.assertIn("radio went silent at " + time.strftime("%H:%M:%S", time.localtime(SINCE - 320)), text)
+        # Marginal reception no longer makes it "unheard": the mesh said what happened.
+        self.assertEqual(classify(row(last_seen=SINCE - 320, rssi=-87.0), None, SINCE, NOW, lost_leader=lost)[0],
+                         "leader_lost")
+        # Starvation still comes first; a last frame far from the loss is not this.
+        self.assertEqual(classify(row(starved=True, last_seen=SINCE - 320), None, SINCE, NOW, lost_leader=lost)[0],
+                         "lost_parent")
+        self.assertEqual(classify(row(last_seen=SINCE - 3000, quiet_reported=True), None, SINCE, NOW,
+                                  lost_leader=lost)[0], "silent")
+        # ...and a leader heard in the last five minutes is not lost.
+        self.assertEqual(classify(row(last_seen=NOW - 60), None, SINCE, NOW,
+                                  lost_leader={"addr": "aa", "ts": NOW - 100})[0], "radio_ok")
+
     def test_a_stale_generation_reading_or_one_behind_is_not_a_key_lag(self):
         parent = row(counter_seq=86, counter_ts=NOW - 30)
         self.assertEqual(classify(row(counter_seq=84, counter_ts=NOW - 7200), parent, SINCE, NOW)[0], "radio_ok")

@@ -393,6 +393,9 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
                      f"leader {prev.get('leader')} -> {cur.get('leader')} in "
                      f"{fmt_duration(rec.get('duration_s') or 0)}, {rec.get('changes')} flips")
             ep["end"] = rec.get("until", rec["ts"])
+        elif ev == "router_set_changed":
+            new("partition", rec, f"router set changed: +{len(rec.get('promoted') or [])} "
+                                  f"-{len(rec.get('demoted') or [])}", rec.get("note", ""))
         elif ev == "leader_stalled":
             addr = _addr(rec) or f"r{rec.get('leader_router')}"
             open_leader[addr] = new("partition", rec, f"leader stalled: {rec.get('leader')}",

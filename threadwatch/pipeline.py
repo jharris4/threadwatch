@@ -231,6 +231,11 @@ class Pipeline:
         # the last batch that went out as a wave (for the attributions).
         self._rejoin_wave: dict | None = None
         self._last_rejoin_wave: dict | None = None
+        # The newest OTBR inventory sample whose router table has been
+        # compared (its started_at): each new sample is judged against the
+        # one before it, once. Seeded at start so a restart announces
+        # nothing that happened before it.
+        self._router_set_ts: float | None = None
         # SRP (DNS UPDATE) transactions in flight, by DNS id: the client
         # that sent the request, so a relayed response is credited to the
         # device it is for and not to the router that carried it; and the
@@ -2794,6 +2799,99 @@ class Pipeline:
         elif hold is None:
             self._note_route_sequence(sequence, ts, sender)
 
+    # ------------------------------------------------------- router set
+
+    @staticmethod
+    def _router_set(sample: dict) -> dict[int, dict] | None:
+        """router id -> {rloc16, addr} from a sample's router table, or
+        None when the sample has no usable table."""
+        from .otbr import _ext, _rloc
+        result = (sample.get("commands") or {}).get("router table") or {}
+        if result.get("status") != "ok":
+            return None
+        routers = {}
+        for row in result.get("rows") or []:
+            rid = row.get("id")
+            if rid is None or not str(rid).isdigit():
+                continue
+            ext = _ext(row)
+            routers[int(rid)] = {"rloc16": _rloc(row), "addr": None if ext in (None, "0" * 16) else ext}
+        return routers
+
+    def _check_router_set(self, samples: list[dict], now: float) -> None:
+        """router_set_changed: the OTBR's router table gained or lost
+        router ids between two inventory samples. The table lists every
+        router id the leader has allocated, so a change is a promotion or
+        a demotion somewhere on the mesh, which nothing on air says
+        plainly. Compared once per new sample; the first sample after a
+        start is only remembered."""
+        usable = [x for x in samples if self._router_set(x) is not None]
+        if not usable:
+            return
+        newest = usable[-1]
+        ts = newest.get("started_at")
+        if self._router_set_ts is None or ts is None:
+            self._router_set_ts = ts
+            return
+        if ts <= self._router_set_ts:
+            return
+        previous = None
+        for x in reversed(usable[:-1]):
+            if (x.get("started_at") or 0) <= self._router_set_ts:
+                previous = x
+                break
+        self._router_set_ts = ts
+        if previous is None:
+            return
+        before, after = self._router_set(previous), self._router_set(newest)
+        promoted = [rid for rid in sorted(after) if rid not in before]
+        demoted = [rid for rid in sorted(before) if rid not in after]
+        if not promoted and not demoted:
+            return
+
+        def describe(rid, table):
+            entry = table[rid]
+            addr = entry.get("addr")
+            name = self.names.name(addr) if addr else None
+            return {"router_id": rid, "rloc16": entry.get("rloc16"), "addr": addr, "name": name,
+                    "label": f"{name or addr or '?'} r{rid}"}
+        up = [describe(r, after) for r in promoted]
+        down = [describe(r, before) for r in demoted]
+        changed = self._partition_changed_ts
+        follows = (f", after the partition change at {time.strftime('%H:%M:%S', time.localtime(changed))}"
+                   if changed is not None and 0 <= ts - changed <= 1800 else "")
+        parts = []
+        if up:
+            parts.append(f"{len(up)} promoted ({', '.join(d['label'] for d in up)})")
+        if down:
+            parts.append(f"{len(down)} demoted ({', '.join(d['label'] for d in down)})")
+        self._emit("router_set_changed", "notice", ts, promoted=up, demoted=down, routers=len(after),
+                   previous_routers=len(before), previous_sample_ts=previous.get("started_at"), sample_ts=ts,
+                   note=f"router set changed between the OTBR inventory samples of "
+                        f"{time.strftime('%H:%M', time.localtime(previous.get('started_at') or ts))} and "
+                        f"{time.strftime('%H:%M', time.localtime(ts))}: " + ", ".join(parts)
+                        + f"; {len(after)} routers now{follows}")
+
+    def lost_leader_for(self, addr: str | None) -> dict | None:
+        """The record of the leader a partition change or storm replaced,
+        when it is this device: what device_quiet and the HA cause read
+        to say that its silence is the leader dying, not reception."""
+        lost = self._lost_leader
+        if not addr or not lost or lost.get("addr") != addr:
+            return None
+        return lost
+
+    def _ha_unavailable_since(self, addr: str) -> float | None:
+        """When Home Assistant marked this device unavailable, if its
+        episode is open; None otherwise or without the check."""
+        tracker = self._haavail
+        if tracker is None:
+            return None
+        for ep in tracker.status().get("open", ()):
+            if (ep.get("addr") or "").lower() == addr:
+                return ep.get("since")
+        return None
+
     def _reset_leader_pulse(self, sequence: int | None, ts: float, sender: str | None) -> None:
         self._leader_seq = sequence
         self._leader_seq_ts = ts if sequence is not None else None
@@ -3053,6 +3151,7 @@ class Pipeline:
             samples = self._otbr_inventory.history.get("samples", [])
             if samples:
                 self.journal.inventory(samples[-1])
+                self._check_router_set(samples, now)
         # Devices on another PAN (a neighbour's mesh, an unpaired device
         # announcing itself) are tracked for the report but never alerted on:
         # their absence says nothing about this network.
@@ -3347,7 +3446,8 @@ class Pipeline:
         except OSError:
             self._haavail_map_ts = None
         self._haavail = Tracker(self.cfg, self.cfg.state_dir / STATE_FILE, emit=self._emit,
-                                rows=self.seen.table, names=self.names, mapping=mapping)
+                                rows=self.seen.table, names=self.names, mapping=mapping,
+                                lost_leader=self.lost_leader_for)
 
     def _poll_ha_availability(self, now: float) -> None:
         """Every [ha_availability] poll_s: the worker's result from last
@@ -4641,6 +4741,23 @@ class Pipeline:
         else:
             note = ("no frames heard; if no mle_rejoin_attempt follows, "
                     "suspect device-internal failure rather than RF")
+        # What the rest of the recorder already knows about this device
+        # outranks the reception hedge: the leader the mesh lost, or Home
+        # Assistant having marked it unavailable, is a device that failed,
+        # however faintly the sniffer heard it.
+        corroborated = []
+        lost = self.lost_leader_for(addr)
+        if lost and abs(row["last_seen"] - lost["ts"]) <= 600:
+            corroborated.append(
+                f"it was the mesh leader: it stopped leading at "
+                f"{time.strftime('%H:%M:%S', time.localtime(lost['ts']))} and the routers re-elected "
+                f"{lost.get('successor') or 'another router'}")
+        ha_since = self._ha_unavailable_since(addr)
+        if ha_since is not None:
+            corroborated.append(f"Home Assistant has had it unavailable since "
+                                f"{time.strftime('%H:%M:%S', time.localtime(ha_since))}")
+        if corroborated:
+            note = "; ".join(corroborated) + ": the device failed, whatever the signal here. " + note
         if blind >= 60:
             note += (f" (the recorder itself was not listening for {round(blind / 60)} min of the "
                      f"{round(wall / 60)} min: a restart, a stalled dongle or a clock step)")
@@ -4663,12 +4780,14 @@ class Pipeline:
         muted = self.names.muted(addr)
         if muted:
             note += " Muted in devices.json: logged, not paged."
+        soft = (marginal or unheard) and not corroborated
         self._emit(
-            "device_quiet", "notice" if marginal or unheard or muted else "warning", now, addr=addr,
+            "device_quiet", "notice" if soft or muted else "warning", now, addr=addr,
             name=self.names.name(addr), silent_for_s=round(wall), unheard_s=round(unheard_s),
             blind_s=round(blind), last_seen=row["last_seen"], hold_s=self.quiet_threshold_s(addr), muted=muted,
             rssi_dbm=rssi, reception="unheard" if unheard else "marginal" if marginal else "good",
-            radio_down=unheard, note=note, **proxy)
+            radio_down=unheard, was_leader=bool(lost and abs(row["last_seen"] - lost["ts"]) <= 600),
+            ha_unavailable_since=ha_since, note=note, **proxy)
 
 
 class CredentialsError(RuntimeError):

@@ -192,7 +192,9 @@ LEGEND = [
      "Routine after a border router reboots; a problem if it keeps happening. A leader stalled row "
      "names the leader whose router-id sequence stopped advancing: the storm follows about a minute "
      "later unless it recovers, and a partition storm row is that storm, every router briefly "
-     "leading a partition of its own before the merge."),
+     "leading a partition of its own before the merge. A router set changed row is the OTBR inventory "
+     "([otbr]) seeing router ids appear or vanish between two samples: promotions and demotions the "
+     "air never says plainly."),
     ("rejoin", "Rejoin attempt",
      "A device sent MLE Parent Request, Child ID Request or Announce: it lost its parent or its "
      "network and is trying to get back (credentials needed). Expected after a device or router "

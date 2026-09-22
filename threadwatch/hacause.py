@@ -21,6 +21,9 @@ RADIO_OK_S = 5 * 60
 # A last frame this long before HA lost the device is the radio going
 # first: the device died, lost power or left the mesh.
 SILENT_BEFORE_S = 120.0
+# A last frame within this long of the moment the mesh lost its leader is
+# that leader dying, when the device is the leader that was lost.
+LEADER_LOST_S = 600.0
 
 # frame_counter_mismatch is said again once an hour while the device keeps
 # sending below its advertisement; a stamp older than this is a past episode.
@@ -34,6 +37,9 @@ SENTENCES = {
     "dropped_polls": "Its polls are acknowledged with data pending and nothing follows: the "
                      "parent's stack is dropping them (poll_unserved).",
     "lost_parent": "Still polling its parent with no answer: parent gone or link broken.",
+    "leader_lost": "It was the mesh leader: it stopped leading at {stopped} and the routers re-elected "
+                   "{successor}; its radio went silent at {when}. The leader's stack hung, then died "
+                   "(leader_stalled, partition_storm).",
     "silent": "Radio went silent at {when}: device died, lost power or left the mesh.",
     "radio_ok": "Radio and key look fine: likely the Matter, IP or HA side. Check the Matter Server log.",
     "unheard": "The sniffer cannot hear this device; cause unknown from here.",
@@ -41,14 +47,18 @@ SENTENCES = {
 
 
 def classify(row: dict | None, parent_row: dict | None, episode_since: float, now: float, *,
-             fresh_s: float = 30 * 60, min_rssi_dbm: float = -82.0) -> tuple[str, str]:
+             fresh_s: float = 30 * 60, min_rssi_dbm: float = -82.0,
+             lost_leader: dict | None = None) -> tuple[str, str]:
     """(cause, sentence) for a device HA marked unavailable at
     ``episode_since``, from its last-seen row and its parent's. A device
     with an open key-lag episode (the recorder's own judgement) is
     key_lag before anything else; otherwise a fresh generation reading
     two or more below the parent's says the same. Then starvation, then
-    a silence that began before HA lost the device, then a radio heard
-    in the last five minutes, and finally: the sniffer cannot say."""
+    the leader the mesh lost (``lost_leader``: the pipeline's record of
+    the leader a partition change or storm replaced, when it is this
+    device and its silence began around then), then a silence that began
+    before HA lost the device, then a radio heard in the last five
+    minutes, and finally: the sniffer cannot say."""
     if not row:
         return "unheard", SENTENCES["unheard"]
     gens = row.get("keylag_gens")
@@ -70,6 +80,11 @@ def classify(row: dict | None, parent_row: dict | None, episode_since: float, no
         return "lost_parent", SENTENCES["lost_parent"]
     last = row.get("last_seen")
     heard = isinstance(last, (int, float)) and not isinstance(last, bool)
+    if lost_leader and heard and abs(last - lost_leader["ts"]) <= LEADER_LOST_S and now - last > RADIO_OK_S:
+        return "leader_lost", SENTENCES["leader_lost"].format(
+            stopped=time.strftime("%H:%M:%S", time.localtime(lost_leader["ts"])),
+            successor=lost_leader.get("successor") or "another router",
+            when=time.strftime("%H:%M:%S", time.localtime(last)))
     if heard and last < episode_since - SILENT_BEFORE_S and row.get("quiet_reported"):
         return "silent", SENTENCES["silent"].format(when=time.strftime("%H:%M", time.localtime(last)))
     if heard and now - last <= RADIO_OK_S:

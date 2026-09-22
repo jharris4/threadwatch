@@ -480,5 +480,9 @@ class DevicesByModelTest(unittest.TestCase):
             (cfg.state_dir / "status.json").write_text(json.dumps({"updated": now, "last_frame_age_s": 3}))
             from threadwatch.web import Site
             body = Site(cfg).devices_page()
-            self.assertIn('<span class="k">by model</span> ALPSTUGA air quality monitor 2 '
-                          '(<span class="bad">1 quiet</span>, 1 marginal) &middot; Apple TV 4K 1</p>', body)
+            self.assertIn('<summary>by model (2)</summary>', body)
+            self.assertIn('<tr><td>ALPSTUGA air quality monitor</td><td class="n">2</td>'
+                          '<td class="n"><span class="bad">1</span></td><td class="n"></td>'
+                          '<td class="n">1</td></tr>'
+                          '<tr><td>Apple TV 4K</td><td class="n">1</td><td class="n"></td><td class="n"></td>'
+                          '<td class="n"></td></tr>', body)

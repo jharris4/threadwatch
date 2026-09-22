@@ -674,10 +674,11 @@ class Site:
 
     @staticmethod
     def models_html(every: list[dict], names, dominant) -> str:
-        """One line per model in devices.json with how many of that model
-        are tracked and how many of them are quiet, marginal or unavailable
-        in Home Assistant: the roll call that says which product line is
-        failing (four ALPSTUGA monitors died in three weeks of 2026-09)."""
+        """One row per model in devices.json with how many of that model
+        are tracked and how many of them are quiet, unavailable in Home
+        Assistant or marginal: the roll call that says which product line
+        is failing (four ALPSTUGA monitors died in three weeks of 2026-09).
+        Collapsed by default so it does not push the device table down."""
         tally: dict[str, dict] = {}
         for r in every:
             if r.get("rotated_to") or (dominant is not None and r.get("pan") not in (None, dominant)):
@@ -695,14 +696,20 @@ class Site:
                 t["unavailable"] += 1
         if not tally:
             return ""
-        parts = []
+
+        def cell(n: int, cls: str = "") -> str:
+            # A zero is left blank so the eye lands on the models with a problem.
+            if not n:
+                return '<td class="n"></td>'
+            return f'<td class="n"><span class="{cls}">{n}</span></td>' if cls else f'<td class="n">{n}</td>'
+
+        rows = []
         for model, t in sorted(tally.items(), key=lambda kv: (-kv[1]["n"], kv[0])):
-            flags = [f'<span class="bad">{t["quiet"]} quiet</span>' if t["quiet"] else "",
-                     f'<span class="warn">{t["unavailable"]} unavailable in HA</span>' if t["unavailable"] else "",
-                     f'{t["marginal"]} marginal' if t["marginal"] else ""]
-            flags = [f for f in flags if f]
-            parts.append(f'{esc(model)} {t["n"]}' + (f' ({", ".join(flags)})' if flags else ""))
-        return f'<p class="muted"><span class="k">by model</span> {" &middot; ".join(parts)}</p>'
+            rows.append(f'<tr><td>{esc(model)}</td><td class="n">{t["n"]}</td>{cell(t["quiet"], "bad")}'
+                        f'{cell(t["unavailable"], "warn")}{cell(t["marginal"])}</tr>')
+        return (f'<details><summary>by model ({len(tally)})</summary>'
+                f'<table><tr><th>model</th><th>tracked</th><th>quiet</th><th>unavailable in HA</th>'
+                f'<th>marginal</th></tr>{"".join(rows)}</table></details>')
 
     @staticmethod
     def heard_by_html(r: dict, labels: list[str]) -> str:

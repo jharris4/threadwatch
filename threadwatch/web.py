@@ -647,7 +647,13 @@ class Site:
             else:
                 nm = '<span class="warn">unknown</span>'
             if r.get("border_router_label"):
-                nm += f' <span class="muted">border router {esc(r["border_router_label"])}</span>'
+                # A named border router needs only the tag: its mDNS instance
+                # and model ("AppleTV Basement Room (Apple BorderRouter)")
+                # restate the name, and on the OTBR the model is the instance
+                # name again. The full label stays where it is the only
+                # identification, an unnamed address, and on the device page.
+                who = "" if r["name"] else f' {esc(r["border_router_label"])}'
+                nm += f' <span class="muted">border router{who}</span>'
             if r.get("rotated_to"):
                 seen_html = (f'<span class="muted">retired: now <a href="/device/{esc(r["rotated_to"])}">'
                              f'{esc(r["rotated_to"])}</a></span>')

@@ -305,8 +305,23 @@ class PageBranchTest(unittest.TestCase):
             "72d035122fdf06f6": {"first_seen": self.now - 600, "last_seen": self.now - 30, "frames": 30,
                                  "rssi": None, "types": {}},
         })
+        # The recorder has learned two border routers from mDNS: the TV, which
+        # devices.json names, and one no entry covers.
+        (self.cfg.state_dir / "border-routers.json").write_text(json.dumps({
+            "appletv-living-room.local": {"addr": TV2, "name": "Living Room Apple TV",
+                                          "instance": "AppleTV Living Room", "vendor": "Apple",
+                                          "model": "BorderRouter", "previous": [{"addr": TV1}]},
+            "core-otbr.local": {"addr": "72d035122fdf06f6", "instance": "Home Assistant OpenThread Border Router",
+                                "vendor": "Home Assistant", "model": "OpenThread Border Router"}}))
         _st, body = self.get("/devices")
         self.assertIn(f'retired: now <a href="/device/{TV2}">{TV2}</a>', body)
+        # A named border router carries only the tag, on its live and its
+        # retired address alike; the unnamed one keeps the label that is all
+        # it has.
+        self.assertEqual(body.count('Living Room Apple TV <span class="muted">border router</span></a>'), 2)
+        self.assertNotIn("AppleTV Living Room", body)
+        self.assertIn('<span class="warn">unknown</span> <span class="muted">border router '
+                      'Home Assistant OpenThread Border Router (Home Assistant OpenThread Border Router)</span>', body)
         self.assertNotIn("by model", body)                          # no entry carries a model
         self.assertIn('<span class="warn">foreign 0x1234</span>', body)
         self.assertIn('<span class="muted">ours</span>', body)

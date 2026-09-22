@@ -661,13 +661,46 @@ class Site:
         unknown = sum(1 for r in every if r["name"] is None and not r.get("visitor"))
         note = (f'<p class="muted">{len(every)} addresses tracked'
                 + (f', <span class="warn">{unknown} not in devices.json</span>' if unknown else "")
-                + (f'; showing {len(rows)} ({DEVICE_FILTERS[only][0]})' if only else "") + '.</p>')
+                + (f'; showing {len(rows)} ({DEVICE_FILTERS[only][0]})' if only else "") + '.</p>'
+                + self.models_html(every, names, dominant))
         table = ('<table><tr><th>device</th><th>role (live)</th><th>key gen</th>'
                  + ('<th>HA</th>' if show_ha else "") + '<th>last heard</th><th>rssi</th>'
                  '<th>reception</th>' + ('<th>heard by</th>' if radio_labels else "")
                  + f'<th>frames</th><th>pan</th><th>address</th></tr>{"".join(trs)}</table>'
                  if trs else f'<p class="empty">no devices {DEVICE_FILTERS[only][0] if only else "tracked"}</p>')
         return self.page("devices", f'<h1>devices</h1>{note}{filters}{table}')
+
+    @staticmethod
+    def models_html(every: list[dict], names, dominant) -> str:
+        """One line per model in devices.json with how many of that model
+        are tracked and how many of them are quiet, marginal or unavailable
+        in Home Assistant: the roll call that says which product line is
+        failing (four ALPSTUGA monitors died in three weeks of 2026-09)."""
+        tally: dict[str, dict] = {}
+        for r in every:
+            if r.get("rotated_to") or (dominant is not None and r.get("pan") not in (None, dominant)):
+                continue
+            model = (names.by_addr.get(r["addr"]) or {}).get("model")
+            if not model:
+                continue
+            t = tally.setdefault(model, {"n": 0, "quiet": 0, "marginal": 0, "unavailable": 0})
+            t["n"] += 1
+            if r.get("quiet") or (r.get("silent_for_s") or 0) > 1800:
+                t["quiet"] += 1
+            if r.get("reception") == "marginal":
+                t["marginal"] += 1
+            if r.get("ha_state") == "unavailable":
+                t["unavailable"] += 1
+        if not tally:
+            return ""
+        parts = []
+        for model, t in sorted(tally.items(), key=lambda kv: (-kv[1]["n"], kv[0])):
+            flags = [f'<span class="bad">{t["quiet"]} quiet</span>' if t["quiet"] else "",
+                     f'<span class="warn">{t["unavailable"]} unavailable in HA</span>' if t["unavailable"] else "",
+                     f'{t["marginal"]} marginal' if t["marginal"] else ""]
+            flags = [f for f in flags if f]
+            parts.append(f'{esc(model)} {t["n"]}' + (f' ({", ".join(flags)})' if flags else ""))
+        return f'<p class="muted"><span class="k">by model</span> {" &middot; ".join(parts)}</p>'
 
     @staticmethod
     def heard_by_html(r: dict, labels: list[str]) -> str:

@@ -50,6 +50,16 @@ def _snapshot_ha_logs(cfg, dest: Path) -> None:
                     if got[0] is not None and got[1] is not None else "")
             print(f"  {slug}: {r.get('lines', 0):,} lines, {r.get('bytes_gz', 0) / 1e6:.1f} MB gzipped, "
                   f"{r.get('elapsed_s', 0):.0f} s{span}" + ("" if r.get("complete") else " (partial)"))
+        elif r.get("hours"):
+            hours = r["hours"]
+            kept = sorted(h for h, v in hours.items() if v.get("file"))
+            lost = r.get("lost") or [h for h, v in hours.items() if v.get("source") == "lost"]
+            partial = [h for h, v in hours.items() if v.get("file") and not v.get("complete")]
+            span = f", {kept[0]}-{kept[-1]} UTC" if kept else ""
+            print(f"  {slug}: {len(kept)} archived hours kept, {r.get('lines', 0):,} lines{span}"
+                  + (f"; {len(lost)} lost ({', '.join(lost[:4])}{', ...' if len(lost) > 4 else ''})" if lost else "")
+                  + (f"; {len(partial)} partial" if partial else "")
+                  + (f"; {r['error']}" if r.get("error") else ""))
         else:
             print(f"  {slug}: nothing kept ({r.get('error') or status.get('reason') or 'no log'})")
     verdict = status.get("status")

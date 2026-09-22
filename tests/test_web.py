@@ -307,6 +307,7 @@ class PageBranchTest(unittest.TestCase):
         })
         _st, body = self.get("/devices")
         self.assertIn(f'retired: now <a href="/device/{TV2}">{TV2}</a>', body)
+        self.assertNotIn("by model", body)                          # no entry carries a model
         self.assertIn('<span class="warn">foreign 0x1234</span>', body)
         self.assertIn('<span class="muted">ours</span>', body)
         self.assertIn('<span class="muted">?</span>', body)        # a device with no PAN yet
@@ -443,3 +444,40 @@ class PageBranchTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DevicesByModelTest(unittest.TestCase):
+    """The devices page tallies the inventory's models: how many of each
+    are tracked and how many of them are quiet, marginal or unavailable."""
+
+    def test_the_tally_counts_each_model_once_per_live_address(self):
+        import tempfile
+        from tests.test_web import AQ, TV1, TV2
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "devices.json").write_text(json.dumps([
+                {"name": "Office AQ", "extendedAddress": AQ, "model": "ALPSTUGA air quality monitor"},
+                {"name": "Hall AQ", "extendedAddress": "1afe3b8423f332de", "model": "ALPSTUGA air quality monitor"},
+                {"name": "Living Room Apple TV", "extendedAddresses": [TV1, TV2], "model": "Apple TV 4K"},
+                {"name": "Plain Outlet", "extendedAddress": "72d035122fdf06f6"},
+            ]))
+            cfg = Config(data_dir=d / "data", devices_path=d / "devices.json", pan_id=0x4e21)
+            cfg.state_dir.mkdir(parents=True, exist_ok=True)
+            now = time.time()
+            (cfg.state_dir / "last-seen.json").write_text(json.dumps({
+                AQ: {"first_seen": now - 7200, "last_seen": now - 60, "frames": 900, "rssi": -60.0,
+                     "pan": 0x4e21, "types": {}},
+                "1afe3b8423f332de": {"first_seen": now - 7200, "last_seen": now - 4000, "frames": 900,
+                                     "rssi": -88.0, "pan": 0x4e21, "types": {}},
+                TV1: {"first_seen": now - 9000, "last_seen": now - 8000, "frames": 400, "rssi": -55.0,
+                      "pan": 0x4e21, "rotated_to": TV2, "types": {}},
+                TV2: {"first_seen": now - 8000, "last_seen": now - 30, "frames": 500, "rssi": -55.0,
+                      "pan": 0x4e21, "types": {}},
+                "72d035122fdf06f6": {"first_seen": now - 600, "last_seen": now - 30, "frames": 30,
+                                     "rssi": -60.0, "pan": 0x4e21, "types": {}},
+            }))
+            (cfg.state_dir / "status.json").write_text(json.dumps({"updated": now, "last_frame_age_s": 3}))
+            from threadwatch.web import Site
+            body = Site(cfg).devices_page()
+            self.assertIn('<span class="k">by model</span> ALPSTUGA air quality monitor 2 '
+                          '(<span class="bad">1 quiet</span>, 1 marginal) &middot; Apple TV 4K 1</p>', body)

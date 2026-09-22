@@ -1024,3 +1024,36 @@ class ConfigValidationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SnapshotLogSummaryTest(unittest.TestCase):
+    """The lines `threadwatch snapshot` prints for the HA add-on logs: an
+    add-on whose hours came from the archive says how many were kept, not
+    "nothing kept" for want of a live file."""
+
+    def test_archived_hours_are_reported_as_kept(self):
+        import contextlib
+        import io
+        from unittest import mock
+
+        from threadwatch import cli, halogs
+        from threadwatch.config import Config
+        hours = {"20260922-14": {"source": "archive", "file": "ha-logs/otbr/20260922-14.log.gz", "lines": 100,
+                                 "complete": True, "error": None},
+                 "20260922-15": {"source": "lost", "file": None, "lines": 0, "complete": True, "error": None},
+                 "20260922-16": {"source": "archive", "file": "ha-logs/otbr/20260922-16.log.gz", "lines": 50,
+                                 "complete": True, "error": None},
+                 "20260922-17": {"source": "live", "file": "ha-logs/otbr/20260922-17.log.gz", "lines": 7,
+                                 "complete": False, "error": None}}
+        status = {"status": "partial", "reason": None,
+                  "addons": {"otbr": {"slug": "otbr", "file": None, "hours": hours, "lines": 157,
+                                      "complete": False, "error": None, "lost": ["20260922-15"]},
+                             "matter": {"slug": "matter", "file": None, "complete": False, "error": "HTTP 502"}}}
+        out = io.StringIO()
+        with mock.patch.object(halogs, "attach_logs", return_value=status), contextlib.redirect_stdout(out):
+            cli._snapshot_ha_logs(Config(data_dir=Path("/nonexistent"), ha_logs_retry=False), Path("/tmp/x"))
+        text = out.getvalue()
+        self.assertIn("  otbr: 3 archived hours kept, 157 lines, 20260922-14-20260922-17 UTC; "
+                      "1 lost (20260922-15); 1 partial", text)
+        self.assertIn("  matter: nothing kept (HTTP 502)", text)
+        self.assertIn("ha-logs: partial", text)

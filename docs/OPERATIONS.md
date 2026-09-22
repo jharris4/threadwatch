@@ -419,6 +419,9 @@ it up if you care about the history; nothing else holds it.
                              sends them and removes the file (docs/ALERTING.md)
         border-routers.json  mDNS hostname -> current address of each border router, with the
                              addresses it retired (how a rebooted Apple hub keeps its name)
+        device-rotations.json  each address a device was seen to move to, and from which: how a
+                             device that took a new address after a firmware update keeps its name
+                             (docs/ALERTING.md, device_address_changed)
         capture.fifo         the pipe the sniffer writes into; recreated at every start
         events/YYYY-MM-DD.jsonl   the event log (docs/REVIEW.md, "Storage")
         events.jsonl.migrated     a pre-day-rolling events.jsonl, kept after it was split into
@@ -447,7 +450,9 @@ held are gone for good, since HA's journal has long since let them go.
 one `already_unavailable_at_start` notice per device down at the time and
 one repeated page for an episode already paged. `border-routers.json` is rebuilt at the next mDNS
 browse, but the retired addresses in it are forgotten, so an Apple hub's
-history from before its last reboot loses its name. `last-seen.json` is
+history from before its last reboot loses its name; `device-rotations.json`
+the same for a device that took a new address, until its next registration
+says so again. `last-seen.json` is
 the expensive one, below. The event log and the ring are your history and
 are never worth deleting; the ring prunes itself.
 

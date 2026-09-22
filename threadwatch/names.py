@@ -160,13 +160,19 @@ class AmbiguousName(ValueError):
 
 
 class DeviceNames:
-    def __init__(self, inventory_path: Path | None, learned_path: Path | None = None):
+    def __init__(self, inventory_path: Path | None, learned_path: Path | None = None,
+                 rotations_path: Path | None = None):
         """``learned_path``: the recorder's border-routers.json, whose
         hostname -> address bindings name a rebooted Apple hub's new
-        address after the inventory (which lists only old ones)."""
+        address after the inventory (which lists only old ones).
+        ``rotations_path``: its device-rotations.json, the same for any
+        device the recorder saw take a new address (rotate)."""
         self.by_addr: dict[str, dict] = {}
         self.inventory_path = inventory_path
         self.entries: list[dict] = []
+        self.rotations_path = rotations_path
+        self.rotations: dict[str, dict] = load_rotations(rotations_path)   # addr -> {previous, name, evidence, ts}
+        self.persist_rotations = True          # a replay reads the file and never writes it back
         self.border_routers: dict[str, dict] = {}    # addr -> {hostname, instance, vendor, model, name, retired}
         # Addresses an mDNS advertisement put under an entry, rather than the
         # inventory. They carry the entry's name, because that is what the
@@ -240,6 +246,49 @@ class DeviceNames:
                 if entry is not None and a not in self.by_addr:
                     self.by_addr[a] = entry     # the same binding learn() makes, restored
                     self.learned.add(a)
+        # Rotations the recorder saw, oldest first, so A -> B -> C names C
+        # through B. The same binding rotate() made, restored; an address
+        # the inventory has since been given keeps the inventory's word.
+        for a, rec in sorted(self.rotations.items(), key=lambda kv: kv[1].get("ts") or 0):
+            entry = self.by_addr.get(_norm(str(rec.get("previous") or "")))
+            if entry is not None and a not in self.by_addr:
+                self.by_addr[a] = entry
+                self.learned.add(a)
+
+    def rotate(self, addr: str, previous: str, evidence: str, ts: float) -> tuple[str | None, bool]:
+        """The device at ``previous`` now answers to ``addr``: name the new
+        address from the old one's entry (learn: the name, not membership;
+        `threadwatch name` confirms it) and remember the rotation in
+        device-rotations.json, so every later process names it too.
+        Returns the name, and whether this rotation is news (False when
+        the file already records it, so it is said once)."""
+        a, p = _norm(addr), _norm(previous)
+        entry = self.by_addr.get(p)
+        if entry is not None and a not in self.by_addr:
+            self.learn(a, entry)
+        name = self.name(a) or self.name(p)
+        rec = self.rotations.get(a)
+        if rec is not None and rec.get("previous") == p:
+            return name, False
+        self.rotations[a] = {"previous": p, "name": name, "evidence": evidence, "ts": ts}
+        if len(self.rotations) > ROTATIONS_MAX:
+            oldest = sorted(self.rotations, key=lambda k: self.rotations[k].get("ts") or 0)
+            for k in oldest[:len(self.rotations) - ROTATIONS_MAX]:
+                del self.rotations[k]
+        self._save_rotations()
+        return name, True
+
+    def _save_rotations(self) -> None:
+        if self.rotations_path is None or not self.persist_rotations:
+            return
+        try:
+            self.rotations_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.rotations_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self.rotations, indent=1))
+            tmp.replace(self.rotations_path)
+        except OSError as exc:
+            print(f"[threadwatch] {self.rotations_path.name} not written ({exc}): the rotation is named "
+                  "in this process only", file=sys.stderr, flush=True)
 
     def entry_named(self, name: str) -> dict | None:
         want = name.strip().lower()
@@ -567,10 +616,35 @@ def load_border_routers(path: Path | None) -> dict[str, dict]:
     return {host: rec for host, rec in data.items() if isinstance(rec, dict)}
 
 
+ROTATIONS_MAX = 256
+
+
+def load_rotations(path: Path | None) -> dict[str, dict]:
+    """device-rotations.json: {addr: {previous, name, evidence, ts}}, one
+    per address the recorder saw a device move to, written by rotate()."""
+    if path is None:
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        _warn_once(path, f"{path.name} is unreadable ({exc}): a device that took a new address keeps "
+                         "its old name only until the next registration says so again")
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {_norm(str(a)): rec for a, rec in data.items()
+            if isinstance(rec, dict) and _EXT_ADDR.match(_norm(str(a)))
+            and _EXT_ADDR.match(_norm(str(rec.get("previous") or "")))}
+
+
 def load_names(cfg) -> DeviceNames:
     """The inventory plus what the recorder has learned about border
-    routers: the one way every command and page should build names."""
-    return DeviceNames(cfg.devices_path, cfg.state_dir / "border-routers.json")
+    routers and rotated devices: the one way every command and page
+    should build names."""
+    return DeviceNames(cfg.devices_path, cfg.state_dir / "border-routers.json",
+                       cfg.state_dir / "device-rotations.json")
 
 
 class VisitorNames:

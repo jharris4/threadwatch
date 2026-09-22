@@ -454,6 +454,44 @@ class LearnedBorderRoutersTest(unittest.TestCase):
 
 
 
+class RotationsTest(unittest.TestCase):
+    """device-rotations.json: an address the recorder saw a device move
+    to is named from the old address's entry, in every later process."""
+
+    A, B, C, D, E = "1111111111111111", "2222222222222222", "3333333333333333", "4444444444444444", "5555555555555555"
+
+    def test_rotate_names_the_new_address_and_the_file_restores_the_chain(self):
+        from threadwatch.names import DeviceNames
+        with tempfile.TemporaryDirectory() as d:
+            inv = Path(d) / "devices.json"
+            inv.write_text(json.dumps([{"name": "Porch Sensor", "extendedAddress": self.A.upper()}]))
+            rot = Path(d) / "state" / "device-rotations.json"
+            names = DeviceNames(inv, None, rot)
+            self.assertEqual(names.rotate(self.B, self.A, "srp", 10.0), ("Porch Sensor", True))
+            self.assertEqual(names.rotate(self.B, self.A, "srp", 11.0), ("Porch Sensor", False))   # said once
+            self.assertEqual(names.name(self.B), "Porch Sensor")
+            self.assertIn(self.B, names.learned)                                # the name, not membership
+            self.assertEqual(names.rotate(self.C, self.B, "ha", 12.0), ("Porch Sensor", True))
+            self.assertEqual(names.rotate(self.E, self.D, "srp", 13.0), (None, True))   # nothing to name, remembered
+            again = DeviceNames(inv, None, rot)
+            self.assertEqual([again.name(a) for a in (self.A, self.B, self.C)], ["Porch Sensor"] * 3)
+            self.assertIsNone(again.name(self.E))
+            self.assertEqual(again.rotate(self.C, self.B, "ha", 14.0), ("Porch Sensor", False))
+            # A replay reads the file and never writes it.
+            replay = DeviceNames(inv, None, rot)
+            replay.persist_rotations = False
+            self.assertEqual(replay.rotate(self.D, self.A, "srp", 15.0), ("Porch Sensor", True))
+            self.assertNotIn(self.D, json.loads(rot.read_text()))
+            # The inventory's own word for an address is kept over a rotation's.
+            inv.write_text(json.dumps([{"name": "Porch Sensor", "extendedAddress": self.A.upper()},
+                                       {"name": "Shed Sensor", "extendedAddress": self.B}]))
+            self.assertEqual(DeviceNames(inv, None, rot).name(self.B), "Shed Sensor")
+            rot.write_text("nope")
+            self.assertEqual(DeviceNames(inv, None, rot).rotations, {})
+            rot.write_text(json.dumps({"zz": {"previous": self.A}, self.C: "junk", self.D: {"previous": "x"}}))
+            self.assertEqual(DeviceNames(inv, None, rot).rotations, {})
+
+
 class OfflineLearnedNamesTest(unittest.TestCase):
     """An offline pass (replay, device) builds an ephemeral pipeline, which
     used to be given no learned-identity file at all: a hub that had

@@ -146,6 +146,12 @@ LEGEND = [
      "ten minutes and the newest stayed so for two: a network problem, not one device. Critical, with "
      "the automatic snapshot; the members' own rows are notices. When most mapped devices drop at once "
      "while the recorder still hears them, the row says HA or the Matter Server, not the mesh."),
+    ("device_rotation", "Device took a new address",
+     "A device came back under a new extended address (a reboot after a firmware update can do this) and "
+     "registered the same Matter service names the old address held, or Home Assistant's node diagnostics "
+     "report the new address for it. The new address takes the device's name, the old one is retired "
+     "rather than reported quiet, and the row carries the threadwatch name command that confirms it in "
+     "devices.json. A notice, once per rotation."),
     ("ha_link", "Home Assistant unreachable / reachable",
      "The availability poll has failed for five minutes (Home Assistant down or restarting), or "
      "succeeds again. No device episode opens or closes meanwhile, and the first poll after is a "

@@ -191,6 +191,19 @@ class TrackerTest(unittest.TestCase):
     def _events(self, name):
         return [r for r in self.records if r["event"] == name]
 
+    def test_a_map_refresh_with_a_new_address_for_a_device_queues_the_rotation(self):
+        tr = self._tracker()
+        self._poll(tr, T0)
+        new_map = json.loads(json.dumps(self.mapping))
+        new_map[IDS[0]].update({"addr": "E17F3A9B2C4D5E6F", "matched": False, "name": "HA 0"})
+        devices = {d: (False, None) for d in self.mapping}
+        tr.apply({"ok": True, "devices": devices, "map": new_map}, T0 + 60)
+        self.assertEqual(tr.rotations, [{"previous": ADDRS[0], "addr": "e17f3a9b2c4d5e6f", "ha_device_id": IDS[0]}])
+        self.assertEqual(tr.mapping[IDS[0]]["addr"], "E17F3A9B2C4D5E6F")
+        tr.apply({"ok": True, "devices": devices, "map": new_map}, T0 + 120)       # the same map again: nothing
+        self.assertEqual(len(tr.rotations), 1)
+        self.assertEqual(self.records, [])                                          # the pipeline says it, not here
+
     def test_a_device_back_inside_the_hold_is_nothing_and_past_it_is_one_warning_then_available(self):
         tr = self._tracker()
         self._poll(tr, T0)                                                      # baseline: all available

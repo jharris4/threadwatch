@@ -217,6 +217,11 @@ class Tracker:
         # replaced, when it is that device (Pipeline.lost_leader_for).
         self.lost_leader = lost_leader or (lambda addr: None)
         self.mapping: dict = mapping or {}
+        # Rotations the last map refresh reported (a device whose extended
+        # address changed in HA's node diagnostics): the pipeline drains
+        # these after apply and retires the old rows, which live on its
+        # thread and are never written here.
+        self.rotations: list[dict] = []
         self.state = load_state(state_path)
         # Every start is a baseline: an episode carried over that was not
         # paged is one the last run never got to, and is said at notice.
@@ -313,6 +318,7 @@ class Tracker:
         st["ha_last_ok_ts"] = now
         self.baseline_pending = False
         if isinstance(result.get("map"), dict):
+            self._note_rotations(result["map"], now)
             self.mapping = result["map"]
         devices = result.get("devices") or {}
         self.mapped = len(devices)
@@ -382,6 +388,18 @@ class Tracker:
                                if rejoined else "")))
         self.state["closed"][device_id] = {"closed_ts": now, "episodes": int(ep.get("episode") or 1)}
         del self.state["episodes"][device_id]
+
+    def _note_rotations(self, new_map: dict, now: float) -> None:
+        """A device whose extended address differs between the map the
+        tracker held and the one just built took a new address: the
+        Matter Server read the new one from the device itself. Queued for
+        the pipeline (Pipeline._device_rotated), which names the new
+        address, retires the old row and says so once."""
+        for device_id, info in new_map.items():
+            before = ((self.mapping.get(device_id) or {}).get("addr") or "").lower()
+            after = (info.get("addr") or "").lower()
+            if before and after and before != after:
+                self.rotations.append({"previous": before, "addr": after, "ha_device_id": device_id})
 
     def _bursts(self, devices: dict, now: float) -> None:
         """Rule 3: several non-muted devices dropping together are one

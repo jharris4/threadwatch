@@ -5543,6 +5543,117 @@ class SrpRefusedTest(unittest.TestCase):
             self._response(t0 + i, dns_id, 2, src=self.R2, dst=ROUTER, mesh=("fc11", "c407"))
         self.assertEqual(self._events("srp_refused")[0]["addr"], SENSOR)
 
+    def _register(self, ts, src, dns_id, instances, via=ROUTER):
+        """A registration as a device sends one: three to six fragments
+        of one DNS UPDATE naming its host and its Matter services."""
+        from tests.frames import next_counter, secured_psdu
+        from tests.test_identity import lowpan_udp
+        from tests.test_srp import lowpan_fragments, srp_update
+        from threadwatch.pcap import parse_frame
+        packet = lowpan_udp(49152, 53, srp_update(dns_id, src.upper(), instances))
+        for i, frag in enumerate(lowpan_fragments(packet, 10, tag=dns_id)):
+            self.pipe.ingest(parse_frame(ts + i * 0.01, secured_psdu(src, next_counter(src), dst=via, payload=frag),
+                                         230))
+
+    def test_a_registration_from_a_new_address_names_it_after_the_device_it_was(self):
+        """2026-09-22: a climate sensor came back from a firmware update
+        under a new extended address, registered the same Matter service
+        names, was refused (the names still belonged to the old address's
+        key), and the warning named an address nobody recognised."""
+        from threadwatch.names import DeviceNames
+        NEW = "e17f3a9b2c4d5e6f"
+        FABRIC, APPLE = "1A2B3C4D5E6F7081-0000000000000067", "0F1E2D3C4B5A6978-00000000ABCDEF01"
+        t0 = 1_700_000_000.0
+        self.pipe.ingest(frame(t0 - 10, SENSOR))
+        self._register(t0, SENSOR, 31, [FABRIC, APPLE]); self._response(t0 + 0.3, 31, 0)
+        row = self.pipe.seen.table[SENSOR]
+        self.assertEqual(row["matter_instances"], [f"{APPLE.lower()}._matter._tcp.default.service.arpa",
+                                                   f"{FABRIC.lower()}._matter._tcp.default.service.arpa"])
+        self.assertEqual(row["srp_host"], SENSOR.upper())
+        self.assertEqual(self._events("device_address_changed"), [])
+        # An hour later the same names arrive from an address nobody knows.
+        self._register(t0 + 3600, NEW, 32, [FABRIC, APPLE])
+        rot = self._events("device_address_changed")
+        self.assertEqual(len(rot), 1)
+        self.assertEqual((rot[0]["addr"], rot[0]["name"], rot[0]["previous"]), (NEW, "Porch Sensor", SENSOR))
+        self.assertRegex(rot[0]["note"], f"carries the Matter service name (?:{APPLE.lower()}|{FABRIC.lower()}) "
+                                         f"that {SENSOR} registered")
+        self.assertIn(f'confirm with: threadwatch name {NEW} "Porch Sensor"', rot[0]["note"])
+        self.assertEqual(self.pipe.names.name(NEW), "Porch Sensor")
+        self.assertEqual(self.pipe.seen.table[SENSOR]["rotated_to"], NEW)
+        self.assertNotIn("rotated_to", self.pipe.seen.table[NEW])
+        # The refusals that follow name the device, not the address.
+        for i, dns_id in enumerate((33, 34, 35)):
+            self._response(t0 + 3601 + i, dns_id, 6, dst=NEW)
+        rec = self._events("srp_refused")
+        self.assertEqual((rec[0]["addr"], rec[0]["name"], rec[0]["rcode_name"]), (NEW, "Porch Sensor", "YXDOMAIN"))
+        # Every later process names it too, and the hourly re-registration is not news.
+        again = DeviceNames(self.cfg.devices_path, None, self.cfg.state_dir / "device-rotations.json")
+        self.assertEqual(again.name(NEW), "Porch Sensor")
+        self._register(t0 + 7200, NEW, 36, [FABRIC, APPLE])
+        self.assertEqual(len(self._events("device_address_changed")), 1)
+
+    def test_a_registration_with_a_fragment_missing_still_gives_the_names_it_carried(self):
+        from tests.frames import next_counter, secured_psdu
+        from tests.test_identity import lowpan_udp
+        from tests.test_srp import lowpan_fragments, srp_update
+        from threadwatch.pcap import parse_frame
+        NEW = "e17f3a9b2c4d5e6f"
+        FABRIC = "1A2B3C4D5E6F7081-0000000000000067"
+        t0 = 1_700_000_000.0
+        self.pipe.ingest(frame(t0 - 10, SENSOR))
+        self._register(t0, SENSOR, 61, [FABRIC]); self._response(t0 + 0.3, 61, 0)
+        self.pipe.ingest(frame(t0 + 3600, NEW))
+        packet = lowpan_udp(49152, 53, srp_update(62, NEW.upper(), [FABRIC]))
+        frags = lowpan_fragments(packet, 10, tag=62)
+        self.assertGreaterEqual(len(frags), 3)
+        for i, frag in enumerate(frags[:-1]):                       # the last fragment was never heard
+            self.pipe.ingest(parse_frame(t0 + 3601 + i * 0.01,
+                                         secured_psdu(NEW, next_counter(NEW), dst=ROUTER, payload=frag), 230))
+        row = self.pipe.seen.table[NEW]
+        self.assertEqual(row["matter_instances"], [f"{FABRIC.lower()}._matter._tcp.default.service.arpa"])
+        self.assertIsNone(row["srp_host"])                            # the host waits for a whole one
+        rot = self._events("device_address_changed")
+        self.assertEqual([(r["addr"], r["previous"], r["name"]) for r in rot], [(NEW, SENSOR, "Porch Sensor")])
+        self.assertEqual(self.pipe.names.name(NEW), "Porch Sensor")
+
+    def test_a_first_fragment_alone_still_attributes_the_answer_and_names_nothing(self):
+        from tests.frames import next_counter, secured_psdu
+        from tests.test_identity import lowpan_udp
+        from tests.test_srp import lowpan_fragments, srp_update
+        from threadwatch.pcap import parse_frame
+        t0 = 1_700_000_000.0
+        self.pipe.ingest(frame(t0 - 10, SENSOR))
+        packet = lowpan_udp(49152, 53, srp_update(41, SENSOR.upper(), ["1A2B3C4D5E6F7081-0000000000000067"]))
+        first = lowpan_fragments(packet, 10)[0]                        # the rest was never heard
+        self.pipe.ingest(parse_frame(t0, secured_psdu(SENSOR, next_counter(SENSOR), dst=ROUTER, payload=first), 230))
+        self._response(t0 + 0.2, 41, 2)
+        self.assertEqual(self.pipe.seen.table[SENSOR]["srp"]["refused"], 1)
+        self.assertNotIn("matter_instances", self.pipe.seen.table[SENSOR])
+
+    def test_the_ha_map_reporting_a_new_address_rotates_the_device_too(self):
+        t0 = 1_700_000_000.0
+        NEW = "e17f3a9b2c4d5e6f"
+        self.pipe.ingest(frame(t0 - 10, SENSOR))
+        self.pipe.ingest(frame(t0, NEW))
+        name = self.pipe._device_rotated(SENSOR, NEW, t0 + 1,
+                                         "Home Assistant's Matter node diagnostics report the new address")
+        self.assertEqual(name, "Porch Sensor")
+        rot = self._events("device_address_changed")
+        self.assertEqual((rot[0]["addr"], rot[0]["previous"], rot[0]["name"]), (NEW, SENSOR, "Porch Sensor"))
+        self.assertIn("Home Assistant's Matter node diagnostics", rot[0]["note"])
+        self.assertEqual(self.pipe.seen.table[SENSOR]["rotated_to"], NEW)
+        # Said once: the registration that follows finds the rotation already known.
+        self._register(t0 + 5, NEW, 51, ["1A2B3C4D5E6F7081-0000000000000067"])
+        self.assertEqual(len(self._events("device_address_changed")), 1)
+        # devices.json naming both addresses differently is a conflict the inventory settles.
+        OTHER = "0a0a0a0a0a0a0a0a"
+        self.pipe.ingest(frame(t0 + 10, OTHER))
+        self.pipe.names.by_addr[OTHER] = {"name": "Shed Sensor", "extendedAddress": OTHER}
+        self.assertEqual(self.pipe._device_rotated(SENSOR, OTHER, t0 + 11, "a test"), "Shed Sensor")
+        self.assertEqual(len(self._events("device_address_changed")), 1)
+        self.assertNotIn("rotated_to", self.pipe.seen.table[OTHER])
+
     def test_plain_dns_queries_on_port_53_are_not_registrations(self):
         import struct
         t0 = 1_700_000_000.0

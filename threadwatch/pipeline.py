@@ -56,6 +56,7 @@ from .names import (
     router_holders,
 )
 from .pcap import BROADCAST_PAN, Frame, is_poll
+from .srp import Reassembler, fragment, matter_instances_in, parse_update
 
 MLE_REJOIN_COMMANDS = {"Parent Request", "Child ID Request", "Announce"}
 
@@ -160,7 +161,9 @@ class Pipeline:
         # candidates a short-source frame is identified from. DeviceNames
         # only reads; nothing here writes the file back (_save_border_routers
         # returns on ephemeral, and no browse runs offline).
-        self.names = DeviceNames(cfg.devices_path, cfg.state_dir / "border-routers.json")
+        self.names = DeviceNames(cfg.devices_path, cfg.state_dir / "border-routers.json",
+                                 cfg.state_dir / "device-rotations.json")
+        self.names.persist_rotations = not ephemeral
         # Labels for visiting addresses (config/visitors.json). Never the
         # inventory: an inventory entry makes an address a device whose
         # silence pages; a label only changes what a visit is called.
@@ -169,6 +172,16 @@ class Pipeline:
             from .snapshot import remember_capture
             remember_capture(cfg, self.names.entries)
         self.seen = LastSeen(None if ephemeral else cfg.state_dir / "last-seen.json")
+        # Matter service instance names by the address that last registered
+        # them (a row's matter_instances, from the SRP updates heard whole):
+        # the identity an address that rotated is recognised by.
+        self._matter_owner: dict[str, tuple[str, float]] = {}
+        for addr, row in self.seen.table.items():
+            when = (row.get("srp") or {}).get("last_ts") or row.get("last_seen") or 0.0
+            for inst in row.get("matter_instances") or []:
+                if inst not in self._matter_owner or self._matter_owner[inst][1] < when:
+                    self._matter_owner[inst] = (addr, when)
+        self._reassembly = Reassembler()
         self.detector = Detector(cfg.detector)
         # How often a storm that rumbles on is escalated to the event log,
         # which is what [detect] alert_cooldown_s documents itself as.
@@ -1733,7 +1746,7 @@ class Pipeline:
         if info is not None and info.secured and fresh_mle:
             self._apply_mle(f, info, src_for_mle)
         if srp is not None:
-            self._note_srp(srp, ts)
+            self._note_srp(srp, ts, live)
         if who and live and who not in self.seen.table and not self._admit(who, ts):
             live = False        # every row is one worth keeping: this frame goes uncounted
         if who and live:
@@ -2599,8 +2612,24 @@ class Pipeline:
         dshort = f.dst if f.dst and len(f.dst) == 4 else None
         # Unsecured frames are unauthenticated bytes from anyone on the
         # channel; a parse failure there must not take the capture down.
+        partial = False
         try:
-            r = Decryptor.udp_ports(plain, mac_src_ext=ext, mac_dst_ext=dext, mac_dst_short=dshort)
+            frag = fragment(plain)
+            if frag is None:
+                r = Decryptor.udp_ports(plain, mac_src_ext=ext, mac_dst_ext=dext, mac_dst_short=dshort)
+            else:
+                # A fragment of a larger datagram (an SRP registration is
+                # three to six frames): read whole once every piece is in.
+                # A FRAG1 on its own still gives what it always did, the
+                # header and the first records, in case the rest is never
+                # heard.
+                first = (Decryptor.udp_ports(plain, mac_src_ext=ext, mac_dst_ext=dext, mac_dst_short=dshort)
+                         if frag[0] == "first" else None)
+                r = self._reassembly.add(f.src or "", frag, first, f.ts)
+                if r is None:
+                    if first is None:
+                        return None, None, (), self._partial_registration(plain, frag, ext, short)
+                    r, partial = first, True
             if not r:
                 return None, None, (), None
             sport, dport, payload, sip, dip = r
@@ -2630,8 +2659,31 @@ class Pipeline:
                               else ext or self.decryptor.short_to_ext.get(short or ""))
                     srp = {"kind": "request", "id": dns_id, "rcode": None, "client": client,
                            "server": self._aloc_label(dip)}
+                    update = None if partial else parse_update(payload)
+                    if update is not None:
+                        srp.update(host=update["host"], instances=update["instances"],
+                                   lease=update["lease"], key_lease=update["key_lease"])
         return None, None, tuple(n for n in Decryptor.harvest_names(payload)
                                  if len(n) > 8 and not n.startswith("_")), srp
+
+    def _partial_registration(self, plain: bytes, frag: tuple, ext: str | None, short: str | None) -> dict | None:
+        """A later fragment of an SRP registration whose FRAG1 was heard
+        but whose whole may never be: the sniffer misses a frame in many
+        a nine-fragment registration. The names written out in this piece
+        are still the device's, so they count (partial), with the request
+        id and zone the FRAG1 gave; the host and leases wait for a whole
+        one."""
+        pending = self._reassembly.last_update
+        if pending is None:
+            return None
+        instances = sorted({n for piece in pending["pieces"] for n in matter_instances_in(piece, pending["zone"])})
+        if not instances:
+            return None
+        mesh = self._mesh_endpoints(plain)
+        client = (self.decryptor.short_to_ext.get(mesh[0]) if mesh
+                  else ext or self.decryptor.short_to_ext.get(short or ""))
+        return {"kind": "request", "id": pending["id"], "rcode": None, "client": client,
+                "server": self._aloc_label(pending["dip"]), "instances": instances, "partial": True}
 
     @staticmethod
     def _mesh_endpoints(plain: bytes) -> tuple[str, str] | None:
@@ -2654,15 +2706,107 @@ class Pipeline:
             return None
         return f"anycast {ip[14]:02x}{ip[15]:02x}"
 
+    MATTER_INSTANCES_MAX = 8
+
+    def _note_matter_identity(self, client: str, srp: dict, ts: float) -> None:
+        """The ``_matter._tcp`` service names a device registers, one per
+        fabric, are its identity across the extended addresses it may use:
+        a reboot after a firmware update gave one a new address on
+        2026-09-22, and its registration under it carried the same three
+        names. They are kept with the row, and an address registering a
+        name another address holds is that device under a new address."""
+        row = self.seen.table.get(client)
+        if row is None:
+            return          # not heard on its own yet (the first frame of a new address): next time
+        instances = {str(i).lower() for i in srp["instances"]}
+        host = srp.get("host")
+        if srp.get("partial"):
+            # A fragment of a registration: what it names is added to
+            # what is known; the host waits for a registration heard whole.
+            instances |= set(row.get("matter_instances") or [])
+            host = row.get("srp_host")
+        instances = sorted(instances)[:self.MATTER_INSTANCES_MAX]
+        if row.get("srp_host") != host or row.get("matter_instances") != instances:
+            row["srp_host"], row["matter_instances"] = host, instances
+            self.seen._dirty = True
+        previous = None
+        for inst in instances:
+            holder = self._matter_owner.get(inst)
+            self._matter_owner[inst] = (client, ts)
+            if holder is not None and holder[0] != client and holder[1] <= ts and previous is None:
+                previous = (holder[0], inst.split(".")[0])
+        if previous is not None:
+            self._device_rotated(previous[0], client, ts,
+                                 f"its SRP registration carries the Matter service name {previous[1]} "
+                                 f"that {previous[0]} registered")
+
+    def _device_rotated(self, previous: str, addr: str, now: float, evidence: str) -> str | None:
+        """``addr`` is the device that was ``previous``. The new address
+        takes the name (names.rotate: learned, and remembered in
+        device-rotations.json), the old row is retired so it is not
+        reported quiet, and the rotation is said once. Returns the name.
+
+        Retiring an address on a claim is what the mDNS path refuses to
+        do without the radio's corroboration, because mDNS is anyone on
+        the LAN. This evidence is not: an SRP registration arrives inside
+        the mesh, decrypted under the network key from a frame whose
+        counter was fresh, naming the device's own Matter identity; and
+        the HA map's address comes from the Matter Server, which read it
+        from the device over its own session. Whoever could forge either
+        is already on the mesh with the key, past what the recorder
+        guards against."""
+        old_name, new_name = self.names.name(previous), self.names.name(addr)
+        if old_name and new_name and old_name != new_name:
+            # devices.json names both, differently: the inventory stands.
+            # It may be wrong, but that is the operator's to settle.
+            print(f"[threadwatch] {addr} registered as {old_name!r} ({previous}) but devices.json calls it "
+                  f"{new_name!r}; the inventory stands", file=sys.stderr, flush=True)
+            return new_name
+        name, fresh = self.names.rotate(addr, previous, evidence, now)
+        self._retire_rotated(previous, addr, name, now)
+        if fresh:
+            label = name or addr
+            fix = f'threadwatch name {addr} "{name}"' if name else f'threadwatch name {addr} "<name>"'
+            self._emit("device_address_changed", "notice", now, addr=addr, name=name, previous=previous,
+                       evidence=evidence,
+                       note=(f"{label} now answers to {addr}, was {previous}: {evidence}, so it is the same "
+                             f"device under a new extended address (a reboot after a firmware update can do "
+                             f"this). {previous} is retired, not reported quiet. "
+                             + (f"Named from its entry; confirm with: {fix}" if name
+                                else f"Not in devices.json: {fix}")))
+        return name
+
+    def _retire_rotated(self, previous: str, addr: str, name: str | None, now: float) -> None:
+        """rotated_to on the old row: out of the quiet, link and starvation
+        checks, and the devices page says where it went. The new address
+        is live by definition, even if it was itself retired once."""
+        new_row = self.seen.table.get(addr)
+        if new_row is not None and new_row.pop("rotated_to", None):
+            self.seen._dirty = True
+        old_row = self.seen.table.get(previous)
+        if old_row is None or old_row.get("rotated_to") == addr:
+            return
+        old_row["rotated_to"] = addr
+        old_row.pop("quiet_reported_ts", None)
+        was_quiet = old_row.pop("quiet_reported", None) or previous in self.quiet_reported
+        self.quiet_reported.discard(previous)
+        self.seen._dirty = True
+        if was_quiet:
+            self._emit("device_returned", "notice", now, addr=previous, name=name,
+                       note=f"back under a new address, {addr}")
+
     SRP_RCODES = {0: "NOERROR", 1: "FORMERR", 2: "SERVFAIL", 3: "NXDOMAIN", 4: "NOTIMP", 5: "REFUSED",
                   6: "YXDOMAIN", 7: "YXRRSET", 8: "NXRRSET", 9: "NOTAUTH", 10: "NOTZONE"}
 
-    def _note_srp(self, srp: dict, ts: float) -> None:
+    def _note_srp(self, srp: dict, ts: float, vouched: bool = False) -> None:
         """An SRP registration (DNS UPDATE) request or response. A device
         refused [srp] refusals times in a row is srp_refused (warning);
         the next accepted registration is srp_accepted (info). The streak
         lives in the device's last-seen row, so it survives a restart, as
-        it must: a refused client retries hourly."""
+        it must: a refused client retries hourly. A request heard whole
+        also says which Matter service names the device registers, its
+        identity across addresses (_note_matter_identity), but only from
+        a frame the MAC layer vouched for (``vouched``)."""
         # Bound the transaction tables: ids are 16 bits and a mesh
         # registers a few dozen times an hour.
         if len(self._srp_requests) > 256:
@@ -2674,6 +2818,8 @@ class Pipeline:
         if srp["kind"] == "request":
             if srp["client"] and srp["id"] not in self._srp_requests:
                 self._srp_requests[srp["id"]] = (srp["client"], ts)
+            if vouched and srp["client"] and srp.get("instances"):
+                self._note_matter_identity(srp["client"], srp, ts)
             return
         answered = self._srp_answered.get(srp["id"])
         if answered is not None and ts - answered < 30:
@@ -3542,6 +3688,13 @@ class Pipeline:
                 if isinstance(result.get("map"), dict):
                     self._haavail_map_ts = now
                 self._haavail.apply(result, now)
+                for rot in self._haavail.rotations:
+                    name = self._device_rotated(rot["previous"], rot["addr"], now,
+                                                "Home Assistant's Matter node diagnostics report the new address")
+                    info = self._haavail.mapping.get(rot["ha_device_id"])
+                    if info is not None and name and not info.get("matched"):
+                        info["name"] = name     # the tracker's label, without waiting for devices.json
+                self._haavail.rotations.clear()
             return
         if now < self._next_haavail:
             return

@@ -100,6 +100,7 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `clock_step` | info | `step_s` (signed), `note`. The host clock jumped, NTP correcting a boot without an RTC. Forward: silences spanning the jump are not counted against any device. Backward: every timestamp the recorder holds, `last-seen.json` included, is moved back with it |
 | `recorder_started` | info after a requested stop or on the first start ever, notice when the last run ended any other way | `cause` (`stopped`, `stalled`, `sniffer_died`, `stream_ended`, `crashed`, `unknown` for a run that left no note: a power cut or a kill, `first_start`), `gap_s` (since the last frame any run heard), `last_frame_ts`, `stopped_ts` (when the last run ended, if it left the note), `exit_code`, `note` |
 | `border_router_address_changed` | notice | `addr`, `name`, `previous`, `hostname`, `evidence` (what corroborated the rotation), `note` |
+| `device_address_changed` | notice | `addr` (the new address), `name`, `previous`, `evidence` (the SRP registration that carried the same Matter service name, or Home Assistant's node diagnostics), `note`; once per rotation |
 | `border_router_unlisted` | notice | `addr`, `hostname`, `note` |
 | `border_router_address_conflict` | warning | `addr`, `name` (the entry devices.json gives the address to), `hostname`, `claimed_by` (the entry the hostname belongs to), `note` |
 | `border_router_rotation_unverified` | notice | `addr`, `name`, `previous`, `hostname`, `evidence` (what held, when anything did), `missing` (what did not), `note` |
@@ -466,6 +467,30 @@ not forget it. `srp_accepted` closes the episode. On 2026-09-17 22:15 a
 smoke sensor's registrations started coming back SERVFAIL, hourly, from
 the same server that accepted its siblings; Apple Home lost it five days
 later, after a partition change broke the session it still had.
+
+`device_address_changed` is a device that took a new extended address:
+on 2026-09-22 a climate sensor came back from a firmware update under
+one, registered the same three `_matter._tcp` service names it always
+had, and was refused (YXDOMAIN: the names still belonged to the old
+address's SRP key), and the warning named an address nobody recognised.
+A registration is three to six 6LoWPAN fragments; the recorder now reads
+it whole and keeps the service names (`<compressed fabric id>-<node id>`,
+one per fabric) with the device's row as its identity. An address that
+registers a name another address holds is that device under a new
+address: the new address takes the name from the old one's devices.json
+entry, the old row is retired rather than reported quiet, and the
+rotation is remembered in `device-rotations.json` so every later process
+and page names it too. The `[ha_availability]` map refresh is the second
+witness: Home Assistant's Matter node diagnostics carry the address the
+Matter Server read from the device, and a device whose address moved
+between two refreshes is rotated the same way. Either way it is said
+once, with the `threadwatch name` command that confirms it in
+devices.json. Unlike an mDNS advertisement, both witnesses are inside
+the trust boundary: the registration was decrypted under the network
+key from a frame with a fresh counter, and the Matter Server read the
+address over its own session, so the retirement needs no further
+corroboration. If devices.json names both addresses, differently, the
+inventory stands and nothing is renamed or retired.
 
 `router_set_changed` is the mesh's router roster moving. The `[otbr]`
 inventory reads `ot-ctl router table` every `poll_s`, and that table

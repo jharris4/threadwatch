@@ -178,6 +178,8 @@ Each snapshot is one directory:
       observed-names.json    SRP hostnames harvested from the mesh
       frames-by-hour.json    the frame counts behind the daily summary
       border-routers.json    each border router's hostname, address and retired addresses
+      device-rotations.json  each address a device was seen to move to, and from which (docs/ALERTING.md,
+                             device_address_changed)
       blind-spans.json       when the recorder was not listening, as far as a silence still reached
       retransmissions.json   the retransmission detector's baseline and open elevation
       storm.json             the storm detector's windows, onsets and last page

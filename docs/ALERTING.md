@@ -93,6 +93,8 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `partition_storm` | warning | `previous`, `current` (as above), `partitions` (distinct states seen), `leaders`, `changes` (flips), `since`, `until`, `duration_s`, `note`; several changes inside `[partition] settle_s`, logged as one |
 | `leader_stalled` | warning | `partition`, `leader_router`, `leader`, `addr`, `name`, `id_sequence`, `since`, `stalled_for_s`, `last_carried_by`, `leader_last_seen`, `leader_silent_for_s`, `note` |
 | `leader_resumed` | info | `partition`, `leader_router`, `leader`, `addr`, `name`, `since`, `stalled_for_s`, `note`; closes a `leader_stalled` |
+| `srp_refused` | warning | `addr`, `name`, `rcode`, `rcode_name`, `refusals`, `since`, `refused_for_s`, `accepted_ts` (the last accepted registration, if one was heard), `server` (the anycast locator answered from, when readable), `note`; once per streak |
+| `srp_accepted` | info | `addr`, `name`, `refusals`, `since`, `refused_for_s`, `server`, `note`; only after an `srp_refused` went out |
 | `credentials_stale` | warning | `failed`, `note` |
 | `clock_step` | info | `step_s` (signed), `note`. The host clock jumped, NTP correcting a boot without an RTC. Forward: silences spanning the jump are not counted against any device. Backward: every timestamp the recorder holds, `last-seen.json` included, is moved back with it |
 | `recorder_started` | info after a requested stop or on the first start ever, notice when the last run ended any other way | `cause` (`stopped`, `stalled`, `sniffer_died`, `stream_ended`, `crashed`, `unknown` for a run that left no note: a power cut or a kill, `first_start`), `gap_s` (since the last frame any run heard), `last_frame_ts`, `stopped_ts` (when the last run ended, if it left the note), `exit_code`, `note` |
@@ -445,6 +447,24 @@ inside five minutes of a partition change, are attributed to the wave
 minute after the leader died was 70 rejoin notices and a retransmission
 notice blaming contention; it is one wave of 18 devices now, and the
 retransmission note names it.
+
+`srp_refused` is a device the border routers will not register. Every
+Matter device on the mesh publishes its host and `_matter._tcp` service
+by SRP: a DNS UPDATE to the SRP server's anycast locator, answered by an
+Apple TV or the OTBR, which advertises the records on the LAN by mDNS.
+Controllers that find devices that way (Apple Home) lose a device once
+its last accepted registration expires; Home Assistant keeps the address
+it already has and is the last to notice. The recorder reads the
+responses (rcode) and credits each to the device that sent the request,
+even when it is heard relayed by the device's parent, and logs
+`srp_refused` once a device has been refused `[srp] refusals` (default 3)
+times in a row, with the response code and when its last accepted
+registration was heard. The streak is kept with the device's last-seen
+row, since a refused client retries hourly and a recorder restart must
+not forget it. `srp_accepted` closes the episode. On 2026-09-17 22:15 a
+smoke sensor's registrations started coming back SERVFAIL, hourly, from
+the same server that accepted its siblings; Apple Home lost it five days
+later, after a partition change broke the session it still had.
 
 `retransmission_elevation` is the storm precursor: in one minute more than
 20% of frames were repeats (same sender and sequence number within 2 s, a

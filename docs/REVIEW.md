@@ -141,6 +141,7 @@ The raw log is the wrong unit for people, so the pages group it:
 | `key_sequence_advanced`, `key_lag_census` | one row each, always: *key sequence 85 -> 86*, *key generation census* |
 | `partition_or_leader_change`, `partition_storm`, `phase_locked_storm`, `daily_summary` | one row each, always |
 | `rejoin_wave` | one row, always, naming the devices |
+| `srp_refused` ... `srp_accepted` | one row: *X SRP registration refused for 5d02h* (or open) |
 | `leader_stalled` | one row per stall, closed by `leader_resumed` |
 
 A quiet spell that started yesterday and ended today appears on both days

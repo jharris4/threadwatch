@@ -78,6 +78,7 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
     rejoin: dict[str, dict] = {}
     open_link: dict[str, dict] = {}
     open_leader: dict[str, dict] = {}
+    open_srp: dict[str, dict] = {}
     open_starved: dict[str, dict] = {}
     open_unserved: dict[str, dict] = {}
     open_keylag: dict[str, dict] = {}
@@ -339,6 +340,20 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
                                    f"ours is {rec.get('dominant_pan')}")
             else:
                 bump(ep, rec)
+        elif ev == "srp_refused":
+            addr = _addr(rec) or ""
+            open_srp[addr] = new("srp", rec, f"{_label(rec)} SRP registration refused",
+                                 f"{rec.get('refusals')} refusals ({rec.get('rcode_name')}) over "
+                                 f"{fmt_duration(rec.get('refused_for_s') or 0)}", end=None)
+        elif ev == "srp_accepted":
+            addr = _addr(rec) or ""
+            ep = open_srp.pop(addr, None)
+            if ep is not None:
+                ep["end"] = rec["ts"]
+                ep["events"].append(rec)
+                ep["title"] += f" for {fmt_duration(rec.get('refused_for_s') or 0)}"
+            else:
+                new("srp", rec, f"{_label(rec)} SRP registration accepted", rec.get("note", ""))
         elif ev == "rejoin_wave":
             ep = new("rejoin", rec, f"rejoin wave: {rec.get('devices')} devices",
                      (f"after {rec['trigger']}: " if rec.get("trigger") else "")

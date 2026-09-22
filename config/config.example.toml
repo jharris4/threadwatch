@@ -239,6 +239,14 @@ settle_s = 30
 wave_s = 60
 wave_devices = 3
 
+[srp]
+# A device whose SRP registration (how it publishes its host and Matter
+# service to the border routers, and so to Apple Home) has been refused
+# this many times in a row is srp_refused (warning); the next accepted one
+# closes it. Home Assistant keeps the address it has, so it is the last to
+# notice a refused device.
+refusals = 3
+
 [link]
 # Slow link degradation: a device still heard, but with its average RSSI at
 # the sniffer this far below its own daily reference for this long, is

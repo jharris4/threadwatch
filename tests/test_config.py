@@ -461,6 +461,7 @@ class ExampleConfigTest(unittest.TestCase):
         ("partition", "settle_s"): ("partition_settle_s", 30, 0),
         ("rejoins", "wave_s"): ("rejoin_wave_s", 60, 0),
         ("rejoins", "wave_devices"): ("rejoin_wave_devices", 3, 5),
+        ("srp", "refusals"): ("srp_refusals", 3, 1),
         ("link", "drop_db"): ("link_drop_db", 8, 3),
         ("link", "hold_s"): ("link_hold_s", 1800, 120),
         ("summary", "hour"): ("summary_hour", 8, 6),

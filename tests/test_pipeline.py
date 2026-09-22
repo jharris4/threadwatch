@@ -5378,3 +5378,121 @@ class RejoinWaveTest(unittest.TestCase):
         self.pipe._win_start = t0 + 100 + 360
         self.pipe._win_dup_by = {(SENSOR, ROUTER): 3, (self.S2, ROUTER): 3, (self.S3, "ffff"): 2}
         self.assertNotIn("cause", self.pipe._retrans_attribution())
+
+
+def dns_update(dns_id, rcode=None):
+    """A DNS UPDATE (SRP) header: a request when rcode is None, else the
+    response carrying that code. No records: the pipeline reads the header."""
+    import struct
+    flags = 5 << 11
+    if rcode is not None:
+        flags |= 0x8000 | rcode
+    return struct.pack(">HHHHHH", dns_id, flags, 0, 0, 0, 0)
+
+
+class SrpRefusedTest(unittest.TestCase):
+    """srp_refused / srp_accepted: a device's SRP registrations coming back
+    refused (docs/ALERTING.md). Porch Sensor registers through its parent
+    Hall Router; the server's answers come back down the same path."""
+
+    R2 = "a2a2a2a2a2a2a2a2"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        (d / "devices.json").write_text(json.dumps([{"name": "Porch Sensor", "extendedAddress": SENSOR},
+                                                    {"name": "Hall Router", "extendedAddress": ROUTER},
+                                                    {"name": "Den Router", "extendedAddress": self.R2}]))
+        self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json")
+        self.pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _events(self, name):
+        return [r for r in self.pipe.events.records if r["event"] == name]
+
+    def _frame(self, ts, src, dst, sport, dport, payload, mesh=None):
+        from tests.frames import next_counter, secured_psdu
+        from tests.test_identity import lowpan_udp
+        from threadwatch.pcap import parse_frame
+        plain = lowpan_udp(sport, dport, payload)
+        if mesh is not None:                    # a relayed hop: originator and final destination (short)
+            plain = bytes([0x85]) + bytes.fromhex(mesh[0]) + bytes.fromhex(mesh[1]) + plain
+        return parse_frame(ts, secured_psdu(src, next_counter(src), dst=dst, payload=plain), 230)
+
+    def _request(self, ts, dns_id, src=SENSOR, via=ROUTER):
+        self.pipe.ingest(self._frame(ts, src, via, 49152, 53, dns_update(dns_id)))
+
+    def _response(self, ts, dns_id, rcode, src=ROUTER, dst=SENSOR, mesh=None):
+        self.pipe.ingest(self._frame(ts, src, dst, 53, 49152, dns_update(dns_id, rcode), mesh))
+
+    def test_three_refusals_in_a_row_are_a_warning_and_the_next_acceptance_closes_it(self):
+        t0 = 1_700_000_000.0
+        self.pipe.ingest(frame(t0 - 10, SENSOR))
+        self._request(t0, 1); self._response(t0 + 0.2, 1, 2)
+        self._request(t0 + 2, 2); self._response(t0 + 2.2, 2, 2)
+        self.assertEqual(self._events("srp_refused"), [])
+        self._request(t0 + 5, 3); self._response(t0 + 5.2, 3, 2)
+        warned = self._events("srp_refused")
+        self.assertEqual(len(warned), 1)
+        rec = warned[0]
+        self.assertEqual((rec["addr"], rec["name"], rec["rcode"], rec["rcode_name"], rec["refusals"], rec["since"]),
+                         (SENSOR, "Porch Sensor", 2, "SERVFAIL", 3, t0 + 0.2))
+        self.assertIn("Porch Sensor's SRP registration has been refused 3 times over 5 s (SERVFAIL); "
+                      "no accepted registration of its has been heard", rec["note"])
+        self.assertIn("Apple Home", rec["note"])
+        self._request(t0 + 9, 4); self._response(t0 + 9.2, 4, 2)
+        self.assertEqual(len(self._events("srp_refused")), 1)             # once per streak
+        self.assertEqual(self.pipe.seen.table[SENSOR]["srp"]["refused"], 4)
+        self._request(t0 + 3600, 5); self._response(t0 + 3600.2, 5, 0)
+        ok = self._events("srp_accepted")
+        self.assertEqual(len(ok), 1)
+        self.assertEqual((ok[0]["refusals"], ok[0]["since"], ok[0]["refused_for_s"]), (4, t0 + 0.2, 3600))
+        self.assertIn("accepted after 4 refusals over 60 min", ok[0]["note"])
+        state = self.pipe.seen.table[SENSOR]["srp"]
+        self.assertEqual((state["refused"], state["reported"], state["accepted_ts"]), (0, False, t0 + 3600.2))
+        # A new streak starts from zero, and its warning says when the last acceptance was.
+        for i, dns_id in enumerate((6, 7, 8)):
+            self._request(t0 + 7200 + i, dns_id); self._response(t0 + 7200 + i + 0.2, dns_id, 5)
+        rec = self._events("srp_refused")[1]
+        self.assertEqual((rec["rcode_name"], rec["accepted_ts"]), ("REFUSED", t0 + 3600.2))
+        self.assertIn("its last accepted registration was 60 min ago", rec["note"])
+
+    def test_a_relayed_answer_is_credited_to_the_device_that_asked_and_counted_once(self):
+        t0 = 1_700_000_000.0
+        self.pipe.ingest(frame(t0 - 10, SENSOR))
+        self.pipe.decryptor.short_to_ext["c407"] = SENSOR
+        for i, dns_id in enumerate((11, 12, 13)):
+            t = t0 + 10 * i
+            self._request(t, dns_id)                                           # the sensor asks its parent
+            # The server's answer comes over the mesh: Den Router hands it to
+            # Hall Router with a mesh header naming the sensor...
+            self._response(t + 0.1, dns_id, 2, src=self.R2, dst=ROUTER, mesh=("fc11", "c407"))
+            # ...and Hall Router hands it to the sensor: the same answer again.
+            self._response(t + 0.2, dns_id, 2)
+        rec = self._events("srp_refused")
+        self.assertEqual(len(rec), 1)
+        self.assertEqual((rec[0]["addr"], rec[0]["refusals"]), (SENSOR, 3))
+        self.assertNotIn("srp", self.pipe.seen.table[ROUTER])                 # the relay is not the client
+        self.assertNotIn("srp", self.pipe.seen.table.get(self.R2, {}))
+
+    def test_a_response_whose_request_was_missed_goes_to_the_mesh_destination(self):
+        t0 = 1_700_000_000.0
+        self.pipe.ingest(frame(t0 - 10, SENSOR))
+        self.pipe.decryptor.short_to_ext["c407"] = SENSOR
+        for i, dns_id in enumerate((21, 22, 23)):
+            self._response(t0 + i, dns_id, 2, src=self.R2, dst=ROUTER, mesh=("fc11", "c407"))
+        self.assertEqual(self._events("srp_refused")[0]["addr"], SENSOR)
+
+    def test_plain_dns_queries_on_port_53_are_not_registrations(self):
+        import struct
+        t0 = 1_700_000_000.0
+        self.pipe.ingest(frame(t0 - 10, SENSOR))
+        query = struct.pack(">HHHHHH", 31, 0x0000, 1, 0, 0, 0)
+        answer = struct.pack(">HHHHHH", 31, 0x8003, 1, 0, 0, 0)               # NXDOMAIN, opcode QUERY
+        for i in range(3):
+            self.pipe.ingest(self._frame(t0 + i, SENSOR, ROUTER, 49153, 53, query))
+            self.pipe.ingest(self._frame(t0 + i + 0.1, ROUTER, SENSOR, 53, 49153, answer))
+        self.assertEqual(self._events("srp_refused"), [])
+        self.assertNotIn("srp", self.pipe.seen.table[SENSOR])

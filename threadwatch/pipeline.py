@@ -231,6 +231,12 @@ class Pipeline:
         # the last batch that went out as a wave (for the attributions).
         self._rejoin_wave: dict | None = None
         self._last_rejoin_wave: dict | None = None
+        # SRP (DNS UPDATE) transactions in flight, by DNS id: the client
+        # that sent the request, so a relayed response is credited to the
+        # device it is for and not to the router that carried it; and the
+        # ids answered lately, so a response heard on two hops counts once.
+        self._srp_requests: dict[int, tuple[str | None, float]] = {}
+        self._srp_answered: dict[int, float] = {}
         self._crypto_mark = (0, 0)          # (decrypted, failed) when decryption last worked
         self._stale_evt = 0.0
         # Border routers on the LAN: hostname -> current address (mDNS).
@@ -1688,8 +1694,8 @@ class Pipeline:
         retry = self._counter_was_retry
         if who and live and self._last_mac_counter is not None:
             self._check_advertised(who, "mac", self._last_mac_sequence, self._last_mac_counter, ts)
-        info, src_for_mle, names = (self._deep_inspect(f, plain) if f.ftype == 1 and plain is not None
-                                    else (None, None, ()))
+        info, src_for_mle, names, srp = (self._deep_inspect(f, plain) if f.ftype == 1 and plain is not None
+                                         else (None, None, (), None))
         # A secured MLE message vouches for the sender of the unsecured
         # frame that carries it, and only while its own counter says it is
         # not a recording. The check runs even when the MAC layer already
@@ -1708,6 +1714,8 @@ class Pipeline:
                 self._check_advertised(who, "mle", info.key_sequence, info.counter, ts)
         if info is not None and info.secured and fresh_mle:
             self._apply_mle(f, info, src_for_mle)
+        if srp is not None:
+            self._note_srp(srp, ts)
         if who and live and who not in self.seen.table and not self._admit(who, ts):
             live = False        # every row is one worth keeping: this frame goes uncounted
         if who and live:
@@ -2578,7 +2586,7 @@ class Pipeline:
         try:
             r = Decryptor.udp_ports(plain, mac_src_ext=ext, mac_dst_ext=dext, mac_dst_short=dshort)
             if not r:
-                return None, None, ()
+                return None, None, (), None
             sport, dport, payload, sip, dip = r
             info = src_for_mle = None
             if MLE_UDP_PORT in (sport, dport):
@@ -2588,11 +2596,115 @@ class Pipeline:
                 info = self.decryptor.parse_mle(payload, src_for_mle, sip, dip, bind_short=False)
         except (struct.error, IndexError, ValueError):
             self.decryptor.stats["parse_failed"] += 1
-            return None, None, ()
+            return None, None, (), None
         if MLE_UDP_PORT in (sport, dport):
-            return info, src_for_mle, ()
+            return info, src_for_mle, (), None
+        srp = None
+        if 53 in (sport, dport) and len(payload) >= 12:
+            dns_id, flags = struct.unpack(">HH", payload[:4])
+            if (flags >> 11) & 0xF == 5:                    # opcode UPDATE: SRP, not a DNS-SD query
+                mesh = self._mesh_endpoints(plain)
+                if flags & 0x8000:                          # a response: for the mesh destination
+                    client = (self.decryptor.short_to_ext.get(mesh[1]) if mesh
+                              else dext or self.decryptor.short_to_ext.get(dshort or ""))
+                    srp = {"kind": "response", "id": dns_id, "rcode": flags & 0xF, "client": client,
+                           "server": self._aloc_label(sip)}
+                else:                                       # a request: from the mesh originator
+                    client = (self.decryptor.short_to_ext.get(mesh[0]) if mesh
+                              else ext or self.decryptor.short_to_ext.get(short or ""))
+                    srp = {"kind": "request", "id": dns_id, "rcode": None, "client": client,
+                           "server": self._aloc_label(dip)}
         return None, None, tuple(n for n in Decryptor.harvest_names(payload)
-                                 if len(n) > 8 and not n.startswith("_"))
+                                 if len(n) > 8 and not n.startswith("_")), srp
+
+    @staticmethod
+    def _mesh_endpoints(plain: bytes) -> tuple[str, str] | None:
+        """The 6LoWPAN mesh header's originator and final destination
+        (short addresses, hex), when the frame carries one: a frame on a
+        multi-hop path names the devices at its ends there, and its MAC
+        addresses name only this hop's."""
+        if not plain or (plain[0] >> 6) != 0b10:
+            return None
+        deep = (plain[0] & 0x0F) == 0x0F
+        off = 1 + (1 if deep else 0)
+        if len(plain) < off + 4:
+            return None
+        return plain[off:off + 2].hex(), plain[off + 2:off + 4].hex()
+
+    @staticmethod
+    def _aloc_label(ip: bytes | None) -> str | None:
+        """'anycast fc11' for a Thread service anycast locator, else None."""
+        if ip is None or len(ip) != 16 or ip[8:14] != b"\x00\x00\x00\xff\xfe\x00" or ip[14] != 0xfc:
+            return None
+        return f"anycast {ip[14]:02x}{ip[15]:02x}"
+
+    SRP_RCODES = {0: "NOERROR", 1: "FORMERR", 2: "SERVFAIL", 3: "NXDOMAIN", 4: "NOTIMP", 5: "REFUSED",
+                  6: "YXDOMAIN", 7: "YXRRSET", 8: "NXRRSET", 9: "NOTAUTH", 10: "NOTZONE"}
+
+    def _note_srp(self, srp: dict, ts: float) -> None:
+        """An SRP registration (DNS UPDATE) request or response. A device
+        refused [srp] refusals times in a row is srp_refused (warning);
+        the next accepted registration is srp_accepted (info). The streak
+        lives in the device's last-seen row, so it survives a restart, as
+        it must: a refused client retries hourly."""
+        # Bound the transaction tables: ids are 16 bits and a mesh
+        # registers a few dozen times an hour.
+        if len(self._srp_requests) > 256:
+            cutoff = ts - 120
+            self._srp_requests = {k: v for k, v in self._srp_requests.items() if v[1] >= cutoff}
+        if len(self._srp_answered) > 256:
+            cutoff = ts - 120
+            self._srp_answered = {k: v for k, v in self._srp_answered.items() if v >= cutoff}
+        if srp["kind"] == "request":
+            if srp["client"] and srp["id"] not in self._srp_requests:
+                self._srp_requests[srp["id"]] = (srp["client"], ts)
+            return
+        answered = self._srp_answered.get(srp["id"])
+        if answered is not None and ts - answered < 30:
+            return                                      # the same answer on its next hop
+        self._srp_answered[srp["id"]] = ts
+        request = self._srp_requests.pop(srp["id"], None)
+        client = request[0] if request else srp["client"]
+        if not client or client not in self.seen.table:
+            return
+        row = self.seen.table[client]
+        state = row.setdefault("srp", {"refused": 0, "since": None, "last_rcode": None,
+                                       "last_ts": None, "accepted_ts": None, "reported": False})
+        rcode = srp["rcode"]
+        state["last_rcode"], state["last_ts"] = rcode, ts
+        self.seen._dirty = True
+        name = self.names.name(client)
+        label = name or client
+        code = self.SRP_RCODES.get(rcode, f"rcode {rcode}")
+        if rcode == 0:
+            if state["reported"]:
+                since = state["since"] or ts
+                self._emit("srp_accepted", "info", ts, addr=client, name=name, refusals=state["refused"],
+                           since=since, refused_for_s=round(ts - since), server=srp.get("server"),
+                           note=f"{label}'s SRP registration was accepted after {state['refused']} refusals "
+                                f"over {fmt_span(ts - since)}: its host and service records are current again")
+            state.update({"refused": 0, "since": None, "accepted_ts": ts, "reported": False})
+            return
+        state["refused"] += 1
+        if state["since"] is None:
+            state["since"] = ts
+        if state["reported"] or state["refused"] < self.cfg.srp_refusals:
+            return
+        state["reported"] = True
+        since = state["since"]
+        accepted = state.get("accepted_ts")
+        last_ok = (f"its last accepted registration was {fmt_span(ts - accepted)} ago" if accepted
+                   else "no accepted registration of its has been heard")
+        self._emit("srp_refused", "warning", ts, addr=client, name=name, rcode=rcode, rcode_name=code,
+                   refusals=state["refused"], since=since, refused_for_s=round(ts - since),
+                   accepted_ts=accepted, server=srp.get("server"),
+                   note=f"{label}'s SRP registration has been refused {state['refused']} times over "
+                        f"{fmt_span(ts - since)} ({code}); {last_ok}. The SRP server (a border router: an "
+                        "Apple TV or the OTBR) will not take its host and Matter service records, so a "
+                        "controller that finds it through mDNS (Apple Home) loses it once the last accepted "
+                        "registration expires, while Home Assistant keeps the address it has and may not "
+                        "notice. The device retries with backoff, hourly at the cap; the refusal is the "
+                        "server's to explain")
 
     def _apply_mle(self, f: Frame, info, src_for_mle: str | None) -> None:
         """What a fresh, authenticated MLE message changes: the sender's

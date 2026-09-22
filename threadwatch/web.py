@@ -181,6 +181,12 @@ LEGEND = [
      "Traffic floods recurring with a stable period: the signature of the mesh-wide broadcast "
      "storm that took the network down before. Critical. This is what the ring buffer is for: "
      "run 'threadwatch snapshot' to keep the packets."),
+    ("srp", "SRP registration refused",
+     "A device's SRP registration (the DNS UPDATE by which it publishes its host and Matter service to "
+     "the border routers' SRP server) has been refused [srp] refusals times in a row. Controllers that "
+     "find the device through mDNS, Apple Home among them, lose it once its last accepted registration "
+     "expires; Home Assistant keeps the address it has and may not notice. The row closes on the next "
+     "accepted registration. The refusal is the server's: an Apple TV or the OTBR."),
     ("partition", "Partition, leader change, leader stalled",
      "The Thread mesh split, merged, or elected a new leader (credentials needed to see this). "
      "Routine after a border router reboots; a problem if it keeps happening. A leader stalled row "

@@ -241,6 +241,13 @@ class Config:
     # as the individual mle_rejoin_attempt notices it always was.
     rejoin_wave_s: float = 60.0
     rejoin_wave_devices: int = 3
+    # [srp] a device whose SRP registration (DNS UPDATE to the border
+    # routers' SRP server: how it publishes its host and Matter service for
+    # the controllers that find it through mDNS) has been refused this many
+    # times in a row is logged as srp_refused (warning); the next accepted
+    # one closes it. On 2026-09-17 a smoke sensor's registrations started
+    # being refused and nobody knew until Apple Home lost it five days on.
+    srp_refusals: int = 3
     # [border_routers] how often the recorder asks the LAN (mDNS, the
     # _meshcop._udp service every border router advertises) which extended
     # address each border router has now. Apple hubs change theirs on every
@@ -344,6 +351,7 @@ SECTIONS: dict[str, frozenset[str] | None] = {
     "retransmissions": frozenset(("confirm_s",)),
     "partition": frozenset(("stall_s", "settle_s")),
     "rejoins": frozenset(("wave_s", "wave_devices")),
+    "srp": frozenset(("refusals",)),
     "border_routers": frozenset(("browse_s", "rotation")),
     "summary": frozenset(("hour", "severity")),
     "detect": frozenset(("flood_multiplier", "flood_min_frames", "period_min_s",
@@ -703,6 +711,11 @@ def load(path: Path | None) -> Config:
         if isinstance(devices, bool) or not isinstance(devices, int) or devices < 2:
             raise ValueError(f"[rejoins] wave_devices must be a whole number of 2 or more, not {devices!r}")
         cfg.rejoin_wave_devices = devices
+        srp = raw.get("srp", {})
+        refusals = srp.get("refusals", cfg.srp_refusals)
+        if isinstance(refusals, bool) or not isinstance(refusals, int) or refusals < 1:
+            raise ValueError(f"[srp] refusals must be a whole number of 1 or more, not {refusals!r}")
+        cfg.srp_refusals = refusals
         brs = raw.get("border_routers", {})
         cfg.border_router_browse_s = float(_finite("border_routers", "browse_s",
                                                   brs.get("browse_s", cfg.border_router_browse_s)))

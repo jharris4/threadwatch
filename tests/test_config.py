@@ -459,6 +459,8 @@ class ExampleConfigTest(unittest.TestCase):
         ("retransmissions", "confirm_s"): ("retrans_confirm_s", 300, 60),
         ("partition", "stall_s"): ("partition_stall_s", 60, 45),
         ("partition", "settle_s"): ("partition_settle_s", 30, 0),
+        ("rejoins", "wave_s"): ("rejoin_wave_s", 60, 0),
+        ("rejoins", "wave_devices"): ("rejoin_wave_devices", 3, 5),
         ("link", "drop_db"): ("link_drop_db", 8, 3),
         ("link", "hold_s"): ("link_hold_s", 1800, 120),
         ("summary", "hour"): ("summary_hour", 8, 6),

@@ -571,6 +571,7 @@ class MleThroughThePipelineTest(unittest.TestCase):
             self.assertEqual(pipe.decryptor.stats["mle_decrypted"], 1)
             # Then it loses its parent and asks for a new one.
             pipe.ingest(self._mle_frame(t + 60, b"\x09", 2))
+            pipe.periodic(t + 60 + 61)                       # one device: its notice, once the batch window has passed
             ev = [r for r in pipe.events.records if r["event"] == "mle_rejoin_attempt"]
             self.assertEqual([(e["command"], e["addr"]) for e in ev], [("Parent Request", SED)])
             self.assertIn("trying to get back", ev[0]["note"])

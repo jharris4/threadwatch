@@ -1314,7 +1314,7 @@ def run_replay(cfg: Config, pcap_path: Path | list[Path], *, journal=None, outpu
             path = getattr(exc, "filename", None) or ", ".join(str(p) for p in group.values())
             raise SystemExit(f"threadwatch replay: could not read {path}: {exc}") from None
     if last:
-        pipe.periodic(last)
+        pipe.periodic(last, final=True)
     out = {
         "file": str(files[0]) if len(files) == 1 else None,
         "files": [str(f) for f in files],

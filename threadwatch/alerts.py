@@ -71,7 +71,7 @@ SEVERITIES = ("info", "notice", "warning", "critical")
 # is a journal line rather than a page that keeps coming.
 KNOWN_EVENTS = frozenset((
     "device_first_seen", "device_returned", "join_scan_activity", "possible_foreign_pan",
-    "dominant_pan_changed", "configured_pan_silent", "mle_rejoin_attempt", "device_quiet",
+    "dominant_pan_changed", "configured_pan_silent", "mle_rejoin_attempt", "rejoin_wave", "device_quiet",
     "visitor_left", "visitor_returned",
     "poll_starvation", "poll_answered", "poll_unserved", "poll_served", "frame_counter_mismatch",
     "rssi_degradation", "rssi_recovered",

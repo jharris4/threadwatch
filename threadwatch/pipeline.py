@@ -222,6 +222,15 @@ class Pipeline:
         # The leader a change or storm replaced, for the detectors that
         # judge that device's silence afterwards (device_quiet, ha causes).
         self._lost_leader: dict | None = None
+        # When the partition or leader last flipped (the first flip of a
+        # storm): the rejoin and retransmission detectors read it to say
+        # what a burst that follows is.
+        self._partition_changed_ts: float | None = None
+        # Rejoin attempts held for [rejoins] wave_s after the last one:
+        # devices by address, the records the batch would have logged, and
+        # the last batch that went out as a wave (for the attributions).
+        self._rejoin_wave: dict | None = None
+        self._last_rejoin_wave: dict | None = None
         self._crypto_mark = (0, 0)          # (decrypted, failed) when decryption last worked
         self._stale_evt = 0.0
         # Border routers on the LAN: hostname -> current address (mDNS).
@@ -2536,8 +2545,17 @@ class Pipeline:
         else:
             note = (f"retries spread across devices (top: {who} -> {target}, {share:.0%}): "
                     f"channel contention or interference rather than one bad link")
-        return {"addr": sender_ext, "name": self.names.name(sender_ext) if sender_ext else None,
-                "top_sender": who, "top_target": target, "top_share": round(share, 2), "note": note}
+        out = {"addr": sender_ext, "name": self.names.name(sender_ext) if sender_ext else None,
+               "top_sender": who, "top_target": target, "top_share": round(share, 2), "note": note}
+        if share < 0.5:
+            context = self._rejoin_context(self._win_start + 60 if self._win_start else time.time())
+            if context:
+                trigger = context.get("trigger") or "a rejoin wave"
+                many = f"{context['devices']} devices re-attaching" if context.get("devices") else "the mesh re-attaching"
+                out["cause"] = "rejoin_wave"
+                out["note"] = (f"retries spread across devices (top: {who} -> {target}, {share:.0%}) while "
+                               f"{many} after {trigger}: the rejoin wave, not interference")
+        return out
 
     # ------------------------------------------------- credentialed layer
 
@@ -2618,10 +2636,7 @@ class Pipeline:
                 # and the HA availability check reads it the same way.
                 row["rejoin_ts"] = f.ts
                 self.seen._dirty = True
-            self._emit("mle_rejoin_attempt", "notice", f.ts,
-                       command=info.command_name, src=f.src, addr=src_for_mle, name=name,
-                       note=f"{info.command_name} from {name or src_for_mle or f.src}: "
-                            "it lost its parent or its network and is trying to get back")
+            self._note_rejoin(f.ts, info.command_name, f.src, src_for_mle, name)
         if info.partition_id is not None:
             self._note_partition((info.partition_id, info.leader_router_id), f.ts,
                                  src_for_mle, info.route_id_sequence)
@@ -2653,6 +2668,7 @@ class Pipeline:
             if hold is None:
                 hold = self._partition_hold = {"previous": self.partition, "first_ts": ts,
                                                "last_ts": ts, "states": [], "changes": 0}
+                self._partition_changed_ts = ts
             if cur not in (state for state, _ in hold["states"]):
                 hold["states"].append((cur, ts))
             hold["changes"] += 1
@@ -2774,6 +2790,104 @@ class Pipeline:
                    note=f"{what}: every router hit the leader-age timeout together and re-elected; "
                         "sleepy children re-attach in the minute after")
 
+    # ------------------------------------------------------------ rejoins
+
+    def _note_rejoin(self, ts: float, command: str, src: str | None, addr: str | None,
+                     name: str | None) -> None:
+        """A Parent Request or Child ID Request. Held for [rejoins] wave_s
+        after the last one: a batch from several devices is one
+        rejoin_wave, a smaller batch goes out as the mle_rejoin_attempt
+        notices it always was (_settle_rejoins)."""
+        fields = {"command": command, "src": src, "addr": addr, "name": name,
+                  "note": f"{command} from {name or addr or src}: it lost its parent or its "
+                          "network and is trying to get back"}
+        if self.cfg.rejoin_wave_s <= 0:
+            self._emit("mle_rejoin_attempt", "notice", ts, **fields)
+            return
+        wave = self._rejoin_wave
+        if wave is not None and ts - wave["last_ts"] > self.cfg.rejoin_wave_s:
+            self._settle_rejoins(ts)
+            wave = None
+        if wave is None:
+            wave = self._rejoin_wave = {"first_ts": ts, "last_ts": ts, "devices": {}, "records": []}
+        wave["last_ts"] = max(wave["last_ts"], ts)
+        key = addr or src or "?"
+        dev = wave["devices"].setdefault(key, {"addr": addr, "src": src, "name": name,
+                                               "first": ts, "last": ts, "attempts": 0, "commands": {}})
+        dev["last"] = max(dev["last"], ts)
+        dev["attempts"] += 1
+        dev["commands"][command] = dev["commands"].get(command, 0) + 1
+        wave["records"].append((ts, fields))
+
+    def _rejoin_trigger(self, first_ts: float) -> str | None:
+        """What a batch of rejoins that started at first_ts follows: a
+        partition change or storm inside five minutes either side, or
+        nothing the recorder saw."""
+        changed = self._partition_changed_ts
+        if changed is not None and abs(first_ts - changed) <= 300:
+            return f"the partition change at {time.strftime('%H:%M:%S', time.localtime(changed))}"
+        return None
+
+    def _settle_rejoins(self, now: float) -> None:
+        """Log the held rejoin batch: one rejoin_wave for several devices
+        (the per-device attempts still reach the key journal), the
+        individual notices for a small one."""
+        wave = self._rejoin_wave
+        if wave is None:
+            return
+        self._rejoin_wave = None
+        devices = wave["devices"]
+        trigger = self._rejoin_trigger(wave["first_ts"])
+        if len(devices) < self.cfg.rejoin_wave_devices and not (trigger and len(devices) >= 2):
+            for ts, fields in wave["records"]:
+                self._emit("mle_rejoin_attempt", "notice", ts, **fields)
+            return
+        from .alerts import record_id
+        rows = sorted(devices.values(), key=lambda d: d["first"])
+        commands: dict[str, int] = {}
+        for d in rows:
+            for c, n in d["commands"].items():
+                commands[c] = commands.get(c, 0) + n
+        names = [d["name"] or d["addr"] or d["src"] or "?" for d in rows]
+        listed = ", ".join(names[:12]) + (f" and {len(names) - 12} more" if len(names) > 12 else "")
+        duration = wave["last_ts"] - wave["first_ts"]
+        cause = f" after {trigger}" if trigger else ""
+        self._last_rejoin_wave = {"first_ts": wave["first_ts"], "last_ts": wave["last_ts"],
+                                  "devices": len(rows), "trigger": trigger}
+        self._emit("rejoin_wave", "notice", wave["first_ts"], devices=len(rows),
+                   attempts=sum(d["attempts"] for d in rows), commands=commands, names=names,
+                   since=wave["first_ts"], until=wave["last_ts"], duration_s=round(duration, 1),
+                   trigger=trigger,
+                   note=f"{len(rows)} devices re-attached over {fmt_span(duration)}{cause}: {listed}. "
+                        + ("Their parents detached and came back; each child found a parent again."
+                           if trigger else
+                           "No partition change was seen: a parent router of theirs rebooted or "
+                           "dropped them, or the sniffer missed the change."))
+        # The key journal keeps each device's attempt as evidence, as it did
+        # when every attempt was its own record.
+        for ts, fields in wave["records"]:
+            record = {"ts": ts, "event": "mle_rejoin_attempt", "severity": "notice", **fields}
+            record["id"] = record_id(record)
+            self.journal.event(record, source="replay" if self.ephemeral else "event_log")
+
+    def _rejoin_context(self, ts: float) -> dict:
+        """What the retransmission detector should say when retries rise
+        while the mesh is re-attaching: the rejoin wave or partition
+        change inside the last five minutes, if any."""
+        wave = self._rejoin_wave
+        if wave is not None and ts - wave["first_ts"] <= 300 \
+                and len(wave["devices"]) >= self.cfg.rejoin_wave_devices:
+            return {"devices": len(wave["devices"]), "since": wave["first_ts"],
+                    "trigger": self._rejoin_trigger(wave["first_ts"])}
+        last = self._last_rejoin_wave
+        if last is not None and ts - last["last_ts"] <= 300:
+            return {"devices": last["devices"], "since": last["first_ts"], "trigger": last["trigger"]}
+        changed = self._partition_changed_ts
+        if changed is not None and ts - changed <= 300:
+            return {"devices": 0, "since": changed,
+                    "trigger": f"the partition change at {time.strftime('%H:%M:%S', time.localtime(changed))}"}
+        return {}
+
     def _note_observed_name(self, owner: str, name: str, repeat: bool = False) -> None:
         """``repeat`` marks a frame the MAC layer accepted as a retry: the
         same bytes again, milliseconds later.
@@ -2799,13 +2913,17 @@ class Pipeline:
 
     # ------------------------------------------------------- housekeeping
 
-    def periodic(self, now: float) -> None:
-        """Run every ~30 s in live capture: quiet checks, persistence."""
+    def periodic(self, now: float, final: bool = False) -> None:
+        """Run every ~30 s in live capture: quiet checks, persistence.
+        final: the last call of a replay, which logs what is still held."""
         self._check_clock(now)
         hold = self._partition_hold
-        if hold is not None and now - hold["last_ts"] >= self.cfg.partition_settle_s:
+        if hold is not None and (final or now - hold["last_ts"] >= self.cfg.partition_settle_s):
             self._settle_partition(now)
         self._check_leader(now)
+        wave = self._rejoin_wave
+        if wave is not None and (final or now - wave["last_ts"] >= self.cfg.rejoin_wave_s):
+            self._settle_rejoins(now)
         self.seen.maybe_save()
         self.journal.save(now)
         self._check_credentials(now)

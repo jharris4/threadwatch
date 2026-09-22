@@ -339,6 +339,11 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
                                    f"ours is {rec.get('dominant_pan')}")
             else:
                 bump(ep, rec)
+        elif ev == "rejoin_wave":
+            ep = new("rejoin", rec, f"rejoin wave: {rec.get('devices')} devices",
+                     (f"after {rec['trigger']}: " if rec.get("trigger") else "")
+                     + ", ".join(rec.get("names") or [])[:200])
+            ep["end"] = rec.get("until", rec["ts"])
         elif ev == "mle_rejoin_attempt":
             key = _label(rec)
             ep = rejoin.get(key)

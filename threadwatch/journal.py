@@ -25,7 +25,7 @@ MAX_RECORDS = 8192
 MAX_BYTES = 16 * 1024 * 1024
 MAX_DEVICES = 1024
 EVENTS = frozenset(("key_sequence_advanced", "key_lag", "key_lag_cleared", "key_lag_census",
-                    "mle_rejoin_attempt", "ha_unavailable", "ha_available",
+                    "mle_rejoin_attempt", "rejoin_wave", "ha_unavailable", "ha_available",
                     "partition_or_leader_change", "partition_storm", "leader_stalled",
                     "clock_step", "recorder_started",
                     "snapshot_requested", "snapshot_saved", "snapshot_skipped"))

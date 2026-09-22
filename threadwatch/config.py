@@ -234,6 +234,13 @@ class Config:
     # partition_storm rather than one warning per flip (90 in three seconds
     # on 2026-09-22).
     partition_settle_s: float = 30.0
+    # [rejoins] Parent Requests and Child ID Requests are held this long
+    # after the last one; a lull closes the batch. A batch from wave_devices
+    # or more devices (or from two or more within five minutes of a
+    # partition change) is one rejoin_wave record; a smaller batch is logged
+    # as the individual mle_rejoin_attempt notices it always was.
+    rejoin_wave_s: float = 60.0
+    rejoin_wave_devices: int = 3
     # [border_routers] how often the recorder asks the LAN (mDNS, the
     # _meshcop._udp service every border router advertises) which extended
     # address each border router has now. Apple hubs change theirs on every
@@ -336,6 +343,7 @@ SECTIONS: dict[str, frozenset[str] | None] = {
                                   "burst_hold_s", "rearm_s", "registry_refresh_s")),
     "retransmissions": frozenset(("confirm_s",)),
     "partition": frozenset(("stall_s", "settle_s")),
+    "rejoins": frozenset(("wave_s", "wave_devices")),
     "border_routers": frozenset(("browse_s", "rotation")),
     "summary": frozenset(("hour", "severity")),
     "detect": frozenset(("flood_multiplier", "flood_min_frames", "period_min_s",
@@ -687,6 +695,14 @@ def load(path: Path | None) -> Config:
         if cfg.partition_settle_s < 0:
             raise ValueError("[partition] settle_s must be 0 (log every change at once) or more, "
                              f"not {cfg.partition_settle_s:g}")
+        rejoins = raw.get("rejoins", {})
+        cfg.rejoin_wave_s = float(_finite("rejoins", "wave_s", rejoins.get("wave_s", cfg.rejoin_wave_s)))
+        if cfg.rejoin_wave_s < 0:
+            raise ValueError(f"[rejoins] wave_s must be 0 (log every attempt at once) or more, not {cfg.rejoin_wave_s:g}")
+        devices = rejoins.get("wave_devices", cfg.rejoin_wave_devices)
+        if isinstance(devices, bool) or not isinstance(devices, int) or devices < 2:
+            raise ValueError(f"[rejoins] wave_devices must be a whole number of 2 or more, not {devices!r}")
+        cfg.rejoin_wave_devices = devices
         brs = raw.get("border_routers", {})
         cfg.border_router_browse_s = float(_finite("border_routers", "browse_s",
                                                   brs.get("browse_s", cfg.border_router_browse_s)))

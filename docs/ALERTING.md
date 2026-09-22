@@ -72,7 +72,8 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `possible_foreign_pan` | notice | `pan`, `src`, `dominant_pan`, `note` |
 | `dominant_pan_changed` | notice when first guessed, warning when the guess changes | `pan`, `previous`, `frames`, `note` |
 | `configured_pan_silent` | warning | `pan`, `heard_frames`, `window_s`, `busiest_pan`, `note` |
-| `mle_rejoin_attempt` | notice | `command`, `src`, `name` |
+| `mle_rejoin_attempt` | notice | `command`, `src`, `addr`, `name`; logged once `[rejoins] wave_s` has passed without another attempt, unless the batch became a `rejoin_wave` |
+| `rejoin_wave` | notice | `devices`, `attempts`, `commands` (count per MLE command), `names`, `since`, `until`, `duration_s`, `trigger` (the partition change it followed, or null), `note`; replaces the batch's individual `mle_rejoin_attempt` records in the log (the key journal still gets each attempt) |
 | `device_quiet` | warning, or notice when `reception` is `marginal` | `addr`, `name`, `silent_for_s` (wall clock since the device's last frame, as the pages show it), `unheard_s` (the part the recorder was listening for, the figure judged against `[quiet] silence_s`), `blind_s` (the difference: the recorder's own outage or clock step), `last_seen`, `rssi_dbm`, `reception`, `note`; when something proved the device alive after its last frame, `vouched_ts` and `vouched_by` (`parent`: its parent answered its keep-alive; `ack`: its radio acknowledged a frame) |
 | `visitor_left` | info | `addr` (never in `devices.json`; `name` is its label from `config/visitors.json`, else null), `first_seen`, `last_seen`, `heard_for_s`, `silent_for_s`, `frames`, `rloc16`, `parent`, `parent_addr`, `rssi_dbm`, `generations` (each key generation the address sent under, with the highest MAC `counter` and `mle_counter` heard), `note`. An address not in the inventory, heard for under 5 min as a child in its latest stretch of presence (a gap of over 5 min between frames starts a new stretch, so a phone that attaches twice in an evening is two visits), then silent for `[quiet] silence_s`: a phone or tablet reaching a HomeKit accessory. `visit` counts the address's visits (`data/state/visits.json`, kept by the recorder). Filed instead of `device_quiet`; the address is dropped from the device table at the same time, so it is never counted quiet or unnamed |
 | `visitor_returned` | info | `addr`, `name` (label from `config/visitors.json`, else null), `visit`, `last_visit`, `note`: an address that has visited before is heard again (phones keep their extended address, even across a reboot); raised in place of `device_first_seen`, whose row the last visit dropped |
@@ -87,7 +88,7 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `key_lag_census` | info | `sequence`, `mesh_generation`, `counts` (devices per generation, fresh ones only), `behind_parent_1`, `behind_parent_2plus`, `routers_behind` (each: `name`, `addr`, `generation`, `lag`, and `parent` / `parent_generation` or `mesh_generation`), `unknown` (no fresh frame: not judged), `suspects` (the observation's first sender, then every device whose first frame on the new generation came while its parent was still fresh on the old one, entries as in `key_sequence_advanced`), `note`; `[keys] census_delay_s` after each advance |
 | `key_lag` | warning for a child, critical for a router; notice when `episode` > 1 (reopened within `[keys] rearm_s`) | `addr`, `name`, `role`, `generation`, `parent`, `parent_addr`, `parent_generation` (a child) or `mesh_generation` (a router), `lag`, `since`, `lagged_for_s`, `rssi_dbm`, `reception`, `polls_acked`, `episode`, `since_previous_s`, `note` |
 | `key_lag_cleared` | info | `addr`, `name`, `role`, `generation`, `parent`, `parent_addr`, `parent_generation` or `mesh_generation`, `since`, `lagged_for_s`, `rejoined`, `rejoin_ts`, `note`; only after a `key_lag` went out |
-| `retransmission_elevation` | notice for the first elevated minute, warning once the rate has stayed up for `[retransmissions] confirm_s` (`confirmed`); notice regardless when one sender-target pair is `top_share` >= 0.5 of the retries (a chronic bad link, not a storm precursor) | `rate`, `baseline`, `addr`, `name`, `top_sender`, `top_target`, `top_share`, `confirmed`, `sustained_s`, `note` |
+| `retransmission_elevation` | notice for the first elevated minute, warning once the rate has stayed up for `[retransmissions] confirm_s` (`confirmed`); notice regardless when one sender-target pair is `top_share` >= 0.5 of the retries (a chronic bad link, not a storm precursor) | `rate`, `baseline`, `addr`, `name`, `top_sender`, `top_target`, `top_share`, `confirmed`, `sustained_s`, `cause` (`rejoin_wave` when the mesh was re-attaching after a partition change inside the last five minutes), `note` |
 | `partition_or_leader_change` | warning | `previous`, `current`, each with `partition`, `leader_router` and `leader` (the router id with the device's name once the MLE layer has matched it); logged once the change has held for `[partition] settle_s` |
 | `partition_storm` | warning | `previous`, `current` (as above), `partitions` (distinct states seen), `leaders`, `changes` (flips), `since`, `until`, `duration_s`, `note`; several changes inside `[partition] settle_s`, logged as one |
 | `leader_stalled` | warning | `partition`, `leader_router`, `leader`, `addr`, `name`, `id_sequence`, `since`, `stalled_for_s`, `last_carried_by`, `leader_last_seen`, `leader_silent_for_s`, `note` |
@@ -428,6 +429,22 @@ whether the mesh split and merged back under the same leader or lost its
 leader to a successor. The 09-22 storm was 90 warnings in three seconds
 for 14 partitions; it is one record now. `settle_s = 0` logs every flip at
 once, as before.
+
+`rejoin_wave` is the minute after a partition change, or after a parent
+router dropped its children, seen as one record instead of one notice per
+Parent Request. Attempts are held for `[rejoins] wave_s` (default 60 s)
+after the last one; a batch from `wave_devices` (default 3) or more
+devices, or from two or more inside five minutes of a partition change, is
+logged as one `rejoin_wave` with the devices named, the attempts per
+command, the span and the trigger. A smaller batch is logged as the
+individual `mle_rejoin_attempt` notices, each at its own time. The key
+journal receives every attempt either way. The retransmission detector
+reads the same window: retries that rise while a wave is running, or
+inside five minutes of a partition change, are attributed to the wave
+(`cause = rejoin_wave`) rather than to interference. On 2026-09-22 the
+minute after the leader died was 70 rejoin notices and a retransmission
+notice blaming contention; it is one wave of 18 devices now, and the
+retransmission note names it.
 
 `retransmission_elevation` is the storm precursor: in one minute more than
 20% of frames were repeats (same sender and sequence number within 2 s, a

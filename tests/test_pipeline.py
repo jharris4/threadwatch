@@ -2790,6 +2790,7 @@ class KeyGenerationTest(unittest.TestCase):
         self.assertEqual(len(self._events(pipe, "key_lag")), 1)
         pipe.ingest(rejoin_frame(t + 1000, SENSOR, 5))
         self.assertEqual(pipe.seen.table[SENSOR]["rejoin_ts"], t + 1000)
+        pipe.periodic(t + 1000 + 61)
         self.assertEqual(len(self._events(pipe, "mle_rejoin_attempt")), 1)
         pipe.ingest(frame(t + 1010, SENSOR, sequence=7))
         pipe.ingest(short_frame(t + 1011, "0401", SENSOR, sequence=7))
@@ -5268,3 +5269,112 @@ class LeaderAndPartitionTest(unittest.TestCase):
         self._adv(t0 + 1, self.R2, 0, partition=0x7ff4debb, leader=49)
         self._adv(t0 + 2, self.R2, 0, partition=0x7ff4debb, leader=49)
         self.assertEqual(len(self._events("partition_or_leader_change")), 1)
+
+
+class RejoinWaveTest(unittest.TestCase):
+    """rejoin_wave: a batch of Parent / Child ID Requests from several
+    devices is one record; a small batch is the notices it always was
+    (docs/ALERTING.md)."""
+
+    S2 = "c2c2c2c2c2c2c2c2"
+    S3 = "c3c3c3c3c3c3c3c3"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        (d / "devices.json").write_text(json.dumps([{"name": "Porch Sensor", "extendedAddress": SENSOR},
+                                                    {"name": "Hall Router", "extendedAddress": ROUTER},
+                                                    {"name": "Loft Sensor", "extendedAddress": self.S2}]))
+        self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json")
+        self.pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _events(self, name):
+        return [r for r in self.pipe.events.records if r["event"] == name]
+
+    def _rejoin(self, ts, src, command=9):
+        self.pipe.ingest(mle_frame(ts, src, 0, bytes([command])))
+
+    def test_three_devices_inside_the_window_are_one_wave(self):
+        t0 = 1_700_000_000.0
+        self._rejoin(t0, SENSOR)                       # Parent Request
+        self._rejoin(t0 + 2, SENSOR, 11)               # Child ID Request
+        self._rejoin(t0 + 10, self.S2)
+        self._rejoin(t0 + 40, self.S3)                 # not in the inventory: named by address
+        self.pipe.periodic(t0 + 70)
+        self.assertEqual(self._events("rejoin_wave"), [])          # 30 s since the last: still open
+        self.pipe.periodic(t0 + 101)
+        wave = self._events("rejoin_wave")
+        self.assertEqual(len(wave), 1)
+        rec = wave[0]
+        self.assertEqual((rec["ts"], rec["devices"], rec["attempts"], rec["duration_s"], rec["trigger"]),
+                         (t0, 3, 4, 40.0, None))
+        self.assertEqual(rec["commands"], {"Parent Request": 3, "Child ID Request": 1})
+        self.assertEqual(rec["names"], ["Porch Sensor", "Loft Sensor", self.S3])
+        self.assertIn("3 devices re-attached over 40 s: Porch Sensor, Loft Sensor, " + self.S3, rec["note"])
+        self.assertIn("No partition change was seen", rec["note"])
+        self.assertEqual(self._events("mle_rejoin_attempt"), [])     # replaced in the log
+        self.assertEqual(self.pipe.seen.table[SENSOR]["rejoin_ts"], t0 + 2)   # the per-device fact is kept
+        # ...and the key journal still received each attempt.
+        attempts = [r for r in self.pipe.journal.records
+                    if r.get("kind") == "event" and r["evidence"].get("event") == "mle_rejoin_attempt"]
+        self.assertEqual(len(attempts), 4)
+
+    def test_one_device_is_its_own_notices_once_the_window_has_passed(self):
+        t0 = 1_700_000_000.0
+        self._rejoin(t0, SENSOR)
+        self._rejoin(t0 + 5, SENSOR, 11)
+        self.assertEqual(self._events("mle_rejoin_attempt"), [])    # held
+        self.pipe.periodic(t0 + 66)
+        ev = self._events("mle_rejoin_attempt")
+        self.assertEqual([(e["ts"], e["command"], e["name"]) for e in ev],
+                         [(t0, "Parent Request", "Porch Sensor"), (t0 + 5, "Child ID Request", "Porch Sensor")])
+        self.assertIn("trying to get back", ev[0]["note"])
+        self.assertEqual(self._events("rejoin_wave"), [])
+
+    def test_two_devices_after_a_partition_change_are_a_wave_with_the_trigger(self):
+        t0 = 1_700_000_000.0
+        self.pipe.ingest(mle_frame(t0, ROUTER, 0, advertisement(0x3a31cae5, 60, 10)))
+        self.pipe.ingest(mle_frame(t0 + 100, ROUTER, 0, advertisement(0x709985ad, 57, 3)))
+        self._rejoin(t0 + 111, SENSOR)
+        self._rejoin(t0 + 130, self.S2, 11)
+        self.pipe.periodic(t0 + 200)
+        rec = self._events("rejoin_wave")[0]
+        self.assertEqual(rec["devices"], 2)
+        self.assertEqual(rec["trigger"], "the partition change at " + time.strftime("%H:%M:%S", time.localtime(t0 + 100)))
+        self.assertIn("after the partition change at", rec["note"])
+        self.assertIn("Their parents detached and came back", rec["note"])
+
+    def test_the_last_periodic_of_a_replay_logs_what_is_still_held(self):
+        t0 = 1_700_000_000.0
+        self._rejoin(t0, SENSOR)
+        self.pipe.periodic(t0 + 5, final=True)
+        self.assertEqual(len(self._events("mle_rejoin_attempt")), 1)
+
+    def test_wave_s_zero_logs_every_attempt_at_once(self):
+        self.cfg.rejoin_wave_s = 0
+        self._rejoin(1_700_000_000.0, SENSOR)
+        self.assertEqual(len(self._events("mle_rejoin_attempt")), 1)
+
+    def test_retransmissions_during_a_wave_are_attributed_to_it(self):
+        t0 = 1_700_000_000.0
+        for i, src in enumerate((SENSOR, self.S2, self.S3)):
+            self._rejoin(t0 + i, src)
+        self.pipe._win_start = t0 + 30
+        self.pipe._win_dups = 20
+        self.pipe._win_dup_by = {(SENSOR, ROUTER): 3, (self.S2, ROUTER): 3, (self.S3, "ffff"): 2}
+        att = self.pipe._retrans_attribution()
+        self.assertEqual(att["cause"], "rejoin_wave")
+        self.assertIn("while 3 devices re-attaching after a rejoin wave: the rejoin wave, not interference", att["note"])
+        # One pair hammering one target is still that pair's link, wave or not.
+        self.pipe._win_dup_by = {(SENSOR, ROUTER): 15, (self.S2, ROUTER): 5}
+        att = self.pipe._retrans_attribution()
+        self.assertNotIn("cause", att)
+        self.assertIn("a failing link between those two", att["note"])
+        # Six minutes on, with the wave long closed, retries are interference again.
+        self.pipe.periodic(t0 + 100)
+        self.pipe._win_start = t0 + 100 + 360
+        self.pipe._win_dup_by = {(SENSOR, ROUTER): 3, (self.S2, ROUTER): 3, (self.S3, "ffff"): 2}
+        self.assertNotIn("cause", self.pipe._retrans_attribution())

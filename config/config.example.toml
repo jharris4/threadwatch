@@ -229,6 +229,16 @@ stall_s = 60
 # record). 0 logs every flip at once.
 settle_s = 30
 
+[rejoins]
+# Parent Requests and Child ID Requests are held this long after the last
+# one; a lull closes the batch. A batch from wave_devices or more devices
+# (or from two or more within five minutes of a partition change) is one
+# rejoin_wave notice naming them; a smaller batch is logged as the
+# individual mle_rejoin_attempt notices it always was. wave_s = 0 logs
+# every attempt at once.
+wave_s = 60
+wave_devices = 3
+
 [link]
 # Slow link degradation: a device still heard, but with its average RSSI at
 # the sniffer this far below its own daily reference for this long, is

@@ -452,6 +452,7 @@ class DevicesByModelTest(unittest.TestCase):
 
     def test_the_tally_counts_each_model_once_per_live_address(self):
         import tempfile
+
         from tests.test_web import AQ, TV1, TV2
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp)

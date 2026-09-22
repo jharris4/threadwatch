@@ -711,7 +711,8 @@ def load(path: Path | None) -> Config:
         rejoins = raw.get("rejoins", {})
         cfg.rejoin_wave_s = float(_finite("rejoins", "wave_s", rejoins.get("wave_s", cfg.rejoin_wave_s)))
         if cfg.rejoin_wave_s < 0:
-            raise ValueError(f"[rejoins] wave_s must be 0 (log every attempt at once) or more, not {cfg.rejoin_wave_s:g}")
+            raise ValueError("[rejoins] wave_s must be 0 (log every attempt at once) or more, "
+                             f"not {cfg.rejoin_wave_s:g}")
         devices = rejoins.get("wave_devices", cfg.rejoin_wave_devices)
         if isinstance(devices, bool) or not isinstance(devices, int) or devices < 2:
             raise ValueError(f"[rejoins] wave_devices must be a whole number of 2 or more, not {devices!r}")

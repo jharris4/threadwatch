@@ -2574,7 +2574,8 @@ class Pipeline:
             context = self._rejoin_context(self._win_start + 60 if self._win_start else time.time())
             if context:
                 trigger = context.get("trigger") or "a rejoin wave"
-                many = f"{context['devices']} devices re-attaching" if context.get("devices") else "the mesh re-attaching"
+                many = (f"{context['devices']} devices re-attaching" if context.get("devices")
+                        else "the mesh re-attaching")
                 out["cause"] = "rejoin_wave"
                 out["note"] = (f"retries spread across devices (top: {who} -> {target}, {share:.0%}) while "
                                f"{many} after {trigger}: the rejoin wave, not interference")

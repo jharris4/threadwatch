@@ -5399,7 +5399,8 @@ class RejoinWaveTest(unittest.TestCase):
         self.pipe.periodic(t0 + 200)
         rec = self._events("rejoin_wave")[0]
         self.assertEqual(rec["devices"], 2)
-        self.assertEqual(rec["trigger"], "the partition change at " + time.strftime("%H:%M:%S", time.localtime(t0 + 100)))
+        self.assertEqual(rec["trigger"],
+                         "the partition change at " + time.strftime("%H:%M:%S", time.localtime(t0 + 100)))
         self.assertIn("after the partition change at", rec["note"])
         self.assertIn("Their parents detached and came back", rec["note"])
 
@@ -5423,7 +5424,8 @@ class RejoinWaveTest(unittest.TestCase):
         self.pipe._win_dup_by = {(SENSOR, ROUTER): 3, (self.S2, ROUTER): 3, (self.S3, "ffff"): 2}
         att = self.pipe._retrans_attribution()
         self.assertEqual(att["cause"], "rejoin_wave")
-        self.assertIn("while 3 devices re-attaching after a rejoin wave: the rejoin wave, not interference", att["note"])
+        self.assertIn("while 3 devices re-attaching after a rejoin wave: the rejoin wave, not interference",
+                      att["note"])
         # One pair hammering one target is still that pair's link, wave or not.
         self.pipe._win_dup_by = {(SENSOR, ROUTER): 15, (self.S2, ROUTER): 5}
         att = self.pipe._retrans_attribution()

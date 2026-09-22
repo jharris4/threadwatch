@@ -492,8 +492,13 @@ confirm_s` (10 min) past the first periodic onset, cooldown or not, and
 names the warning's snapshot instead of taking another. On 2026-09-22 a
 hub re-establishing its sessions after the other Apple TV was restarted
 produced three onsets 100 s apart and stopped after six minutes: a
-warning now, not the critical page and snapshot it was. `confirm_s = 0`
-pages critical at the call, as before.
+warning now, not the critical page and snapshot it was. Later that day the
+tail of one burst gave three onsets 110 s and 90 s apart, a 100 s period
+the mesh never had, and the bursts that followed came five minutes apart
+and faded: the gap check refuses the confirmation, and the flag drops
+three measured periods after the last flood (300 s there, not the 540 s
+it used to wait), so those bursts are fresh onsets too far apart to call.
+`confirm_s = 0` pages critical at the call, as before.
 
 `retransmission_elevation` is the storm precursor: in one minute more than
 20% of frames were repeats (same sender and sequence number within 2 s, a

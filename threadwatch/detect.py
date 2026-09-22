@@ -87,7 +87,7 @@ class Detector:
             # a discontinuity are not worth judging.
             #
             # The storm state goes with it. The only way out of a storm is
-            # window_start - last_flood > 3 * period_max_s, which stays
+            # window_start - last_flood > 3 periods, which stays
             # negative for the whole length of the step while last_flood
             # sits on the pre-step clock: the storm could never end, and
             # _close_window stopped feeding calm, so the flood baseline
@@ -130,6 +130,19 @@ class Detector:
         base = self._baseline()
         threshold = max(self.cfg.flood_min_frames, base * self.cfg.flood_multiplier)
         flood = count >= threshold and len(self.counts) >= 6
+        # A storm is over once flooding has stopped for 3 periods: the
+        # period it was measured at, so a 100 s beat is over after 300 s of
+        # quiet and bursts minutes apart after that are fresh onsets, too
+        # far apart to call. Judged before this window counts, so a flood
+        # arriving after the quiet ends the storm it follows rather than
+        # extending it. Judged against 3 x period_max_s (540 s) the flag
+        # outlived the storm: an 80 s beat waited nine of its periods.
+        # Only a storm without a measured period (a state file from before
+        # the details were kept) waits the configured maximum.
+        period = self.storm_details.get("period") or self.cfg.period_max_s
+        if self.storm_active and self.window_start - self.last_flood > 3 * period:
+            self.storm_active = False
+            self.storm_since, self.storm_confirmed, self.storm_gap_max = 0.0, False, 0.0
         if flood and not self.in_flood:
             self.onsets.append(self.window_start)
             self._check_periodicity()
@@ -137,10 +150,6 @@ class Detector:
             if self.storm_active and self.last_flood and not self.in_flood:
                 self.storm_gap_max = max(self.storm_gap_max, self.window_start - self.last_flood)
             self.last_flood = self.window_start
-        # A storm is over once flooding has stopped for 3 periods.
-        if self.storm_active and self.window_start - self.last_flood > 3 * self.cfg.period_max_s:
-            self.storm_active = False
-            self.storm_since, self.storm_confirmed, self.storm_gap_max = 0.0, False, 0.0
         # Confirmed once the floods have persisted and kept their beat:
         # judged by the newest flood, never by the clock, so a storm that
         # stopped stays a call, and a lull of more than a period and a half

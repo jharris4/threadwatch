@@ -127,7 +127,7 @@ class StormLatchTest(unittest.TestCase):
     def test_a_backward_clock_step_ends_the_storm_it_left_behind(self):
         # An RTC-less Pi corrected by NTP after boot: the clock steps back
         # an hour in the middle of a storm. The only exit from a storm is
-        # window_start - last_flood > 3 * period_max_s, so with last_flood
+        # window_start - last_flood > 3 periods, so with last_flood
         # left on the pre-step clock that difference stays negative for
         # the whole hour and the storm can never end. status.json, the web
         # header, the day page and the daily summary all go on claiming a
@@ -415,26 +415,56 @@ class AlertCooldownTest(unittest.TestCase):
 
 
 class StormOverTest(unittest.TestCase):
-    """A storm is over once flooding has stopped for three periods (three
-    times period_max_s, 540 s). Sooner, and the gap between two bursts
-    of one storm ends it, so the next burst is a new storm with its own
-    alert, and the calm windows inside it become the baseline."""
+    """A storm is over once flooding has stopped for three of the periods
+    it was measured at (240 s for an 80 s beat). Sooner, and the gap
+    between two bursts of one storm ends it, so the next burst is a new
+    storm with its own alert, and the calm windows inside it become the
+    baseline. Later, and the flag outlives the storm: judged against three
+    times period_max_s (540 s) it stayed up through half an hour of
+    baseline traffic on 2026-09-22."""
 
-    def test_a_storm_ends_three_periods_after_its_last_flood(self):
-        self.assertEqual(DetectorConfig().period_max_s, 180.0)
+    def _run(self, floods_at, until, details=None):
         det = Detector(DetectorConfig(alert_cooldown_s=0))
         active = {}
-        for w in range(0, 1000, 10):
-            n = 1500 if w in (200, 280, 360) else 250
+        for w in range(0, until, 10):
+            n = 1500 if any(t <= w < t + 10 for t in floods_at) else 250
             for i in range(n):
                 det.add_frame(w + i / n)
+            if details is not None and w == 370:
+                det.storm_details = details                 # a state file from before the period was kept
             active[w] = det.storm_active                    # after the window before w has closed
+        return det, active
+
+    def test_a_storm_ends_three_periods_after_its_last_flood(self):
+        det, active = self._run([200, 280, 360], until=1000)
         self.assertTrue(active[370])                        # locked at the third onset
         self.assertTrue(active[560])                        # one period of quiet: still a storm
-        self.assertTrue(active[910])                        # window 900 closed: 540 s since the flood, not over
-        self.assertFalse(active[920])                       # window 910 closed: 550 s, over
+        self.assertTrue(active[610])                        # window 600 closed: 240 s since the flood, not over
+        self.assertFalse(active[620])                       # window 610 closed: 250 s, over
         self.assertFalse(det.storm_active)
         self.assertEqual(det.alerts_sent, 1)
+
+    def test_a_surge_tail_clears_before_its_next_burst(self):
+        # 2026-09-22 15:18-15:45: the tail of one burst gave onsets 110 s
+        # and 90 s apart, a 100 s "period" the mesh never had, then bursts
+        # of subscription traffic every 310 s that faded out. Three
+        # measured periods of quiet drop the flag, and the bursts after it
+        # are fresh onsets too far apart to lock again.
+        floods = [200, 310, 400] + [710, 1020, 1330]
+        det, active = self._run(floods, until=1700)
+        self.assertTrue(active[410])
+        self.assertAlmostEqual(det.storm_details["period"], 100.0)
+        self.assertTrue(active[710])                        # window 700 closed: 300 s since the flood at 400, not over
+        self.assertFalse(active[720])                       # window 710 closed: a flood, after 310 s of quiet ended it
+        self.assertFalse(any(active[w] for w in range(720, 1700, 10)))
+        self.assertEqual([round(t) for t in list(det.onsets)[-3:]], [710, 1020, 1330])
+        self.assertEqual(det.alerts_sent, 1)
+
+    def test_a_storm_without_a_measured_period_waits_the_configured_maximum(self):
+        self.assertEqual(DetectorConfig().period_max_s, 180.0)
+        det, active = self._run([200, 280, 360], until=1000, details={})
+        self.assertTrue(active[910])                        # window 900 closed: 540 s since the flood, not over
+        self.assertFalse(active[920])                       # window 910 closed: 550 s, over
 
 
 if __name__ == "__main__":

@@ -13,7 +13,10 @@
 # never touched, and a config/ file the host has but this workstation does
 # not (a fresh clone, a second machine, a credentials.toml written on the
 # host by `threadwatch import`) is left in place rather than deleted: for
-# the network key that may be the only copy.
+# the network key that may be the only copy. A config/ file the host holds
+# a newer, different copy of (a devices.json written there by `threadwatch
+# name`, a credentials.toml from `threadwatch import`) stops the push until
+# it is copied back, or FORCE_CONFIG=1 says the workstation's copy wins.
 #
 # What deploys is what git tracks, plus config/. Everything else in the working
 # tree -- caches, scratch notes, data/, .venv/ -- stays on the workstation. That
@@ -74,28 +77,43 @@ fi
 # holds off --delete, and rsync -a is not -u, so a config/ file the
 # workstation also has is replaced whichever copy is newer. That is the
 # documented design (INSTALL.md, "Updating": the workstation's config/ is
-# authoritative), so a credentials.toml or devices.json written on the host
-# by import or adopt must be copied back here before the next push, or the
-# push reverts it. Do not read this filter as --update.
+# authoritative); the check below is what keeps it from silently reverting
+# a credentials.toml or devices.json written on the host by import or
+# name. Do not read this filter as --update.
 # .venv/ is the host's Python runtime (bin/threadwatch prefers it whenever
 # it exists) and is named here on its own: the git-derived exclude list only
 # covers it when this workstation happens to have one, and a push from a
 # checkout without one used to delete the host's.
 # Which config/ files this push would replace with an older copy: what a
-# plain run sends, less what --update would send. config/ is a handful of
-# small files, so the two dry runs cost nothing, and they turn a silent
-# revert of a host-written credentials.toml or devices.json into a line
-# the operator sees before it happens.
+# plain run sends, less what --update would send. -c compares content, so
+# a host file that only carries a newer timestamp over the same bytes
+# (a push copies mtimes; an editor's save-without-change does not) is not
+# counted. config/ is a handful of small files, so the two dry runs cost
+# nothing. The push used to warn and carry on, and the warning scrolled
+# past above the rsync output; a host-written devices.json or the only
+# copy of a network key was then gone. Now it stops, prints the copy-back
+# commands, and FORCE_CONFIG=1 is the one way to say the workstation's
+# copies are the ones wanted.
 config_would_send() {
-  rsync -a --dry-run --out-format='%n' "$@" \
+  rsync -ac --dry-run --out-format='%n' "$@" \
     --include '/config/' --include '/config/**' --exclude '*' \
     "$REPO/" "$TARGET:$DEST_DIR/" 2>/dev/null | grep -v '/$' | sort -u || true
 }
 REVERTS="$(comm -23 <(config_would_send) <(config_would_send --update))"
 if [ -n "$REVERTS" ]; then
-  echo "warning: the host has a NEWER copy of these, and this push replaces them:" >&2
-  printf '%s\n' "$REVERTS" | sed 's/^/  /' >&2
-  echo "  copy them back here first if the host's version is the one you want." >&2
+  if [ "${FORCE_CONFIG:-}" = "1" ]; then
+    echo "warning: FORCE_CONFIG=1: replacing the host's NEWER copy of these:" >&2
+    printf '%s\n' "$REVERTS" | sed 's/^/  /' >&2
+  else
+    echo "push-to-host.sh: the host has a NEWER, different copy of these; nothing pushed:" >&2
+    printf '%s\n' "$REVERTS" | sed 's/^/  /' >&2
+    echo "  copy them back first:" >&2
+    while IFS= read -r f; do
+      printf '    scp %q %q\n' "$TARGET:$DEST_DIR/$f" "$REPO/$f" >&2
+    done <<< "$REVERTS"
+    echo "  or FORCE_CONFIG=1 to replace them with this workstation's copies." >&2
+    exit 1
+  fi
 fi
 
 CHANGED="$(rsync -a --delete --dry-run --out-format='%n' \

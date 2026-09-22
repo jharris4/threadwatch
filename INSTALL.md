@@ -127,17 +127,22 @@ the working tree it came from held uncommitted edits; that is what
 
 `config/` travels one way, and the workstation's copy wins. Every file
 under `config/` on the workstation overwrites the host's file of that
-name, newer or not; a file only the host has (a `credentials.toml` that
+name; a file only the host has (a `credentials.toml` that
 `threadwatch import` wrote there, a `config.toml` edited over ssh) is
 left in place, never deleted, and so is everything under `data/`. So the
-workstation's `config/` is authoritative for whatever it contains: an
-edit made on the host to a file the workstation also holds is undone by
-the next push, and a workstation holding an old network key replaces the
-host's good one (the recorder then logs `credentials_stale`). The push
-warns first, naming every `config/` file the host has a newer copy of.
-Keep one place to edit, the workstation, and copy a host-side edit back
-(`scp`) before pushing again. A push from a clone with no secrets removes none
-from the host. To remove a config file from the host, delete it there.
+workstation's `config/` is authoritative for whatever it contains, and
+an edit made on the host to a file the workstation also holds (a
+`devices.json` that `threadwatch name` grew there, a `config.toml`
+edited over ssh) would be undone by the next push. The push checks for
+that first and stops: when the host's copy of a `config/` file is newer
+and differs, nothing is pushed, and it prints the `scp` command that
+copies each such file back here. Copy them back, look at the diff, and
+push again. `FORCE_CONFIG=1 bin/push-to-host.sh ...` is the one way past
+the check, for when the workstation's copy is the one you want, such as
+a network key corrected here after the host's went stale (the recorder
+logs `credentials_stale`). Keep one place to edit, the workstation. A
+push from a clone with no secrets removes none from the host. To remove
+a config file from the host, delete it there.
 
 ## 6. Placement and storage
 

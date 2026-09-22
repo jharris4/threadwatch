@@ -462,6 +462,7 @@ class ExampleConfigTest(unittest.TestCase):
         ("rejoins", "wave_s"): ("rejoin_wave_s", 60, 0),
         ("rejoins", "wave_devices"): ("rejoin_wave_devices", 3, 5),
         ("srp", "refusals"): ("srp_refusals", 3, 1),
+        ("srp", "grace_s"): ("srp_grace_s", 60, 0),
         ("link", "drop_db"): ("link_drop_db", 8, 3),
         ("link", "hold_s"): ("link_hold_s", 1800, 120),
         ("summary", "hour"): ("summary_hour", 8, 6),

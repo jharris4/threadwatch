@@ -248,6 +248,10 @@ class Config:
     # one closes it. On 2026-09-17 a smoke sensor's registrations started
     # being refused and nobody knew until Apple Home lost it five days on.
     srp_refusals: int = 3
+    # ...and the streak has to outlast this grace with no acceptance: on
+    # 2026-09-22 the third refusal of a two-hour streak paged ten seconds
+    # before the retry that was accepted.
+    srp_grace_s: float = 60.0
     # [border_routers] how often the recorder asks the LAN (mDNS, the
     # _meshcop._udp service every border router advertises) which extended
     # address each border router has now. Apple hubs change theirs on every
@@ -351,7 +355,7 @@ SECTIONS: dict[str, frozenset[str] | None] = {
     "retransmissions": frozenset(("confirm_s",)),
     "partition": frozenset(("stall_s", "settle_s")),
     "rejoins": frozenset(("wave_s", "wave_devices")),
-    "srp": frozenset(("refusals",)),
+    "srp": frozenset(("refusals", "grace_s")),
     "border_routers": frozenset(("browse_s", "rotation")),
     "summary": frozenset(("hour", "severity")),
     "detect": frozenset(("flood_multiplier", "flood_min_frames", "period_min_s",
@@ -722,6 +726,9 @@ def load(path: Path | None) -> Config:
         if isinstance(refusals, bool) or not isinstance(refusals, int) or refusals < 1:
             raise ValueError(f"[srp] refusals must be a whole number of 1 or more, not {refusals!r}")
         cfg.srp_refusals = refusals
+        cfg.srp_grace_s = float(_finite("srp", "grace_s", srp.get("grace_s", cfg.srp_grace_s)))
+        if cfg.srp_grace_s < 0:
+            raise ValueError(f"[srp] grace_s must be 0 or more seconds, not {cfg.srp_grace_s:g}")
         brs = raw.get("border_routers", {})
         cfg.border_router_browse_s = float(_finite("border_routers", "browse_s",
                                                   brs.get("browse_s", cfg.border_router_browse_s)))

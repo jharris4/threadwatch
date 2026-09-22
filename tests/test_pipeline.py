@@ -5492,11 +5492,16 @@ class SrpRefusedTest(unittest.TestCase):
         self._request(t0 + 2, 2); self._response(t0 + 2.2, 2, 2)
         self.assertEqual(self._events("srp_refused"), [])
         self._request(t0 + 5, 3); self._response(t0 + 5.2, 3, 2)
+        self.assertEqual(self._events("srp_refused"), [])                 # the grace: a retry may get through
+        self.pipe.periodic(t0 + 40)
+        self.assertEqual(self._events("srp_refused"), [])
+        self.pipe.periodic(t0 + 70)
         warned = self._events("srp_refused")
         self.assertEqual(len(warned), 1)
         rec = warned[0]
-        self.assertEqual((rec["addr"], rec["name"], rec["rcode"], rec["rcode_name"], rec["refusals"], rec["since"]),
-                         (SENSOR, "Porch Sensor", 2, "SERVFAIL", 3, t0 + 0.2))
+        self.assertEqual((rec["addr"], rec["name"], rec["rcode"], rec["rcode_name"], rec["refusals"], rec["since"],
+                          rec["refused_for_s"], rec["ts"]),
+                         (SENSOR, "Porch Sensor", 2, "SERVFAIL", 3, t0 + 0.2, 5, t0 + 70))
         self.assertIn("Porch Sensor's SRP registration has been refused 3 times over 5 s (SERVFAIL); "
                       "no accepted registration of its has been heard", rec["note"])
         self.assertIn("Apple Home", rec["note"])
@@ -5510,12 +5515,27 @@ class SrpRefusedTest(unittest.TestCase):
         self.assertIn("accepted after 4 refusals over 60 min", ok[0]["note"])
         state = self.pipe.seen.table[SENSOR]["srp"]
         self.assertEqual((state["refused"], state["reported"], state["accepted_ts"]), (0, False, t0 + 3600.2))
-        # A new streak starts from zero, and its warning says when the last acceptance was.
+        # A new streak starts from zero, and its warning says when the last acceptance was;
+        # a refusal past the grace says it without waiting for the periodic pass.
         for i, dns_id in enumerate((6, 7, 8)):
             self._request(t0 + 7200 + i, dns_id); self._response(t0 + 7200 + i + 0.2, dns_id, 5)
+        self.assertEqual(len(self._events("srp_refused")), 1)
+        self._request(t0 + 7300, 9); self._response(t0 + 7300.2, 9, 5)
         rec = self._events("srp_refused")[1]
-        self.assertEqual((rec["rcode_name"], rec["accepted_ts"]), ("REFUSED", t0 + 3600.2))
-        self.assertIn("its last accepted registration was 60 min ago", rec["note"])
+        self.assertEqual((rec["rcode_name"], rec["accepted_ts"], rec["refusals"]), ("REFUSED", t0 + 3600.2, 4))
+        self.assertIn("its last accepted registration was 61 min ago", rec["note"])
+
+    def test_an_acceptance_inside_the_grace_means_nothing_was_said(self):
+        t0 = 1_700_000_000.0
+        self.pipe.ingest(frame(t0 - 10, SENSOR))
+        for i, dns_id in enumerate((1, 2, 3)):
+            self._request(t0 + 3600 * i, dns_id); self._response(t0 + 3600 * i + 0.2, dns_id, 2)
+        self._request(t0 + 7210, 4); self._response(t0 + 7210.2, 4, 0)      # the retry got through
+        self.pipe.periodic(t0 + 7300)
+        self.assertEqual(self._events("srp_refused"), [])
+        self.assertEqual(self._events("srp_accepted"), [])
+        state = self.pipe.seen.table[SENSOR]["srp"]
+        self.assertEqual((state["refused"], state["pending_ts"], state["reported"]), (0, None, False))
 
     def test_a_relayed_answer_is_credited_to_the_device_that_asked_and_counted_once(self):
         t0 = 1_700_000_000.0
@@ -5529,6 +5549,7 @@ class SrpRefusedTest(unittest.TestCase):
             self._response(t + 0.1, dns_id, 2, src=self.R2, dst=ROUTER, mesh=("fc11", "c407"))
             # ...and Hall Router hands it to the sensor: the same answer again.
             self._response(t + 0.2, dns_id, 2)
+        self.pipe.periodic(t0 + 100)
         rec = self._events("srp_refused")
         self.assertEqual(len(rec), 1)
         self.assertEqual((rec[0]["addr"], rec[0]["refusals"]), (SENSOR, 3))
@@ -5541,6 +5562,7 @@ class SrpRefusedTest(unittest.TestCase):
         self.pipe.decryptor.short_to_ext["c407"] = SENSOR
         for i, dns_id in enumerate((21, 22, 23)):
             self._response(t0 + i, dns_id, 2, src=self.R2, dst=ROUTER, mesh=("fc11", "c407"))
+        self.pipe.periodic(t0 + 100)
         self.assertEqual(self._events("srp_refused")[0]["addr"], SENSOR)
 
     def _register(self, ts, src, dns_id, instances, via=ROUTER):
@@ -5585,6 +5607,7 @@ class SrpRefusedTest(unittest.TestCase):
         # The refusals that follow name the device, not the address.
         for i, dns_id in enumerate((33, 34, 35)):
             self._response(t0 + 3601 + i, dns_id, 6, dst=NEW)
+        self.pipe.periodic(t0 + 3700)
         rec = self._events("srp_refused")
         self.assertEqual((rec[0]["addr"], rec[0]["name"], rec[0]["rcode_name"]), (NEW, "Porch Sensor", "YXDOMAIN"))
         # Every later process names it too, and the hourly re-registration is not news.

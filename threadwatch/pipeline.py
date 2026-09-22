@@ -2837,7 +2837,6 @@ class Pipeline:
         self.seen._dirty = True
         name = self.names.name(client)
         label = name or client
-        code = self.SRP_RCODES.get(rcode, f"rcode {rcode}")
         if rcode == 0:
             if state["reported"]:
                 since = state["since"] or ts
@@ -2845,28 +2844,54 @@ class Pipeline:
                            since=since, refused_for_s=round(ts - since), server=srp.get("server"),
                            note=f"{label}'s SRP registration was accepted after {state['refused']} refusals "
                                 f"over {fmt_span(ts - since)}: its host and service records are current again")
-            state.update({"refused": 0, "since": None, "accepted_ts": ts, "reported": False})
+            # A streak that ended inside its grace was never said: nothing to close.
+            state.update({"refused": 0, "since": None, "accepted_ts": ts, "reported": False, "pending_ts": None})
             return
         state["refused"] += 1
+        state["last_rcode"], state["server"] = rcode, srp.get("server")
         if state["since"] is None:
             state["since"] = ts
         if state["reported"] or state["refused"] < self.cfg.srp_refusals:
             return
-        state["reported"] = True
-        since = state["since"]
+        # Enough refusals: said once the streak has outlasted [srp] grace_s
+        # with no acceptance (periodic), or at the next refusal past it.
+        # On 2026-09-22 the third refusal of a two-hour streak paged ten
+        # seconds before the retry that was accepted.
+        if state.get("pending_ts") is None:
+            state["pending_ts"] = ts
+        if ts - state["pending_ts"] >= self.cfg.srp_grace_s:
+            self._emit_srp_refused(client, state, ts)
+
+    def _emit_srp_refused(self, client: str, state: dict, now: float) -> None:
+        state["reported"], state["pending_ts"] = True, None
+        name = self.names.name(client)
+        label = name or client
+        code = self.SRP_RCODES.get(state["last_rcode"], f"rcode {state['last_rcode']}")
+        since, last = state["since"], state["last_ts"]
         accepted = state.get("accepted_ts")
-        last_ok = (f"its last accepted registration was {fmt_span(ts - accepted)} ago" if accepted
+        last_ok = (f"its last accepted registration was {fmt_span(last - accepted)} ago" if accepted
                    else "no accepted registration of its has been heard")
-        self._emit("srp_refused", "warning", ts, addr=client, name=name, rcode=rcode, rcode_name=code,
-                   refusals=state["refused"], since=since, refused_for_s=round(ts - since),
-                   accepted_ts=accepted, server=srp.get("server"),
+        self._emit("srp_refused", "warning", now, addr=client, name=name, rcode=state["last_rcode"],
+                   rcode_name=code, refusals=state["refused"], since=since, refused_for_s=round(last - since),
+                   accepted_ts=accepted, server=state.get("server"),
                    note=f"{label}'s SRP registration has been refused {state['refused']} times over "
-                        f"{fmt_span(ts - since)} ({code}); {last_ok}. The SRP server (a border router: an "
+                        f"{fmt_span(last - since)} ({code}); {last_ok}. The SRP server (a border router: an "
                         "Apple TV or the OTBR) will not take its host and Matter service records, so a "
                         "controller that finds it through mDNS (Apple Home) loses it once the last accepted "
                         "registration expires, while Home Assistant keeps the address it has and may not "
                         "notice. The device retries with backoff, hourly at the cap; the refusal is the "
                         "server's to explain")
+
+    def _check_srp_pending(self, now: float) -> None:
+        """Refusal streaks past the count whose grace has run out with no
+        acceptance heard: said now."""
+        for addr, row in self.seen.table.items():
+            state = row.get("srp")
+            if not state or state.get("reported") or state.get("pending_ts") is None:
+                continue
+            if now - state["pending_ts"] >= self.cfg.srp_grace_s:
+                self._emit_srp_refused(addr, state, now)
+                self.seen._dirty = True
 
     def _apply_mle(self, f: Frame, info, src_for_mle: str | None) -> None:
         """What a fresh, authenticated MLE message changes: the sender's
@@ -3294,6 +3319,7 @@ class Pipeline:
         if hold is not None and (final or now - hold["last_ts"] >= self.cfg.partition_settle_s):
             self._settle_partition(now)
         self._check_leader(now)
+        self._check_srp_pending(now)
         wave = self._rejoin_wave
         if wave is not None and (final or now - wave["last_ts"] >= self.cfg.rejoin_wave_s):
             self._settle_rejoins(now)

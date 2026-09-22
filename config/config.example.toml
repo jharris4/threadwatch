@@ -246,6 +246,10 @@ wave_devices = 3
 # closes it. Home Assistant keeps the address it has, so it is the last to
 # notice a refused device.
 refusals = 3
+# ...and the streak must outlast this many seconds with no acceptance
+# before it pages: a device's retry right after its third refusal is
+# often the one that gets through.
+grace_s = 60
 
 [link]
 # Slow link degradation: a device still heard, but with its average RSSI at

@@ -460,8 +460,12 @@ it already has and is the last to notice. The recorder reads the
 responses (rcode) and credits each to the device that sent the request,
 even when it is heard relayed by the device's parent, and logs
 `srp_refused` once a device has been refused `[srp] refusals` (default 3)
-times in a row, with the response code and when its last accepted
-registration was heard. The streak is kept with the device's last-seen
+times in a row and the streak has outlasted `grace_s` (default 60 s) with
+no acceptance, with the response code and when its last accepted
+registration was heard. The grace is for the retry that follows a
+refusal within seconds and gets through: on 2026-09-22 a two-hour
+SERVFAIL streak paged on its third refusal, ten seconds before the retry
+that was accepted. The streak is kept with the device's last-seen
 row, since a refused client retries hourly and a recorder restart must
 not forget it. `srp_accepted` closes the episode. On 2026-09-17 22:15 a
 smoke sensor's registrations started coming back SERVFAIL, hourly, from

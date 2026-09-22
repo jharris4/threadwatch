@@ -75,7 +75,9 @@ class StatusFileTest(unittest.TestCase):
                 return next(reads, [])          # reassigned after the first read
 
         self.pipe.__class__ = Racing
-        self.assertEqual(self.pipe.partition_status(), {"id": 0x2a, "leader_router": 60})
+        self.assertEqual(self.pipe.partition_status(),
+                         {"id": 0x2a, "leader_router": 60, "id_sequence": None,
+                          "sequence_advanced_ts": None, "stalled": False})
 
     def test_dropped_serial_lines_are_counted_into_the_status_file(self):
         # The vendored sniffer swallowed a line its packet regex did not

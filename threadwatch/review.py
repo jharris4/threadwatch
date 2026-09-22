@@ -79,6 +79,7 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
     open_link: dict[str, dict] = {}
     open_leader: dict[str, dict] = {}
     open_srp: dict[str, dict] = {}
+    storm_row: dict | None = None
     open_starved: dict[str, dict] = {}
     open_unserved: dict[str, dict] = {}
     open_keylag: dict[str, dict] = {}
@@ -411,9 +412,20 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
             else:
                 new("partition", rec, f"leader resumed: {rec.get('leader')}", rec.get("note", ""))
         elif ev == "phase_locked_storm":
-            new("storm", rec, "phase-locked storm",
-                f"period {rec.get('period_s')}s, onsets {rec.get('onsets')}, "
-                f"baseline {rec.get('baseline_frames_per_window')} frames/window")
+            detail = (f"period {rec.get('period_s')}s, onsets {rec.get('onsets')}, "
+                      f"baseline {rec.get('baseline_frames_per_window')} frames/window")
+            if storm_row is not None and rec["ts"] - storm_row["end"] <= 3600 \
+                    and rec.get("storm_since") == storm_row.get("storm_since"):
+                bump(storm_row, rec)
+                storm_row["detail"] = detail
+                if rec.get("confirmed"):
+                    storm_row["title"] = "phase-locked storm, confirmed"
+            else:
+                storm_row = new("storm", rec,
+                                "phase-locked storm, confirmed" if rec.get("confirmed") else
+                                "phase-locked storm" + (" (call)" if rec.get("confirmed") is False else ""),
+                                detail + (f"; {rec['follows']}" if rec.get("follows") else ""),
+                                storm_since=rec.get("storm_since"))
         elif ev in ("snapshot_saved", "snapshot_failed"):
             new("snapshot", rec, "snapshot saved" if ev == "snapshot_saved" else "snapshot failed",
                 rec.get("note", ""))

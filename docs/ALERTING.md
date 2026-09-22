@@ -103,7 +103,7 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `border_router_unlisted` | notice | `addr`, `hostname`, `note` |
 | `border_router_address_conflict` | warning | `addr`, `name` (the entry devices.json gives the address to), `hostname`, `claimed_by` (the entry the hostname belongs to), `note` |
 | `border_router_rotation_unverified` | notice | `addr`, `name`, `previous`, `hostname`, `evidence` (what held, when anything did), `missing` (what did not), `note` |
-| `phase_locked_storm` | critical | detector snapshot (`period_s`, `onsets`, ...) |
+| `phase_locked_storm` | warning at `[detect] period_onsets` periodic onsets (`confirmed` false, with the snapshot), critical once the floods have persisted `[detect] confirm_s` (`confirmed` true) | `period_s`, `onsets`, `onset_times`, `confirmed`, `storm_since`, `follows` (what the surge came after, on the warning), `auto_snapshot`, detector snapshot (`baseline_frames_per_window`, `recent_windows`, `storm_active`, `storm_confirmed`, `flood_onsets_recent`) |
 | `snapshot_requested` | info | `label`, `trigger`, `key_observation` (`sequence`, `observed_at`, `phase`): a key snapshot attempt was reserved |
 | `snapshot_saved` | info | `label`, `path`, `ring_files`, `note` (with either automatic snapshot option) |
 | `snapshot_failed` | warning | `label`, `note` |
@@ -478,6 +478,22 @@ only a reading of two samples by hand showed at the time. The note names
 the partition change when one fell in the half hour before the sample.
 The first sample after a start is only remembered, so a restart announces
 nothing that happened while it was down.
+
+`phase_locked_storm` is the 2026-09-01 outage: every accessory's periodic
+report converging on the hub in the same window every 80.5 s, for hours,
+after a LAN outage; only powering the hub off ended it. The detector calls
+it at `[detect] period_onsets` (3) flood onsets with a stable period, and
+that call is now a warning: it saves the ring (the packets matter whether
+or not the storm confirms), says in `follows` what the surge came after
+when a border router changed address or the partition changed in the
+previous 15 minutes, and says the critical is coming if the floods
+persist. The critical follows once the newest flood is `[detect]
+confirm_s` (10 min) past the first periodic onset, cooldown or not, and
+names the warning's snapshot instead of taking another. On 2026-09-22 a
+hub re-establishing its sessions after the other Apple TV was restarted
+produced three onsets 100 s apart and stopped after six minutes: a
+warning now, not the critical page and snapshot it was. `confirm_s = 0`
+pages critical at the call, as before.
 
 `retransmission_elevation` is the storm precursor: in one minute more than
 20% of frames were repeats (same sender and sequence number within 2 s, a

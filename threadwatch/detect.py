@@ -30,6 +30,14 @@ class DetectorConfig:
     period_max_s: float = 180.0
     period_onsets: int = 3            # consecutive periodic onsets to alert
     alert_cooldown_s: float = 1800.0
+    # A storm called at period_onsets is confirmed once its floods have
+    # kept coming this long after the first periodic onset (the newest
+    # flood window is the clock, so a storm that stops never confirms). The
+    # pipeline pages the call as a warning and the confirmation as
+    # critical. 0 confirms at the call, as before: a hub re-establishing
+    # its sessions after a border router restart looked exactly like the
+    # 2026-09-01 storm for three onsets and was over in six minutes.
+    confirm_s: float = 600.0
 
 
 @dataclass
@@ -45,6 +53,14 @@ class Detector:
     last_alert: float | None = None      # frame time of the last counted alert
     alerts_sent: int = 0
     storm_active: bool = False
+    # The first onset of the periodic run that made the storm, and
+    # whether its floods have persisted cfg.confirm_s since (see there).
+    storm_since: float = 0.0
+    storm_confirmed: bool = False
+    # The longest lull between flood windows since the storm was called:
+    # a storm that keeps its beat never pauses more than a period or so;
+    # a surge that ended and a later bump do not confirm it.
+    storm_gap_max: float = 0.0
     # The storm as last measured (period, onsets): refreshed at every
     # periodic onset, cooldown or not, so whoever reports the storm
     # describes the one running and never an earlier one.
@@ -80,6 +96,7 @@ class Detector:
             # what follows.
             self.window_start, self.window_count = ts, 0
             self.last_flood, self.in_flood, self.storm_active = 0.0, False, False
+            self.storm_since, self.storm_confirmed, self.storm_gap_max = 0.0, False, 0.0
             self.storm_details = {}
             self.onsets.clear()
             self.last_alert = None
@@ -117,10 +134,21 @@ class Detector:
             self.onsets.append(self.window_start)
             self._check_periodicity()
         if flood:
+            if self.storm_active and self.last_flood and not self.in_flood:
+                self.storm_gap_max = max(self.storm_gap_max, self.window_start - self.last_flood)
             self.last_flood = self.window_start
         # A storm is over once flooding has stopped for 3 periods.
         if self.storm_active and self.window_start - self.last_flood > 3 * self.cfg.period_max_s:
             self.storm_active = False
+            self.storm_since, self.storm_confirmed, self.storm_gap_max = 0.0, False, 0.0
+        # Confirmed once the floods have persisted and kept their beat:
+        # judged by the newest flood, never by the clock, so a storm that
+        # stopped stays a call, and a lull of more than a period and a half
+        # since the call means the surge ended, whatever comes later.
+        if self.storm_active and not self.storm_confirmed and self.last_flood - self.storm_since >= self.cfg.confirm_s:
+            period = self.storm_details.get("period") or self.cfg.period_max_s
+            if self.storm_gap_max <= 1.5 * period:
+                self.storm_confirmed = True
         self.in_flood = flood
         self.counts.append(count)
         if not self.storm_active:
@@ -136,6 +164,10 @@ class Detector:
             mean = sum(gaps) / len(gaps)
             spread = max(gaps) - min(gaps)
             if spread <= 0.25 * mean:
+                if not self.storm_active:
+                    self.storm_since = recent[0]
+                    self.storm_confirmed = self.cfg.confirm_s <= 0
+                    self.storm_gap_max = 0.0
                 self.storm_active = True
                 self.storm_details = {"period": mean, "onsets": [round(t, 1) for t in recent]}
                 self._alert(self.window_start)
@@ -163,6 +195,8 @@ class Detector:
                     "baseline_frames_per_window": round(self._baseline(), 1),
                     "recent_windows": list(self.counts)[-6:],
                     "storm_active": self.storm_active,
+                    "storm_confirmed": self.storm_confirmed,
+                    "storm_since": round(self.storm_since, 1) if self.storm_since else None,
                     "flood_onsets_recent": [round(t, 1) for t in list(self.onsets)[-5:]],
                     "alerts_sent": self.alerts_sent,
                 }

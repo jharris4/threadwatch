@@ -270,6 +270,12 @@ period_min_s = 40.0        # phase-lock signature: flood onsets recurring
 period_max_s = 180.0       #   with a stable period in this range
 period_onsets = 3          # consecutive periodic onsets before alerting
 alert_cooldown_s = 1800.0  # seconds between phase_locked_storm events while a storm rumbles on
+# The call at period_onsets is a warning (with the snapshot); it is critical
+# once the floods have kept coming this long after the first periodic onset.
+# A hub re-establishing its sessions after a border router restart looks
+# like the storm for three onsets and is over in minutes; the 2026-09-01
+# storm ran for hours. 0 pages critical at the call, as before.
+confirm_s = 600            # 10 min
 
 [border_routers]
 # Apple hubs (Apple TV, HomePod) change their Thread extended address on

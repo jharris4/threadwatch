@@ -1417,10 +1417,49 @@ class QuietPolicyTest(unittest.TestCase):
         pipe = self._pipe()
         pipe.detector.storm_active = True
         pipe.detector.storm_details = {"period": 80.5, "onsets": [100.0, 180.5, 261.0]}
+        pipe.detector.storm_since = 100.0
         pipe.ingest(frame(1_700_000_000.0, ROUTER))
         rec = [r for r in pipe.events.records if r["event"] == "phase_locked_storm"][0]
-        self.assertEqual((rec["period_s"], rec["onsets"]), (80.5, 3))
+        self.assertEqual((rec["period_s"], rec["onsets"], rec["severity"], rec["confirmed"]),
+                         (80.5, 3, "warning", False))
         self.assertIn("every 80 s", rec["note"])
+        self.assertIn("Critical if the floods persist for 10 min", rec["note"])
+
+    def test_the_call_is_a_warning_with_the_snapshot_and_the_confirmation_a_critical_naming_it(self):
+        self.cfg.snapshot_on_critical = True
+        pipe = self._pipe()
+        saved = []
+        pipe.snapshotter = lambda label, trigger: saved.append((label, trigger))
+        det = pipe.detector
+        det.storm_active, det.storm_since = True, 1_700_000_000.0
+        det.storm_details = {"period": 100.0, "onsets": [1_700_000_000.0, 1_700_000_100.0, 1_700_000_200.0]}
+        det.add_frame = lambda ts: None                        # hold the detector's state as set
+        pipe._border_router_changed = (1_700_000_000.0 - 300, "Living Room Apple TV")
+        t0 = 1_700_000_200.0
+        pipe.ingest(frame(t0, ROUTER))
+        storms = [r for r in pipe.events.records if r["event"] == "phase_locked_storm"]
+        self.assertEqual([(r["severity"], r["confirmed"], r["auto_snapshot"]) for r in storms],
+                         [("warning", False, "auto-phase_locked_storm")])
+        self.assertIn("began after Living Room Apple TV came back under a new address at "
+                      + time.strftime("%H:%M:%S", time.localtime(1_700_000_000.0 - 300)), storms[0]["note"])
+        self.assertIn("the ring is being saved as auto-phase_locked_storm", storms[0]["note"])
+        self.assertEqual(saved, [("auto-phase_locked_storm", "phase_locked_storm")])
+        pipe.ingest(frame(t0 + 60, ROUTER))                    # inside the cooldown: nothing new
+        self.assertEqual(len([r for r in pipe.events.records if r["event"] == "phase_locked_storm"]), 1)
+        # The floods persist: confirmed, and the critical goes out at once.
+        det.storm_confirmed, det.last_flood = True, 1_700_000_700.0
+        pipe.ingest(frame(t0 + 120, ROUTER))
+        storms = [r for r in pipe.events.records if r["event"] == "phase_locked_storm"]
+        self.assertEqual([(r["severity"], r["confirmed"]) for r in storms],
+                         [("warning", False), ("critical", True)])
+        self.assertIn("have recurred every 100 s for 11 min (3 periodic onsets since", storms[1]["note"])
+        self.assertIn("the ring was saved as auto-phase_locked_storm when the warning went out", storms[1]["note"])
+        self.assertIsNone(storms[1]["auto_snapshot"])
+        self.assertEqual(len(saved), 1)                        # no second copy
+        # The storm ends: the next storm starts its stages afresh.
+        det.storm_active = False
+        pipe.ingest(frame(t0 + 180, ROUTER))
+        self.assertIsNone(pipe._storm_stage)
 
     def test_critical_event_saves_the_ring_once_per_cooldown(self):
         self.cfg.snapshot_on_critical = True
@@ -1428,6 +1467,7 @@ class QuietPolicyTest(unittest.TestCase):
         saved = []
         pipe.snapshotter = lambda label, trigger: saved.append((label, trigger))
         pipe.detector.storm_active = True
+        pipe.detector.storm_confirmed = True                   # the critical stage: the one that snapshots here
         pipe.detector.storm_details = {"period": 80.5, "onsets": [1.0, 2.0, 3.0]}
         # The detector ends a storm when flooding stops; hold it on regardless.
         pipe.detector.add_frame = lambda ts: setattr(pipe.detector, "storm_active", True)
@@ -5205,6 +5245,22 @@ class LeaderAndPartitionTest(unittest.TestCase):
         rec = self._events("leader_stalled")[0]
         self.assertIn("has not been heard for 130 s: it is gone", rec["note"])
         self.assertEqual(rec["leader_silent_for_s"], 130)
+
+    def test_a_hole_in_the_capture_restarts_the_pulse_instead_of_stalling_the_leader(self):
+        t0 = 1_700_000_000.0
+        self._adv(t0, ROUTER, 10)
+        self._adv(t0 + 20, self.R2, 12)
+        # Forty-five minutes of nothing (a ring copied with an hour missing), then the mesh again.
+        self._adv(t0 + 20 + 2700, self.R2, 12)
+        self._adv(t0 + 20 + 2705, ROUTER, 12)
+        self.pipe.periodic(t0 + 20 + 2710)
+        self.assertEqual(self._events("leader_stalled"), [])
+        self.assertEqual(self.pipe.partition_status()["sequence_advanced_ts"], t0 + 20 + 2700)
+        # ...and from there the stall is judged afresh.
+        for i in range(1, 5):
+            self._adv(t0 + 20 + 2700 + 20 * i, self.R2, 12)
+        self.pipe.periodic(t0 + 20 + 2700 + 85)
+        self.assertEqual(len(self._events("leader_stalled")), 1)
 
     def test_a_stalled_sequence_is_not_judged_while_the_sniffer_hears_nothing(self):
         t0 = 1_700_000_000.0

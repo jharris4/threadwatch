@@ -303,6 +303,9 @@ class Pipeline:
         # same storm page again inside its own cooldown.
         self.storm_path = cfg.state_dir / "storm.json"
         self._storm_evt = 0.0                   # last phase_locked_storm event
+        self._storm_stage: str | None = None    # "warning" or "critical": what the running storm has been paged as
+        self._storm_snapshot: str | None = None # the snapshot the warning took, for the critical to name
+        self._border_router_changed: tuple | None = None   # (ts, name) of the last address change
         if not ephemeral:
             self._load_storm()
         self.quiet_reported: set[str] = set()
@@ -773,14 +776,22 @@ class Pipeline:
             state = (float(raw["last_flood"]), float(raw["window_start"]), int(raw["window_count"]),
                      bool(raw["in_flood"]), None if last_alert is None else float(last_alert),
                      int(raw["alerts_sent"]), bool(raw["storm_active"]),
-                     dict(raw.get("storm_details") or {}), float(raw.get("storm_evt") or 0.0))
+                     dict(raw.get("storm_details") or {}), float(raw.get("storm_evt") or 0.0),
+                     float(raw.get("storm_since") or 0.0), bool(raw.get("storm_confirmed")),
+                     raw.get("storm_stage"), raw.get("storm_snapshot"), float(raw.get("storm_gap_max") or 0.0))
         except (OSError, ValueError, TypeError, KeyError, AttributeError):
             return
         d.counts.extend(counts)
         d.calm.extend(calm)
         d.onsets.extend(onsets)
         (d.last_flood, d.window_start, d.window_count, d.in_flood, d.last_alert,
-         d.alerts_sent, d.storm_active, d.storm_details, self._storm_evt) = state
+         d.alerts_sent, d.storm_active, d.storm_details, self._storm_evt,
+         d.storm_since, d.storm_confirmed, self._storm_stage, self._storm_snapshot, d.storm_gap_max) = state
+        if self._storm_stage is None and self._storm_evt and d.storm_active:
+            # A file from before the two stages existed: the storm it holds
+            # was paged, at the stage its confirmation implies, and a
+            # restart must not page it again.
+            self._storm_stage = "critical" if d.storm_confirmed else "warning"
 
     def _save_storm(self) -> None:
         d = self.detector
@@ -792,7 +803,9 @@ class Pipeline:
                 "window_count": d.window_count, "in_flood": d.in_flood,
                 "last_alert": d.last_alert, "alerts_sent": d.alerts_sent,
                 "storm_active": d.storm_active, "storm_details": d.storm_details,
-                "storm_evt": self._storm_evt}))
+                "storm_evt": self._storm_evt, "storm_since": d.storm_since,
+                "storm_confirmed": d.storm_confirmed, "storm_stage": self._storm_stage,
+                "storm_snapshot": self._storm_snapshot, "storm_gap_max": d.storm_gap_max}))
             tmp.replace(self.storm_path)
         except OSError as exc:
             print(f"[threadwatch] {self.storm_path.name} not written: {exc}", file=sys.stderr, flush=True)
@@ -1931,26 +1944,23 @@ class Pipeline:
             self._win_dup_by = {}
 
         # Storm detector escalation to the event log (own cooldown, never
-        # per-frame even when the detector's alert cooldown is zeroed).
-        if self.detector.storm_active and ts - self._storm_evt > self.storm_event_cooldown_s:
-            self._storm_evt = ts
-            if not self.ephemeral:
-                # Now, not at the next window close: this is the record a
-                # restart in the next minute must not repeat.
-                self._save_storm()
-            details = self.detector.storm_details
-            period = details.get("period")
-            onsets = details.get("onsets") or []
-            # The snapshot is _emit's doing, off the "critical" severity: it
-            # adds the auto_snapshot field and the sentence about where the
-            # packets went, and starts the copy afterwards.
-            self._emit("phase_locked_storm", "critical", ts,
-                 period_s=round(period, 1) if period else None, onsets=len(onsets),
-                 onset_times=onsets,
-                 note=(f"traffic floods recurring every {period:.0f} s ({len(onsets)} onsets): "
-                       f"the broadcast-storm signature"
-                       if period else "phase-locked traffic floods"),
-                 **self.detector.snapshot())
+        # per-frame even when the detector's alert cooldown is zeroed). Two
+        # stages: the call at period_onsets is a warning that keeps the
+        # packets; the confirmation ([detect] confirm_s of floods) is the
+        # critical, at once, cooldown or not.
+        if self.detector.storm_active:
+            stage = "critical" if self.detector.storm_confirmed else "warning"
+            if stage != self._storm_stage or ts - self._storm_evt > self.storm_event_cooldown_s:
+                self._storm_stage = stage
+                self._storm_evt = ts
+                if not self.ephemeral:
+                    # Now, not at the next window close: this is the record a
+                    # restart in the next minute must not repeat.
+                    self._save_storm()
+                self._emit_storm(stage, ts)
+        elif self._storm_stage is not None:
+            self._storm_stage = None
+            self._storm_snapshot = None
 
         self.last_frame = f
         self.last_sighting = who if (who and live) else None
@@ -2780,6 +2790,12 @@ class Pipeline:
             self.partition = cur
             self._reset_leader_pulse(sequence, ts, sender)
             return
+        # A hole in the capture (a stalled dongle, a copy of the ring with
+        # an hour missing) is not the leader falling silent: the pulse
+        # starts over at the first sequence heard after it.
+        last = self.last_frame
+        if last is not None and ts - last.ts > self.cfg.partition_stall_s:
+            self._reset_leader_pulse(None, ts, None)
         hold = self._partition_hold
         if cur != self.partition:
             if hold is None:
@@ -3262,6 +3278,60 @@ class Pipeline:
     AUTO_SNAPSHOT_COOLDOWN_S = 6 * 3600
     AUTO_SNAPSHOT_RETRY_S = 30 * 60      # after a failed copy: the next critical event tries again
 
+    def _emit_storm(self, stage: str, ts: float) -> None:
+        """phase_locked_storm at its two stages. The warning takes the
+        snapshot the critical used to take (the packets matter whether or
+        not the storm confirms) and says what the floods followed; the
+        critical says how long they have persisted and names that snapshot
+        rather than reserving a second one."""
+        det = self.detector
+        details = det.storm_details
+        period = details.get("period")
+        onsets = details.get("onsets") or []
+        since = det.storm_since or (onsets[0] if onsets else ts)
+        confirm = self.cfg.detector.confirm_s
+        fields = dict(period_s=round(period, 1) if period else None, onsets=len(onsets), onset_times=onsets,
+                      confirmed=stage == "critical", **det.snapshot())
+        fields["storm_since"] = since
+        every = f"every {period:.0f} s" if period else "at a steady period"
+        if stage == "warning":
+            context = self._storm_context(since)
+            fields["note"] = (f"traffic floods recurring {every} ({len(onsets)} onsets): the storm signature"
+                              + (f"; began {context}" if context else "")
+                              + (f". Critical if the floods persist for {fmt_span(confirm)}; a hub "
+                                 "re-establishing its sessions after a border router restart looks the same "
+                                 "and clears before that" if confirm > 0 else ""))
+            fields["follows"] = context
+            label = self._auto_snapshot(ts, "phase_locked_storm")
+            self._storm_snapshot = label
+            fields["auto_snapshot"] = label
+            fields["note"] += (f"; the ring is being saved as {label}" if label
+                               else "; run 'threadwatch snapshot' to keep the packets")
+            self._emit("phase_locked_storm", "warning", ts, **fields)
+            if label:
+                self.snapshotter(label, "phase_locked_storm")
+            return
+        lasted = max(0.0, det.last_flood - since)
+        fields["note"] = (f"traffic floods have recurred {every} for {fmt_span(lasted)} ({len(onsets)} periodic "
+                          f"onsets since {time.strftime('%H:%M:%S', time.localtime(since))}): the phase-locked "
+                          "storm; on 2026-09-01 only powering the hub off ended it")
+        if self._storm_snapshot:
+            fields["keep_packets"] = f"the ring was saved as {self._storm_snapshot} when the warning went out"
+        self._emit("phase_locked_storm", "critical", ts, **fields)
+
+    def _storm_context(self, since: float) -> str | None:
+        """What a surge that began at ``since`` followed inside the
+        previous 15 minutes: a border router changing address (a hub
+        rebooted), a partition change, or nothing the recorder saw."""
+        changed = self._border_router_changed
+        if changed and 0 <= since - changed[0] <= 900:
+            return (f"after {changed[1] or 'a border router'} came back under a new address at "
+                    f"{time.strftime('%H:%M:%S', time.localtime(changed[0]))}")
+        part = self._partition_changed_ts
+        if part is not None and abs(since - part) <= 900:
+            return f"around the partition change at {time.strftime('%H:%M:%S', time.localtime(part))}"
+        return None
+
     def _emit(self, event: str, severity: str = "info", ts: float | None = None,
               **fields) -> dict:
         """Log an event, and save the ring when it is a critical one. Every
@@ -3276,10 +3346,17 @@ class Pipeline:
         ts = time.time() if ts is None else ts
         label = None
         if severity == "critical":
-            label = self._auto_snapshot(ts, event)
-            fields["auto_snapshot"] = label
-            keep = (f"the ring is being saved as {label}" if label
-                    else "run 'threadwatch snapshot' to keep the packets")
+            # keep_packets: the caller already has the packets (a warning
+            # stage took the snapshot) and says so; no second reservation.
+            earlier = fields.pop("keep_packets", None)
+            if earlier:
+                fields["auto_snapshot"] = None
+                keep = earlier
+            else:
+                label = self._auto_snapshot(ts, event)
+                fields["auto_snapshot"] = label
+                keep = (f"the ring is being saved as {label}" if label
+                        else "run 'threadwatch snapshot' to keep the packets")
             note = fields.get("note")
             fields["note"] = f"{note}; {keep}" if note else keep
         record = self.events.emit(event, severity, ts, **fields)
@@ -4386,6 +4463,7 @@ class Pipeline:
                 f"every reboot. Retired on {why}{seen_late}, so {prev} is not reported quiet. "
                 + ("Named from its entry; nothing to edit." if name
                    else "Not in devices.json: see the devices page."))
+        self._border_router_changed = (now, name or host)
         self._emit("border_router_address_changed", "notice", now, addr=ext, name=name,
                    previous=prev, hostname=host, evidence=why, note=note)
 

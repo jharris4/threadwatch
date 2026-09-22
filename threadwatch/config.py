@@ -355,7 +355,7 @@ SECTIONS: dict[str, frozenset[str] | None] = {
     "border_routers": frozenset(("browse_s", "rotation")),
     "summary": frozenset(("hour", "severity")),
     "detect": frozenset(("flood_multiplier", "flood_min_frames", "period_min_s",
-                         "period_max_s", "period_onsets", "alert_cooldown_s")),
+                         "period_max_s", "period_onsets", "alert_cooldown_s", "confirm_s")),
     "events": frozenset(("keep_days",)),
     "web": frozenset(("bind", "port")),
     "credentials": frozenset(("file",)),
@@ -577,6 +577,11 @@ def load(path: Path | None) -> Config:
             if cfg.detector.alert_cooldown_s < 0:
                 raise ValueError(f"[detect] alert_cooldown_s must be 0 (no cooldown) or more, "
                                  f"not {cfg.detector.alert_cooldown_s:g}")
+        if "confirm_s" in det:
+            cfg.detector.confirm_s = _number("confirm_s", "seconds")
+            if cfg.detector.confirm_s < 0:
+                raise ValueError("[detect] confirm_s must be 0 (critical at the call) or more, "
+                                 f"not {cfg.detector.confirm_s:g}")
         if "period_onsets" in det:
             cfg.detector.period_onsets = det["period_onsets"]
         # Kept as the int the detector slices with: a TOML 3.0 passed the

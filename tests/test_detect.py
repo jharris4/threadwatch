@@ -42,6 +42,38 @@ class StormLatchTest(unittest.TestCase):
         self.assertTrue(active[370])
         self.assertFalse(det.storm_active)    # three missed periods later
 
+    def test_a_storm_is_confirmed_by_persisting_floods_and_only_then(self):
+        # Floods every 80 s from 200 s on: called at the third onset, confirmed
+        # once the newest flood is confirm_s past the first periodic onset.
+        floods = list(range(200, 1400, 80))
+        det, active = self._run(floods, until=1500)
+        self.assertTrue(active[370])
+        self.assertAlmostEqual(det.storm_since, 200.0, delta=0.1)
+        self.assertTrue(det.storm_confirmed)                   # 200 + 600 <= a flood at 840
+        # Stopped after six minutes: called, never confirmed, and over.
+        det, active = self._run(list(range(200, 560, 90)), until=1400)
+        self.assertTrue(active[390])                           # called at the third onset's window close
+        self.assertFalse(det.storm_confirmed)
+        self.assertFalse(det.storm_active)
+        self.assertEqual((det.storm_since, det.storm_confirmed), (0.0, False))
+        # Six minutes of floods, a three-minute lull, then a bump: the surge
+        # that ended (2026-09-22 15:08); the bump does not confirm it.
+        surge = list(range(200, 560, 90)) + list(range(560, 700, 10)) + [880]
+        det, active = self._run(surge, until=1100)
+        self.assertTrue(active[390])
+        self.assertFalse(det.storm_confirmed)
+        self.assertGreater(det.storm_gap_max, 150)
+        # The same, with the floods keeping their beat past confirm_s: confirmed.
+        det, active = self._run(list(range(200, 560, 90)) + list(range(560, 1000, 90)), until=1100)
+        self.assertTrue(det.storm_confirmed)
+        # confirm_s = 0: confirmed at the call, the old behaviour.
+        det = Detector(DetectorConfig(alert_cooldown_s=0, confirm_s=0))
+        for w in range(0, 400, 10):
+            n = 1500 if any(t <= w < t + 10 for t in (200, 280, 360)) else 250
+            for i in range(n):
+                det.add_frame(w + i / n)
+        self.assertTrue(det.storm_active and det.storm_confirmed)
+
     def test_a_second_storm_reports_its_own_period_inside_the_cooldown(self):
         # Two storms in one replayed day: 80 s bursts, a quiet hour, then
         # 60 s bursts. The alert cooldown (default 30 min) is still running
@@ -299,7 +331,8 @@ class SnapshotUnderMutationTest(unittest.TestCase):
             det = self._detector(failures)
             snap = det.snapshot()
             self.assertEqual(snap, {"baseline_frames_per_window": 250.0, "recent_windows": [250] * 6,
-                                    "storm_active": False, "flood_onsets_recent": [], "alerts_sent": 0}, failures)
+                                    "storm_active": False, "storm_confirmed": False, "storm_since": None,
+                                    "flood_onsets_recent": [], "alerts_sent": 0}, failures)
             self.assertEqual(det.calm.iterations, failures + 1)
 
     def test_three_collisions_give_the_reduced_snapshot(self):

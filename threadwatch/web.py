@@ -178,9 +178,11 @@ LEGEND = [
      "warning if the rate stays up for five ([retransmissions] confirm_s), since one minute is a "
      "microwave."),
     ("storm", "Phase-locked storm",
-     "Traffic floods recurring with a stable period: the signature of the mesh-wide broadcast "
-     "storm that took the network down before. Critical. This is what the ring buffer is for: "
-     "run 'threadwatch snapshot' to keep the packets."),
+     "Traffic floods recurring with a stable period: the signature of the mesh-wide storm that took "
+     "the network down on 2026-09-01, the whole fleet's reports converging on the hub every 80 s. "
+     "The call at three periodic onsets is a warning that saves the ring and says what the surge "
+     "followed (a hub re-establishing its sessions after a border router restart looks the same for "
+     "a few minutes); it is critical once the floods have persisted [detect] confirm_s."),
     ("srp", "SRP registration refused",
      "A device's SRP registration (the DNS UPDATE by which it publishes its host and Matter service to "
      "the border routers' SRP server) has been refused [srp] refusals times in a row. Controllers that "

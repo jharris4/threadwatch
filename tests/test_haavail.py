@@ -561,6 +561,49 @@ class RecorderAvailabilityTest(unittest.TestCase):
         self.assertEqual([(d["name"], d["open"], d["down_for_s"] > 0) for d in summary["ha_unavailable_24h"]],
                          [("Front Path Motion", False, True)])
 
+    def _register(self, pipe, addr, ts, dns_id=5):
+        pipe._note_srp({"kind": "request", "id": dns_id, "rcode": None, "client": addr, "server": None}, ts)
+
+    def test_an_unnamed_address_registering_rebuilds_the_map_early_and_is_named_from_it(self):
+        """2026-09-23: a motion sensor came back from a firmware update under
+        a new address, the sniffer missed the fragments naming it, and its
+        srp_refused went out unnamed an hour before the next map refresh."""
+        NEW = "3a3b3c3d3e3f4041"
+        pipe = self._pipe()
+        now = 1_800_000_000.0
+        self._cycle(pipe, now)
+        pipe._next_haavail = now + 3600                                  # the regular poll is not due
+        self._register(pipe, NEW, now + 100)
+        self._register(pipe, NEW, now + 101, dns_id=6)                   # its retries ask nothing more
+        self._register(pipe, "c233a4a5bf8391c9", now + 102, dns_id=7)   # a named address is not asked about
+        self.assertEqual(list(pipe._identify), [NEW])
+        pipe._poll_ha_availability(now + 120)
+        self.assertIsNone(pipe._haavail_thread)                          # not before IDENTIFY_DELAY_S
+        self.mapping = {MOTION: dict(self.mapping[MOTION], addr=NEW.upper())}
+        self._cycle(pipe, now + 130)
+        self.assertEqual(len(self.refreshes), 2)
+        rot = [r for r in pipe.events.records if r["event"] == "device_address_changed"]
+        self.assertEqual([(r["addr"], r["previous"], r["name"]) for r in rot],
+                         [(NEW, "c233a4a5bf8391c9", "Front Path Motion")])
+        self.assertEqual(pipe._identify, {})
+        self._cycle(pipe, now + 500)                                     # the regular poll, on the cached map:
+        self.assertEqual(len(self.refreshes), 2)                         # no retry once the map had it
+
+    def test_an_address_the_map_does_not_have_is_retried_once_then_left_to_the_hourly_refresh(self):
+        NEW = "3a3b3c3d3e3f4041"
+        pipe = self._pipe()
+        now = 1_800_000_000.0
+        self._cycle(pipe, now)
+        pipe._next_haavail = now + 7200
+        self._register(pipe, NEW, now + 100)
+        self._cycle(pipe, now + 130)
+        self._cycle(pipe, now + 431)
+        self.assertEqual(len(self.refreshes), 3)
+        self._cycle(pipe, now + 1000)
+        self.assertEqual(len(self.refreshes), 3)
+        self._register(pipe, NEW, now + 4000, dns_id=8)                  # an hour on: not asked about again
+        self.assertEqual(pipe._identify, {})
+
     def test_off_or_replay_runs_nothing(self):
         from threadwatch.crypto import Decryptor
         from threadwatch.events import NullEventLog

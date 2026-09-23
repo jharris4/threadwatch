@@ -487,7 +487,11 @@ rotation is remembered in `device-rotations.json` so every later process
 and page names it too. The `[ha_availability]` map refresh is the second
 witness: Home Assistant's Matter node diagnostics carry the address the
 Matter Server read from the device, and a device whose address moved
-between two refreshes is rotated the same way. Either way it is said
+between two refreshes is rotated the same way. The map is rebuilt early, 30 s
+after an address with no name first registers and once more five minutes
+on if that did not have it: the sniffer often misses the fragments that
+carry the service names, and on 2026-09-23 a motion sensor's srp_refused
+went out unnamed an hour before the next scheduled refresh. Either way it is said
 once, with the `threadwatch name` command that confirms it in
 devices.json. Unlike an mDNS advertisement, both witnesses are inside
 the trust boundary: the registration was decrypted under the network

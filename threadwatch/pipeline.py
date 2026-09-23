@@ -410,6 +410,10 @@ class Pipeline:
         self._haavail_result: dict | None = None
         self._next_haavail = 0.0
         self._haavail_map_ts: float | None = None
+        # Addresses with no name that registered over SRP, waiting on an
+        # early map refresh to say which device they are (_want_identity).
+        self._identify: dict[str, dict] = {}
+        self._identify_done: set[str] = set()
         if not ephemeral and cfg.ha_availability_enabled:
             self._init_ha_availability()
         self._last_auto_snapshot = 0.0 if ephemeral else self._last_auto_snapshot_on_disk()
@@ -2872,6 +2876,8 @@ class Pipeline:
             cutoff = ts - 120
             self._srp_answered = {k: v for k, v in self._srp_answered.items() if v >= cutoff}
         if srp["kind"] == "request":
+            if srp["client"]:
+                self._want_identity(srp["client"], ts)
             prior = self._srp_requests.get(srp["id"])
             if srp["client"] and (prior is None or ts - prior[1] > self.SRP_REQUEST_S):
                 self._srp_requests[srp["id"]] = (srp["client"], ts)
@@ -3769,6 +3775,7 @@ class Pipeline:
             if result is not None:
                 if isinstance(result.get("map"), dict):
                     self._haavail_map_ts = now
+                    self._identified(result["map"])
                 self._haavail.apply(result, now)
                 for rot in self._haavail.rotations:
                     name = self._device_rotated(rot["previous"], rot["addr"], now,
@@ -3778,12 +3785,13 @@ class Pipeline:
                         info["name"] = name     # the tracker's label, without waiting for devices.json
                 self._haavail.rotations.clear()
             return
-        if now < self._next_haavail:
+        early = self._identify_due(now)
+        if now < self._next_haavail and not early:
             return
         self._next_haavail = now + self.cfg.ha_availability_poll_s
         mapping = dict(self._haavail.mapping)
         entries = list(self.names.entries)
-        map_age = now - self._haavail_map_ts if self._haavail_map_ts is not None else None
+        map_age = now - self._haavail_map_ts if self._haavail_map_ts is not None and not early else None
 
         def run():
             from .haavail import poll_once
@@ -3796,6 +3804,49 @@ class Pipeline:
 
         self._haavail_thread = threading.Thread(target=run, name="ha-availability", daemon=True)
         self._haavail_thread.start()
+
+    # When an unnamed address's first registration is heard, the map is
+    # rebuilt this long after it (the Matter Server has the device's new
+    # address within seconds of its session resuming) and once more
+    # IDENTIFY_RETRY_S later if that one did not have it; then the hourly
+    # refresh is left to it.
+    IDENTIFY_DELAY_S = 30.0
+    IDENTIFY_RETRY_S = 300.0
+    IDENTIFY_TRIES = 2
+
+    def _want_identity(self, addr: str, ts: float) -> None:
+        """An address with no name registered over SRP: a Matter device,
+        most likely one that took a new address after a firmware update
+        (2026-09-23). Its registration names it only when the sniffer hears
+        the fragments carrying its Matter service names, and the next hourly
+        map refresh left its srp_refused unnamed and its old address to
+        report quiet. Home Assistant's map names it as soon as it is rebuilt."""
+        if (self._haavail is None or addr in self._identify or addr in self._identify_done
+                or self.names.name(addr) or self.visitor_names.name(addr)):
+            return
+        self._identify[addr] = {"due": ts + self.IDENTIFY_DELAY_S, "tries": 0}
+
+    def _identify_due(self, now: float) -> bool:
+        """Whether an early map refresh is due; counts it as a try for every
+        address it is for."""
+        due = [a for a, w in self._identify.items() if w["due"] <= now]
+        for a in due:
+            w = self._identify[a]
+            w["tries"] += 1
+            if w["tries"] >= self.IDENTIFY_TRIES:
+                del self._identify[a]
+                self._identify_done.add(a)
+            else:
+                w["due"] = now + self.IDENTIFY_RETRY_S
+        return bool(due)
+
+    def _identified(self, new_map: dict) -> None:
+        """Addresses the rebuilt map carries are known to Home Assistant:
+        a rotation, if any, has been applied from it, so no retry."""
+        seen = {str(i.get("addr") or "").lower() for i in new_map.values() if isinstance(i, dict)}
+        for a in [a for a in self._identify if a in seen]:
+            del self._identify[a]
+            self._identify_done.add(a)
 
     def ha_availability_status(self) -> dict | None:
         """The 'ha_availability' entry of status.json: reachability, the

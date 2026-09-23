@@ -2801,6 +2801,12 @@ class Pipeline:
             self._emit("device_returned", "notice", now, addr=previous, name=name,
                        note=f"back under a new address, {addr}")
 
+    # How long a registration's request stands for its answer. Answers come
+    # back within a second or two; a request whose answer the sniffer missed
+    # must not stand for longer, or the next device to draw the same 16-bit
+    # id has its answer credited to the one that asked hours ago.
+    SRP_REQUEST_S = 120
+
     SRP_RCODES = {0: "NOERROR", 1: "FORMERR", 2: "SERVFAIL", 3: "NXDOMAIN", 4: "NOTIMP", 5: "REFUSED",
                   6: "YXDOMAIN", 7: "YXRRSET", 8: "NXRRSET", 9: "NOTAUTH", 10: "NOTZONE"}
 
@@ -2816,13 +2822,14 @@ class Pipeline:
         # Bound the transaction tables: ids are 16 bits and a mesh
         # registers a few dozen times an hour.
         if len(self._srp_requests) > 256:
-            cutoff = ts - 120
+            cutoff = ts - self.SRP_REQUEST_S
             self._srp_requests = {k: v for k, v in self._srp_requests.items() if v[1] >= cutoff}
         if len(self._srp_answered) > 256:
             cutoff = ts - 120
             self._srp_answered = {k: v for k, v in self._srp_answered.items() if v >= cutoff}
         if srp["kind"] == "request":
-            if srp["client"] and srp["id"] not in self._srp_requests:
+            prior = self._srp_requests.get(srp["id"])
+            if srp["client"] and (prior is None or ts - prior[1] > self.SRP_REQUEST_S):
                 self._srp_requests[srp["id"]] = (srp["client"], ts)
             if vouched and srp["client"] and srp.get("instances"):
                 self._note_matter_identity(srp["client"], srp, ts)
@@ -2832,6 +2839,8 @@ class Pipeline:
             return                                      # the same answer on its next hop
         self._srp_answered[srp["id"]] = ts
         request = self._srp_requests.pop(srp["id"], None)
+        if request is not None and ts - request[1] > self.SRP_REQUEST_S:
+            request = None                              # an old one whose answer went unheard
         client = request[0] if request else srp["client"]
         if not client or client not in self.seen.table:
             return

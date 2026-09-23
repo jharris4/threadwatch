@@ -5581,6 +5581,22 @@ class SrpRefusedTest(unittest.TestCase):
         self.assertNotIn("srp", self.pipe.seen.table[ROUTER])                 # the relay is not the client
         self.assertNotIn("srp", self.pipe.seen.table.get(self.R2, {}))
 
+    def test_an_old_unanswered_request_does_not_take_a_later_answer_with_its_id(self):
+        t0 = 1_700_000_000.0
+        self.pipe.ingest(frame(t0 - 10, SENSOR))
+        self.pipe.ingest(frame(t0 - 10, self.R2))
+        self._request(t0, 7, src=self.R2)                  # its answer is never heard
+        self._request(t0 + 3600, 7)                        # the sensor draws the same id an hour later
+        self._response(t0 + 3600.2, 7, 2)
+        self.assertEqual(self.pipe.seen.table[SENSOR]["srp"]["refused"], 1)
+        self.assertNotIn("srp", self.pipe.seen.table[self.R2])
+        # The same when the sensor's own request was missed too: the answer
+        # goes to its destination, not the hour-old request.
+        self._request(t0 + 7200, 9, src=self.R2)
+        self._response(t0 + 10800, 9, 0)
+        self.assertEqual(self.pipe.seen.table[SENSOR]["srp"]["accepted_ts"], t0 + 10800)
+        self.assertNotIn("srp", self.pipe.seen.table[self.R2])
+
     def test_a_response_whose_request_was_missed_goes_to_the_mesh_destination(self):
         t0 = 1_700_000_000.0
         self.pipe.ingest(frame(t0 - 10, SENSOR))

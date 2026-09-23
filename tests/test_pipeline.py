@@ -3507,6 +3507,19 @@ class ObservedNamesTest(unittest.TestCase):
             self.assertEqual(seen["office-aq-1a2b._hap._tcp.local"], 20)
             self.assertLessEqual(len(seen), Pipeline.OBSERVED_NAMES_MAX)
 
+    def test_a_saved_count_that_is_not_a_whole_number_is_dropped_at_load(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Config(data_dir=Path(d) / "data", devices_path=Path(d) / "devices.json")
+            cfg.state_dir.mkdir(parents=True, exist_ok=True)
+            row = {"first_seen": 1.0, "last_seen": 2.0, "frames": 1, "types": {}}
+            (cfg.state_dir / "last-seen.json").write_text(json.dumps({SENSOR: row}))
+            (cfg.state_dir / "observed-names.json").write_text(json.dumps(
+                {SENSOR: {"porch.local": "x", "den.local": True, "hall.local": 2}}))
+            pipe = Pipeline(cfg, NullEventLog(), stub_decryptor())
+            self.assertEqual(pipe.observed_names, {SENSOR: {"hall.local": 2}})
+            pipe._note_observed_name(SENSOR, "porch.local")         # raised on "x" += 1
+            self.assertEqual(pipe.observed_names[SENSOR], {"hall.local": 2, "porch.local": 1})
+
 
 class CredentialsTest(unittest.TestCase):
     """No key, no recorder; a rotated key is announced, not silently endured."""

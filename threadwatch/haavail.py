@@ -179,6 +179,10 @@ HA_SIDE_SHARE = 0.8
 HEARD_RECENTLY_S = 5 * 60.0
 
 
+def _number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def load_state(path: Path | None) -> dict:
     empty = {"episodes": {}, "closed": {}, "burst": None, "ha_last_ok_ts": None, "last_poll_ts": None,
              "unreachable": False, "fail_since": None}
@@ -191,10 +195,17 @@ def load_state(path: Path | None) -> dict:
     if not isinstance(data, dict):
         return empty
     state = dict(empty)
-    state["episodes"] = {k: v for k, v in (data.get("episodes") or {}).items()
-                         if isinstance(v, dict) and isinstance(v.get("since"), (int, float))}
-    state["closed"] = {k: v for k, v in (data.get("closed") or {}).items() if isinstance(v, dict)}
-    state["burst"] = data.get("burst") if isinstance(data.get("burst"), dict) else None
+    # Parsed JSON of the wrong shape would raise in the Tracker's
+    # constructor or its next poll, both on the capture thread, every
+    # start: what does not fit is dropped here instead.
+    episodes, closed = data.get("episodes"), data.get("closed")
+    state["episodes"] = {k: v for k, v in (episodes if isinstance(episodes, dict) else {}).items()
+                         if isinstance(v, dict) and _number(v.get("since"))}
+    state["closed"] = {k: v for k, v in (closed if isinstance(closed, dict) else {}).items() if isinstance(v, dict)}
+    burst = data.get("burst")
+    if (isinstance(burst, dict) and isinstance(burst.get("members"), list)
+            and "id" in burst and _number(burst.get("first_since")) and _number(burst.get("latest_since"))):
+        state["burst"] = burst
     for key in ("ha_last_ok_ts", "last_poll_ts", "fail_since"):
         value = data.get(key)
         state[key] = float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None

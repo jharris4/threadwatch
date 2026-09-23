@@ -181,6 +181,18 @@ def load_inventory(path: Path) -> dict:
         number = lambda n: isinstance(n, (float, int)) and not isinstance(n, bool) and math.isfinite(n)
         value["samples"] = [s for s in value["samples"] if isinstance(s, dict)
                             and number(s.get("completed_at")) and isinstance(s.get("commands"), dict)][-HISTORY_COUNT:]
+        # Each command's result is read as the poll wrote it (an object,
+        # its output a string, its table rows objects) by the periodic
+        # loop and the journal; a retained sample of another shape raised
+        # there on every pass, so what does not fit is dropped here.
+        for sample in value["samples"]:
+            sample["commands"] = {k: r for k, r in sample["commands"].items() if isinstance(r, dict)}
+            for result in sample["commands"].values():
+                if not isinstance(result.get("output", ""), str):
+                    result["output"] = ""
+                if "rows" in result:
+                    rows = result["rows"]
+                    result["rows"] = [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
         if not number(value.get("next_poll_at")):
             value["next_poll_at"] = 0
         if not isinstance(value.get("failures"), int) or not 0 <= value["failures"] <= 4:

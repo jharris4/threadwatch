@@ -71,6 +71,21 @@ class MapAndPollTest(unittest.TestCase):
             (Path(d) / "ha-map.json").write_text("nope")
             self.assertEqual(haavail.load_map(Path(d)), {})
 
+    def test_a_state_file_of_the_wrong_shape_loads_as_what_fits(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "ha-availability.json"
+            burst = {"id": "b1", "members": ["dev1"], "first_since": 1.0, "latest_since": 2.0}
+            for data, episodes, kept_burst in (
+                    ({"episodes": [{"since": 1}], "closed": [1]}, {}, None),       # raised in the constructor
+                    ({"episodes": {"dev1": {"since": 1.0}}, "burst": {**burst, "members": 5}}, {"dev1": {"since": 1.0}},
+                     None),                                                         # raised on the next poll
+                    ({"burst": {**burst, "latest_since": "later"}}, {}, None),
+                    ({"burst": burst}, {}, burst)):
+                with self.subTest(data=data):
+                    path.write_text(json.dumps(data))
+                    state = haavail.load_state(path)
+                    self.assertEqual((state["episodes"], state["closed"], state["burst"]), (episodes, {}, kept_burst))
+
     def test_the_states_payload_reduces_to_per_device_availability(self):
         mapping = {MOTION: {"entities": ["binary_sensor.motion", "sensor.motion_lux"]},
                    GARDEN: {"entities": ["sensor.garden_battery"]},

@@ -497,14 +497,16 @@ class Pipeline:
                       "harvested from the mesh are forgotten and re-learned as devices re-register",
                       file=sys.stderr, flush=True)
                 loaded = {}
-            # Owners map to {name: count}; any other shape would raise at
-            # the first name observed, in the capture loop. Only owners the
-            # device table still holds are kept: names are harvested for a
-            # tracked device, `devices --suggest` reads them for one, and a
-            # file written before the owners were bounded must not carry
-            # the growth back in.
-            self.observed_names = {k: v for k, v in loaded.items()
-                                   if isinstance(v, dict) and k in self.seen.table} \
+            # Owners map to {name: count}; any other shape, a count that is
+            # not a whole number included, would raise at the first name
+            # observed, in the capture loop. Only owners the device table
+            # still holds are kept: names are harvested for a tracked
+            # device, `devices --suggest` reads them for one, and a file
+            # written before the owners were bounded must not carry the
+            # growth back in.
+            self.observed_names = {
+                k: {n: c for n, c in v.items() if isinstance(c, int) and not isinstance(c, bool)}
+                for k, v in loaded.items() if isinstance(v, dict) and k in self.seen.table} \
                 if isinstance(loaded, dict) else {}
         # Silences that crossed their threshold while the recorder was down
         # (or while it sat in the no-frames watchdog restart loop, where

@@ -299,6 +299,20 @@ class InventoryTest(unittest.TestCase):
         self.assertEqual(poller.next_poll, 0)
         self.assertIsNone(poller.status)
 
+    def test_retained_results_of_another_shape_are_dropped_at_load(self):
+        from threadwatch.pipeline import Pipeline
+        path = Path(self.tmp.name) / "otbr.json"
+        path.write_text(json.dumps({"samples": [{"completed_at": 1.0, "commands": {
+            "router table": {"status": "ok", "rows": [1, {"id": "2", "rloc16": "0x0800"}]},
+            "neighbor table": {"status": "ok", "rows": "none"},
+            "uptime": {"status": "ok", "output": 5},
+            "trel peers": "ok"}}]}))
+        commands = otbr.load_inventory(path)["samples"][0]["commands"]
+        self.assertEqual(sorted(commands), ["neighbor table", "router table", "uptime"])
+        self.assertEqual(commands["router table"]["rows"], [{"id": "2", "rloc16": "0x0800"}])
+        self.assertEqual((commands["neighbor table"]["rows"], commands["uptime"]["output"]), ([], ""))
+        self.assertEqual(list(Pipeline._router_set({"commands": commands})), [2])     # raised on the int row
+
     def test_config_rejects_bad_limits_and_targets(self):
         path = Path(self.tmp.name) / "config.toml"
         for setting in ('enabled = true', 'poll_s = 1', 'poll_s = 901', 'poll_s = nan',

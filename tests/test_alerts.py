@@ -773,9 +773,23 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(got, {"info": 5, "notice": 5, "warning": 5, "critical": 8})
         self.assertEqual(alerts.template_fields({**REC, "severity": "notice"})["severity_value"], "notice")
 
+    def test_sink_durations_outside_their_range_are_refused_by_name(self):
+        inf, nan = float("inf"), float("nan")
+        for key, bad in (("cooldown_s", inf), ("cooldown_s", 1e10), ("cooldown_s", nan), ("cooldown_s", -1),
+                         ("cooldown_s", True), ("cooldown_s", "soon"), ("timeout_s", 0), ("timeout_s", -1),
+                         ("timeout_s", nan), ("timeout_s", inf)):
+            with self.subTest(key=key, bad=bad), self.assertRaises(alerts.ConfigError) as cm:
+                alerts.build_sinks({"sinks": [{"name": "phone", "url": "http://x", key: bad}]}, print)
+            self.assertIn(f"alert sink 'phone': {key} must be", str(cm.exception))
+        [sink] = alerts.build_sinks({"sinks": [{"url": "http://x", "cooldown_s": 0, "timeout_s": "2.5"}]}, print)
+        self.assertEqual((sink.cooldown_s, sink.timeout_s), (0.0, 2.5))
+
     def test_build_heartbeats_validates(self):
-        with self.assertRaises(alerts.ConfigError):
-            alerts.build_heartbeats([{"url": "http://x", "interval_s": 1}], print)
+        for key, bad in (("interval_s", 1), ("interval_s", float("nan")), ("interval_s", float("inf")),
+                         ("timeout_s", 0), ("timeout_s", float("-inf"))):
+            with self.subTest(key=key, bad=bad), self.assertRaises(alerts.ConfigError) as cm:
+                alerts.build_heartbeats([{"name": "gatus", "url": "http://x", key: bad}], print)
+            self.assertIn(f"heartbeat 'gatus': {key} must be", str(cm.exception))
         with self.assertRaises(alerts.ConfigError):   # same name: only one timer would run
             alerts.build_heartbeats([{"name": "gatus", "url": "http://a"}, {"name": "gatus", "url": "http://b"}], print)
         msgs = []

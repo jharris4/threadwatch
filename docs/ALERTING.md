@@ -760,8 +760,8 @@ type = "http"                  # http | command | ntfy (preset)
 min_severity = "warning"       # default warning
 # events = ["device_quiet", "phase_locked_storm"]   # only these names (see Choosing events)
 # ignore_events = ["poll_starvation"]               # or every name but these
-cooldown_s = 300               # per event name, per sink; default 300 (see Digests)
-timeout_s = 10                 # for the whole request, connect to reply
+cooldown_s = 300               # per event name, per sink; default 300, 0 to 86400 (see Digests)
+timeout_s = 10                 # for the whole request, connect to reply; above 0, at most 3600
 enabled = true
 ```
 
@@ -900,7 +900,7 @@ works and is equivalent to one `http` sink named `webhook` with no template.
 name = "gatus"
 url = "..."                    # hit while capture is healthy
 failure_url = "..."            # optional: hit instead when frames have stalled
-interval_s = 60                # minimum 10
+interval_s = 60                # 10 to 86400
 method = "POST"
 headers = { Authorization = "Bearer ${GATUS_THREADWATCH_TOKEN}" }
 # body = "..."                 # optional, sent verbatim (text/plain)

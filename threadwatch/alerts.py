@@ -229,6 +229,28 @@ def _min_severity(raw, sink: str) -> int:
     return SEVERITIES.index(name)
 
 
+def _seconds(raw: dict, key: str, default: float, owner: str, low: float, high: float,
+             low_open: bool = False) -> float:
+    """A duration from a sink or heartbeat table, refused unless it is a
+    number in its range. These tables reach the builders raw, past the
+    finite check the rest of the config gets: nan passes every comparison
+    (a heartbeat every half second), a timeout of 0 or less times every
+    send out at once (each alert sent twice and logged failed), and an
+    infinite or very long cooldown makes the dispatcher's wait overflow,
+    which ends that thread and every alert after it."""
+    value = raw.get(key, default)
+    try:
+        if isinstance(value, bool):
+            raise ValueError
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ConfigError(f"{owner}: {key} must be a number of seconds, not {value!r}") from None
+    if not math.isfinite(number) or number > high or number < low or (low_open and number == low):
+        floor = f"more than {low:g}" if low_open else f"at least {low:g}"
+        raise ConfigError(f"{owner}: {key} must be {floor} and at most {high:g}, not {value!r}")
+    return number
+
+
 # ------------------------------------------------------------------- sinks
 
 def record_id(record: dict) -> str:
@@ -522,8 +544,8 @@ def build_sink(raw: dict, index: int, log: Callable[[str], None],
     common = dict(
         name=name,
         min_severity=_min_severity(raw.get("min_severity", "warning"), name),
-        cooldown_s=float(raw.get("cooldown_s", 300.0)),
-        timeout_s=float(raw.get("timeout_s", 10.0)),
+        cooldown_s=_seconds(raw, "cooldown_s", 300.0, f"alert sink '{name}'", 0, 86400),
+        timeout_s=_seconds(raw, "timeout_s", 10.0, f"alert sink '{name}'", 0, 3600, low_open=True),
         events=_event_filter(raw, "events", name, log),
         ignore_events=_event_filter(raw, "ignore_events", name, log) or frozenset(),
         secrets=tuple(sorted(found, key=len, reverse=True)),
@@ -1090,14 +1112,13 @@ def build_heartbeats(raw_list: list, log: Callable[[str], None],
             continue
         if not raw.get("url"):
             raise ConfigError(f"heartbeat '{name}': url is required")
-        interval = float(raw.get("interval_s", 60.0))
-        if interval < 10:
-            raise ConfigError(f"heartbeat '{name}': interval_s must be at least 10")
+        interval = _seconds(raw, "interval_s", 60.0, f"heartbeat '{name}'", 10, 86400)
         out.append(Heartbeat(name=name, url=str(raw["url"]), interval_s=interval,
                              method=str(raw.get("method", "POST")).upper(),
                              headers={str(k): str(v) for k, v in raw.get("headers", {}).items()},
                              body=raw.get("body"), failure_url=raw.get("failure_url"),
-                             timeout_s=float(raw.get("timeout_s", 10.0))))
+                             timeout_s=_seconds(raw, "timeout_s", 10.0, f"heartbeat '{name}'", 0, 3600,
+                                                low_open=True)))
     # The runner schedules and reports by name; two beats sharing one
     # would collapse into a single timer and the second would never fire.
     _check_unique_names("heartbeat", out)

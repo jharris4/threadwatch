@@ -332,8 +332,17 @@ class DoctorTest(unittest.TestCase):
         path = self.cfg.state_dir / "last-seen.json"
         self.assertEqual(doctor.check_last_seen(self.cfg)[0][:2], ("ok", "last-seen"))
         self.assertIn("not written yet", doctor.check_last_seen(self.cfg)[0][2])
-        path.write_text(json.dumps({"0011223344556677": {"last": 1.0}, "8899aabbccddeeff": {"last": 2.0}}))
+        row = {"first_seen": 1.0, "last_seen": 2.0, "frames": 3, "types": {"1": 3}}
+        path.write_text(json.dumps({"0011223344556677": row, "8899aabbccddeeff": row}))
         self.assertEqual(doctor.check_last_seen(self.cfg), [("ok", "last-seen", "2 address(es) with a history")])
+        # Rows the recorder cannot use (a hand repair that closed one too
+        # early) are the ones it drops when it starts: said, not passed.
+        path.write_text(json.dumps({"0011223344556677": row, "8899aabbccddeeff": {},
+                                    "2233445566778899": {**row, "types": []}}))
+        self.assertEqual(doctor.check_last_seen(self.cfg), [
+            ("ok", "last-seen", "1 address(es) with a history"),
+            ("warn", "last-seen", "2 row(s) the recorder drops when it starts "
+                                  "(8899aabbccddeeff: first_seen is None, not a number, and 1 more)")])
         # A list parses as JSON but is not a table: bef55e2 treats it as unreadable.
         path.write_text("[]")
         level, _, text = doctor.check_last_seen(self.cfg)[0]

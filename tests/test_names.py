@@ -539,6 +539,27 @@ class UnreadableStateTest(unittest.TestCase):
             seen = LastSeen(path)
         return seen, out.getvalue()
 
+    def test_rows_the_recorder_cannot_use_are_dropped_and_named(self):
+        good = {"first_seen": 1.0, "last_seen": 2.0, "frames": 3, "types": {"1": 3}}
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "last-seen.json"
+            path.write_text(json.dumps({
+                AQ: good,
+                TV1: {},                                                   # a repair that closed it too early
+                "00112233445566aa": {**good, "last_seen": "yesterday"},
+                "00112233445566bb": {**good, "frames": True},
+                "00112233445566cc": {**good, "types": []},
+                "00112233445566dd": {**good, "matter_instances": 5}}))
+            seen, said = self._load(path)
+            self.assertEqual(sorted(seen.table), ["00112233445566dd", AQ])
+            self.assertNotIn("matter_instances", seen.table["00112233445566dd"])   # the hint goes, the row stays
+            self.assertIn(f"dropping row '{TV1}': first_seen is None, not a number", said)
+            self.assertIn("last_seen is 'yesterday', not a number", said)
+            self.assertIn("frames is True, not a whole number", said)
+            self.assertIn("types is [], not an object", said)
+            seen.touch(AQ, 3.0, 1)                                         # what used to raise on the first frame
+            self.assertEqual(seen.table[AQ]["frames"], 4)
+
     def test_a_broken_table_is_announced_and_kept_aside_on_the_first_save(self):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "last-seen.json"

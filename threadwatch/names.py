@@ -54,6 +54,7 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import json
+import math
 import os
 import re
 import sys
@@ -413,6 +414,27 @@ def _warn_once(path, message: str) -> None:
     print(f"[threadwatch] {message}", file=sys.stderr, flush=True)
 
 
+def _is_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def last_seen_row_problem(row: dict) -> str | None:
+    """Why a last-seen row cannot be used, or None. The recorder writes
+    every row with numeric first_seen, last_seen and frames and an object
+    of frame types, and reads them without looking: a row missing one, or
+    holding the wrong type (a hand repair that closed a row too early),
+    stopped every start at the quiet check or the first frame from that
+    device. doctor reports the same rows."""
+    for key in ("first_seen", "last_seen"):
+        if not _is_number(row.get(key)):
+            return f"{key} is {row.get(key)!r}, not a number"
+    if not isinstance(row.get("frames"), int) or isinstance(row.get("frames"), bool):
+        return f"frames is {row.get('frames')!r}, not a whole number"
+    if not isinstance(row.get("types"), dict):
+        return f"types is {row.get('types')!r}, not an object"
+    return None
+
+
 class LastSeen:
     """Tracks when each source address (extended, 16-hex-char) last transmitted."""
 
@@ -454,7 +476,14 @@ class LastSeen:
                     if not _EXT_ADDR.match(n):
                         print(f"[threadwatch] {state_path.name}: dropping row {a!r}: not 16 hex digits",
                               file=sys.stderr, flush=True)
+                    elif (problem := last_seen_row_problem(r)) is not None:
+                        print(f"[threadwatch] {state_path.name}: dropping row {a!r}: {problem}",
+                              file=sys.stderr, flush=True)
                     elif n not in self.table:
+                        instances = r.get("matter_instances")
+                        if instances is not None and not (isinstance(instances, list)
+                                                          and all(isinstance(i, str) for i in instances)):
+                            r.pop("matter_instances")   # only an identity hint: the row itself is good
                         self.table[n] = r
             except (ValueError, OSError) as exc:
                 self.unreadable = exc

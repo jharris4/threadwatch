@@ -268,7 +268,14 @@ def check_last_seen(cfg) -> list[Check]:
     except (ValueError, OSError) as exc:
         return [(FAIL, "last-seen", f"last-seen.json is unreadable ({exc}): the recorder is starting from "
                                     "an empty table, so no device has a history and none can go quiet")]
-    out = [(OK, "last-seen", f"{len(table)} address(es) with a history")]
+    from .names import last_seen_row_problem
+    bad = {a: "not an object" if not isinstance(r, dict) else last_seen_row_problem(r) for a, r in table.items()}
+    bad = {a: why for a, why in bad.items() if why is not None}
+    out = [(OK, "last-seen", f"{len(table) - len(bad)} address(es) with a history")]
+    if bad:
+        a, why = next(iter(bad.items()))
+        out.append((WARN, "last-seen", f"{len(bad)} row(s) the recorder drops when it starts ({a}: {why}"
+                                       + (f", and {len(bad) - 1} more" if len(bad) > 1 else "") + ")"))
     if kept:
         out.append((WARN, "last-seen", f"an earlier table was kept aside as {kept[-1].name}: "
                                        "that history is lost unless you put it back"))

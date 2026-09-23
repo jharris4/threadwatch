@@ -2316,6 +2316,31 @@ def rejoin_frame(ts, src_ext, sequence, mac_sequence=None):
     return parse_frame(ts, psdu, 230)
 
 
+class MleExchangeTest(unittest.TestCase):
+    """The attachment and link exchanges kept for the key-transition
+    journal, matched by the names the decoder gives them."""
+
+    def test_every_kept_command_is_a_name_the_decoder_gives(self):
+        from threadwatch.crypto import MLE_COMMANDS
+        from threadwatch.pipeline import MLE_EXCHANGE_COMMANDS
+        self.assertLessEqual(MLE_EXCHANGE_COMMANDS, set(MLE_COMMANDS.values()))
+
+    def test_a_link_accept_and_request_is_kept_for_both_ends(self):
+        from types import SimpleNamespace
+
+        from threadwatch.crypto import MLE_COMMANDS
+        with tempfile.TemporaryDirectory() as tmp:
+            pipe = Pipeline(Config(data_dir=Path(tmp), devices_path=Path(tmp) / "devices.json"),
+                            NullEventLog(), stub_decryptor(), ephemeral=True)
+            info = SimpleNamespace(command_name=MLE_COMMANDS[2], key_sequence=5, link_frame_counter=None,
+                                   mle_frame_counter=None, source_addr16=None, partition_id=None)
+            pipe._apply_mle(frame(1_700_000_000.0, ROUTER, dst=SENSOR), info, ROUTER)
+            for addr in (ROUTER, SENSOR):
+                [kept] = pipe._journal_exchanges[addr]
+                self.assertEqual((kept["command"], kept["sender"], kept["receiver"]),
+                                 ("Link Accept And Request", ROUTER, SENSOR))
+
+
 class KeyGenerationTest(unittest.TestCase):
     """The key-generation detectors: every rotation recorded once, a
     census of who followed, and a page for a device left two or more

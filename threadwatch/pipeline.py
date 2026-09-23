@@ -59,6 +59,12 @@ from .pcap import BROADCAST_PAN, Frame, is_poll
 from .srp import Reassembler, fragment, matter_instances_in, parse_update
 
 MLE_REJOIN_COMMANDS = {"Parent Request", "Child ID Request", "Announce"}
+# The attachment and link exchanges kept for the key-transition journal,
+# spelled as crypto.MLE_COMMANDS names them (a test holds them to it).
+MLE_EXCHANGE_COMMANDS = {
+    "Parent Request", "Parent Response", "Child ID Request", "Child ID Response",
+    "Child Update Request", "Child Update Response", "Link Request", "Link Accept",
+    "Link Accept And Request"}
 
 # Starvation: this many distinct polls (MAC retries of one poll share a
 # sequence number and count once) with no ACK, spanning at least this long.
@@ -2901,10 +2907,7 @@ class Pipeline:
         Applied on a stale message, this reverted the partition and the
         device's RLOC to what they were when it was captured and paged for
         a change that never happened."""
-        if src_for_mle and info.command_name in (
-                "Parent Request", "Parent Response", "Child ID Request", "Child ID Response",
-                "Child Update Request", "Child Update Response", "Link Request", "Link Accept",
-                "Link Accept and Request"):
+        if src_for_mle and info.command_name in MLE_EXCHANGE_COMMANDS:
             peer = f.dst if f.dst and len(f.dst) == 16 else self.decryptor.short_to_ext.get(f.dst)
             exchange = {"ts": f.ts, "command": info.command_name, "sender": src_for_mle,
                         "receiver": peer, "packet": self._journal_packet(f),

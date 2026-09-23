@@ -83,6 +83,19 @@ def plan_inventory(entries: list[dict], found: list[dict]) -> tuple[list[dict], 
     matches a name that is unique in HA."""
     entries = copy.deepcopy(entries)
     changes: list[str] = []
+    # One address reported for two HA devices (bridged endpoints on one
+    # node, a registry record left behind by a re-commission): taken as
+    # given, each became an entry of its own under one address, or renamed
+    # the entry holding it once per device, the last one winning. Which is
+    # the device is HA's to settle, so neither is imported.
+    by_address: dict[str, list[dict]] = {}
+    for dev in found:
+        by_address.setdefault(_norm(dev["addr"]).upper(), []).append(dev)
+    for addr, devs in by_address.items():
+        if len(devs) > 1:
+            changes.append(f"skip {addr}: Home Assistant reports it for {len(devs)} devices "
+                           f"({', '.join(repr(d['name']) for d in devs)}); remove the stale one there")
+    found = [dev for dev in found if len(by_address[_norm(dev["addr"]).upper()]) == 1]
     # Multiple live HA addresses in one identity require a human decision
     # about historical addresses and metadata. Never rename the shared object
     # twice or silently assign its history to whichever HA result came last.

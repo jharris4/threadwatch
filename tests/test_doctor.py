@@ -72,6 +72,15 @@ class DoctorTest(unittest.TestCase):
         self.assertIn("2 devices, 2 addresses; default hold and not muted, the field cannot be read: "
                       "entry 1 (A): hold_s must be a number of seconds, more than 0, not 0, "
                       "entry 2 (B): mute must be true or false, not 'yes'", text)
+        # One address in two entries: the recorder takes the first, so the
+        # second's name, hold and mute never apply. An address repeated in
+        # its own entry is not a conflict.
+        inv.write_text(json.dumps([{"name": "A", "extendedAddresses": ["0011223344556677", "0011223344556677"]},
+                                   {"name": "B", "extendedAddress": "00:11:22:33:44:55:66:77", "mute": True}]))
+        level, _, text = doctor.check_inventory(self.cfg)[0]
+        self.assertEqual(level, "FAIL")
+        self.assertIn("an address may belong to one entry, the recorder uses the first: "
+                      "0011223344556677 in entry 1 (A) and entry 2 (B)", text)
 
     def test_credentials_permissions_and_key(self):
         self.cfg.credentials_path = self.d / "absent.toml"

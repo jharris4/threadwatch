@@ -226,6 +226,15 @@ class DeviceNames:
                         print(f"[threadwatch] {inventory_path.name}: ignoring address {a!r} of "
                               f"{entry.get('name')!r}: not 16 hex digits", file=sys.stderr, flush=True)
                         continue
+                    owner = self.by_addr.get(n)
+                    if owner is not None and owner is not entry:
+                        # One address, one entry (README): a second claim
+                        # used to win silently, its name, hold and mute
+                        # over the first's, by nothing but file order.
+                        print(f"[threadwatch] {inventory_path.name}: address {n} is in the entries for "
+                              f"{owner.get('name')!r} and {entry.get('name')!r}: the first is used "
+                              "until it is fixed (threadwatch doctor checks it)", file=sys.stderr, flush=True)
+                        continue
                     self.by_addr[n] = entry
         for host, rec in load_border_routers(learned_path).items():
             addr = _norm(str(rec.get("addr") or ""))

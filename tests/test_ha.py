@@ -439,6 +439,22 @@ class PlanInventoryTest(unittest.TestCase):
                     plan_inventory(existing, ordered)
                 self.assertEqual(existing, before)
 
+    def test_an_address_home_assistant_gives_two_devices_is_not_imported(self):
+        found = [{"name": "Bridge A", "addr": "0011223344556677"},
+                 {"name": "Bridge B", "addr": "00:11:22:33:44:55:66:77"},
+                 {"name": "Sensor", "addr": "8899aabbccddeeff"}]
+        skip = ("skip 0011223344556677: Home Assistant reports it for 2 devices ('Bridge A', 'Bridge B'); "
+                "remove the stale one there")
+        # Two entries under one address from an empty file...
+        planned, changes = plan_inventory([], found)
+        self.assertEqual(planned, [{"name": "Sensor", "extendedAddress": "8899AABBCCDDEEFF"}])
+        self.assertEqual(changes, [skip, "add 'Sensor' = 8899AABBCCDDEEFF"])
+        # ...or the entry holding it renamed once per device, the last winning.
+        existing = [{"name": "Old", "extendedAddress": "0011223344556677"}]
+        planned, changes = plan_inventory(existing, found)
+        self.assertEqual(planned[0], existing[0])
+        self.assertEqual(changes[0], skip)
+
     def test_merge_keeps_hand_written_entries_and_reports_each_change(self):
         existing = [
             {"name": "Living Room Motion", "extendedAddress": "F00D000000000001", "note": "by the window"},

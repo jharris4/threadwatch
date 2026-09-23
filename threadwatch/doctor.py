@@ -51,6 +51,8 @@ def check_inventory(cfg) -> list[Check]:
     from .names import _EXT_ADDR, _norm, address_field_error, entry_addresses, tolerance_field_error
     bad, addrs, unnamed, wrong_shape = [], 0, 0, []
     bad_fields, bad_tolerance, held, muted = [], [], 0, 0
+    owners: dict[str, int] = {}
+    shared: list[str] = []
     for i, e in enumerate(entries, 1):
         # A null an editor left, or a bare string: the recorder skips it
         # and keeps recording, and naming it is this check's whole job.
@@ -78,11 +80,19 @@ def check_inventory(cfg) -> list[Check]:
             muted += e.get("mute") is True
         for a in entry_addresses(e):
             addrs += 1
-            if not _EXT_ADDR.match(_norm(a)):
+            n = _norm(a)
+            if not _EXT_ADDR.match(n):
                 bad.append(a)
+            elif owners.setdefault(n, i) != i:
+                first = entries[owners[n] - 1]
+                shared.append(f"{n} in entry {owners[n]} ({first.get('name') or 'unnamed'}) "
+                              f"and entry {i} ({e.get('name') or 'unnamed'})")
     text = f"{len(entries) - len(wrong_shape)} devices, {addrs} addresses"
     if held or muted:
         text += f", {held} with a hold of their own, {muted} muted"
+    if shared:
+        return [(FAIL, "inventory", f"{text}; an address may belong to one entry, the recorder uses the "
+                                    f"first: {', '.join(shared[:5])}")]
     if wrong_shape:
         return [(WARN, "inventory", f"{text}; skipped, not device objects: {', '.join(wrong_shape[:5])}"
                                     " (adopt and import refuse to rewrite the file until it is fixed)")]

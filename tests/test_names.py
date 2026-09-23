@@ -70,6 +70,19 @@ class SuggestTest(unittest.TestCase):
             inv.write_text(json.dumps([{"name": "", "extendedAddress": AQ.upper(), "note": "?"}]))
             self.assertIsNone(DeviceNames(inv).name(AQ))
 
+    def test_an_address_in_two_entries_belongs_to_the_first(self):
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as d:
+            inv = Path(d) / "devices.json"
+            inv.write_text(json.dumps([{"name": "Alpha", "extendedAddress": AQ},
+                                       {"name": "Beta", "extendedAddress": AQ.upper(), "mute": True, "hold_s": 900}]))
+            said = io.StringIO()
+            with contextlib.redirect_stderr(said):
+                names = DeviceNames(inv)
+            self.assertEqual((names.name(AQ), names.muted(AQ), names.hold_s(AQ)), ("Alpha", False, None))
+            self.assertIn(f"address {AQ} is in the entries for 'Alpha' and 'Beta': the first is used", said.getvalue())
+
     def test_observed_names_missing_or_broken_is_empty(self):
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(load_observed_names(Path(d)), {})

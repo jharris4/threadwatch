@@ -183,16 +183,6 @@ class Pipeline:
         # the identity an address that rotated is recognised by.
         self._matter_owner: dict[str, tuple[str, float]] = {}
         for addr, row in self.seen.table.items():
-            host = str(row.get("srp_host") or "").lower()
-            if host != addr and host in self.seen.table:
-                # A registration a router forwarded for another device it
-                # holds (_registrant): credited to the router before
-                # 2026-09-23, it would make the router that device's
-                # previous address. The device's own row has it.
-                row.pop("srp_host")
-                row.pop("matter_instances", None)
-                self.seen._dirty = True
-                continue
             when = (row.get("srp") or {}).get("last_ts") or row.get("last_seen") or 0.0
             for inst in row.get("matter_instances") or []:
                 if inst not in self._matter_owner or self._matter_owner[inst][1] < when:
@@ -1860,8 +1850,6 @@ class Pipeline:
                 self.seen.table[who]["resumed_ts"] = ts
                 print(f"[threadwatch] {self.names.name(who) or who} heard on air after its address was "
                       "retired: judged again", file=sys.stderr, flush=True)
-            if len(f.src) == 16 and who in self.names.moved:
-                self._withdraw_rotations(who, ts)
             if len(f.src) == 4:
                 self._note_rloc16(who, f.src, ts)
             pending = self._pending_routers.pop(who, None)
@@ -2837,27 +2825,6 @@ class Pipeline:
                              + (f"Named from its entry; confirm with: {fix}" if name
                                 else f"Not in devices.json: {fix}")))
         return name
-
-    def _withdraw_rotations(self, previous: str, ts: float) -> None:
-        """``previous`` sent a frame under its own extended address after a
-        rotation said the device had left it: nothing moved. The address it
-        was said to have moved to loses the name it was lent, and the
-        rotation is withdrawn out loud, since its notice named the wrong
-        device. Only a frame carrying the extended address counts: a short
-        address can be one the parent has since handed to another child."""
-        for addr in self.names.rotated_from(previous):
-            rec = self.names.rotations.get(addr) or {}
-            if (rec.get("ts") or 0.0) >= ts:
-                continue
-            self.names.withdraw_rotation(addr)
-            name, now_named = rec.get("name"), self.names.name(addr)
-            label = name or previous
-            kept = (f"devices.json names it {now_named}" if now_named
-                    else f"{addr} no longer carries the name")
-            self._emit("device_address_change_withdrawn", "notice", ts, addr=addr, name=now_named,
-                       previous=previous, previous_name=name, evidence=rec.get("evidence"),
-                       note=(f"{label} is still on air at {previous}, so {addr} is not {label} under a new "
-                             f"address: the device_address_changed that said so is withdrawn, and {kept}"))
 
     def _retire_rotated(self, previous: str, addr: str, name: str | None, now: float) -> None:
         """rotated_to on the old row: out of the quiet, link and starvation

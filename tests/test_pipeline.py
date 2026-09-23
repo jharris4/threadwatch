@@ -5766,58 +5766,6 @@ class SrpRefusedTest(unittest.TestCase):
         self.assertIsNone(self.pipe.names.name(NEW))
         self.assertNotIn("rotated_to", self.pipe.seen.table[SENSOR])
 
-    def test_a_rotation_the_old_address_contradicts_later_is_withdrawn(self):
-        from threadwatch.names import DeviceNames
-        NEW = "e17f3a9b2c4d5e6f"
-        FABRIC = "1A2B3C4D5E6F7081-0000000000000067"
-        t0 = 1_700_000_000.0
-        self.pipe.ingest(frame(t0 - 10, SENSOR))
-        self._register(t0, SENSOR, 93, [FABRIC])
-        self._register(t0 + 3600, NEW, 94, [FABRIC])
-        self.assertEqual(len(self._events("device_address_changed")), 1)
-        self.assertEqual(self.pipe.names.name(NEW), "Porch Sensor")
-        self.pipe.ingest(frame(t0 + 3700, SENSOR))
-        wd = self._events("device_address_change_withdrawn")
-        self.assertEqual([(r["addr"], r["previous"], r["previous_name"], r["name"]) for r in wd],
-                         [(NEW, SENSOR, "Porch Sensor", None)])
-        self.assertIsNone(self.pipe.names.name(NEW))
-        self.assertEqual(self.pipe.names.name(SENSOR), "Porch Sensor")
-        self.assertNotIn("rotated_to", self.pipe.seen.table[SENSOR])
-        again = DeviceNames(self.cfg.devices_path, None, self.cfg.state_dir / "device-rotations.json")
-        self.assertIsNone(again.name(NEW))
-        self.pipe.ingest(frame(t0 + 3800, SENSOR))                      # said once
-        self.assertEqual(len(self._events("device_address_change_withdrawn")), 1)
-
-    def test_a_withdrawn_rotation_leaves_an_address_the_operator_listed_its_name(self):
-        NEW = "e17f3a9b2c4d5e6f"
-        FABRIC = "1A2B3C4D5E6F7081-0000000000000067"
-        t0 = 1_700_000_000.0
-        self.pipe.ingest(frame(t0 - 10, SENSOR))
-        self._register(t0, SENSOR, 95, [FABRIC])
-        self._register(t0 + 3600, NEW, 96, [FABRIC])
-        entry = self.pipe.names.by_addr[SENSOR]
-        entry["extendedAddresses"] = [SENSOR, NEW]                     # `threadwatch name`, confirmed
-        self.pipe.names.learn(NEW, entry)
-        self.pipe.ingest(frame(t0 + 3700, SENSOR))
-        wd = self._events("device_address_change_withdrawn")
-        self.assertEqual(wd[0]["name"], "Porch Sensor")
-        self.assertIn("devices.json names it Porch Sensor", wd[0]["note"])
-        self.assertEqual(self.pipe.names.name(NEW), "Porch Sensor")
-
-    def test_a_router_row_holding_a_childs_registration_is_cleared_at_start(self):
-        FABRIC = "1a2b3c4d5e6f7081-0000000000000069._matter._tcp.default.service.arpa"
-        t0 = 1_700_000_000.0
-        self.pipe.ingest(frame(t0, SENSOR))
-        self.pipe.ingest(frame(t0, ROUTER))
-        self.pipe.seen.table[ROUTER].update(srp_host=SENSOR.upper(), matter_instances=[FABRIC])
-        self.pipe.seen.table[SENSOR].update(srp_host=SENSOR.upper(), matter_instances=[FABRIC])
-        self.pipe.seen.save()
-        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
-        self.assertNotIn("matter_instances", pipe.seen.table[ROUTER])
-        self.assertNotIn("srp_host", pipe.seen.table[ROUTER])
-        self.assertEqual(pipe.seen.table[SENSOR]["matter_instances"], [FABRIC])
-        self.assertEqual(pipe._matter_owner[FABRIC][0], SENSOR)
-
     def test_a_first_fragment_alone_still_attributes_the_answer_and_names_nothing(self):
         from tests.frames import next_counter, secured_psdu
         from tests.test_identity import lowpan_udp

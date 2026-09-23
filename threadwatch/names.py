@@ -173,9 +173,6 @@ class DeviceNames:
         self.entries: list[dict] = []
         self.rotations_path = rotations_path
         self.rotations: dict[str, dict] = load_rotations(rotations_path)   # addr -> {previous, name, evidence, ts}
-        # Every address a rotation says a device moved away from: checked
-        # against each frame's sender, so a set, kept by rotate and withdraw.
-        self.moved: set[str] = {_norm(str(r.get("previous") or "")) for r in self.rotations.values()}
         self.persist_rotations = True          # a replay reads the file and never writes it back
         self.border_routers: dict[str, dict] = {}    # addr -> {hostname, instance, vendor, model, name, retired}
         # Addresses an mDNS advertisement put under an entry, rather than the
@@ -288,30 +285,8 @@ class DeviceNames:
             oldest = sorted(self.rotations, key=lambda k: self.rotations[k].get("ts") or 0)
             for k in oldest[:len(self.rotations) - ROTATIONS_MAX]:
                 del self.rotations[k]
-        self.moved = {_norm(str(r.get("previous") or "")) for r in self.rotations.values()}
         self._save_rotations()
         return name, True
-
-    def rotated_from(self, previous: str) -> list[str]:
-        """The addresses a rotation says ``previous`` moved to."""
-        p = _norm(previous)
-        return [a for a, rec in self.rotations.items() if _norm(str(rec.get("previous") or "")) == p]
-
-    def withdraw_rotation(self, addr: str) -> dict | None:
-        """Undo rotate(): the device at the previous address never moved,
-        so ``addr`` loses the name it was lent and the file forgets the
-        rotation. An address the inventory lists keeps the inventory's word.
-        Returns the record withdrawn, None when there was none."""
-        a = _norm(addr)
-        rec = self.rotations.pop(a, None)
-        if rec is None:
-            return None
-        self.moved = {_norm(str(r.get("previous") or "")) for r in self.rotations.values()}
-        if a in self.learned:
-            self.learned.discard(a)
-            self.by_addr.pop(a, None)
-        self._save_rotations()
-        return rec
 
     def _save_rotations(self) -> None:
         if self.rotations_path is None or not self.persist_rotations:

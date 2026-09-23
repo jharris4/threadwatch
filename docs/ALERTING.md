@@ -101,7 +101,6 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `recorder_started` | info after a requested stop or on the first start ever, notice when the last run ended any other way | `cause` (`stopped`, `stalled`, `sniffer_died`, `stream_ended`, `crashed`, `unknown` for a run that left no note: a power cut or a kill, `first_start`), `gap_s` (since the last frame any run heard), `last_frame_ts`, `stopped_ts` (when the last run ended, if it left the note), `exit_code`, `note` |
 | `border_router_address_changed` | notice | `addr`, `name`, `previous`, `hostname`, `evidence` (what corroborated the rotation), `note` |
 | `device_address_changed` | notice | `addr` (the new address), `name`, `previous`, `evidence` (the SRP registration that carried the same Matter service name, or Home Assistant's node diagnostics), `note`; once per rotation |
-| `device_address_change_withdrawn` | notice | `addr` (the address the rotation named), `name`, `previous`, `previous_name` (the name the rotation lent), `evidence` (what the rotation was believed on), `note` |
 | `border_router_unlisted` | notice | `addr`, `hostname`, `note` |
 | `border_router_address_conflict` | warning | `addr`, `name` (the entry devices.json gives the address to), `hostname`, `claimed_by` (the entry the hostname belongs to), `note` |
 | `border_router_rotation_unverified` | notice | `addr`, `name`, `previous`, `hostname`, `evidence` (what held, when anything did), `missing` (what did not), `note` |
@@ -504,11 +503,8 @@ server one hop away with no mesh header. On 2026-09-23 two climate
 sensors' registrations had been credited to their parent routers, and
 when the sensors rotated after a firmware update the notices named the
 routers. A fragment read from a router without the whole is credited
-only by an IPv6 source the router's own registrations used. No rotation
-is taken from an address heard after the new one began, and if the old
-address later sends a frame under its own extended address,
-`device_address_change_withdrawn` takes the rotation and the lent name
-back.
+only by an IPv6 source the router's own registrations used, and no
+rotation is taken from an address heard after the new one began.
 
 `router_set_changed` is the mesh's router roster moving. The `[otbr]`
 inventory reads `ot-ctl router table` every `poll_s`, and that table

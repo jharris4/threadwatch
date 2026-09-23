@@ -33,7 +33,7 @@ class DetectorConfig:
     # A storm called at period_onsets is confirmed once its floods have
     # kept coming this long after the first periodic onset (the newest
     # flood window is the clock, so a storm that stops never confirms). The
-    # pipeline pages the call as a warning and the confirmation as
+    # pipeline logs the call as a notice and pages the confirmation as
     # critical. 0 confirms at the call, as before: a hub re-establishing
     # its sessions after a border router restart looked exactly like the
     # 2026-09-01 storm for three onsets and was over in six minutes.

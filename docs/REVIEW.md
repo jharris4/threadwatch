@@ -140,7 +140,7 @@ The raw log is the wrong unit for people, so the pages group it:
 | `ha_unavailable_burst`, `ha_unreachable`, `ha_reachable` | one row each, always |
 | `key_sequence_advanced`, `key_lag_census` | one row each, always: *key sequence 85 -> 86*, *key generation census* |
 | `partition_or_leader_change`, `partition_storm`, `router_set_changed`, `daily_summary` | one row each, always |
-| `phase_locked_storm` | one row per storm: the warning opens it, the confirmed critical joins it |
+| `phase_locked_storm` | one row per storm: the notice-level call opens it, the confirmed critical joins it |
 | `rejoin_wave` | one row, always, naming the devices |
 | `srp_refused` ... `srp_accepted` | one row: *X SRP registration refused for 5d02h* (or open) |
 | `leader_stalled` | one row per stall, closed by `leader_resumed` |

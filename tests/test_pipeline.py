@@ -1472,7 +1472,7 @@ class QuietPolicyTest(unittest.TestCase):
         pipe.ingest(frame(1_700_000_000.0, ROUTER))
         rec = [r for r in pipe.events.records if r["event"] == "phase_locked_storm"][0]
         self.assertEqual((rec["period_s"], rec["onsets"], rec["severity"], rec["confirmed"]),
-                         (80.5, 3, "warning", False))
+                         (80.5, 3, "notice", False))
         self.assertIn("every 80 s", rec["note"])
         self.assertIn("Critical if the floods persist for 10 min", rec["note"])
 
@@ -1490,7 +1490,7 @@ class QuietPolicyTest(unittest.TestCase):
         pipe.ingest(frame(t0, ROUTER))
         storms = [r for r in pipe.events.records if r["event"] == "phase_locked_storm"]
         self.assertEqual([(r["severity"], r["confirmed"], r["auto_snapshot"]) for r in storms],
-                         [("warning", False, "auto-phase_locked_storm")])
+                         [("notice", False, "auto-phase_locked_storm")])
         self.assertIn("began after Living Room Apple TV came back under a new address at "
                       + time.strftime("%H:%M:%S", time.localtime(1_700_000_000.0 - 300)), storms[0]["note"])
         self.assertIn("the ring is being saved as auto-phase_locked_storm", storms[0]["note"])
@@ -1502,9 +1502,9 @@ class QuietPolicyTest(unittest.TestCase):
         pipe.ingest(frame(t0 + 120, ROUTER))
         storms = [r for r in pipe.events.records if r["event"] == "phase_locked_storm"]
         self.assertEqual([(r["severity"], r["confirmed"]) for r in storms],
-                         [("warning", False), ("critical", True)])
+                         [("notice", False), ("critical", True)])
         self.assertIn("have recurred every 100 s for 11 min (3 periodic onsets since", storms[1]["note"])
-        self.assertIn("the ring was saved as auto-phase_locked_storm when the warning went out", storms[1]["note"])
+        self.assertIn("the ring was saved as auto-phase_locked_storm when the storm was called", storms[1]["note"])
         self.assertIsNone(storms[1]["auto_snapshot"])
         self.assertEqual(len(saved), 1)                        # no second copy
         # The storm ends: the next storm starts its stages afresh.

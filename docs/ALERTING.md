@@ -105,7 +105,7 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `border_router_unlisted` | notice | `addr`, `hostname`, `note` |
 | `border_router_address_conflict` | warning | `addr`, `name` (the entry devices.json gives the address to), `hostname`, `claimed_by` (the entry the hostname belongs to), `note` |
 | `border_router_rotation_unverified` | notice | `addr`, `name`, `previous`, `hostname`, `evidence` (what held, when anything did), `missing` (what did not), `note` |
-| `phase_locked_storm` | warning at `[detect] period_onsets` periodic onsets (`confirmed` false, with the snapshot), critical once the floods have persisted `[detect] confirm_s` (`confirmed` true) | `period_s`, `onsets`, `onset_times`, `confirmed`, `storm_since`, `follows` (what the surge came after, on the warning), `auto_snapshot`, detector snapshot (`baseline_frames_per_window`, `recent_windows`, `storm_active`, `storm_confirmed`, `flood_onsets_recent`) |
+| `phase_locked_storm` | notice at `[detect] period_onsets` periodic onsets (`confirmed` false, with the snapshot), critical once the floods have persisted `[detect] confirm_s` (`confirmed` true) | `period_s`, `onsets`, `onset_times`, `confirmed`, `storm_since`, `follows` (what the surge came after, on the warning), `auto_snapshot`, detector snapshot (`baseline_frames_per_window`, `recent_windows`, `storm_active`, `storm_confirmed`, `flood_onsets_recent`) |
 | `snapshot_requested` | info | `label`, `trigger`, `key_observation` (`sequence`, `observed_at`, `phase`): a key snapshot attempt was reserved |
 | `snapshot_saved` | info | `label`, `path`, `ring_files`, `note` (with either automatic snapshot option) |
 | `snapshot_failed` | warning | `label`, `note` |
@@ -531,7 +531,7 @@ nothing that happened while it was down.
 report converging on the hub in the same window every 80.5 s, for hours,
 after a LAN outage; only powering the hub off ended it. The detector calls
 it at `[detect] period_onsets` (3) flood onsets with a stable period, and
-that call is now a warning: it saves the ring (the packets matter whether
+that call is a notice, logged but not paged: it saves the ring (the packets matter whether
 or not the storm confirms), says in `follows` what the surge came after
 when a border router changed address or the partition changed in the
 previous 15 minutes, and says the critical is coming if the floods
@@ -540,13 +540,17 @@ confirm_s` (10 min) past the first periodic onset, cooldown or not, and
 names the warning's snapshot instead of taking another. On 2026-09-22 a
 hub re-establishing its sessions after the other Apple TV was restarted
 produced three onsets 100 s apart and stopped after six minutes: a
-warning now, not the critical page and snapshot it was. Later that day the
+warning then, not the critical page and snapshot it had been. On
+2026-09-23 Home Assistant's Matter Server read one attribute from every
+node four times, 90 s apart, and the floods of polls and replies it set
+off paged a warning for a surge that was over in five minutes; the call
+has been a notice since, so only the confirmed critical pages. Later that day the
 tail of one burst gave three onsets 110 s and 90 s apart, a 100 s period
 the mesh never had, and the bursts that followed came five minutes apart
 and faded: the gap check refuses the confirmation, and the flag drops
 three measured periods after the last flood (300 s there, not the 540 s
 it used to wait), so those bursts are fresh onsets too far apart to call.
-`confirm_s = 0` pages critical at the call, as before.
+`confirm_s = 0` pages critical at the call.
 
 `retransmission_elevation` is the storm precursor: in one minute more than
 20% of frames were repeats (same sender and sequence number within 2 s, a

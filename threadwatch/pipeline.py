@@ -1974,7 +1974,7 @@ class Pipeline:
 
         # Storm detector escalation to the event log (own cooldown, never
         # per-frame even when the detector's alert cooldown is zeroed). Two
-        # stages: the call at period_onsets is a warning that keeps the
+        # stages: the call at period_onsets is a notice that keeps the
         # packets; the confirmation ([detect] confirm_s of floods) is the
         # critical, at once, cooldown or not.
         if self.detector.storm_active:
@@ -3515,11 +3515,14 @@ class Pipeline:
     AUTO_SNAPSHOT_RETRY_S = 30 * 60      # after a failed copy: the next critical event tries again
 
     def _emit_storm(self, stage: str, ts: float) -> None:
-        """phase_locked_storm at its two stages. The warning takes the
-        snapshot the critical used to take (the packets matter whether or
-        not the storm confirms) and says what the floods followed; the
-        critical says how long they have persisted and names that snapshot
-        rather than reserving a second one."""
+        """phase_locked_storm at its two stages. The call is a notice, not a
+        page: Home Assistant's Matter Server sweeping every node and a hub
+        re-establishing its sessions both look like the storm for a few
+        onsets and are over before it confirms. It takes the snapshot the
+        critical used to take (the packets matter whether or not the storm
+        confirms) and says what the floods followed; the critical says how
+        long they have persisted and names that snapshot rather than
+        reserving a second one."""
         det = self.detector
         details = det.storm_details
         period = details.get("period")
@@ -3543,7 +3546,7 @@ class Pipeline:
             fields["auto_snapshot"] = label
             fields["note"] += (f"; the ring is being saved as {label}" if label
                                else "; run 'threadwatch snapshot' to keep the packets")
-            self._emit("phase_locked_storm", "warning", ts, **fields)
+            self._emit("phase_locked_storm", "notice", ts, **fields)
             if label:
                 self.snapshotter(label, "phase_locked_storm")
             return
@@ -3552,7 +3555,7 @@ class Pipeline:
                           f"onsets since {time.strftime('%H:%M:%S', time.localtime(since))}): the phase-locked "
                           "storm; on 2026-09-01 only powering the hub off ended it")
         if self._storm_snapshot:
-            fields["keep_packets"] = f"the ring was saved as {self._storm_snapshot} when the warning went out"
+            fields["keep_packets"] = f"the ring was saved as {self._storm_snapshot} when the storm was called"
         self._emit("phase_locked_storm", "critical", ts, **fields)
 
     def _storm_context(self, since: float) -> str | None:
@@ -3582,7 +3585,7 @@ class Pipeline:
         ts = time.time() if ts is None else ts
         label = None
         if severity == "critical":
-            # keep_packets: the caller already has the packets (a warning
+            # keep_packets: the caller already has the packets (a notice
             # stage took the snapshot) and says so; no second reservation.
             earlier = fields.pop("keep_packets", None)
             if earlier:

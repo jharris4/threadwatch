@@ -145,6 +145,13 @@ class Config:
     # 20-70 min at a time while everything at -80 dBm or better never went
     # 2 min without a frame.
     quiet_min_rssi_dbm: float = -82.0
+    # An address nobody named (not in the inventory, not a labelled visitor)
+    # and never seen as a router is dropped from the device table after
+    # this much silence, with an address_forgotten record. Without it the
+    # address a device held between losing its fabric and its factory
+    # reset (2026-09-18) stayed quiet and unknown in every daily summary.
+    # 0 keeps every address.
+    quiet_forget_unnamed_s: float = 3 * 86400
     # [link] slow degradation: the average RSSI sitting this far below the
     # device's daily reference for this long is logged (notice). 0 disables.
     link_drop_db: float = 8.0
@@ -344,7 +351,7 @@ SECTIONS: dict[str, frozenset[str] | None] = {
                          "snapshot_on_critical", "snapshot_on_key_advance", "keep_snapshots", "radios")),
     "devices": frozenset(("inventory",)),
     "visitors": frozenset(("file",)),
-    "quiet": frozenset(("silence_s", "min_rssi_dbm")),
+    "quiet": frozenset(("silence_s", "min_rssi_dbm", "forget_unnamed_s")),
     "link": frozenset(("drop_db", "hold_s")),
     "polls": frozenset(("rearm_s", "confirm_s")),
     "keys": frozenset(("confirm_s", "fresh_s", "census_delay_s", "rearm_s", "rotation_hours")),
@@ -616,6 +623,11 @@ def load(path: Path | None) -> Config:
             raise ValueError(f"[quiet] silence_s must be more than 0 seconds, not {cfg.quiet_s:g}")
         cfg.quiet_min_rssi_dbm = float(_finite("quiet", "min_rssi_dbm",
                                               quiet.get("min_rssi_dbm", cfg.quiet_min_rssi_dbm)))
+        cfg.quiet_forget_unnamed_s = float(_finite("quiet", "forget_unnamed_s",
+                                                  quiet.get("forget_unnamed_s", cfg.quiet_forget_unnamed_s)))
+        if cfg.quiet_forget_unnamed_s < 0:
+            raise ValueError(f"[quiet] forget_unnamed_s must be 0 (keep every address) or more, not "
+                             f"{cfg.quiet_forget_unnamed_s:g}")
         link = raw.get("link", {})
         cfg.link_drop_db = float(_finite("link", "drop_db", link.get("drop_db", cfg.link_drop_db)))
         cfg.link_hold_s = float(_finite("link", "hold_s", link.get("hold_s", cfg.link_hold_s)))

@@ -156,6 +156,19 @@ class EpisodeTest(unittest.TestCase):
                           ("starved", T0 + 100, T0 + 150, f"{AQ} polls unanswered for 55s, then it left")])
         self.assertEqual(len(eps[0]["events"]), 2)
 
+    def test_a_forgotten_address_is_its_own_row_and_ends_its_quiet(self):
+        gone = rec("address_forgotten", "info", T0 + 3 * 86400, addr=AQ, silent_for_s=3 * 86400,
+                   last_seen=T0, note="dropped")
+        eps = group_episodes([gone], now=T0 + 3 * 86400 + 60)
+        self.assertEqual([(e["kind"], e["severity"], e["title"], e["detail"]) for e in eps],
+                         [("forgotten", "info", f"{AQ} forgotten after 3d0h silent", "dropped")])
+        # A quiet on the same page stops reading "still quiet".
+        eps = group_episodes([rec("device_quiet", "warning", T0 + 1800, addr=AQ, last_seen=T0), gone],
+                             now=T0 + 3 * 86400 + 60)
+        self.assertEqual([(e["kind"], e["end"], e["title"]) for e in eps],
+                         [("quiet", T0 + 3 * 86400, f"{AQ} quiet until forgotten"),
+                          ("forgotten", T0 + 3 * 86400, f"{AQ} forgotten after 3d0h silent")])
+
     def test_repeated_quiet_before_a_return_is_one_row(self):
         recs = [
             {"ts": T0, "event": "device_quiet", "severity": "warning", "addr": AQ, "name": "AQ", "silent_for_s": 1800},

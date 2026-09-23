@@ -222,6 +222,11 @@ LEGEND = [
      "(parent, frames, key generation, counters). Phones keep their address, so a later visit by "
      "the same one is counted ('visit 3'), and shows as 'visiting' until it is filed, half an hour "
      "after it leaves. A starvation or signal drop still open for the address ends with the visit."),
+    ("forgotten", "Address forgotten",
+     "An address not in devices.json or visitors.json, never a router, silent for [quiet] "
+     "forget_unnamed_s (3 days by default): dropped from the device table so it is no longer "
+     "listed quiet or unknown. Usually the address a device held before a reset or a lost fabric "
+     "gave it a new one. The record keeps what was known (parent, frames, SRP host names)."),
     ("foreign_pan", "Foreign PAN",
      "Frames on this channel carrying a PAN id that is not this network's, seen repeatedly. "
      "Another Thread mesh, or a Zigbee network on the same channel. Harmless, but it competes "

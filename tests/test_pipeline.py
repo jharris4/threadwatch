@@ -505,6 +505,57 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual(s["visits_24h"], [{"addr": STRANGER, "first_seen": t0, "heard_for_s": 16}])
         self.assertIn("1 visit by unnamed addresses", s["note"])
 
+    def test_an_unnamed_address_silent_for_days_is_forgotten(self):
+        """A device that takes a new address leaves its old one behind: on
+        2026-09-18 a sensor lost its fabric and rejoined under an address
+        nobody named, was reset under another the next morning, and the one
+        in between stayed quiet and unknown in every daily summary. After
+        [quiet] forget_unnamed_s it is dropped with a record of what was
+        known; a named device, an unnamed router and a labelled phone are
+        kept, as is everything while the setting is 0."""
+        lingerer, new_router, phone = "5a5a5a5a5a5a5a5a", "6b6b6b6b6b6b6b6b", "7c7c7c7c7c7c7c7c"
+        d = Path(self.tmp.name)
+        (d / "visitors.json").write_text(json.dumps([{"name": "Sam's iPhone", "extendedAddress": phone}]))
+        self.cfg.visitors_path = d / "visitors.json"
+        pipe = self._pipe()
+        t0 = 1_700_000_000.0
+        for i in range(0, 20 * 60, 20):
+            for addr in (SENSOR, lingerer, new_router, phone, ROUTER):
+                pipe.ingest(frame(t0 + i, addr))
+        pipe.seen.table[ROUTER]["rloc16"] = "4400"          # router 17
+        pipe.seen.table[lingerer]["rloc16"] = "4403"        # its child 3
+        pipe.seen.table[new_router]["rloc16"] = "4800"      # router 18, unnamed
+        pipe.observed_names[lingerer] = {"default.service.arpa": 22}
+        last = t0 + 20 * 60 - 20
+        pipe.periodic(t0 + 2 * 86400)
+        self.assertNotIn("address_forgotten", [r["event"] for r in pipe.events.records])
+        self.assertIn(lingerer, pipe.summary(t0 + 2 * 86400)["unknown"])
+        pipe.periodic(last + 3 * 86400)
+        gone = [r for r in pipe.events.records if r["event"] == "address_forgotten"]
+        self.assertEqual([(r["addr"], r["severity"], r["last_seen"], r["silent_for_s"], r["frames"],
+                           r["parent"], r["parent_addr"], r["rloc16"], r["observed_names"]) for r in gone],
+                         [(lingerer, "info", last, 3 * 86400, 60, "Living Room Apple TV", ROUTER, "4403",
+                           {"default.service.arpa": 22})])
+        self.assertIn("silent for 3.0 days", gone[0]["note"])
+        self.assertNotIn(lingerer, pipe.seen.table)
+        self.assertNotIn(lingerer, pipe.quiet_reported)
+        self.assertNotIn(lingerer, pipe.observed_names)
+        self.assertEqual(sorted(a for a in (SENSOR, new_router, phone, ROUTER) if a in pipe.seen.table),
+                         sorted((SENSOR, new_router, phone, ROUTER)))
+        self.assertNotIn(lingerer, pipe.summary(last + 3 * 86400)["unknown"])
+        # Saved at once: a restart does not bring the row back.
+        self.assertNotIn(lingerer, self._pipe().seen.table)
+
+    def test_forget_unnamed_s_of_zero_keeps_every_address(self):
+        self.cfg.quiet_forget_unnamed_s = 0
+        pipe = self._pipe()
+        t0 = 1_700_000_000.0
+        for i in range(0, 20 * 60, 20):
+            pipe.ingest(frame(t0 + i, "5a5a5a5a5a5a5a5a"))
+        pipe.periodic(t0 + 30 * 86400)
+        self.assertIn("5a5a5a5a5a5a5a5a", pipe.seen.table)
+        self.assertNotIn("address_forgotten", [r["event"] for r in pipe.events.records])
+
     def test_a_labelled_visitor_is_named_in_its_visit_records_but_is_still_a_visitor(self):
         d = Path(self.tmp.name)
         (d / "visitors.json").write_text(json.dumps([{"name": "Sam's iPhone", "extendedAddress": STRANGER}]))

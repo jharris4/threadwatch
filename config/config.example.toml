@@ -89,6 +89,10 @@ silence_s = 1800           # 30 min
 # Devices the sniffer hears below this average RSSI are logged at notice
 # (not paged) when quiet: at the edge of range, silence is usually fading.
 min_rssi_dbm = -82
+# An address in neither devices.json nor visitors.json, never seen as a
+# router, is dropped from the device table after this much silence (an
+# address_forgotten record keeps what was known about it). 0 keeps them all.
+forget_unnamed_s = 259200  # 3 days
 
 [polls]
 # A poll_starvation episode that opens within this long of the previous

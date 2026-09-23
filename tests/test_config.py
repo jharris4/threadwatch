@@ -273,6 +273,13 @@ class EventsKeepDaysTest(unittest.TestCase):
                 self._load(f"[quiet]\nsilence_s = {bad}\n")
             self.assertIn("[quiet] silence_s must be more than 0 seconds", str(cm.exception))
 
+    def test_forget_unnamed_s_defaults_to_three_days_zero_keeps_negative_refused(self):
+        self.assertEqual(self._load("[network]\nchannel = 25\n").quiet_forget_unnamed_s, 3 * 86400)
+        self.assertEqual(self._load("[quiet]\nforget_unnamed_s = 0\n").quiet_forget_unnamed_s, 0)
+        with self.assertRaises(ValueError) as cm:
+            self._load("[quiet]\nforget_unnamed_s = -1\n")
+        self.assertIn("[quiet] forget_unnamed_s must be 0", str(cm.exception))
+
     def test_confirm_s_defaults_to_ten_minutes_zero_pages_at_once_negative_refused(self):
         self.assertEqual(self._load("[network]\nchannel = 25\n").poll_confirm_s, 600)
         self.assertEqual(self._load("[polls]\nconfirm_s = 0\n").poll_confirm_s, 0)
@@ -426,6 +433,7 @@ class ExampleConfigTest(unittest.TestCase):
         ("visitors", "file"): ("visitors_path", "visitors.json", "phones.json"),
         ("quiet", "silence_s"): ("quiet_s", 1800, 600),
         ("quiet", "min_rssi_dbm"): ("quiet_min_rssi_dbm", -82, -70),
+        ("quiet", "forget_unnamed_s"): ("quiet_forget_unnamed_s", 259200, 86400),
         ("polls", "rearm_s"): ("poll_rearm_s", 3600, 120),
         ("polls", "confirm_s"): ("poll_confirm_s", 600, 120),
         ("keys", "confirm_s"): ("key_confirm_s", 900, 120),

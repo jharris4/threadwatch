@@ -3415,6 +3415,7 @@ class Pipeline:
                 continue
             if self._is_quiet(addr, row, now):
                 self._report_quiet(addr, row, now)
+        self._forget_unnamed(now)
         self._check_links(now, dominant)
         self._check_key_lag(now, dominant)
         self._maybe_census(now, dominant)
@@ -5033,11 +5034,7 @@ class Pipeline:
                      first_visit=min(since, known.get("first_visit") or since))
         self._visits[addr] = known
         self._save_visits()
-        holders = router_holders(self.seen.table)
-        parent_addr = parent_address(row, holders)
-        live = rloc16_role(row.get("rloc16")) or {}
-        parent = ((self.names.name(parent_addr) or parent_addr) if parent_addr
-                  else (f"router {live['router_id']}" if live else None))
+        parent, parent_addr = self._last_parent(row)
         generations = []
         for seq in sorted({*self._mle_counter.get(addr, {}), *self._mac_counter.get(addr, {})},
                           key=lambda x: (x is not None, x or 0)):
@@ -5056,6 +5053,48 @@ class Pipeline:
                          "accessory), not a device that failed"))
         self._forget(addr)
         if persist:
+            self.seen.save()
+
+    def _last_parent(self, row: dict) -> tuple[str | None, str | None]:
+        """The parent a row last sat under, by name where it has one, and
+        its address: from the router holding the row's short address."""
+        parent_addr = parent_address(row, router_holders(self.seen.table))
+        live = rloc16_role(row.get("rloc16")) or {}
+        parent = ((self.names.name(parent_addr) or parent_addr) if parent_addr
+                  else (f"router {live['router_id']}" if live else None))
+        return parent, parent_addr
+
+    def _forget_unnamed(self, now: float) -> None:
+        """Drop the rows of addresses nobody named that have been silent for
+        [quiet] forget_unnamed_s. Only a visit's row went before, so any
+        other unnamed address stayed quiet and unknown for good: on
+        2026-09-18 a sensor that lost its fabric rejoined under a new
+        address, was reset under another the next morning, and the one in
+        between was listed in every daily summary after. An address that
+        was a router stays, as a device missing from the inventory; so do
+        a hub's retired address and a labelled visitor's."""
+        keep_s = self.cfg.quiet_forget_unnamed_s
+        if keep_s <= 0:
+            return
+        gone = [(addr, row) for addr, row in self.seen.table.items()
+                if now - row["last_seen"] >= keep_s and not row.get("rotated_to")
+                and self.names.name(addr) is None and self.visitor_names.name(addr) is None
+                and (rloc16_role(row.get("rloc16")) or {}).get("role") != "router"]
+        for addr, row in gone:
+            parent, parent_addr = self._last_parent(row)
+            silent = round(now - row["last_seen"])
+            self._emit("address_forgotten", "info", now, addr=addr, first_seen=row.get("first_seen"),
+                       last_seen=row["last_seen"], silent_for_s=silent, frames=row.get("frames"),
+                       rloc16=row.get("rloc16"), parent=parent, parent_addr=parent_addr,
+                       rssi_dbm=row.get("rssi"), pan=row.get("pan"),
+                       observed_names=dict(self.observed_names.get(addr) or {}),
+                       note=(f"an address not in the inventory, silent for {silent / 86400:.1f} days: "
+                             "dropped from the device table so it is no longer listed quiet or "
+                             "unknown. A device that took a new address (a reset, a lost fabric) "
+                             "leaves its old one behind like this; it comes back as a new "
+                             "device_first_seen if it is ever heard again."))
+            self._forget(addr)
+        if gone:
             self.seen.save()
 
     def _report_quiet(self, addr: str, row: dict, now: float, persist: bool = True) -> None:

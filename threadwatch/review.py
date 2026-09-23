@@ -182,6 +182,20 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
                     left["end"] = end
                     left["events"].append(rec)
                     left["title"] += f" for {fmt_duration(end - left[since_key])}, then it left"
+        elif ev == "address_forgotten":
+            # An unnamed address dropped after days of silence: the quiet
+            # announced for it, if this page holds it, ends here rather
+            # than standing as still quiet.
+            addr = _addr(rec) or ""
+            silent = rec.get("silent_for_s")
+            ep = new("forgotten", rec, f"{_label(rec)} forgotten"
+                     + (f" after {fmt_duration(silent)} silent" if isinstance(silent, (int, float)) else ""),
+                     rec.get("note", ""))
+            quiet = open_quiet.pop(addr, None)
+            if quiet is not None:
+                quiet["end"] = rec["ts"]
+                quiet["events"].append(rec)
+                quiet["title"] = f"{_label(rec)} quiet until forgotten"
         elif ev == "poll_starvation":
             addr = _addr(rec) or ""
             ep = open_starved.get(addr)

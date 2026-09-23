@@ -2850,13 +2850,14 @@ class Pipeline:
             if (rec.get("ts") or 0.0) >= ts:
                 continue
             self.names.withdraw_rotation(addr)
-            name = rec.get("name")
+            name, now_named = rec.get("name"), self.names.name(addr)
             label = name or previous
-            self._emit("device_address_change_withdrawn", "notice", ts, addr=addr, name=self.names.name(addr),
+            kept = (f"devices.json names it {now_named}" if now_named
+                    else f"{addr} no longer carries the name")
+            self._emit("device_address_change_withdrawn", "notice", ts, addr=addr, name=now_named,
                        previous=previous, previous_name=name, evidence=rec.get("evidence"),
                        note=(f"{label} is still on air at {previous}, so {addr} is not {label} under a new "
-                             f"address: the device_address_changed that said so is withdrawn, and {addr} "
-                             "no longer carries the name"))
+                             f"address: the device_address_changed that said so is withdrawn, and {kept}"))
 
     def _retire_rotated(self, previous: str, addr: str, name: str | None, now: float) -> None:
         """rotated_to on the old row: out of the quiet, link and starvation

@@ -952,10 +952,11 @@ SRC_FORMS = {
                      LINK_LOCAL + bytes.fromhex("0212345678abcdef")),
     "short":        (False, 2, bytes.fromhex("9c01"), LINK_LOCAL + bytes.fromhex("000000fffe009c01")),
     "elided":       (False, 3, b"", LINK_LOCAL + bytes.fromhex("009a47566a00b543")),
-    "ctx-unspec":   (True, 0, b"", None),
-    "ctx-iid":      (True, 1, bytes.fromhex("0312345678abcdef"), None),
-    "ctx-short":    (True, 2, bytes.fromhex("9c02"), None),
-    "ctx-elided":   (True, 3, b"", None),
+    # Context-based: the prefix is in the network data, so it reads as zeros.
+    "ctx-unspec":   (True, 0, b"", bytes(16)),
+    "ctx-iid":      (True, 1, bytes.fromhex("0312345678abcdef"), bytes(8) + bytes.fromhex("0312345678abcdef")),
+    "ctx-short":    (True, 2, bytes.fromhex("9c02"), bytes(8) + bytes.fromhex("000000fffe009c02")),
+    "ctx-elided":   (True, 3, b"", bytes(8) + bytes.fromhex("009a47566a00b543")),
 }
 
 # Every (M, DAC, DAM) form the same way, given mac_dst_ext=OTHER and
@@ -975,9 +976,10 @@ DST_FORMS = {
                      LINK_LOCAL + bytes.fromhex("02fedcba98765432")),
     "ucast-short":  (False, False, 2, bytes.fromhex("6e03"), LINK_LOCAL + bytes.fromhex("000000fffe006e03")),
     "ucast-elided": (False, False, 3, b"", LINK_LOCAL + bytes.fromhex("d00bfcd1a12f625d")),
-    "ucast-ctx-iid":    (False, True, 1, bytes.fromhex("03fedcba98765432"), None),
-    "ucast-ctx-short":  (False, True, 2, bytes.fromhex("6e04"), None),
-    "ucast-ctx-elided": (False, True, 3, b"", None),
+    "ucast-ctx-iid":    (False, True, 1, bytes.fromhex("03fedcba98765432"),
+                         bytes(8) + bytes.fromhex("03fedcba98765432")),
+    "ucast-ctx-short":  (False, True, 2, bytes.fromhex("6e04"), bytes(8) + bytes.fromhex("000000fffe006e04")),
+    "ucast-ctx-elided": (False, True, 3, b"", bytes(8) + bytes.fromhex("d00bfcd1a12f625d")),
 }
 
 PAYLOAD = bytes(range(0x60, 0x80))    # 32 distinct bytes: a mis-sliced payload cannot match

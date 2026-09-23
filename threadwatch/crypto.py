@@ -296,7 +296,9 @@ class Decryptor:
 
         Returns (sport, dport, udp_payload, src_ip16, dst_ip16) where the IPs
         are 16-byte addresses when reconstructable (stateless link-local and
-        common multicast forms — sufficient for MLE), else None. Handles the
+        common multicast forms — sufficient for MLE), else None. A
+        context-based address comes back with a zero prefix and its own
+        interface id. Handles the
         common Thread on-air forms; returns None for non-first fragments and
         unhandled layouts.
         """
@@ -337,7 +339,19 @@ class Decryptor:
                 if mac_src_ext:
                     src_ip = LL + Decryptor._iid_from_ext(mac_src_ext)
         else:
-            off += (0, 8, 2, 0)[sam]  # context-based: skip, no reconstruction
+            # Context-based (the mesh-local and OMR prefixes): the prefix
+            # lives in the network data, not here, so it is left as zeros;
+            # the interface id is the device's all the same, and the RLOC
+            # and ALOC forms (an SRP server's anycast locator) still read.
+            ZERO = bytes(8)
+            if sam == 0:
+                src_ip = bytes(16)
+            elif sam == 1:
+                src_ip = ZERO + p[off:off + 8]; off += 8
+            elif sam == 2:
+                src_ip = ZERO + b"\x00\x00\x00\xff\xfe\x00" + p[off:off + 2]; off += 2
+            elif mac_src_ext:
+                src_ip = ZERO + Decryptor._iid_from_ext(mac_src_ext)
 
         m = bool(iphc & 0x0008)
         dam = iphc & 0x3
@@ -367,7 +381,19 @@ class Decryptor:
                 elif mac_dst_short:
                     dst_ip = LL + b"\x00\x00\x00\xff\xfe\x00" + bytes.fromhex(mac_dst_short)
         else:
-            off += (0, 8, 2, 0)[dam]
+            # Context-based, as for the source: a zero prefix, its own
+            # interface id (an SRP server's anycast locator reads).
+            ZERO = bytes(8)
+            if dam == 0:
+                dst_ip = bytes(16)
+            elif dam == 1:
+                dst_ip = ZERO + p[off:off + 8]; off += 8
+            elif dam == 2:
+                dst_ip = ZERO + b"\x00\x00\x00\xff\xfe\x00" + p[off:off + 2]; off += 2
+            elif mac_dst_ext:
+                dst_ip = ZERO + Decryptor._iid_from_ext(mac_dst_ext)
+            elif mac_dst_short:
+                dst_ip = ZERO + b"\x00\x00\x00\xff\xfe\x00" + bytes.fromhex(mac_dst_short)
 
         if off >= len(p):
             return None
@@ -424,6 +450,8 @@ class Decryptor:
         elif suite == 0:
             if len(udp_payload) < 11 or not src_ext_hex or not src_ip or not dst_ip:
                 return None
+            if src_ip[:8] == bytes(8) or dst_ip[:8] == bytes(8):
+                return None             # a context prefix udp_ports could not fill in: no AAD
             sec_ctl = udp_payload[1]
             sec_level = sec_ctl & 0x07
             key_mode = (sec_ctl >> 3) & 0x03

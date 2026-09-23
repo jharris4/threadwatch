@@ -1145,6 +1145,17 @@ class TwoRadiosRunTest(unittest.TestCase):
             self.run_over.set()
         return cm.exception.code, out.getvalue()
 
+    def _long_hold(self):
+        """For a test that counts the frames two radios shared: the fake
+        radios are threads, and on a loaded CI runner one's copy of a frame
+        can reach the merger more than the live 250 ms hold after the
+        other's, so both went out and the shared frames were counted twice.
+        The run ends when the radios do, so the long hold costs nothing."""
+        from unittest import mock
+        hold = mock.patch("threadwatch.merge.HOLD_S", 5.0)
+        hold.start()
+        self.addCleanup(hold.stop)
+
     def _events(self):
         """The radio events of the run, in order."""
         from threadwatch.events import read_all
@@ -1158,6 +1169,7 @@ class TwoRadiosRunTest(unittest.TestCase):
     def test_both_radios_write_their_own_series_and_the_run_ends_when_both_have(self):
         from threadwatch.pcap import PcapStreamReader
         self.cfg.keep_hours = 1
+        self._long_hold()
         self.cfg.ring_dir.mkdir(parents=True, exist_ok=True)
         old_primary = self.cfg.ring_dir / "threadwatch-20200101-00.pcap"
         old_primary.write_bytes(b"old primary hour")
@@ -1318,6 +1330,7 @@ class RelayRadioRunTest(TwoRadiosRunTest):
 
     def test_a_relay_is_adopted_streams_its_copies_and_its_loss_is_the_radios_not_the_runs(self):
         from threadwatch.pcap import PcapStreamReader
+        self._long_hold()
         frames = self._frames(3)
         self.scripts["/dev/fake-hub"] = frames
         hub_hold = self.holds.setdefault("/dev/fake-hub", threading.Event())

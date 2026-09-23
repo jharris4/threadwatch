@@ -148,6 +148,24 @@ class StartupFailureTest(unittest.TestCase):
             self.assertTrue(all(r.listener is None for r in radios))
             self.assertEqual(radios[0].fifo.read_text(), "not owned by this startup")
 
+    def test_a_relay_radio_waiting_for_its_relay_is_not_a_dead_sniffer(self):
+        import queue
+
+        from threadwatch import record
+        with tempfile.TemporaryDirectory() as tmp:
+            radio = record.Radio("annex", None, "", None, Path(tmp) / "annex.fifo", lambda msg: None,
+                                 source="tcp", listen="127.0.0.1:0")
+            self.assertFalse(radio.sniffer_alive())
+            radio._listen(queue.Queue())
+            try:
+                self.assertTrue(radio.sniffer_alive())
+                self.assertIsNone(record.watchdog_verdict(30.0, ring_open=False,
+                                                          sniffer_alive=radio.sniffer_alive()))
+            finally:
+                radio.close_listener()
+            radio.accept_thread.join(2)
+            self.assertFalse(radio.sniffer_alive())
+
     def test_later_attach_failure_wakes_a_non_daemon_worker_stuck_opening_its_fifo(self):
         import os
         import queue

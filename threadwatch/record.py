@@ -424,6 +424,7 @@ class Radio:
         self.state_mono = 0.0
         self.sniffer = None
         self.thread: threading.Thread | None = None
+        self.accept_thread: threading.Thread | None = None
         self.clock = RadioClock()
         self.writer: RingWriter | None = None
         self.dlt: int | None = None
@@ -526,7 +527,8 @@ class Radio:
                 else:
                     conn.close()
 
-        threading.Thread(target=accept, daemon=True, name=f"radio-{self.key}-accept").start()
+        self.accept_thread = threading.Thread(target=accept, daemon=True, name=f"radio-{self.key}-accept")
+        self.accept_thread.start()
 
     def adopt(self, conn, peer: str, hs: dict, q, mono: float) -> None:
         """A relay's connection becomes this radio's stream. A connection
@@ -673,7 +675,12 @@ class Radio:
 
     def sniffer_alive(self) -> bool:
         if self.source == "tcp":
-            return self.thread is not None and self.thread.is_alive()
+            # A listener waiting for its relay is alive: the relay may be
+            # down for a while, and until the stall timeout that is waiting,
+            # not a sniffer that died. Read as dead, a recorder with only
+            # relays exited 30 s into every start with none connected, fast
+            # enough for systemd's start limit to leave it failed for good.
+            return any(t is not None and t.is_alive() for t in (self.thread, self.accept_thread))
         thread = getattr(self.sniffer, "thread", None)
         return bool(thread is not None and thread.is_alive())
 

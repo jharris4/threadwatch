@@ -5694,6 +5694,114 @@ class SrpRefusedTest(unittest.TestCase):
         self.assertEqual([(r["addr"], r["previous"], r["name"]) for r in rot], [(NEW, SENSOR, "Porch Sensor")])
         self.assertEqual(self.pipe.names.name(NEW), "Porch Sensor")
 
+    def _forward(self, ts, router, host, dns_id, instances, iid, drop_last=False):
+        """A registration as a router forwards its child's to the SRP
+        server one hop away: the router's MAC source, no mesh header, and
+        the child's own IPv6 source carried inline (context-based, as the
+        mesh-local and OMR addresses are)."""
+        import struct
+        from tests.frames import next_counter, secured_psdu
+        from tests.test_srp import lowpan_fragments, srp_update
+        from threadwatch.pcap import parse_frame
+        iphc = (0b011 << 13) | (3 << 11) | (1 << 10) | (2 << 8) | (1 << 6) | (1 << 4) | (1 << 3) | 3
+        packet = (struct.pack(">H", iphc) + bytes.fromhex(iid) + b"\x01" + b"\xf0"
+                  + struct.pack(">HH", 49152, 53) + b"\x00\x00" + srp_update(dns_id, host.upper(), instances))
+        frags = lowpan_fragments(packet, 18, tag=dns_id)
+        for i, frag in enumerate(frags[:-1] if drop_last else frags):
+            self.pipe.ingest(parse_frame(ts + i * 0.01, secured_psdu(router, next_counter(router), dst=self.R2,
+                                                                     payload=frag), 230))
+
+    def _hall_router_routes(self, ts):
+        self.pipe.ingest(frame(ts, ROUTER))
+        self.pipe.seen.table[ROUTER]["rloc16"] = "c400"
+
+    def test_a_registration_a_router_forwards_is_the_childs_not_the_routers(self):
+        """2026-09-23: two climate sensors' registrations, forwarded by
+        their parent routers, were credited to the routers; when the
+        sensors rotated, the routers were named as the devices that had."""
+        NEW = "e17f3a9b2c4d5e6f"
+        FABRIC = "1A2B3C4D5E6F7081-0000000000000069"
+        t0 = 1_700_000_000.0
+        self.pipe.ingest(frame(t0 - 10, SENSOR))
+        self._hall_router_routes(t0 - 5)
+        self._register(t0, SENSOR, 71, [FABRIC])                         # the sensor to its parent
+        self._forward(t0 + 0.1, ROUTER, SENSOR, 71, [FABRIC], "0a1b2c3d4e5f6071")   # the parent onward
+        self.assertNotIn("matter_instances", self.pipe.seen.table[ROUTER])
+        self.assertIsNone(self.pipe.seen.table[ROUTER].get("srp_host"))
+        self.assertEqual(self.pipe.seen.table[SENSOR]["srp_host"], SENSOR.upper())
+        self._response(t0 + 0.3, 71, 2, src=self.R2, dst=ROUTER)
+        self.assertNotIn("srp", self.pipe.seen.table[ROUTER])
+        self.assertEqual(self.pipe.seen.table[SENSOR]["srp"]["refused"], 1)
+        # The sensor reboots under a new address and registers the same name.
+        self.pipe.ingest(frame(t0 + 3600, NEW))
+        self._register(t0 + 3601, NEW, 72, [FABRIC])
+        rot = self._events("device_address_changed")
+        self.assertEqual([(r["addr"], r["previous"], r["name"]) for r in rot], [(NEW, SENSOR, "Porch Sensor")])
+
+    def test_a_fragment_a_router_carries_is_credited_by_its_source_or_not_at_all(self):
+        FABRIC, APPLE = "1A2B3C4D5E6F7081-0000000000000069", "0F1E2D3C4B5A6978-00000000ABCDEF01"
+        t0 = 1_700_000_000.0
+        self.pipe.ingest(frame(t0 - 10, SENSOR))
+        self._hall_router_routes(t0 - 5)
+        self._forward(t0, ROUTER, SENSOR, 81, [FABRIC], "0a1b2c3d4e5f6071")
+        # A registration the sniffer heard only part of, from a source it
+        # knows: the sensor's. From one it does not: nobody's.
+        self._forward(t0 + 60, ROUTER, SENSOR, 82, [FABRIC, APPLE], "0a1b2c3d4e5f6071", drop_last=True)
+        self.assertIn(f"{APPLE.lower()}._matter._tcp.default.service.arpa",
+                      self.pipe.seen.table[SENSOR]["matter_instances"])
+        self._forward(t0 + 120, ROUTER, "0b0b0b0b0b0b0b0b", 83, ["2B3C4D5E6F708192-0000000000000070"],
+                      "7766554433221100", drop_last=True)
+        self.assertNotIn("matter_instances", self.pipe.seen.table[ROUTER])
+
+    def test_an_address_still_on_air_is_not_the_one_a_device_rotated_from(self):
+        NEW = "e17f3a9b2c4d5e6f"
+        FABRIC = "1A2B3C4D5E6F7081-0000000000000067"
+        t0 = 1_700_000_000.0
+        self.pipe.ingest(frame(t0 - 10, SENSOR))
+        self._register(t0, SENSOR, 91, [FABRIC])
+        self.pipe.ingest(frame(t0 + 3600, NEW))
+        self.pipe.ingest(frame(t0 + 3601, SENSOR))                     # the old address talks on
+        self._register(t0 + 3602, NEW, 92, [FABRIC])
+        self.assertEqual(self._events("device_address_changed"), [])
+        self.assertIsNone(self.pipe.names.name(NEW))
+        self.assertNotIn("rotated_to", self.pipe.seen.table[SENSOR])
+
+    def test_a_rotation_the_old_address_contradicts_later_is_withdrawn(self):
+        from threadwatch.names import DeviceNames
+        NEW = "e17f3a9b2c4d5e6f"
+        FABRIC = "1A2B3C4D5E6F7081-0000000000000067"
+        t0 = 1_700_000_000.0
+        self.pipe.ingest(frame(t0 - 10, SENSOR))
+        self._register(t0, SENSOR, 93, [FABRIC])
+        self._register(t0 + 3600, NEW, 94, [FABRIC])
+        self.assertEqual(len(self._events("device_address_changed")), 1)
+        self.assertEqual(self.pipe.names.name(NEW), "Porch Sensor")
+        self.pipe.ingest(frame(t0 + 3700, SENSOR))
+        wd = self._events("device_address_change_withdrawn")
+        self.assertEqual([(r["addr"], r["previous"], r["previous_name"], r["name"]) for r in wd],
+                         [(NEW, SENSOR, "Porch Sensor", None)])
+        self.assertIsNone(self.pipe.names.name(NEW))
+        self.assertEqual(self.pipe.names.name(SENSOR), "Porch Sensor")
+        self.assertNotIn("rotated_to", self.pipe.seen.table[SENSOR])
+        again = DeviceNames(self.cfg.devices_path, None, self.cfg.state_dir / "device-rotations.json")
+        self.assertIsNone(again.name(NEW))
+        self.pipe.ingest(frame(t0 + 3800, SENSOR))                      # said once
+        self.assertEqual(len(self._events("device_address_change_withdrawn")), 1)
+
+    def test_a_router_row_holding_a_childs_registration_is_cleared_at_start(self):
+        FABRIC = "1a2b3c4d5e6f7081-0000000000000069._matter._tcp.default.service.arpa"
+        t0 = 1_700_000_000.0
+        self.pipe.ingest(frame(t0, SENSOR))
+        self.pipe.ingest(frame(t0, ROUTER))
+        self.pipe.seen.table[ROUTER].update(srp_host=SENSOR.upper(), matter_instances=[FABRIC])
+        self.pipe.seen.table[SENSOR].update(srp_host=SENSOR.upper(), matter_instances=[FABRIC])
+        self.pipe.seen.save()
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        self.assertNotIn("matter_instances", pipe.seen.table[ROUTER])
+        self.assertNotIn("srp_host", pipe.seen.table[ROUTER])
+        self.assertEqual(pipe.seen.table[SENSOR]["matter_instances"], [FABRIC])
+        self.assertEqual(pipe._matter_owner[FABRIC][0], SENSOR)
+
     def test_a_first_fragment_alone_still_attributes_the_answer_and_names_nothing(self):
         from tests.frames import next_counter, secured_psdu
         from tests.test_identity import lowpan_udp

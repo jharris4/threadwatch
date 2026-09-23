@@ -183,6 +183,16 @@ class Pipeline:
         # the identity an address that rotated is recognised by.
         self._matter_owner: dict[str, tuple[str, float]] = {}
         for addr, row in self.seen.table.items():
+            host = str(row.get("srp_host") or "").lower()
+            if host != addr and host in self.seen.table:
+                # A registration a router forwarded for another device it
+                # holds (_registrant): credited to the router before
+                # 2026-09-23, it would make the router that device's
+                # previous address. The device's own row has it.
+                row.pop("srp_host")
+                row.pop("matter_instances", None)
+                self.seen._dirty = True
+                continue
             when = (row.get("srp") or {}).get("last_ts") or row.get("last_seen") or 0.0
             for inst in row.get("matter_instances") or []:
                 if inst not in self._matter_owner or self._matter_owner[inst][1] < when:
@@ -261,6 +271,10 @@ class Pipeline:
         # ids answered lately, so a response heard on two hops counts once.
         self._srp_requests: dict[int, tuple[str | None, float]] = {}
         self._srp_answered: dict[int, float] = {}
+        # The IPv6 source of each registration heard whole, by the device
+        # its host name says sent it: what a router's fragment of one is
+        # credited by, when it may be carrying a child's (_registrant).
+        self._srp_sources: dict[bytes, str] = {}
         self._crypto_mark = (0, 0)          # (decrypted, failed) when decryption last worked
         self._stale_evt = 0.0
         # Border routers on the LAN: hostname -> current address (mDNS).
@@ -1846,6 +1860,8 @@ class Pipeline:
                 self.seen.table[who]["resumed_ts"] = ts
                 print(f"[threadwatch] {self.names.name(who) or who} heard on air after its address was "
                       "retired: judged again", file=sys.stderr, flush=True)
+            if len(f.src) == 16 and who in self.names.moved:
+                self._withdraw_rotations(who, ts)
             if len(f.src) == 4:
                 self._note_rloc16(who, f.src, ts)
             pending = self._pending_routers.pop(who, None)
@@ -2662,12 +2678,11 @@ class Pipeline:
                               else dext or self.decryptor.short_to_ext.get(dshort or ""))
                     srp = {"kind": "response", "id": dns_id, "rcode": flags & 0xF, "client": client,
                            "server": self._aloc_label(sip)}
-                else:                                       # a request: from the mesh originator
-                    client = (self.decryptor.short_to_ext.get(mesh[0]) if mesh
-                              else ext or self.decryptor.short_to_ext.get(short or ""))
+                else:                                       # a request: from the device it registers
+                    update = None if partial else parse_update(payload)
+                    client = self._registrant(update and update["host"], plain, sip, ext, short)
                     srp = {"kind": "request", "id": dns_id, "rcode": None, "client": client,
                            "server": self._aloc_label(dip)}
-                    update = None if partial else parse_update(payload)
                     if update is not None:
                         srp.update(host=update["host"], instances=update["instances"],
                                    lease=update["lease"], key_lease=update["key_lease"])
@@ -2687,11 +2702,39 @@ class Pipeline:
         instances = sorted({n for piece in pending["pieces"] for n in matter_instances_in(piece, pending["zone"])})
         if not instances:
             return None
-        mesh = self._mesh_endpoints(plain)
-        client = (self.decryptor.short_to_ext.get(mesh[0]) if mesh
-                  else ext or self.decryptor.short_to_ext.get(short or ""))
+        client = self._registrant(None, plain, pending.get("sip"), ext, short)
         return {"kind": "request", "id": pending["id"], "rcode": None, "client": client,
                 "server": self._aloc_label(pending["dip"]), "instances": instances, "partial": True}
+
+    SRP_SOURCES_MAX = 512
+
+    def _registrant(self, host: str | None, plain: bytes, sip: bytes | None,
+                    ext: str | None, short: str | None) -> str | None:
+        """The device a registration is from. The frame's MAC source is only
+        this hop's sender, and a router forwards its children's registrations
+        to the SRP server one hop away with no mesh header: on 2026-09-23 two
+        climate sensors' registrations were credited to their parent routers,
+        and when the sensors rotated the routers were named as the devices
+        that had. A Matter device's SRP host name is its own extended address,
+        so a registration heard whole names its sender; one read in part from
+        a router is that router's only if its IPv6 source is one the router's
+        own whole registrations used. A child forwards nothing, so its MAC
+        source stands."""
+        who = (host or "").lower()
+        if _EXT_ADDR.match(who) and who in self.seen.table:
+            if sip:
+                if len(self._srp_sources) >= self.SRP_SOURCES_MAX:
+                    self._srp_sources.pop(next(iter(self._srp_sources)))
+                self._srp_sources[bytes(sip)] = who
+            return who
+        mesh = self._mesh_endpoints(plain)
+        if mesh:
+            return self.decryptor.short_to_ext.get(mesh[0])
+        sender = ext or self.decryptor.short_to_ext.get(short or "")
+        rloc16 = short or ((self.seen.table.get(sender) or {}).get("rloc16") if sender else None)
+        if (rloc16_role(rloc16) or {}).get("role") != "router":
+            return sender
+        return self._srp_sources.get(bytes(sip)) if sip else None
 
     @staticmethod
     def _mesh_endpoints(plain: bytes) -> tuple[str, str] | None:
@@ -2741,12 +2784,23 @@ class Pipeline:
         for inst in instances:
             holder = self._matter_owner.get(inst)
             self._matter_owner[inst] = (client, ts)
-            if holder is not None and holder[0] != client and holder[1] <= ts and previous is None:
+            if (holder is not None and holder[0] != client and holder[1] <= ts and previous is None
+                    and not self._heard_since_start(holder[0], client)):
                 previous = (holder[0], inst.split(".")[0])
         if previous is not None:
             self._device_rotated(previous[0], client, ts,
                                  f"its SRP registration carries the Matter service name {previous[1]} "
                                  f"that {previous[0]} registered")
+
+    def _heard_since_start(self, old: str, new: str) -> bool:
+        """Whether ``old`` was on air after ``new`` began: two devices, not
+        one that rebooted under a new address. A rotation is a reboot, so the
+        old address falls silent before the new one's first frame."""
+        old_row, new_row = self.seen.table.get(old), self.seen.table.get(new)
+        if old_row is None or new_row is None:
+            return False
+        started = max(new_row.get("first_seen", 0.0), new_row.get("resumed_ts", 0.0))
+        return old_row.get("last_seen", 0.0) > started
 
     def _device_rotated(self, previous: str, addr: str, now: float, evidence: str) -> str | None:
         """``addr`` is the device that was ``previous``. The new address
@@ -2783,6 +2837,26 @@ class Pipeline:
                              + (f"Named from its entry; confirm with: {fix}" if name
                                 else f"Not in devices.json: {fix}")))
         return name
+
+    def _withdraw_rotations(self, previous: str, ts: float) -> None:
+        """``previous`` sent a frame under its own extended address after a
+        rotation said the device had left it: nothing moved. The address it
+        was said to have moved to loses the name it was lent, and the
+        rotation is withdrawn out loud, since its notice named the wrong
+        device. Only a frame carrying the extended address counts: a short
+        address can be one the parent has since handed to another child."""
+        for addr in self.names.rotated_from(previous):
+            rec = self.names.rotations.get(addr) or {}
+            if (rec.get("ts") or 0.0) >= ts:
+                continue
+            self.names.withdraw_rotation(addr)
+            name = rec.get("name")
+            label = name or previous
+            self._emit("device_address_change_withdrawn", "notice", ts, addr=addr, name=self.names.name(addr),
+                       previous=previous, previous_name=name, evidence=rec.get("evidence"),
+                       note=(f"{label} is still on air at {previous}, so {addr} is not {label} under a new "
+                             f"address: the device_address_changed that said so is withdrawn, and {addr} "
+                             "no longer carries the name"))
 
     def _retire_rotated(self, previous: str, addr: str, name: str | None, now: float) -> None:
         """rotated_to on the old row: out of the quiet, link and starvation

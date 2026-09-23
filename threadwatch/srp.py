@@ -129,7 +129,7 @@ class Reassembler:
                         zone = None
                     if zone:
                         rec["update"] = {"id": struct.unpack(">H", payload[:2])[0], "zone": zone.lower(),
-                                         "dip": dip}
+                                         "sip": sip, "dip": dip}
         else:
             if rec is None or rec["size"] != size or ts - rec["ts"] > self.HOLD_S:
                 self.pending.pop(key, None)

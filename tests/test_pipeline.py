@@ -5700,6 +5700,7 @@ class SrpRefusedTest(unittest.TestCase):
         the child's own IPv6 source carried inline (context-based, as the
         mesh-local and OMR addresses are)."""
         import struct
+
         from tests.frames import next_counter, secured_psdu
         from tests.test_srp import lowpan_fragments, srp_update
         from threadwatch.pcap import parse_frame

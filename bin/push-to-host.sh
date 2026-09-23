@@ -26,6 +26,14 @@ set -euo pipefail
 
 TARGET="${1:?usage: push-to-host.sh user@host [--push-only]}"
 MODE="${2:-}"
+# The host comes first. An option in its place (the host left out) reached
+# rsync as the destination "--push-only:threadwatch/", a usage error from
+# rsync instead of from here.
+case "$TARGET" in
+  -*)
+    echo "usage: push-to-host.sh user@host [--push-only] (the host comes first, not '$TARGET'); nothing pushed" >&2
+    exit 1 ;;
+esac
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 DEST_DIR="${DEST_DIR:-threadwatch}"   # path on the host, relative to $HOME
 # Checked before anything runs. It goes verbatim into an rsync --delete

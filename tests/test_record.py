@@ -210,6 +210,56 @@ class StartupFailureTest(unittest.TestCase):
             self.assertEqual(len(retries), 1, logged)
             self.assertIn("No route to host", retries[0])
 
+    def test_detach_releases_the_vendor_consumer_so_the_reader_thread_ends(self):
+        # The watchdog detaches a radio that hears nothing while another
+        # hears, and re-attaches it a minute later. _stop() alone left the
+        # vendor's consumer in queue.get() holding the FIFO's write end and
+        # the reader blocked on it: two threads and their descriptors per
+        # cycle, until the process ran out of descriptors.
+        import os
+        import queue
+        from unittest import mock
+
+        from threadwatch import record
+        from threadwatch.pcap import DLT_TAP, PcapWriter
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "vendor"))    # as run_record does
+        with tempfile.TemporaryDirectory() as tmp:
+            radio = record.Radio("annex", "BB", "", None, Path(tmp) / "annex.fifo", lambda msg: None)
+            os.mkfifo(radio.fifo)
+            radio._owns_fifo = True
+            packets = queue.Queue()
+            received = []
+
+            def consumer():                   # the vendor's: header written, then waiting for packets
+                with open(radio.fifo, "wb") as fifo:
+                    PcapWriter(fifo, DLT_TAP)
+                    fifo.flush()
+                    received.append(packets.get(timeout=5))
+
+            stopped = mock.Mock()
+            sniffer = SimpleNamespace(thread=threading.Thread(target=consumer, daemon=True),
+                                      queue=packets, _stop=stopped)
+            radio.sniffer = sniffer
+            sniffer.thread.start()
+            frames = queue.Queue()
+            radio.thread = threading.Thread(target=radio._read, args=(frames, sniffer), daemon=True)
+            radio.thread.start()
+            time.sleep(0.2)
+            self.assertTrue(radio.thread.is_alive())
+            self.assertTrue(sniffer.thread.is_alive())
+
+            radio.detach(threading.Lock(), 5.0, "silent while radio hub heard 12 frames")
+            sniffer.thread.join(2)
+            radio.thread.join(2)
+            self.assertFalse(sniffer.thread.is_alive())
+            self.assertFalse(radio.thread.is_alive())
+            self.assertEqual(type(received[0]).__name__, "ExitEvent")
+            stopped.assert_called_once()
+            self.assertEqual(frames.get(timeout=1)[1], None)      # the reader's end marker
+            self.assertFalse(radio.fifo.exists())
+            self.assertIsNone(radio.sniffer)
+            self.assertEqual(radio.state, "down")
+
     def test_later_attach_failure_wakes_a_non_daemon_worker_stuck_opening_its_fifo(self):
         import os
         import queue

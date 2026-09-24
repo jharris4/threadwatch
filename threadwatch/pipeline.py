@@ -2663,7 +2663,10 @@ class Pipeline:
                 src_for_mle = ext or self.decryptor.short_to_ext.get(short or "")
                 # bind_short=False: the mapping this message asserts is
                 # applied in _apply_mle, once its counter has been checked.
-                info = self.decryptor.parse_mle(payload, src_for_mle, sip, dip, bind_short=False)
+                # A FRAG1 on its own is a message cut short: its MIC cannot
+                # check, and the FRAGN that completes it is read whole.
+                if not partial:
+                    info = self.decryptor.parse_mle(payload, src_for_mle, sip, dip, bind_short=False)
         except (struct.error, IndexError, ValueError):
             self.decryptor.stats["parse_failed"] += 1
             return None, None, (), None

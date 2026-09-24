@@ -5043,6 +5043,45 @@ def mle_frame(ts, src_ext, sequence, body, mle_counter=None, mac_counter=None):
     return parse_frame(ts, psdu, 230)
 
 
+class FragmentedMleTest(unittest.TestCase):
+    """An MLE message too big for one frame (a Data Response carrying
+    Network Data) is decrypted once, when its last fragment is in; the
+    FRAG1 alone is not a failed decryption."""
+
+    def test_the_frag1_alone_is_neither_decrypted_nor_failed(self):
+        import struct
+
+        from cryptography.hazmat.primitives.ciphers.aead import AESCCM
+
+        from tests.frames import KEY, next_counter, secured_psdu
+        from tests.test_identity import ALL_NODES, LINK_LOCAL, lowpan_udp
+        from tests.test_srp import lowpan_fragments
+        from threadwatch.crypto import derive_keys
+        from threadwatch.pcap import parse_frame
+        # Data Response: Source Address, Leader Data, 160 bytes of Network Data.
+        body = (bytes([8, 0, 2, 0x04, 0x00, 11, 8]) + struct.pack(">LBBBB", 0xCAFEF00D, 64, 1, 1, 5)
+                + bytes([12, 160]) + bytes(160))
+        counter = next_counter(ROUTER)
+        aux = bytes([5 | (2 << 3)]) + struct.pack("<L", counter) + struct.pack(">L", 0) + bytes([1])
+        mle_key, _mac = derive_keys(KEY, 0)
+        nonce = bytes.fromhex(ROUTER) + struct.pack(">L", counter) + bytes([5])
+        src_ip = LINK_LOCAL + Decryptor._iid_from_ext(ROUTER)
+        msg = bytes([0]) + aux + AESCCM(mle_key, tag_length=4).encrypt(nonce, body, src_ip + ALL_NODES + aux)
+        frags = lowpan_fragments(lowpan_udp(19788, 19788, msg), 10, first_chunk=64, chunk=128)
+        self.assertEqual(len(frags), 2)
+        with tempfile.TemporaryDirectory() as tmp:
+            dec = Decryptor(network_key=KEY)
+            pipe = Pipeline(Config(data_dir=Path(tmp), devices_path=Path(tmp) / "devices.json"),
+                            NullEventLog(), dec, ephemeral=True)
+            got = []
+            for i, frag in enumerate(frags):
+                c = counter if i == 0 else next_counter(ROUTER)
+                psdu = secured_psdu(ROUTER, c, dst="ffff", seq=i, payload=frag)
+                pipe.ingest(parse_frame(1_700_000_000.0 + i * 0.01, psdu, 230))
+                got.append((dec.stats["mle_decrypted"], dec.stats["mle_failed"]))
+        self.assertEqual(got, [(0, 0), (1, 0)])
+
+
 def child_id_request(link_counter, mle_counter):
     """An MLE Child ID Request body advertising the two frame counters."""
     import struct

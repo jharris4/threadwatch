@@ -580,13 +580,22 @@ class Pipeline:
                 if row.get("rotated_to"):
                     continue          # an Apple hub's old address: retired, not quiet
                 if not self._is_quiet(addr, row, now):
-                    row.pop("quiet_reported_ts", None)
+                    announced_at = row.pop("quiet_reported_ts", None)
                     if row.pop("quiet_reported", None):
                         # Heard again after its announced silence, but the
                         # recorder died before saying so: close the silence
-                        # at the moment it was actually heard.
+                        # at the moment it was actually heard. Not heard
+                        # since the announcement (a parent vouched for it,
+                        # or a frame this flag missed), that moment is
+                        # before the device_quiet record, and a return
+                        # logged ahead of its silence closed nothing: the
+                        # day pages showed two devices still quiet for days
+                        # while they were answering. Such a return is dated
+                        # now, when this start found it.
                         returned = max(self.seen.table[a]["last_seen"]
                                        for a in self.names.entry_addresses_of(addr) if a in self.seen.table)
+                        if announced_at is not None and returned <= announced_at:
+                            returned = now
                         self._emit("device_returned", "notice", returned,
                                    addr=addr, name=self.names.name(addr))
                         announced += 1

@@ -1464,6 +1464,24 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertNotIn("quiet_reported", pipe2.seen.table[SENSOR])
         self.assertEqual(pipe2.quiet_reported, set())
 
+    def test_restart_dates_a_vouched_return_after_the_silence_it_closes(self):
+        # Vouched for after the announcement but never heard again: its
+        # last frame is older than the device_quiet record, and a return
+        # dated there sorted ahead of the silence and closed nothing.
+        now = time.time()
+        pipe = self._pipe()
+        pipe.ingest(frame(now - 3 * 3600, SENSOR))
+        pipe.periodic(now - 3600)                   # announced quiet
+        announced = pipe.seen.table[SENSOR]["quiet_reported_ts"]
+        pipe.seen.table[SENSOR]["vouched_ts"] = now - 60     # its parent answered it
+        pipe.seen.save()
+        pipe2 = self._pipe()
+        returned = [r for r in pipe2.events.records if r["event"] == "device_returned"]
+        self.assertEqual([r["addr"] for r in returned], [SENSOR])
+        self.assertGreater(returned[0]["ts"], announced)
+        self.assertNotIn("quiet_reported", pipe2.seen.table[SENSOR])
+        self.assertEqual(pipe2.quiet_reported, set())
+
     def test_storm_event_carries_period_onsets_and_a_note(self):
         pipe = self._pipe()
         pipe.detector.storm_active = True

@@ -166,6 +166,50 @@ class StartupFailureTest(unittest.TestCase):
             radio.accept_thread.join(2)
             self.assertFalse(radio.sniffer_alive())
 
+    def test_a_transient_accept_error_does_not_end_the_relay_listener(self):
+        # accept(2) hands over the new connection's pending network error
+        # (no route, aborted, out of descriptors) and says to retry. Read
+        # as "the listener was closed", the accept thread returned and the
+        # listener stayed open with nobody accepting: the relay connected
+        # and sent into the backlog while the radio stayed missing for good.
+        import errno
+        import queue
+        import socket
+        from unittest import mock
+
+        from threadwatch import record
+        from threadwatch.relay import handshake_line
+        failures = [OSError(errno.EHOSTUNREACH, "No route to host")]
+
+        class FlakyListener(socket.socket):
+            def accept(self):
+                if failures:
+                    raise failures.pop(0)
+                return super().accept()
+
+        logged = []
+        with tempfile.TemporaryDirectory() as tmp:
+            radio = record.Radio("annex", None, "", None, Path(tmp) / "annex.fifo", logged.append,
+                                 source="tcp", listen="127.0.0.1:0")
+            q = queue.Queue()
+            with mock.patch.object(record.socket, "socket", FlakyListener):
+                radio._listen(q)
+            try:
+                port = radio.listener.getsockname()[1]
+                with socket.create_connection(("127.0.0.1", port), timeout=2) as client:
+                    client.sendall(handshake_line("annex", None, 25))
+                    label, kind, _, (conn, _peer, hs) = q.get(timeout=5)
+                self.assertEqual((label, kind, hs["label"]), ("annex", "connect", "annex"))
+                conn.close()
+                self.assertTrue(radio.accept_thread.is_alive())
+            finally:
+                radio.close_listener()
+            radio.accept_thread.join(2)
+            self.assertFalse(radio.accept_thread.is_alive())
+            retries = [m for m in logged if "accept failed, retrying" in m]
+            self.assertEqual(len(retries), 1, logged)
+            self.assertIn("No route to host", retries[0])
+
     def test_later_attach_failure_wakes_a_non_daemon_worker_stuck_opening_its_fifo(self):
         import os
         import queue

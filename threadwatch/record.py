@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import queue
@@ -425,6 +426,7 @@ class Radio:
         self.sniffer = None
         self.thread: threading.Thread | None = None
         self.accept_thread: threading.Thread | None = None
+        self.listener_closed = threading.Event()
         self.clock = RadioClock()
         self.writer: RingWriter | None = None
         self.dlt: int | None = None
@@ -495,13 +497,28 @@ class Radio:
         self.listener.listen(2)
         self.port = f"tcp {self.listen}"
         listener = self.listener
+        closed = self.listener_closed = threading.Event()
 
         def accept():
+            warned = False
             while True:
                 try:
                     conn, addr = listener.accept()
-                except OSError:
-                    return                        # the listener was closed: the run is over
+                except OSError as exc:
+                    if self.listener is not listener or exc.errno in (errno.EBADF, errno.EINVAL):
+                        return                    # the listener was closed: the run is over
+                    # accept(2) also hands over the new connection's own
+                    # pending network errors (EHOSTUNREACH, ECONNABORTED,
+                    # EMFILE, ...) and says to retry: the listener is still
+                    # open, and a relay that gives up on accepting would be
+                    # missing for the rest of the run.
+                    if not warned:
+                        self.log(f"{self.describe()}: accept failed, retrying: {exc}")
+                        warned = True
+                    if closed.wait(0.5):
+                        return
+                    continue
+                warned = False
                 peer = f"{addr[0]}:{addr[1]}"
                 try:
                     conn.settimeout(10.0)
@@ -572,13 +589,21 @@ class Radio:
         self.conn = None
 
     def close_listener(self) -> None:
+        """Close the listener and end its accept thread: the thread may be
+        waiting out an accept() error, so it is told and briefly joined,
+        or the start-up unwind would take it for a capture worker still
+        alive and exit for a supervisor restart."""
         if self.listener is not None:
             listener, self.listener = self.listener, None
+            self.listener_closed.set()
             try:
                 listener.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
             listener.close()
+            thread = self.accept_thread
+            if thread is not None and thread is not threading.current_thread():
+                thread.join(timeout=1.0)
 
     def abort_start(self) -> None:
         """Unwind even a sniffer whose FIFO reader failed to start.

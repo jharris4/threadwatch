@@ -467,6 +467,62 @@ class PanCompressionTest(unittest.TestCase):
         self.assertEqual((f.dst_pan, f.dst, f.src_pan, f.src), (0x4e21, "cc00", 0x58bc, "3c1a"))
 
 
+class FrameVersion2015Test(unittest.TestCase):
+    """802.15.4-2015 (frame version 2) lays the header out by Table 7-2:
+    between two extended addresses PAN ID compression drops the
+    destination PAN too, the sequence number may be suppressed, and with
+    IE Present (FCF bit 9) header IEs sit between the addresses and the
+    payload. OpenThread sends these to and from CSL receivers. A 2006
+    parser read a source PAN that was not there, so the source address
+    came out two bytes late and its tail was counted as a foreign PAN."""
+
+    DST = bytes(range(0x10, 0x18))
+    SRC = bytes(range(0xa0, 0xa8))
+    V2 = 2 << 12
+    CSL_IE = struct.pack("<H", 4 | (0x1a << 7)) + b"\x01\x02\x03\x04"   # element 0x1a, 4 bytes
+    HT2 = struct.pack("<H", 0x7f << 7)
+
+    def _frame(self, fcf, body, seq=b"\x07"):
+        from threadwatch.pcap import parse_frame
+        return parse_frame(0.0, struct.pack("<H", fcf) + seq + body, DLT_NOFCS)
+
+    def test_two_extended_addresses_under_compression_carry_no_pan_at_all(self):
+        f = self._frame(0x0001 | 0x0040 | self.V2 | (3 << 10) | (3 << 14), self.DST + self.SRC)
+        self.assertEqual((f.dst_pan, f.dst, f.src_pan, f.src),
+                         (None, "1716151413121110", None, "a7a6a5a4a3a2a1a0"))
+
+    def test_two_extended_addresses_without_compression_share_the_one_pan_on_the_wire(self):
+        f = self._frame(0x0001 | self.V2 | (3 << 10) | (3 << 14), struct.pack("<H", 0x4e21) + self.DST + self.SRC)
+        self.assertEqual((f.dst_pan, f.dst, f.src_pan, f.src),
+                         (0x4e21, "1716151413121110", 0x4e21, "a7a6a5a4a3a2a1a0"))
+
+    def test_short_and_extended_still_read_as_in_2006(self):
+        f = self._frame(0x0001 | 0x0040 | self.V2 | (2 << 10) | (3 << 14),
+                        struct.pack("<H", 0x4e21) + b"\x00\xcc" + self.SRC)
+        self.assertEqual((f.dst_pan, f.dst, f.src_pan, f.src), (0x4e21, "cc00", 0x4e21, "a7a6a5a4a3a2a1a0"))
+
+    def test_header_ies_are_stepped_over_to_the_command_id_and_the_sequence_may_be_suppressed(self):
+        fcf = 0x0003 | 0x0040 | 0x0100 | 0x0200 | self.V2 | (2 << 10) | (3 << 14)
+        body = struct.pack("<H", 0x4e21) + b"\x00\xcc" + self.SRC + self.CSL_IE + self.HT2 + b"\x04"
+        f = self._frame(fcf, body, seq=b"")
+        self.assertEqual((f.seq, f.src, f.cmd), (None, "a7a6a5a4a3a2a1a0", 4))
+
+    def test_a_frame_that_is_only_ies_has_no_command_and_does_not_raise(self):
+        fcf = 0x0003 | 0x0040 | 0x0200 | self.V2 | (2 << 10) | (3 << 14)
+        f = self._frame(fcf, struct.pack("<H", 0x4e21) + b"\x00\xcc" + self.SRC + self.CSL_IE)
+        self.assertEqual((f.src, f.cmd), ("a7a6a5a4a3a2a1a0", None))
+
+    def test_payload_offset_skips_payload_ies_after_a_header_termination_1(self):
+        from threadwatch.pcap import mac_payload_offset
+        ht1 = struct.pack("<H", 0x7e << 7)
+        payload_ie = struct.pack("<H", 3 | (0x1 << 11) | 0x8000) + b"\xaa\xbb\xcc"
+        payload_term = struct.pack("<H", (0xf << 11) | 0x8000)
+        fcf = 0x0001 | 0x0040 | 0x0200 | self.V2 | (2 << 10) | (3 << 14)
+        psdu = struct.pack("<H", fcf) + b"\x07" + struct.pack("<H", 0x4e21) + b"\x00\xcc" + self.SRC
+        psdu += self.CSL_IE + ht1 + payload_ie + payload_term + b"\x7f\x33"
+        self.assertEqual(psdu[mac_payload_offset(psdu):], b"\x7f\x33")
+
+
 class FormatRejectionTest(unittest.TestCase):
     """What the reader and complete_length make of a file that is not a
     pcap of ours: a pcapng, a nanosecond pcap, a file cut inside the

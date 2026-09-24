@@ -28,6 +28,8 @@ from dataclasses import dataclass, field
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESCCM
 
+from . import pcap
+
 MLE_UDP_PORT = 19788
 
 MLE_COMMANDS = {
@@ -159,7 +161,7 @@ class Decryptor:
             return None, None, None
         if sec is False:
             self.stats["plaintext"] += 1
-            return psdu[self._mac_header_len(psdu):], None, None
+            return psdu[pcap.mac_payload_offset(psdu):], None, None
         ext_hex = src_ext_hex or (self.short_to_ext.get(src_short_hex or "") if src_short_hex else None)
         if not ext_hex:
             self.stats["mac_no_ext_addr"] += 1
@@ -215,12 +217,21 @@ class Decryptor:
         if key_mode != 1 or sec_level != 5:   # Thread uses ENC-MIC-32, key index mode
             return None
         open_len = hdr_len + aux_len
+        version_2015 = (fcf >> 12) & 0x3 == 2
+        # 802.15.4-2015 9.3.5: header IEs follow the aux header and are
+        # authenticated, not encrypted. A CSL receiver (Thread 1.2 sleepy
+        # device) puts a CSL IE in every frame it sends, polls included;
+        # taken for ciphertext, all of them failed their MIC.
+        if fcf & 0x0200:
+            open_len, _payload_ies = pcap.skip_header_ies(psdu, open_len)
         # 802.15.4-2006 7.5.8.2.3: for MAC command frames the command
         # identifier is authenticated but not encrypted, so it belongs to
         # the a-data and a data request's encrypted payload is empty (just
         # the MIC follows). Polls are the bulk of what a sleepy end device
         # sends, so getting this right is what identifies those devices.
-        if (fcf & 0x7) == 3:
+        # A version 2 command frame encrypts its command identifier with
+        # the rest of the payload (OpenThread mac_frame.cpp does the same).
+        if (fcf & 0x7) == 3 and not version_2015:
             open_len += 1
         secret = psdu[open_len:]
         if len(secret) < 4:
@@ -267,18 +278,9 @@ class Decryptor:
 
     @staticmethod
     def _mac_header_len(p: bytes) -> int | None:
-        fcf = struct.unpack("<H", p[0:2])[0]
-        pan_comp = bool(fcf & 0x0040)
-        dst_mode = (fcf >> 10) & 0x3
-        src_mode = (fcf >> 14) & 0x3
-        off = 3
-        if dst_mode in (2, 3):
-            off += 2 + (2 if dst_mode == 2 else 8)
-        if src_mode in (2, 3):
-            if not (pan_comp and dst_mode in (2, 3)):
-                off += 2
-            off += 2 if src_mode == 2 else 8
-        return off if off <= len(p) else None
+        """Where the auxiliary security header starts: past the addressing
+        fields, laid out by frame version (pcap.walk_mac_header)."""
+        return pcap.mac_header_len(p)
 
     # ------------------------------------------------------- 6LoWPAN (lite)
 

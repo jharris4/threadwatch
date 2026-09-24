@@ -154,6 +154,48 @@ if __name__ == "__main__":
     unittest.main()
 
 
+def mac_2015(src_ext: str, counter: int, payload: bytes, *, ftype: int = 1, ies: bytes = b"",
+             sequence: int = 0) -> bytes:
+    """A frame version 2 (802.15.4-2015) frame secured as Thread secures
+    it, with header IEs after the aux header when given. The a-data is
+    everything up to the end of the IEs; a command frame's command id is
+    the first encrypted byte."""
+    fcf = ftype | 0x0008 | 0x0040 | (2 << 10) | (2 << 12) | (3 << 14) | (0x0200 if ies else 0)
+    header = struct.pack("<HBH", fcf, 7, 0x4e21) + b"\x00\xcc" + bytes.fromhex(src_ext)[::-1]
+    aux = bytes([0x0D]) + struct.pack("<L", counter) + bytes([(sequence & 0x7f) + 1])
+    open_part = header + aux + ies
+    _mle, mac_key = derive_keys(KEY, sequence)
+    nonce = bytes.fromhex(src_ext) + struct.pack(">L", counter) + bytes([5])
+    return open_part + AESCCM(mac_key, tag_length=4).encrypt(nonce, payload, open_part)
+
+
+class Version2015MacTest(unittest.TestCase):
+    """802.15.4-2015 9.3.5: header IEs are authenticated, not encrypted,
+    and a version 2 command frame encrypts its command id. A CSL receiver
+    puts a CSL IE in every frame it sends, so before this every one of
+    its frames failed its MIC and the device read as silent."""
+
+    CSL_IE = struct.pack("<H", 4 | (0x1a << 7)) + b"\x10\x00\x40\x00" + struct.pack("<H", 0x7f << 7)
+
+    def test_a_secured_frame_with_a_csl_ie_decrypts(self):
+        d = Decryptor(network_key=KEY)
+        plain, counter, seq = d.decrypt_frame_counter(mac_2015(SED, 9, b"\x7f\x33\xf0", ies=self.CSL_IE), SED, None)
+        self.assertEqual((plain, counter, seq), (b"\x7f\x33\xf0", 9, 0))
+        self.assertEqual((d.stats["mac_decrypted"], d.stats["mac_failed"]), (1, 0))
+
+    def test_a_version_2_poll_has_its_command_id_under_the_cipher(self):
+        d = Decryptor(network_key=KEY)
+        plain = d.decrypt_frame_counter(mac_2015(SED, 10, b"\x04", ftype=3, ies=self.CSL_IE), SED, None)[0]
+        self.assertEqual(plain, b"\x04")
+        self.assertEqual(d.stats["mac_decrypted"], 1)
+
+    def test_an_unsecured_version_2_frame_yields_the_payload_after_its_ies(self):
+        d = Decryptor(network_key=KEY)
+        fcf = 1 | 0x0040 | 0x0200 | (2 << 12) | (2 << 10) | (3 << 14)
+        psdu = struct.pack("<HBH", fcf, 7, 0x4e21) + b"\x00\xcc" + bytes.fromhex(SED)[::-1] + self.CSL_IE + b"\x41\x42"
+        self.assertEqual(d.decrypt_frame_counter(psdu, SED, None), (b"\x41\x42", None, None))
+
+
 class FrameCounterTlvTest(unittest.TestCase):
     def test_link_and_mle_frame_counter_tlvs_are_read(self):
         d = Decryptor(network_key=KEY)

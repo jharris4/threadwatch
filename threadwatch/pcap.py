@@ -419,18 +419,51 @@ def _addr_hex(b: bytes) -> str:
     return b[::-1].hex()  # 802.15.4 addresses are little-endian on air
 
 
-def _parse_mac(f: Frame) -> None:
-    p = f.psdu
-    if len(p) < 3:
-        return
+class _Sink:
+    """Somewhere for walk_mac_header to put address fields when the caller
+    only wants the offset (the decryptor measuring a header)."""
+    __slots__ = ("dst_pan", "dst", "src_pan", "src")
+
+    def __init__(self):
+        self.dst_pan = self.dst = self.src_pan = self.src = None
+
+
+def walk_mac_header(p: bytes, f) -> int:
+    """Read the addressing fields of the MAC header into f (dst_pan, dst,
+    src_pan, src) and return the offset just past them: where the
+    auxiliary security header starts on a secured frame, the header IEs
+    or payload on an unsecured one. Raises struct.error when the frame
+    is cut inside the header; the fields read before the cut stand.
+
+    Frame versions 0 and 1 (2003/2006) carry a PAN with every present
+    address, the source's left off under PAN ID compression when there
+    is a destination. Version 2 (802.15.4-2015 Table 7-2) also suppresses
+    the destination PAN between two extended addresses, and with no
+    address at all uses the compression bit to say a destination PAN is
+    present. A version 2 sender may suppress the sequence number too
+    (FCF bit 8). OpenThread sends version 2 to and from CSL receivers
+    (Thread 1.2 sleepy devices), so a parser that knew only 2006 read
+    those source addresses two bytes late and their tails as a PAN.
+    """
     fcf = struct.unpack("<H", p[0:2])[0]
-    f.ftype = fcf & 0x7
-    f.seq = p[2]
-    f.pending = bool(fcf & 0x0010)
     pan_comp = bool(fcf & 0x0040)
     dst_mode = (fcf >> 10) & 0x3
     src_mode = (fcf >> 14) & 0x3
-    off = 3
+    version = (fcf >> 12) & 0x3
+    off = 2 if version == 2 and fcf & 0x0100 else 3
+    dst_present, src_present = dst_mode in (2, 3), src_mode in (2, 3)
+    if version == 2:
+        if not dst_present and not src_present:
+            dst_pan_present, src_pan_present = pan_comp, False
+        elif dst_present != src_present:
+            dst_pan_present, src_pan_present = dst_present and not pan_comp, src_present and not pan_comp
+        elif dst_mode == 3 and src_mode == 3:
+            dst_pan_present, src_pan_present = not pan_comp, False
+        else:
+            dst_pan_present, src_pan_present = True, not pan_comp
+    else:
+        dst_pan_present = dst_present
+        src_pan_present = src_present and not (pan_comp and dst_present)
 
     def address(n: int) -> str:
         # A slice never raises: a frame cut short inside an extended
@@ -442,24 +475,98 @@ def _parse_mac(f: Frame) -> None:
             raise struct.error("address cut short")
         return _addr_hex(chunk)
 
+    if dst_pan_present:
+        f.dst_pan = struct.unpack("<H", p[off:off + 2])[0]
+        off += 2
+    if dst_present:
+        n = 2 if dst_mode == 2 else 8
+        f.dst = address(n)
+        off += n
+    if src_pan_present:
+        f.src_pan = struct.unpack("<H", p[off:off + 2])[0]
+        off += 2
+    elif src_present and f.dst_pan is not None:
+        f.src_pan = f.dst_pan
+    if src_present:
+        n = 2 if src_mode == 2 else 8
+        f.src = address(n)
+        off += n
+    if off > len(p):
+        raise struct.error("header cut short")
+    return off
+
+
+def mac_header_len(p: bytes) -> int | None:
+    """Offset just past the addressing fields, None when the frame is cut
+    inside them."""
     try:
-        if dst_mode in (2, 3):
-            f.dst_pan = struct.unpack("<H", p[off:off + 2])[0]
-            off += 2
-            n = 2 if dst_mode == 2 else 8
-            f.dst = address(n)
-            off += n
-        if src_mode in (2, 3):
-            if not (pan_comp and dst_mode in (2, 3)):
-                f.src_pan = struct.unpack("<H", p[off:off + 2])[0]
-                off += 2
-            elif f.dst_pan is not None:
-                f.src_pan = f.dst_pan
-            n = 2 if src_mode == 2 else 8
-            f.src = address(n)
-            off += n
-        if f.ftype == 3 and not (fcf & 0x0008) and off < len(p):
-            f.cmd = p[off]   # 0x04 data request (poll), 0x07 beacon request
+        return walk_mac_header(p, _Sink())
+    except struct.error:
+        return None
+
+
+def skip_header_ies(p: bytes, off: int) -> tuple[int, bool]:
+    """Step over the header IEs that start at off (802.15.4-2015 7.4.2):
+    the offset past them and whether a Header Termination 1 said payload
+    IEs follow. The list ends at a termination IE (HT1 0x7e, HT2 0x7f) or,
+    on a frame that is nothing but IEs, at the end of the frame."""
+    while off + 2 <= len(p):
+        ie = struct.unpack("<H", p[off:off + 2])[0]
+        off += 2 + (ie & 0x7f)
+        element = (ie >> 7) & 0xff
+        if element == 0x7f:
+            return off, False
+        if element == 0x7e:
+            return off, True
+    return min(off, len(p)), False
+
+
+def skip_payload_ies(p: bytes, off: int) -> int:
+    """Step over the payload IEs that start at off (7.4.3): the offset of
+    the MAC payload, after the Payload Termination IE (group 0xf) or at
+    the end of the frame when nothing follows the IEs."""
+    while off + 2 <= len(p):
+        ie = struct.unpack("<H", p[off:off + 2])[0]
+        off += 2 + (ie & 0x7ff)
+        if (ie >> 11) & 0xf == 0xf:
+            break
+    return min(off, len(p))
+
+
+def mac_payload_offset(p: bytes) -> int | None:
+    """Where the MAC payload of an unsecured frame starts: past the
+    addressing fields and, when FCF bit 9 says IEs are present, past the
+    header and payload IEs. None when the header is cut short. Secured
+    frames are laid out by the decryptor, which knows the aux header."""
+    off = mac_header_len(p)
+    if off is None:
+        return None
+    fcf = struct.unpack("<H", p[0:2])[0]
+    if fcf & 0x0200:
+        off, payload_ies = skip_header_ies(p, off)
+        if payload_ies:
+            off = skip_payload_ies(p, off)
+    return off
+
+
+def _parse_mac(f: Frame) -> None:
+    p = f.psdu
+    if len(p) < 3:
+        return
+    fcf = struct.unpack("<H", p[0:2])[0]
+    f.ftype = fcf & 0x7
+    if not ((fcf >> 12) & 0x3 == 2 and fcf & 0x0100):
+        f.seq = p[2]
+    f.pending = bool(fcf & 0x0010)
+    try:
+        off = walk_mac_header(p, f)
     except struct.error:
         # Truncated or non-standard header; keep what we have.
-        pass
+        return
+    if f.ftype == 3 and not (fcf & 0x0008):
+        if fcf & 0x0200:
+            off, payload_ies = skip_header_ies(p, off)
+            if payload_ies:
+                off = skip_payload_ies(p, off)
+        if off < len(p):
+            f.cmd = p[off]   # 0x04 data request (poll), 0x07 beacon request

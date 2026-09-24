@@ -25,46 +25,65 @@ def dns_name(name: str) -> bytes:
 
 
 def srp_update(dns_id: int, host: str, instances: list[str], lease: int | None = 7200,
-               key_lease: int | None = 1209600, zone: str = ZONE, compress: bool = False) -> bytes:
-    """A DNS UPDATE as an OpenThread SRP client sends it: the zone, one
-    PTR + SRV + TXT per service, the host's AAAA and KEY, and the Update
-    Lease option. ``compress`` makes every SRV target a pointer to the
-    host name's first appearance."""
-    records = []
+               key_lease: int | None = 1209600, zone: str = ZONE, plain: bool = False) -> bytes:
+    """A DNS UPDATE laid out as an OpenThread SRP client sends it (checked
+    against a registration captured on air): the zone; per service a PTR
+    whose rdata is the instance label and a pointer back to the
+    ``_matter._tcp`` before it, the fabric's sub-type PTR, a delete-all,
+    the SRV and the TXT, all owned by a pointer to that instance label;
+    then the host's delete-all, AAAA and KEY; then the Update Lease
+    option. The first SRV target writes the host name out, later mentions
+    point at it. ``plain`` writes every name out in full instead."""
+    msg = bytearray(struct.pack(">6H", dns_id, 5 << 11, 1, 0, 0, 1))
+    zone_at = len(msg)
+    msg += dns_name(zone) + struct.pack(">HH", 6, 1)
+    count = 0
+
+    def rr(owner: bytes, rtype: int, rdata: bytes, cls: int = 1, ttl: int = 7200) -> int:
+        """Appends a record; returns where its rdata starts."""
+        nonlocal count
+        msg.extend(owner + struct.pack(">HHIH", rtype, cls, ttl, len(rdata)))
+        count += 1
+        msg.extend(rdata)
+        return len(msg) - len(rdata)
+
+    def ptr(at: int) -> bytes:
+        return struct.pack(">H", 0xC000 | at)
+
+    def labels(name: str) -> bytes:
+        return dns_name(name)[:-1]
+
     host_fqdn = f"{host}.{zone}"
     host_at = None
     for inst in instances:
         fqdn = f"{inst}._matter._tcp.{zone}"
-        ptr = dns_name(fqdn)
-        records.append(dns_name(f"_matter._tcp.{zone}") + struct.pack(">HHIH", 12, 1, 7200, len(ptr)) + ptr)
-        records.append(("srv", fqdn))
-        txt = b"\x05SII=5"
-        records.append(dns_name(fqdn) + struct.pack(">HHIH", 16, 1, 7200, len(txt)) + txt)
-    aaaa = bytes(range(16))
-    records.append(dns_name(host_fqdn) + struct.pack(">HHIH", 28, 1, 7200, 16) + aaaa)
-    key = b"\x02\x00\x03\x0d" + b"\x11" * 64
-    records.append(dns_name(host_fqdn) + struct.pack(">HHIH", 25, 1, 7200, len(key)) + key)
+        if plain:
+            rr(dns_name(f"_matter._tcp.{zone}"), 12, dns_name(fqdn))
+            rr(dns_name(fqdn), 33, struct.pack(">HHH", 0, 0, 5540) + dns_name(host_fqdn))
+            rr(dns_name(fqdn), 16, b"\x05SII=5")
+            continue
+        service_at = len(msg)
+        inst_at = rr(labels("_matter._tcp") + ptr(zone_at), 12, labels(inst) + ptr(service_at))
+        rr(labels(f"_I{inst.split('-')[0]}._sub") + ptr(service_at), 12, ptr(inst_at))
+        rr(ptr(inst_at), 255, b"", cls=255, ttl=0)
+        target = ptr(host_at) if host_at is not None else labels(host) + ptr(zone_at)
+        at = rr(ptr(inst_at), 33, struct.pack(">HHH", 0, 0, 5540) + target)
+        host_at = host_at if host_at is not None else at + 6
+        rr(ptr(inst_at), 16, b"\x05SII=5")
+    if plain or host_at is None:
+        host_owner = dns_name(host_fqdn)
+    else:
+        host_owner = ptr(host_at)
+        rr(host_owner, 255, b"", cls=255, ttl=0)
+    rr(host_owner, 28, bytes(range(16)))
+    rr(host_owner, 25, b"\x02\x00\x03\x0d" + b"\x11" * 64)
     option = b""
     if lease is not None:
         data = struct.pack(">I", lease) + (struct.pack(">I", key_lease) if key_lease is not None else b"")
         option = struct.pack(">HH", srp.OPT_UPDATE_LEASE, len(data)) + data
-    opt = b"\x00" + struct.pack(">HHIH", 41, 1232, 0, len(option)) + option
-    msg = struct.pack(">6H", dns_id, 5 << 11, 1, 0, len(records), 1)
-    msg += dns_name(zone) + struct.pack(">HH", 6, 1)
-    for rec in records:
-        if isinstance(rec, tuple):
-            _kind, fqdn = rec
-            if compress and host_at is not None:
-                target = struct.pack(">H", 0xC000 | host_at)
-            else:
-                target = dns_name(host_fqdn)
-            head = dns_name(fqdn) + struct.pack(">HHIH", 33, 1, 7200, 6 + len(target))
-            if host_at is None:
-                host_at = len(msg) + len(head) + 6
-            msg += head + struct.pack(">HHH", 0, 0, 5540) + target
-        else:
-            msg += rec
-    return msg + opt
+    msg += b"\x00" + struct.pack(">HHIH", 41, 1232, 0, len(option)) + option
+    struct.pack_into(">H", msg, 8, count)
+    return bytes(msg)
 
 
 def lowpan_fragments(packet: bytes, header_len: int, first_chunk: int = 40, chunk: int = 64,
@@ -93,11 +112,12 @@ class ParseUpdateTest(unittest.TestCase):
                                              f"{FABRIC.lower()}-0000000000000067._matter._tcp.{ZONE}"],
                                "lease": 7200, "key_lease": 1209600})
 
-    def test_compressed_names_are_followed(self):
+    def test_names_written_out_in_full_are_read_too(self):
         msg = srp_update(8, "E17F3A9B2C4D5E6F", [f"{FABRIC}-0000000000000067", f"{APPLE}-00000000ABCDEF01"],
-                         compress=True)
+                         plain=True)
         got = srp.parse_update(msg)
         self.assertEqual((got["host"], len(got["instances"])), ("E17F3A9B2C4D5E6F", 2))
+        self.assertEqual(srp.matter_instances_in(msg, ZONE, 0), got["instances"])
 
     def test_a_host_only_registration_has_no_instances_and_a_lease_without_key_lease_is_read(self):
         msg = srp_update(9, "E17F3A9B2C4D5E6F", [], lease=0, key_lease=None)
@@ -174,9 +194,8 @@ class ReassemblerTest(unittest.TestCase):
             self.assertIsNone(r.add("e17f", srp.fragment(frag), None, 100.1))
             self.assertEqual((r.last_update["id"], r.last_update["zone"]), (11, ZONE))
         pieces = r.last_update["pieces"]
-        self.assertEqual(len(pieces), 2)
-        self.assertEqual(b"".join(pieces), self.msg[:40 + 2 * 64] + self.msg[40 + 3 * 64:])
-        names = sorted({n for piece in pieces for n in srp.matter_instances_in(piece, ZONE)})
+        self.assertEqual(pieces, [(0, self.msg[:40 + 2 * 64]), (40 + 3 * 64, self.msg[40 + 3 * 64:])])
+        names = sorted({n for at, piece in pieces for n in srp.matter_instances_in(piece, ZONE, at)})
         self.assertTrue(set(names) <= set(srp.parse_update(self.msg)["instances"]))
         self.assertGreaterEqual(len(names), 2)
         self.assertIsNone(r.add("e17f", srp.fragment(self.frags[1] + b"\x00"), None, 100.2))   # a stray tag
@@ -196,6 +215,23 @@ class ReassemblerTest(unittest.TestCase):
                          [f"{APPLE.lower()}-00000000abcdef01._matter._tcp.{ZONE}",
                           f"{FABRIC.lower()}-000000000000002a._matter._tcp.{ZONE}"])
         self.assertEqual(srp.matter_instances_in(b"\x21" + b"Z" * 33 + b"\x07_matter\x04_tcp", ZONE), [])
+
+    def test_instance_names_followed_by_a_pointer_are_read_where_it_can_point_back(self):
+        msg = srp_update(12, "E17F3A9B2C4D5E6F", [f"{FABRIC}-0000000000000067", f"{APPLE}-00000000ABCDEF01"])
+        self.assertNotIn(f"{FABRIC}-0000000000000067".encode() + b"\x07_matter", msg)
+        self.assertEqual(srp.matter_instances_in(msg, ZONE, 0), srp.parse_update(msg)["instances"])
+        label = b"\x21" + f"{FABRIC}-000000000000002A".encode()
+        name = f"{FABRIC.lower()}-000000000000002a._matter._tcp.{ZONE}"
+        service = b"\x07_matter\x04_tcp\xc0\x0c"
+        # Where the piece sits is unknown, or the pointer lands before it: read.
+        self.assertEqual(srp.matter_instances_in(label + b"\xc0\x26", ZONE), [name])
+        self.assertEqual(srp.matter_instances_in(b"xx" + label + b"\xc0\x26", ZONE, 100), [name])
+        # It lands on _matter._tcp inside the piece: read.
+        self.assertEqual(srp.matter_instances_in(service + label + b"\xc0\x64", ZONE, 100), [name])
+        # It lands on something else, on the label itself, or ahead: not an instance name.
+        self.assertEqual(srp.matter_instances_in(b"\x05other" + label + b"\xc0\x64", ZONE, 100), [])
+        self.assertEqual(srp.matter_instances_in(label + b"\xc0\x64", ZONE, 100), [])
+        self.assertEqual(srp.matter_instances_in(label + b"\xc1\x00", ZONE, 100), [])
 
     def test_the_table_of_partial_datagrams_is_bounded(self):
         r = srp.Reassembler()

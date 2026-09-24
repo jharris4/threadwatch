@@ -51,17 +51,30 @@ def fragment(plain: bytes) -> tuple[str, int, int, int, bytes] | None:
 
 # A ``_matter._tcp`` instance name as it sits in a DNS message the first
 # time it is written out: a 33-byte label, <16 hex>-<16 hex>, then the
-# service labels. Later mentions are compression pointers and are not
-# matched; one full mention per name is enough.
-_INSTANCE_RE = re.compile(rb"\x21([0-9A-Fa-f]{16}-[0-9A-Fa-f]{16})\x07_matter\x04_tcp")
+# service labels. OpenThread's SRP client writes it in the PTR rdata with
+# a compression pointer back to the ``_matter._tcp`` just before it, so
+# the labels follow as a pointer; later mentions are pointers to the
+# instance label and are not matched. One full mention per name is enough.
+_SERVICE = b"\x07_matter\x04_tcp"
+_INSTANCE_RE = re.compile(rb"\x21([0-9A-Fa-f]{16}-[0-9A-Fa-f]{16})(?:" + _SERVICE + rb"|([\xc0-\xff][\x00-\xff]))")
 
 
-def matter_instances_in(body: bytes, zone: str) -> list[str]:
-    """The ``_matter._tcp`` instance names written out in full in a piece
-    of a DNS message (one fragment of a registration): what a partial
-    registration still says about the device, when the sniffer missed a
-    fragment or two. Same form as parse_update's ``instances``."""
-    return sorted({f"{m.group(1).decode().lower()}._matter._tcp.{zone}" for m in _INSTANCE_RE.finditer(body)})
+def matter_instances_in(body: bytes, zone: str, at: int | None = None) -> list[str]:
+    """The ``_matter._tcp`` instance names written out in a piece of a DNS
+    message (one fragment of a registration): what a partial registration
+    still says about the device, when the sniffer missed a fragment or
+    two. ``at`` is where the piece sits in the message, when known: a
+    pointer after an instance label must then point back, and at
+    ``_matter._tcp`` when it lands inside the piece. Same form as
+    parse_update's ``instances``."""
+    names = set()
+    for m in _INSTANCE_RE.finditer(body):
+        if m.group(2) and at is not None:
+            target = (((m.group(2)[0] & 0x3F) << 8) | m.group(2)[1]) - at
+            if target >= m.start() or (target >= 0 and not body.startswith(_SERVICE, target)):
+                continue
+        names.add(f"{m.group(1).decode().lower()}._matter._tcp.{zone}")
+    return sorted(names)
 
 
 class Reassembler:
@@ -81,20 +94,20 @@ class Reassembler:
         # After add() of a FRAGN that did not complete its datagram: the
         # pending registration it belongs to ({id, zone, dip, pieces}),
         # when the FRAG1 was an SRP request; else None. ``pieces`` are
-        # the bytes heard so far, each unbroken run of adjacent fragments
-        # joined, so a name split over two fragments is read whole and
-        # nothing is read across a hole.
+        # the bytes heard so far as (offset in the message, bytes), each
+        # unbroken run of adjacent fragments joined, so a name split over
+        # two fragments is read whole and nothing is read across a hole.
         self.last_update: dict | None = None
 
     @staticmethod
-    def _runs(parts: dict[int, bytes]) -> list[bytes]:
-        runs: list[bytes] = []
+    def _runs(parts: dict[int, bytes]) -> list[tuple[int, bytes]]:
+        runs: list[tuple[int, bytes]] = []
         pos = None
         for start in sorted(parts):
             if runs and start == pos:
-                runs[-1] += parts[start]
+                runs[-1] = (runs[-1][0], runs[-1][1] + parts[start])
             else:
-                runs.append(parts[start])
+                runs.append((start, parts[start]))
             pos = start + len(parts[start])
         return runs
 

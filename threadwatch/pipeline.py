@@ -2703,7 +2703,8 @@ class Pipeline:
         pending = self._reassembly.last_update
         if pending is None:
             return None
-        instances = sorted({n for piece in pending["pieces"] for n in matter_instances_in(piece, pending["zone"])})
+        instances = sorted({n for at, piece in pending["pieces"]
+                            for n in matter_instances_in(piece, pending["zone"], at)})
         if not instances:
             return None
         client = self._registrant(None, plain, pending.get("sip"), ext, short)

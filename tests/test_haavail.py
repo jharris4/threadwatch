@@ -498,8 +498,7 @@ class RecorderAvailabilityTest(unittest.TestCase):
         self.assertEqual([o["name"] for o in pipe.ha_availability_status()["open"]], ["Front Path Motion"])
         state = json.loads((self.cfg.state_dir / "ha-availability.json").read_text())
         self.assertIn(MOTION, state["episodes"])
-        for text in json.dumps(pipe.events.records):
-            self.assertNotIn("tk_SECRET_TOKEN", text)
+        self.assertNotIn("tk_SECRET_TOKEN", json.dumps(pipe.events.records))
         # Not before poll_s.
         pipe._poll_ha_availability(now + 90)
         self.assertIsNone(pipe._haavail_thread)

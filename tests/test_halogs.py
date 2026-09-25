@@ -577,8 +577,7 @@ class RecorderLogsTest(unittest.TestCase):
         self.assertEqual(self._events(pipe, "snapshot_logs_failed"), [])
         dest = Path(saved[0]["path"])
         self.assertEqual(json.loads((dest / "ha-logs.json").read_text())["status"], "complete")
-        for text in json.dumps(pipe.events.records):
-            self.assertNotIn(TOKEN, text)
+        self.assertNotIn(TOKEN, json.dumps(pipe.events.records))
 
     def test_a_failed_fetch_is_a_notice_and_the_retry_pass_completes_it_later(self):
         self.srv.status = 503
@@ -1062,8 +1061,7 @@ class RecorderArchiveTest(unittest.TestCase):
         self.assertEqual(len(resumed), 1)
         self.assertEqual(resumed[0]["severity"], "info")
         self.assertEqual(pipe.ha_logs_archive_status()[OTBR]["pending"], [])
-        for text in json.dumps(pipe.events.records):
-            self.assertNotIn(TOKEN, text)
+        self.assertNotIn(TOKEN, json.dumps(pipe.events.records))
 
     def test_doctor_warns_when_the_archive_is_behind_and_the_status_page_shows_it(self):
         from threadwatch import doctor

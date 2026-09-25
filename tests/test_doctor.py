@@ -850,7 +850,9 @@ class OtbrCheckTest(unittest.TestCase):
         from threadwatch.config import Config
         self.tmp = tempfile.TemporaryDirectory()
         d = Path(self.tmp.name)
-        self.cfg = Config(data_dir=d / "data")
+        # config_dir too: run_doctor reads credentials.toml and loads
+        # alerts.env from it, and the default is the checkout's own config/.
+        self.cfg = Config(data_dir=d / "data", config_dir=d)
         self.cfg.state_dir.mkdir(parents=True, exist_ok=True)
         self.cfg.otbr_enabled = True
         self.cfg.otbr_ssh_target = "user@ha.example"

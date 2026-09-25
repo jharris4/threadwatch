@@ -515,8 +515,8 @@ class Tracker:
 def availability_by_addr(state_dir: Path) -> dict[str, dict]:
     """For the pages: extended address -> {name, since, paged, burst_id}
     for every device the cached map knows, ``since`` None when it is
-    available, from the state file and the map. Empty without the
-    feature (no map on disk)."""
+    available, from the state file and the map. The pages ask only with
+    the feature on (web.Site.ha_availability)."""
     state = load_state(state_dir / STATE_FILE)
     mapping = load_map(state_dir)
     out = {}

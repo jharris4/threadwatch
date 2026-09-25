@@ -332,6 +332,10 @@ class Site:
         return part.get("leader_router")
 
     def ha_availability(self) -> dict:
+        # The files outlive the feature: turned off, nothing updates them,
+        # and the last episodes would read as unavailable for ever.
+        if not self.cfg.ha_availability_enabled:
+            return {}
         from .haavail import availability_by_addr
         return availability_by_addr(self.cfg.state_dir)
 

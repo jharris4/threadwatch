@@ -395,6 +395,7 @@ class PageBranchTest(unittest.TestCase):
         })
         _st, body = self.get("/devices")
         self.assertNotIn("<th>HA</th>", body)                                          # feature off: no column
+        self.cfg.ha_availability_enabled = True
         (self.cfg.state_dir / "ha-map.json").write_text(json.dumps({
             "id-aq": {"addr": AQ.upper(), "ha_name": "AQ", "name": "Office AQ", "matched": True, "entities": ["s.aq"]},
             "id-tv": {"addr": TV2.upper(), "ha_name": "TV", "name": "Living Room Apple TV", "matched": True,
@@ -411,6 +412,10 @@ class PageBranchTest(unittest.TestCase):
         live = json.loads(self.get(f"/api/device/{AQ}")[1])["live"]
         self.assertEqual((live["ha_state"], live["ha_since"]), ("unavailable", self.now - 900))
         self.assertEqual(json.loads(self.get(f"/api/device/{TV2}")[1])["live"]["ha_state"], "available")
+        self.cfg.ha_availability_enabled = False                      # turned off: the files stay, unread
+        _st, body = self.get("/devices")
+        self.assertNotIn("<th>HA</th>", body)
+        self.assertIsNone(json.loads(self.get(f"/api/device/{AQ}")[1])["live"]["ha_state"])
 
     def test_todays_card_names_what_is_quiet_and_what_is_fading_or_says_all_is_well(self):
         self.status(updated=self.now, last_frame_age_s=3)

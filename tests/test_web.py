@@ -450,6 +450,7 @@ class PageBranchTest(unittest.TestCase):
 
     def test_a_path_that_is_not_a_page_is_a_404_in_the_shape_the_caller_asked_for(self):
         for path, body in (("/nope", b"not found"), ("/day/notaday", b"bad day"),
+                           ("/day/0001-01-01", b"bad day"), ("/day/9999-12-31", b"bad day"),
                            ("/device/%20", b"bad device"), ("/device/" + "x" * 200, b"bad device")):
             req = urllib.request.Request(self.base + path)
             with self.assertRaises(urllib.error.HTTPError) as cm:
@@ -461,6 +462,17 @@ class PageBranchTest(unittest.TestCase):
                 urllib.request.urlopen(self.base + path, timeout=5)
             self.assertEqual(cm.exception.code, 404, path)
             self.assertIn("error", json.loads(cm.exception.read()), path)
+
+    def test_a_page_bug_under_api_is_a_json_500(self):
+        from unittest import mock
+
+        from threadwatch import web
+        with mock.patch.object(web.Site, "api", side_effect=RuntimeError("boom")):
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                urllib.request.urlopen(self.base + "/api/status", timeout=5)
+        self.assertEqual(cm.exception.code, 500)
+        self.assertEqual(cm.exception.headers["Content-Type"], "application/json")
+        self.assertEqual(json.loads(cm.exception.read()), {"error": "RuntimeError: boom"})
 
 
 class DevicesByModelTest(unittest.TestCase):

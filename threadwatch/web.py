@@ -266,13 +266,16 @@ LEGEND_BY_KIND = {k: one for k, _t, one in LEGEND}
 
 
 def valid_day(day: str) -> bool:
+    """A day the pages can show: a real date whose bounds and neighbours
+    the platform's mktime can compute (not 0001-01-01 or 9999-12-31)."""
     if not DAY_RE.match(day):
         return False
     try:
-        time.strptime(day, "%Y-%m-%d")
-        return True
-    except ValueError:
+        day_bounds(day)
+        prev_day(day)
+    except (ValueError, OverflowError):
         return False
+    return True
 
 
 def esc(x) -> str:
@@ -1172,7 +1175,11 @@ def make_server(cfg, bind: str, port: int) -> ThreadingHTTPServer:
                 url = urlparse(self.path)
                 status, ctype, body = site.respond(url.path, url.query)
             except Exception as exc:  # a page bug is a 500, never a dead server
-                status, ctype, body = 500, "text/plain", f"error: {type(exc).__name__}: {exc}".encode()
+                error = f"{type(exc).__name__}: {exc}"
+                if self.path.startswith("/api/"):
+                    status, ctype, body = 500, "application/json", json.dumps({"error": error}).encode()
+                else:
+                    status, ctype, body = 500, "text/plain", f"error: {error}".encode()
             self.send_response(status)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))

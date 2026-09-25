@@ -243,9 +243,16 @@ class DoctorTest(unittest.TestCase):
         # where it does not it says so once. Pin that, so the list below is
         # the same on a laptop and on a CI runner; the branch that does
         # read systemd is covered by test_services_are_read_from_systemd.
+        # The clock and the web pages are the host's too: timedatectl's
+        # NTP answer, and whatever serves on the web port (the Pi, or a
+        # laptop running `threadwatch serve`). Their branches are covered
+        # by test_a_container_is_told_what_it_cannot_check_instead_of_warned.
         which = doctor.shutil.which
         with mock.patch.object(doctor.shutil, "which",
-                               lambda name: None if name == "systemctl" else which(name)):
+                               lambda name: None if name == "systemctl" else which(name)), \
+             mock.patch.object(doctor, "check_clock", return_value=[("ok", "clock", "NTP synchronized")]), \
+             mock.patch.object(doctor, "_in_container", return_value=False), \
+             mock.patch("urllib.request.urlopen", side_effect=ConnectionRefusedError()):
             checks = doctor.run_doctor(self.cfg, find_port=lambda: "/dev/x", now=time.time())
         self.assertEqual(self.levels(checks), [
             ("ok", "config"),               # channel and data dir
@@ -411,14 +418,15 @@ class DoctorTest(unittest.TestCase):
     def test_a_container_is_told_what_it_cannot_check_instead_of_warned(self):
         # docs/DOCKER.md promised these two warnings were expected and meant
         # nothing, which is a warning the reader can do nothing about.
+        refused = mock.patch("urllib.request.urlopen", side_effect=ConnectionRefusedError())
         with mock.patch.object(doctor, "_in_container", return_value=False), \
              mock.patch.object(doctor.shutil, "which", return_value=None), \
-             mock.patch.object(doctor.sys, "platform", "linux"):
+             mock.patch.object(doctor.sys, "platform", "linux"), refused:
             self.assertEqual(doctor.check_clock(), [("warn", "clock", "no timedatectl: NTP state not checked")])
             self.assertEqual(doctor.check_web(self.cfg)[0][0], "warn")
         with mock.patch.object(doctor, "_in_container", return_value=True), \
              mock.patch.object(doctor.shutil, "which", return_value=None), \
-             mock.patch.object(doctor.sys, "platform", "linux"):
+             mock.patch.object(doctor.sys, "platform", "linux"), refused:
             level, subject, text = doctor.check_clock()[0]
             self.assertEqual((level, subject), ("ok", "clock"))
             self.assertIn("host keeps the time", text)

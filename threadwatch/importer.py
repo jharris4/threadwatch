@@ -70,6 +70,17 @@ def _told_apart(devs: list[dict], entries: list[dict]) -> dict[str, str]:
     return names
 
 
+def _apart(label: str, addr: str, taken: set[str]) -> str:
+    """``label`` with the tail of ``addr`` appended, as many characters of
+    it as it takes to miss every name in ``taken`` (lower-cased)."""
+    name = label
+    for n in range(4, 17, 2):
+        name = f"{label} ({addr[-n:].upper()})"
+        if name.lower() not in taken:
+            break
+    return name
+
+
 def plan_inventory(entries: list[dict], found: list[dict]) -> tuple[list[dict], list[str]]:
     """Merge Home Assistant's Matter-over-Thread devices into the
     inventory. HA is the authority on their names. Returns the new list
@@ -80,7 +91,14 @@ def plan_inventory(entries: list[dict], found: list[dict]) -> tuple[list[dict], 
     the inventory's identity, and two addresses live at the same moment
     are two devices, never one that rotates. The address-by-name fallback
     below (an Apple TV known under an old address) therefore only ever
-    matches a name that is unique in HA."""
+    matches a name that is unique in HA.
+
+    The file can hold a name HA has moved on from: an entry kept by hand
+    for a device HA no longer reports, while HA gives its name to another
+    device. Renaming the second device's entry onto it would make the two
+    one rotating device everywhere a name is looked up, so the renamed
+    entry is told apart by its address the same way and the clash is
+    reported for the operator to settle in the file."""
     entries = copy.deepcopy(entries)
     changes: list[str] = []
     # One address reported for two HA devices (bridged endpoints on one
@@ -133,6 +151,10 @@ def plan_inventory(entries: list[dict], found: list[dict]) -> tuple[list[dict], 
     # renamed device then found the same entry by its own address and
     # renamed it, so both addresses ended up under one name and one
     # device lost its identity in the file --write writes.
+    # Entries no HA address matched keep their names through this pass;
+    # a rename onto one of those names would merge two devices.
+    matched = {id(by_addr[dev["addr"].upper()]) for dev in found if dev["addr"].upper() in by_addr}
+    kept = {(e.get("name") or "").strip().lower(): e for e in entries if e.get("name") and id(e) not in matched}
     named_later = []
     for dev in found:
         addr = dev["addr"].upper()
@@ -140,11 +162,19 @@ def plan_inventory(entries: list[dict], found: list[dict]) -> tuple[list[dict], 
         if entry is None:
             named_later.append(dev)
             continue
-        if (entry.get("name") or "").strip() != dev["name"]:
-            changes.append(f"rename {entry.get('name')!r} -> {dev['name']!r} ({addr})")
+        name, other = dev["name"], kept.get(dev["name"].strip().lower())
+        if other is not None:
+            taken = {(e.get("name") or "").strip().lower() for e in entries if e is not entry}
+            taken |= {d["name"].strip().lower() for d in found}
+            name = _apart(dev["name"], addr, taken)
+            changes.append(f"{dev['name']!r} ({addr}) is also the name of an entry Home Assistant does not "
+                           f"report ({', '.join(_addresses(other))}): told apart here by address; rename or "
+                           "remove one of them in the inventory")
+        if (entry.get("name") or "").strip() != name:
+            changes.append(f"rename {entry.get('name')!r} -> {name!r} ({addr})")
             by_name.pop((entry.get("name") or "").strip().lower(), None)
-            entry["name"] = dev["name"]
-            by_name[dev["name"].lower()] = entry
+            entry["name"] = name
+            by_name[name.lower()] = entry
         _model(dev, entry)
     # What no address matched: a device known under an address it has
     # rotated away from, or one nothing here has seen before.
@@ -208,10 +238,7 @@ def plan_border_routers(entries: list[dict], routers: list[dict]) -> tuple[list[
             taken = {(e.get("name") or "").strip().lower() for e in entries}
             name, why = label, ""
             if name.strip().lower() in taken:
-                for n in range(4, 17, 2):
-                    name = f"{label} ({ext[-n:]})"
-                    if name.lower() not in taken:
-                        break
+                name = _apart(label, ext, taken)
                 why = f"; {label!r} already names another border router"
             new = {"name": name, "borderRouter": host, "extendedAddress": ext}
             if model:
@@ -318,8 +345,9 @@ def _import(cfg, inventory_path: Path, *, write: bool, url: str | None, env_file
         out(f"{inventory_path.name}: {len(existing)} entries" + (":" if changes else ", nothing to change"))
         for line in changes:
             out(f"  {line}")
-        # Not every line above is an edit: a name two HA devices share is
-        # reported on every run, because the fix for it is in HA. Write only
+        # Not every line above is an edit: a name two HA devices share, or
+        # one HA has given to a second device, is reported on every run,
+        # because the fix for it is in HA or by hand in the file. Write only
         # when the entries themselves differ, so a run that has nothing to
         # say but that reminder leaves the file, and its mtime, alone.
         if planned != existing:

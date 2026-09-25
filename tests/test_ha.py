@@ -558,6 +558,43 @@ class PlanInventoryTest(unittest.TestCase):
             self.assertIn("rename 'Kitchen' -> 'Hall' (1111111111111111)", changes)
             self.assertIn("add 'Kitchen' = 2222222222222222", changes)
 
+    def test_a_rename_onto_a_name_a_kept_entry_holds_stays_two_devices(self):
+        # HA gives a device the name of an entry kept by hand for one HA
+        # no longer reports. Renamed onto it, the two entries shared a
+        # name, which every name lookup reads as one rotating device.
+        import tempfile
+
+        from threadwatch.names import DeviceNames
+        existing = [{"name": "Garage Light", "extendedAddress": "AAAAAAAAAAAAAAAA", "note": "died"},
+                    {"name": "Porch Light", "extendedAddress": "BBBBBBBBBBBBCDEF"}]
+        found = [{"name": "Garage Light", "model": None, "addr": "BBBBBBBBBBBBCDEF"}]
+        planned, changes = plan_inventory(existing, found)
+        self.assertEqual([e["name"] for e in planned], ["Garage Light", "Garage Light (CDEF)"])
+        self.assertEqual(planned[0], existing[0])
+        self.assertEqual(changes, [
+            "'Garage Light' (BBBBBBBBBBBBCDEF) is also the name of an entry Home Assistant does not report "
+            "(AAAAAAAAAAAAAAAA): told apart here by address; rename or remove one of them in the inventory",
+            "rename 'Porch Light' -> 'Garage Light (CDEF)' (BBBBBBBBBBBBCDEF)",
+        ])
+        with tempfile.TemporaryDirectory() as d:
+            inv = Path(d) / "devices.json"
+            inv.write_text(json.dumps(planned))
+            self.assertEqual(DeviceNames(inv).resolve("Garage Light")[0], ["aaaaaaaaaaaaaaaa"])
+        again, changes = plan_inventory(planned, found)
+        self.assertEqual((again, len(changes)), (planned, 1))          # only the reminder
+        # The tail grows past a name already in the file.
+        existing.append({"name": "Garage Light (CDEF)", "extendedAddress": "CCCCCCCCCCCCCCCC"})
+        planned, _ = plan_inventory(existing, found)
+        self.assertEqual(planned[1]["name"], "Garage Light (BBCDEF)")
+        # Two entries swapping names in one import collide with nothing.
+        existing = [{"name": "A", "extendedAddress": "1111111111111111"},
+                    {"name": "B", "extendedAddress": "2222222222222222"}]
+        found = [{"name": "B", "model": None, "addr": "1111111111111111"},
+                 {"name": "A", "model": None, "addr": "2222222222222222"}]
+        planned, changes = plan_inventory(existing, found)
+        self.assertEqual([e["name"] for e in planned], ["B", "A"])
+        self.assertEqual(len(changes), 2)
+
     def test_a_colon_formatted_address_is_the_same_address(self):
         # BUG-07: the loader takes 00:11:22:... but the importer matched
         # addresses as written, so HA's 001122... never found the entry and

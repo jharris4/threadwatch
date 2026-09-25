@@ -544,9 +544,11 @@ def hours_due(cfg, state: dict, slug: str, now: float) -> tuple[list[str], list[
     of the journal since they were missed, which are recorded as lost
     rather than asked for again. The catch-up starts at the hour after the
     last archived one (the recorder was down, HA was down), or at the
-    window's edge on the very first pass."""
+    window's edge on the very first pass. An hour still pending is due
+    whatever is on disk for it: a fetch that broke off part-way leaves
+    the hour pending, and the retry asks for the whole hour again."""
     entry = _slug_state(state, slug)
-    have = set(archived_hours(cfg, slug))
+    have = set(archived_hours(cfg, slug)) - set(entry["pending"])
     floor = now - cfg.ha_logs_max_hours * 3600.0
     newest_whole = hour_name(now - 3600.0 - ARCHIVE_GRACE_S)
     if hour_start(newest_whole) + 3600.0 + ARCHIVE_GRACE_S > now:
@@ -555,8 +557,8 @@ def hours_due(cfg, state: dict, slug: str, now: float) -> tuple[list[str], list[
         start = hour_start(entry["last_archived"]) + 3600.0
     else:
         start = int(floor // 3600) * 3600
-    candidates = [h for h in hours_between(start, hour_start(newest_whole) + 3600.0)
-                  if h not in have and h not in entry["lost"]]
+    span = hours_between(start, hour_start(newest_whole) + 3600.0)
+    candidates = sorted(h for h in set(span) | set(entry["pending"]) if h not in have and h not in entry["lost"])
     lost = [h for h in candidates if hour_start(h) + 3600.0 <= floor]
     due = [h for h in candidates if h not in lost]
     return due, lost
@@ -569,8 +571,10 @@ def archive_pass(cfg, now: float, settings: tuple | None, secrets=(), state: dic
     state file current. When a fetch fails the pass stops there: while
     HA is down the recorder sends one request per pass, whatever the
     backlog, and the pass runs every ARCHIVE_RETRY_S until nothing is
-    pending. Hours that roll out of the journal while pending are marked
-    lost. Returns {archived, lost, pending, failed, events, state}: the
+    pending. A fetch cut short (a read timeout, the deadline, a reset)
+    leaves nothing in the archive: the hour stays pending and is fetched
+    whole on the retry, so every file on disk is a whole hour. Hours that
+    roll out of the journal while pending are marked lost. Returns {archived, lost, pending, failed, events, state}: the
     events are ha_logs_archive_stalled (once per outage, when hours have
     been pending ARCHIVE_STALLED_S) and ha_logs_archive_resumed (once,
     when the catch-up completes), for the caller to emit."""
@@ -604,6 +608,7 @@ def archive_pass(cfg, now: float, settings: tuple | None, secrets=(), state: dic
                     entry["last_archived"] = h
                 out["archived"].append(f"{slug}/{h}")
                 continue
+            dest.unlink(missing_ok=True)                 # what arrived is not a whole hour
             pend = entry["pending"].setdefault(h, {"attempts": 0, "first_failed_ts": now})
             pend["attempts"] = int(pend.get("attempts") or 0) + 1
             pend["last_error"] = result["error"]

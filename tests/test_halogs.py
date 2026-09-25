@@ -780,6 +780,59 @@ class ArchiveTest(unittest.TestCase):
         self._pass(t + 25 * 900)
         self.assertFalse(any(rng.startswith(f"realtime={int(self.H22)}:") for _s, rng in self._requests(n)))
 
+    def test_a_fetch_cut_short_leaves_no_file_and_the_hour_is_fetched_whole_on_the_next_pass(self):
+        self._pass(self.H22 + 120)
+        # 22:00 has six lines; the server dribbles them out and the deadline
+        # passes after a few, as a read timeout or a reset during an HA
+        # restart would cut the transfer.
+        for slug in (OTBR, MATTER):
+            self.srv.lines[slug] += [(self.H22 + i * 600, f"{slug} late {i}") for i in range(1, 6)]
+        self.srv.delay_s = 0.2
+        self.cfg.ha_logs_deadline_s = 0.5
+        t = self.H22 + 3600 + 120
+        out = self._pass(t)
+        self.assertEqual(out["archived"], [])
+        self.assertEqual(out["pending"], [f"{OTBR}/20250913-22", f"{MATTER}/20250913-22"])
+        self.assertIn("deadline passed", out["failed"])
+        d = self.cfg.data_dir / "ha-logs" / OTBR
+        self.assertNotIn("20250913-22", self._hours())                   # nothing partial under a whole hour's name
+        self.assertFalse((d / "20250913-22.log.part").exists())
+        self.assertEqual(halogs.load_archive_state(self.cfg)["addons"][OTBR]["pending"]["20250913-22"]["attempts"], 1)
+        # Still cut short a quarter of an hour later: asked for again, still pending.
+        n = len(self.srv.requests)
+        out = self._pass(t + 900)
+        self.assertEqual(self._requests(n)[0], (OTBR, f"realtime={int(self.H22)}:{int(self.H22 + 3600)}"))
+        self.assertEqual(out["pending"], [f"{OTBR}/20250913-22", f"{MATTER}/20250913-22"])
+        self.assertEqual(halogs.load_archive_state(self.cfg)["addons"][OTBR]["pending"]["20250913-22"]["attempts"], 2)
+        # HA answers in full: the hour is archived whole and nothing is pending.
+        self.srv.delay_s = 0.0
+        n = len(self.srv.requests)
+        out = self._pass(t + 1800)
+        self.assertEqual(self._requests(n), [(OTBR, f"realtime={int(self.H22)}:{int(self.H22 + 3600)}"),
+                                             (MATTER, f"realtime={int(self.H22)}:{int(self.H22 + 3600)}")])
+        self.assertEqual((out["archived"], out["pending"], out["failed"]),
+                         ([f"{OTBR}/20250913-22", f"{MATTER}/20250913-22"], [], None))
+        with gzip.open(d / "20250913-22.log.gz", "rt") as fh:
+            self.assertEqual(len(fh.read().splitlines()), 6)
+        state = halogs.load_archive_state(self.cfg)
+        self.assertEqual((state["addons"][OTBR]["pending"], state["addons"][OTBR]["last_archived"], state["outage"]),
+                         ({}, "20250913-22", {}))
+
+    def test_a_pending_hour_older_than_the_last_archived_one_is_still_asked_for(self):
+        # State from before the fix: a partial 20:00 under a whole hour's
+        # name, recorded pending, while later hours went on archiving.
+        self._pass(self.H22 + 120)
+        state = halogs.load_archive_state(self.cfg)
+        state["addons"][OTBR]["pending"]["20250913-20"] = {"attempts": 3, "last_error": "timed out"}
+        halogs.save_archive_state(self.cfg, state)
+        due, lost = halogs.hours_due(self.cfg, state, OTBR, self.H22 + 3600 + 120)
+        self.assertEqual((due, lost), (["20250913-20", "20250913-22"], []))
+        n = len(self.srv.requests)
+        out = self._pass(self.H22 + 3600 + 120)
+        self.assertEqual(self._requests(n)[0], (OTBR, f"realtime={int(self.H22 - 7200)}:{int(self.H22 - 3600)}"))
+        self.assertEqual(out["archived"][:2], [f"{OTBR}/20250913-20", f"{OTBR}/20250913-22"])
+        self.assertEqual(halogs.load_archive_state(self.cfg)["addons"][OTBR]["pending"], {})
+
     def test_a_recorder_that_was_off_for_longer_than_the_window_records_the_gap_as_lost(self):
         self._pass(self.H22 + 120)
         # Twelve hours later, first pass after the outage: the six hours the

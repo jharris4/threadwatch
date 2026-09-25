@@ -5229,6 +5229,29 @@ class PollUnservedTest(unittest.TestCase):
         self.assertEqual(cause, "dropped_polls")
         self.assertIn("poll_unserved", sentence)
 
+    def test_an_episode_the_device_can_no_longer_close_is_closed_on_silence(self):
+        # Only a delivered frame closes it, and a device that has stopped
+        # polling is owed none: left open, the HA cause blames the parent.
+        from threadwatch.hacause import classify
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t = self._served_polls(pipe, 1_700_000_000.0, 5)
+        t = self._unserved_polls(pipe, t, 12)
+        self.assertEqual(len(self._events(pipe, "poll_unserved")), 1)
+        for i in range(1, 7):                            # the parent stays audible; the child does not
+            pipe.ingest(frame(t + 600 * i, ROUTER))
+            pipe.periodic(t + 600 * i)
+        served = self._events(pipe, "poll_served")
+        self.assertEqual(len(served), 1)
+        self.assertIn("stopped polling altogether", served[0]["note"])
+        row = pipe.seen.table[SENSOR]
+        self.assertNotIn("unserved", row)
+        self.assertNotIn("unserved_confirm_at", row)
+        self.assertEqual(row["unserved_closed"], served[0]["ts"])
+        self.assertFalse(pipe.devices[SENSOR].unserved)
+        self.assertNotIn(SENSOR, pipe._awaiting_delivery.values())
+        cause, _ = classify(row, None, t + 3000, t + 3600)
+        self.assertNotEqual(cause, "dropped_polls")
+
 
 class FrameCounterMismatchTest(unittest.TestCase):
     """frame_counter_mismatch: a device's accepted frames run below the

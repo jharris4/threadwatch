@@ -247,7 +247,10 @@ to 1,700 in the hour after it. The record names the parent as
 `poll_starvation`'s does, and is logged at notice, paged `[polls]
 confirm_s` later if still going (`confirmed`), demoted for a marginal
 signal or an episode that reopens within `[polls] rearm_s`, and closed
-by `poll_served` on the first frame the parent delivers. It says that the
+by `poll_served` on the first frame the parent delivers, or once the
+device has been silent past its quiet threshold (a device that stopped
+polling is owed nothing, and an episode left open would have the
+`ha_unavailable` cause blame the parent for its death). It says that the
 parent is dropping the polls, not why: read it beside `key_lag` and
 `frame_counter_mismatch` for the device, and when neither is there, the
 parent's stack has hung (its own `device_quiet` follows if its radio

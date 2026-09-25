@@ -3497,6 +3497,8 @@ class Pipeline:
                     self._close_degradation(addr, row, now, retired)
                 if row.get("starved"):
                     self._close_starvation(addr, row, now, retired)
+                if row.get("unserved"):
+                    self._close_unserved(addr, row, now, retired)
                 continue
             verdict = assess_link(row, now, self.cfg.link_drop_db, self.cfg.link_hold_s,
                                   pause_gap_s=self.quiet_threshold_s(addr))
@@ -3554,6 +3556,25 @@ class Pipeline:
                    note=("this address was retired when the device rotated: the unanswered polls "
                          "it was carrying are closed with it" if retired else
                          "the device has stopped polling altogether: the unanswered polls are "
+                         "closed here, and the silence is the story from now on"))
+
+    def _close_unserved(self, addr: str, row: dict, now: float, retired: bool) -> None:
+        """And for an announced poll_unserved: only a delivered frame closes
+        it, and a device that has stopped polling is owed none. Left open,
+        hacause would blame the parent for the device's own death."""
+        for key in ("unserved", "unserved_confirm_at", "unserved_since"):
+            row.pop(key, None)
+        row["unserved_closed"] = now
+        self.seen._dirty = True
+        stats = self.devices.get(addr)
+        if stats is not None:
+            self._clear_wait(addr, stats)
+            stats.unserved, stats.unserved_confirm_at = False, None
+            stats.unserved_polls, stats.unserved_since = 0, None
+        self._emit("poll_served", "notice", now, addr=addr, name=self.names.name(addr),
+                   note=("this address was retired when the device rotated: the undelivered polls "
+                         "it was carrying are closed with it" if retired else
+                         "the device has stopped polling altogether: the undelivered polls are "
                          "closed here, and the silence is the story from now on"))
 
     # ------------------------------------------------ snapshot on critical

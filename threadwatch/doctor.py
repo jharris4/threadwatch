@@ -673,6 +673,8 @@ def check_otbr(cfg, now: float | None = None, probe: Callable[[list[str]], dict]
             reason = next((ln.strip() for ln in result.get("output", "").splitlines() if ln.strip()),
                           result.get("error") or "")
             why = {"unreachable": "SSH did not connect: host, port, key or the add-on's authorized_keys",
+                   "no_ssh": "no ssh client on this host; a container needs openssh-client in its image "
+                             "and the key mounted (docs/DOCKER.md)",
                    "timeout": f"no answer within {otbr.TIMEOUT_S} s",
                    "unsupported": "ot-ctl did not accept the command",
                    "error": "the command ran but failed: sudo, docker or the container name",

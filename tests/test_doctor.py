@@ -912,6 +912,7 @@ class OtbrCheckTest(unittest.TestCase):
     def test_a_failed_probe_says_what_kind_of_failure(self):
         for status, output, expect in (
                 ("unreachable", "user@ha.example: Permission denied (publickey).", "authorized_keys"),
+                ("no_ssh", "", "no ssh client on this host"),
                 ("error", "sudo: a password is required", "sudo"),
                 ("timeout", "", "10 s")):
             probe = lambda argv, s=status, o=output: {"status": s, "output": o, "returncode": 1}

@@ -11,6 +11,9 @@ __pycache__/
 config/credentials.toml
 config/alerts.env
 config/ha.env
+# The [otbr] key and known_hosts a Docker host mounts into the recorder
+# container (docs/DOCKER.md, "Border router inventory").
+otbr-ssh/
 .DS_Store
 # What a deploy without a .git records as the revision it copied
 # (bin/push-to-host.sh writes it on the host, never here).

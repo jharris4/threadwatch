@@ -173,6 +173,40 @@ outside the container.
   allowlist, so config, secrets, `data/` and anything else in the
   working tree stay out without being named.
 
+## Border router inventory
+
+`[otbr]` (docs/OPERATIONS.md, "Optional OTBR inventory over SSH") runs
+`ot-ctl` on the border router over ssh, from inside the recorder
+container. The image installs `openssh-client`; the key and the host's
+known_hosts entry are yours to supply, and nothing in the container can
+create either: ssh runs with `BatchMode=yes` and
+`StrictHostKeyChecking=yes`, so an unknown host key or a missing key is a
+failed poll, not a prompt.
+
+Make a directory beside `compose.yaml`, owned by the container's uid, and
+put both in it:
+
+```bash
+mkdir -p otbr-ssh
+ssh-keygen -t ed25519 -N "" -f otbr-ssh/threadwatch_otbr -C threadwatch
+ssh-keyscan -p 2222 homeassistant.local > otbr-ssh/known_hosts
+chown -R 1000:1000 otbr-ssh && chmod 700 otbr-ssh && chmod 600 otbr-ssh/*
+```
+
+Authorize `otbr-ssh/threadwatch_otbr.pub` on the SSH add-on as
+docs/OPERATIONS.md describes, uncomment the `./otbr-ssh` line under the
+recorder's `volumes:` in `compose.yaml`, and set `ssh_identity_file =
+"~/.ssh/threadwatch_otbr"` in `config.toml` (the default): the mount lands
+on `/home/threadwatch/.ssh`, which is where `~` resolves for uid 1000. A
+different `user:` needs a matching `useradd` in the Dockerfile too, since
+ssh refuses to run as a uid with no passwd entry. Then recreate the
+container (`docker compose up -d --force-recreate recorder`) and check
+with `docker compose run --rm recorder doctor`: the `otbr` line reads
+`ot-ctl state: ...` on success. `no_ssh` there means the image predates
+this section (rebuild); `unreachable` with `Host key verification failed`
+means `known_hosts` does not hold the target, or holds it under another
+name than `ssh_target`.
+
 ## Time zone
 
 Neither container inherits the host's time zone, and a container with

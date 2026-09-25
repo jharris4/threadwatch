@@ -254,6 +254,24 @@ class InventoryTest(unittest.TestCase):
         back = run(poller, base + 9000, outcome("ok", base + 9000))
         self.assertIn("ok, all 7 commands answered (was failed)", back)
 
+    def test_no_ssh_client_is_its_own_status_and_stops_the_sample(self):
+        # python:3.12-slim ships no ssh: every command would fail the same
+        # way, and "unreachable" would send the operator to the host, the
+        # port and the key. The rest of the sample is skipped as after a
+        # connection failure.
+        result = otbr.run_command(["/nonexistent/ssh", "-T", "host", "true"])
+        self.assertEqual(result["status"], "no_ssh")
+        self.assertIn("no ssh client on this host", result["error"])
+        calls = []
+        def runner(argv):
+            calls.append(argv)
+            return {"status": "no_ssh", "output": "", "error": "no ssh client on this host: [Errno 2] ssh"}
+        sample = otbr.collect(self.cfg, runner=runner, clock=lambda: 1.0)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(sample["status"], "failed")
+        self.assertEqual([r["status"] for r in sample["commands"].values()],
+                         ["no_ssh"] + ["skipped"] * (len(otbr.COMMANDS) - 1))
+
     def test_subprocess_timeout_and_output_are_bounded(self):
         with patch("threadwatch.otbr.TIMEOUT_S", .1):
             start = time.monotonic()

@@ -70,6 +70,11 @@ def run_command(argv: list[str]) -> dict:
     started = time.monotonic()
     try:
         process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    except FileNotFoundError as exc:
+        # No ssh client on this host at all (a container image without
+        # openssh-client): nothing about the border router was tried, so
+        # not "unreachable", which reads as a host, port or key problem.
+        return {"status": "no_ssh", "output": "", "error": f"no ssh client on this host: {exc}"}
     except OSError as exc:
         return {"status": "unreachable", "output": "", "error": str(exc)}
     status = None
@@ -164,7 +169,7 @@ def collect(cfg, runner=run_command, clock=time.time) -> dict:
             values = re.findall(r"^\s*(\d+)\s*$", result.get("output", ""), re.M)
             result["value"] = int(values[0]) if len(values) == 1 else None
         sample["commands"][command] = result
-        disconnected |= result["status"] in ("unreachable", "timeout")
+        disconnected |= result["status"] in ("unreachable", "timeout", "no_ssh")
     statuses = [r["status"] for r in sample["commands"].values()]
     sample["status"] = "ok" if all(s == "ok" for s in statuses) else "partial" if "ok" in statuses else "failed"
     sample["completed_at"] = clock()

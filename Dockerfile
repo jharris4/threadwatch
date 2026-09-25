@@ -6,6 +6,12 @@
 #   docker compose up -d           # recorder + web, see compose.yaml
 #   docker compose run --rm recorder doctor
 FROM python:3.12-slim
+# openssh-client is for the optional [otbr] inventory (docs/OPERATIONS.md),
+# which runs ot-ctl on the border router over ssh. The slim image has no
+# ssh at all, so without this every poll fails before it tries the host.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends openssh-client \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
@@ -31,8 +37,10 @@ RUN if [ -n "$REVISION" ]; then printf '%s\n' "$REVISION" > /app/REVISION; fi
 # Raspberry Pi OS, Debian and most NAS images; where the host's owner is
 # someone else, set compose's `user:` and chown the two directories to
 # match (docs/DOCKER.md). Reading the dongle needs its group, which
-# compose's `group_add` supplies.
-RUN useradd --uid 1000 --user-group --no-create-home --shell /usr/sbin/nologin threadwatch
+# compose's `group_add` supplies. The home is where ssh looks for the
+# [otbr] key, known_hosts and config: compose.yaml mounts a host
+# directory over /home/threadwatch/.ssh, read-only (docs/DOCKER.md).
+RUN useradd --uid 1000 --user-group --create-home --shell /usr/sbin/nologin threadwatch
 USER threadwatch
 VOLUME ["/app/config", "/app/data"]
 EXPOSE 8080

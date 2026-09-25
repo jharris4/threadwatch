@@ -225,12 +225,12 @@ class DoctorTest(unittest.TestCase):
         env = self.d / "alerts.env"
         env.write_text("# secrets\nDOCTOR_TEST_TOKEN=abc\n")
         os.chmod(env, 0o600)
-        try:
-            checks = doctor.check_alerts(self.cfg)
-            self.assertEqual(self.levels(checks)[:2], [("ok", "alerts.env"), ("ok", "alerts")])
-            self.assertEqual(os.environ.get("DOCTOR_TEST_TOKEN"), "abc")
-        finally:
-            os.environ.pop("DOCTOR_TEST_TOKEN", None)
+        # Popped at the end, not after this check: run_doctor below loads
+        # alerts.env again.
+        self.addCleanup(os.environ.pop, "DOCTOR_TEST_TOKEN", None)
+        checks = doctor.check_alerts(self.cfg)
+        self.assertEqual(self.levels(checks)[:2], [("ok", "alerts.env"), ("ok", "alerts")])
+        self.assertEqual(os.environ.get("DOCTOR_TEST_TOKEN"), "abc")
         self.assertEqual(doctor.check_writable(self.cfg)[0][0], "ok")
         # Every verdict, not just the subject names: "each level is one of
         # the three level constants" is true by construction, so a
@@ -733,7 +733,7 @@ class MissingCryptographyTest(unittest.TestCase):
 
         builtins.__import__ = blocked
         try:
-            checks = doc.check_credentials(_cfg_with_key())
+            checks = doc.check_credentials(_cfg_with_key(self))
         finally:
             builtins.__import__ = real
         self.assertEqual([c[0] for c in checks], ["FAIL"])
@@ -755,19 +755,21 @@ class MissingCryptographyTest(unittest.TestCase):
         builtins.__import__ = blocked
         try:
             with self.assertRaises(CredentialsError):
-                load_decryptor(_cfg_with_key())
+                load_decryptor(_cfg_with_key(self))
         finally:
             builtins.__import__ = real
             if cached is not None:
                 _sys.modules["threadwatch.crypto"] = cached
 
 
-def _cfg_with_key():
+def _cfg_with_key(case):
     import tempfile
     from pathlib import Path as _P
 
     from threadwatch.config import Config
-    d = _P(tempfile.mkdtemp())
+    tmp = tempfile.TemporaryDirectory()
+    case.addCleanup(tmp.cleanup)
+    d = _P(tmp.name)
     p = d / "credentials.toml"
     p.write_text('[credentials]\nnetwork_key = "000102030405060708090a0b0c0d0e0f"\n')
     p.chmod(0o600)

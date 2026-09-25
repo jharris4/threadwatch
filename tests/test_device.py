@@ -548,8 +548,7 @@ class RunDeviceRingTest(unittest.TestCase):
         self.assertIn("none of the 2 ring files could be read", str(cm.exception))
 
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_identity import KEY, OTHER, PAN, SED, mle_message, secured_frame  # noqa: E402
+from tests.test_identity import KEY, OTHER, PAN, SED, mle_message, secured_frame  # noqa: E402
 
 
 class DeviceMleAnalysisTest(unittest.TestCase):
@@ -647,8 +646,7 @@ class DeviceMleAnalysisTest(unittest.TestCase):
         import json
         import tempfile
 
-        from test_identity import secured_ext_frame
-
+        from tests.test_identity import secured_ext_frame
         from threadwatch.config import Config
         from threadwatch.device import run_device
         from threadwatch.pcap import Frame, PcapWriter

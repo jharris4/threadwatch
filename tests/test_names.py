@@ -621,7 +621,9 @@ class MalformedInventoryTest(unittest.TestCase):
     """One bad hand-edit must not stop capture or 500 every review page."""
 
     def _names(self, doc):
-        d = Path(tempfile.mkdtemp()) / "devices.json"
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        d = Path(tmp.name) / "devices.json"
         d.write_text(doc)
         return DeviceNames(d, None)
 

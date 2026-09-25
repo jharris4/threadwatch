@@ -222,7 +222,9 @@ class StartupFailureTest(unittest.TestCase):
 
         from threadwatch import record
         from threadwatch.pcap import DLT_TAP, PcapWriter
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "vendor"))    # as run_record does
+        vendor = str(Path(__file__).resolve().parent.parent / "vendor")
+        sys.path.insert(0, vendor)                                   # as run_record does
+        self.addCleanup(sys.path.remove, vendor)
         with tempfile.TemporaryDirectory() as tmp:
             radio = record.Radio("annex", "BB", "", None, Path(tmp) / "annex.fifo", lambda msg: None)
             os.mkfifo(radio.fifo)
@@ -353,7 +355,9 @@ class VendoredSnifferTest(unittest.TestCase):
 
     def _reader(self, lines, disconnect_after):
         import sys
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "vendor"))
+        vendor = str(Path(__file__).resolve().parent.parent / "vendor")
+        sys.path.insert(0, vendor)
+        self.addCleanup(sys.path.remove, vendor)
         from nrf802154_sniffer import ExitEvent, Nrf802154Sniffer, ParseFailure, SnifferPacket
 
         class FakeSerial:

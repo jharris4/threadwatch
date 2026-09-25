@@ -86,10 +86,10 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(f["severity_index"], 2)
 
     def test_env_expansion_collects_missing(self):
-        os.environ["TW_TEST_TOKEN"] = "abc"
         missing = set()
-        out = alerts.expand_env({"h": {"Authorization": "Bearer ${TW_TEST_TOKEN}"},
-                                 "u": "${TW_NOT_SET}/x"}, missing)
+        with mock.patch.dict(os.environ, {"TW_TEST_TOKEN": "abc"}):
+            out = alerts.expand_env({"h": {"Authorization": "Bearer ${TW_TEST_TOKEN}"},
+                                     "u": "${TW_NOT_SET}/x"}, missing)
         self.assertEqual(out["h"]["Authorization"], "Bearer abc")
         self.assertEqual(missing, {"TW_NOT_SET"})
 
@@ -365,6 +365,7 @@ class DeliveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             log = EventLog(Path(d) / "events",
                            [alerts.HttpSink(name="t", url=self.srv.url, min_severity=2)])
+            self.addCleanup(log.close)
             log.emit("device_first_seen", "info", addr="x")
             log.emit("device_quiet", "warning", addr="x", name="n")
             reqs = self.srv.wait(1)
@@ -377,6 +378,7 @@ class DeliveryTests(unittest.TestCase):
         sink = alerts.HttpSink(name="t", url=self.srv.url, cooldown_s=0.6,
                                body='{{"event": "{event}", "who": "{who}", "note": "{note}", "count": "{count}"}}')
         d = alerts.Dispatcher([sink], print)
+        self.addCleanup(d.close)
         for i, name in enumerate(["Stove Light", "Freezer Outlet", "Dining AQ"]):
             d.offer({**REC, "name": name, "addr": "%016x" % i})
         reqs = self.srv.wait(2)
@@ -558,6 +560,7 @@ class DeliveryTests(unittest.TestCase):
         slow = alerts.HttpSink(name="slow", cooldown_s=0, timeout_s=0.5, url=drip_url)
         good = alerts.HttpSink(name="good", cooldown_s=0, url=self.srv.url)
         d = alerts.Dispatcher([slow, good], logs.append)
+        self.addCleanup(d.close)
         started = time.time()
         for i in range(2):
             d.offer({**REC, "name": f"Device {i}"})
@@ -583,9 +586,9 @@ class DeliveryTests(unittest.TestCase):
 
     def test_failed_sink_is_logged_not_raised(self):
         bad = _Server(status=500)
+        msgs = []
+        d = alerts.Dispatcher([alerts.HttpSink(name="bad", url=bad.url)], msgs.append)
         try:
-            msgs = []
-            d = alerts.Dispatcher([alerts.HttpSink(name="bad", url=bad.url)], msgs.append)
             d.offer(REC)
             deadline = time.time() + 3
             while not msgs and time.time() < deadline:
@@ -593,6 +596,7 @@ class DeliveryTests(unittest.TestCase):
             self.assertIn("HTTP 500", msgs[0])
             self.assertIn("'bad'", msgs[0])
         finally:
+            d.close(timeout=2)      # before the server: its retries would go to a dead port
             bad.close()
 
     def test_command_sink_gets_record_on_stdin(self):
@@ -711,7 +715,9 @@ class DeliveryTests(unittest.TestCase):
             self.assertEqual(self.bounced, ["/hook", "/beat"])
             time.sleep(0.2)
             self.assertEqual(elsewhere.requests, [])                     # nothing followed the redirect
-            results = alerts.Dispatcher([sink], lambda m: None).deliver_now(REC)
+            d = alerts.Dispatcher([sink], lambda m: None)
+            self.addCleanup(d.close)
+            results = d.deliver_now(REC)
             self.assertEqual([err for _s, err in results], ["HTTP 302"])   # reported, not followed
         finally:
             bounce.shutdown()
@@ -1376,8 +1382,10 @@ class TimeoutDefaultsTest(unittest.TestCase):
     def test_the_default_is_the_deadline_every_send_and_beat_runs_under(self):
         sink = alerts.HttpSink(name="h", url="http://x")
         beat = alerts.Heartbeat(name="b", url="http://x")
+        d = alerts.Dispatcher([sink], print)
+        self.addCleanup(d.close)
         with mock.patch.object(alerts, "_bounded", return_value=None) as bounded:
-            alerts.Dispatcher([sink], print).deliver_now(REC)
+            d.deliver_now(REC)
             alerts.HeartbeatRunner([beat], healthy=lambda: True, log=print, start=False).push_all()
         self.assertEqual([(c.args[0], c.args[2]) for c in bounded.call_args_list], [(sink, 10.0), (beat, 10.0)])
 

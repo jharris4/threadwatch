@@ -21,8 +21,13 @@ def _records(n=5):
 
 
 class PartialLineTest(unittest.TestCase):
+    def _dir(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        return Path(tmp.name)
+
     def test_resumed_migration_keeps_the_record_after_a_cut_line(self):
-        d = Path(tempfile.mkdtemp())
+        d = self._dir()
         events = d / "events"
         events.mkdir()
         recs = _records()
@@ -39,7 +44,7 @@ class PartialLineTest(unittest.TestCase):
 
     def test_emit_after_a_partial_line_does_not_swallow_the_record(self):
         from threadwatch.events import EventLog
-        d = Path(tempfile.mkdtemp())
+        d = self._dir()
         events = d / "events"
         events.mkdir()
         day = day_of(TS)
@@ -53,7 +58,7 @@ class PartialLineTest(unittest.TestCase):
     def test_a_second_legacy_log_does_not_overwrite_the_first_archive(self):
         import contextlib
         import io
-        d = Path(tempfile.mkdtemp())
+        d = self._dir()
         events = d / "events"
         first = [json.dumps(r) for r in _records(4)]
         second = [json.dumps(r) for r in _records(2)]

@@ -975,7 +975,9 @@ class ConfigValidationTest(unittest.TestCase):
         from pathlib import Path as _P
 
         from threadwatch import config
-        d = _P(tempfile.mkdtemp())
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        d = _P(tmp.name)
         (d / "config.toml").write_text(body)
         return config.load(d / "config.toml")
 
@@ -1030,8 +1032,9 @@ class ConfigValidationTest(unittest.TestCase):
 
     def test_data_dir_expands_environment_variables(self):
         import os
-        os.environ["TW_TEST_ROOT"] = "/tmp/tw-test-root"
-        cfg = self._load('[record]\ndata_dir = "$TW_TEST_ROOT/data"\n')
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"TW_TEST_ROOT": "/tmp/tw-test-root"}):
+            cfg = self._load('[record]\ndata_dir = "$TW_TEST_ROOT/data"\n')
         self.assertEqual(str(cfg.data_dir), "/tmp/tw-test-root/data")
 
     def test_a_config_path_that_does_not_exist_is_one_line_not_a_traceback(self):

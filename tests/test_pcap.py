@@ -64,6 +64,7 @@ class RingSizeCapTest(unittest.TestCase):
             ring.write(Frame(ts=ts, raw=b"\x00" * 20, psdu=b"", rssi=None, channel=None, lqi=None))
             self.assertTrue(ring.current_path.exists())
             self.assertEqual(len(list(Path(d).glob("*.pcap"))), 4)
+            ring.close()
 
     def test_keep_hours_zero_does_not_delete_the_file_being_written(self):
         import time
@@ -73,6 +74,7 @@ class RingSizeCapTest(unittest.TestCase):
             ts = time.mktime(time.strptime("2026-09-04 10:00:00", "%Y-%m-%d %H:%M:%S"))
             ring.write(Frame(ts=ts, raw=b"\x00" * 20, psdu=b"", rssi=None, channel=None, lqi=None))
             self.assertTrue(ring.current_path.exists())
+            ring.close()
 
     def test_byte_cap_counts_only_what_the_file_cap_keeps(self):
         with tempfile.TemporaryDirectory() as d:

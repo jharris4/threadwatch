@@ -919,6 +919,53 @@ class RunRecordTest(unittest.TestCase):
         self.assertEqual(self._exit_note()["code"], 3)
         self.assertTrue((self.cfg.state_dir / "last-seen.json").exists())
 
+    def _stopped_with_a_backlog(self):
+        """A run stopped by SIGTERM in its first queue read, with the fake
+        sniffer's three frames queued behind it: a pipeline slower than
+        the channel leaves frames the readers took from the dongle there."""
+        import queue
+        import types
+        from unittest import mock
+
+        from threadwatch import record
+
+        class Backlog(queue.Queue):
+            first = True
+
+            def get(self, block=True, timeout=None):
+                if Backlog.first:
+                    Backlog.first = False
+                    deadline = time.monotonic() + 5
+                    while self.qsize() < 3 and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    raise SystemExit(0)                   # where the signal handler raises it
+                return super().get(block, timeout)
+
+        with mock.patch.object(record, "queue", types.SimpleNamespace(Queue=Backlog, Empty=queue.Empty)):
+            return self._run()
+
+    def test_a_stop_writes_the_frames_still_queued_behind_the_main_loop(self):
+        # The stop used to close the ring without them: a hole ending
+        # exactly at the stop, and no line saying so.
+        from threadwatch.pcap import PcapStreamReader
+        code, out = self._stopped_with_a_backlog()
+        self.assertEqual(code, 0)
+        self.assertIn("exit: 3 queued frames written", out)
+        self.assertIn("stopped after 3 frames", out)
+        ring = sorted(self.cfg.ring_dir.glob("threadwatch-*.pcap"))
+        self.assertEqual(len(ring), 1)
+        with open(ring[0], "rb") as fh:
+            self.assertEqual(len(list(PcapStreamReader(fh))), 3)
+        self.assertIn(self.DEV, json.loads((self.cfg.state_dir / "last-seen.json").read_text()))
+
+    def test_a_backlog_that_outlasts_the_drain_is_counted_not_waited_on(self):
+        from unittest import mock
+        with mock.patch("threadwatch.record.DRAIN_S", 0.0):
+            code, out = self._stopped_with_a_backlog()
+        self.assertEqual(code, 0)
+        self.assertIn("exit: 0 queued frames written, 3 queued items left unread after 0 s", out)
+        self.assertIn("stopped after 0 frames", out)
+
     def test_a_ring_that_will_not_close_does_not_stop_the_rest_of_the_shutdown(self):
         # A full disk out of ring.close() propagated out of the finally
         # block: the alerts were never drained or spooled, no exit note

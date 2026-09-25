@@ -295,6 +295,9 @@ def watchdog_verdict(age: float, ring_open: bool, sniffer_alive: bool) -> int | 
 # waits on this, so it is as slow as it can be and no slower.
 TICK_S = 10.0
 PERIODIC_S = 30
+# How long a stop may spend on the frames the readers had queued and the
+# main loop had not reached: a backlog only a storm on a slow host builds.
+DRAIN_S = 2.0
 
 
 def periodic_due(last_tick: float, now: float) -> bool:
@@ -1043,6 +1046,28 @@ def run_record(cfg: Config) -> None:
     # because the os._exit in finally would otherwise swallow it.
     exit_code = 0
     streams = {}                         # attachment tokens, owned by the capture loop
+
+    def _push(r: Radio, frame, mono: float, token) -> None:
+        """One radio's copy of a frame into the merger, and whatever the
+        merger releases on through _take."""
+        if streams.get(r.label) is not token:
+            # Drain with the old clocks before replacing them. USB
+            # reattachment runs on the watchdog; domain changes belong
+            # here, in queue order, just like a relay's first frame.
+            if r.label in streams:
+                merger.reset(r.label)
+                for out in merger.release(mono):
+                    _take(out)
+            r.clock = RadioClock()
+            streams[r.label] = token
+        r.frames += 1
+        r.last_frame_mono = mono
+        if r.writer is None and r.dlt is None:
+            r.dlt = DLT_TAP
+        merger.push(r.label, frame, mono)
+        for out in merger.release(mono):
+            _take(out)
+
     try:
         while True:
             # Copies waiting for another radio's are released on the next
@@ -1088,23 +1113,7 @@ def run_record(cfg: Config) -> None:
                 _log("capture stream ended (dongle unplugged? sniffer died?); exiting for supervisor restart")
                 exit_code = 3
                 break
-            if streams.get(label) is not sniffer:
-                # Drain with the old clocks before replacing them. USB
-                # reattachment runs on the watchdog; domain changes belong
-                # here, in queue order, just like a relay's first frame.
-                if label in streams:
-                    merger.reset(label)
-                    for out in merger.release(mono):
-                        _take(out)
-                r.clock = RadioClock()
-                streams[label] = sniffer
-            r.frames += 1
-            r.last_frame_mono = mono
-            if r.writer is None and r.dlt is None:
-                r.dlt = DLT_TAP
-            merger.push(label, frame, mono)
-            for out in merger.release(mono):
-                _take(out)
+            _push(r, frame, mono, sniffer)
     except SystemExit as exc:
         exit_code = exc.code if isinstance(exc.code, int) else 0
     except BaseException:
@@ -1167,13 +1176,39 @@ def run_record(cfg: Config) -> None:
                 if failed:
                     raise RuntimeError("; ".join(failed))
 
+            def drain_queue():
+                # A stop raised out of frames_q.get leaves what the readers
+                # had already taken from the dongles in the queue: a hole in
+                # the ring ending at the stop. What was queued then goes in,
+                # as long as it takes no more than DRAIN_S.
+                queued = frames_q.qsize()
+                deadline = time.monotonic() + DRAIN_S
+                written = taken = 0
+                while taken < queued and time.monotonic() < deadline:
+                    try:
+                        label, frame, mono, token = frames_q.get_nowait()
+                    except queue.Empty:
+                        break
+                    taken += 1
+                    r = by_label[label]
+                    if isinstance(frame, str) and frame == "connect":
+                        token[0].close()                     # a relay that connected as the run stopped
+                    elif frame is not None and r.token() is token:
+                        _push(r, frame, mono, token)
+                        written += 1
+                if written or taken < queued:
+                    _log(f"exit: {written} queued frames written"
+                         + (f", {queued - taken} queued items left unread after {DRAIN_S:.0f} s"
+                            if taken < queued else ""))
+
             def remove_fifos():
                 for r in radios:
                     r.fifo.unlink(missing_ok=True)
                     r.close_listener()
 
-            # What the merger still holds goes into the rings and the
-            # pipeline before the rings close: the last quarter second.
+            # What the queue and then the merger still hold goes into the
+            # rings and the pipeline before the rings close.
+            cleanup("queued frames", drain_queue)
             cleanup("merger flush", lambda: [_take(out) for out in merger.release(flush=True)])
             lost = cleanup("sniffer stop", stop_sniffers)
             lost |= cleanup("last-seen save", pipe.seen.save)

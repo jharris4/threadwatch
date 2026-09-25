@@ -329,15 +329,21 @@ class EventFilterTests(unittest.TestCase):
         self.assertEqual(documented, set(alerts.KNOWN_EVENTS))
 
     def test_every_event_name_the_code_emits_is_known(self):
-        # The names detectors pass to EventLog.emit / Detector events, wherever
-        # they are spelled as a literal in the package.
+        # The names detectors pass to EventLog.emit / Detector._emit, and the
+        # recorder's radio events, wherever they are spelled as a literal in
+        # the package.
         pkg = Path(__file__).resolve().parent.parent / "threadwatch"
         emitted = set()
         for py in pkg.glob("*.py"):
             src = py.read_text()
             emitted |= set(re.findall(r'"event":\s*"([a-z_]+)"', src))
-            emitted |= set(re.findall(r'\.emit\(\s*"([a-z_]+)"', src))
-        self.assertTrue(emitted, "no emit sites found: the pattern needs updating")
+            emitted |= set(re.findall(r'\._?emit\(\s*"([a-z_]+)"', src))
+            for first, other in re.findall(
+                    r'_radio_event\(\s*\w+,\s*"([a-z_]+)"(?:\s+if\b[^\n]*?\belse\s+"([a-z_]+)")?', src):
+                emitted |= {first, other} - {""}
+        # Names each pattern is there to see; a scan that misses them has rotted.
+        self.assertLessEqual({"device_quiet", "authentication_history_full",
+                              "radio_missing", "radio_lost", "radio_returned", "radio_attached"}, emitted)
         self.assertEqual(emitted - set(alerts.KNOWN_EVENTS), set())
 
 

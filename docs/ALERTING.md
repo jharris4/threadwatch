@@ -101,6 +101,10 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `credentials_stale` | warning | `failed`, `note` |
 | `clock_step` | info | `step_s` (signed), `note`. The host clock jumped, NTP correcting a boot without an RTC. Forward: silences spanning the jump are not counted against any device. Backward: every timestamp the recorder holds, `last-seen.json` included, is moved back with it |
 | `recorder_started` | info after a requested stop or on the first start ever, notice when the last run ended any other way | `cause` (`stopped`, `stalled`, `sniffer_died`, `stream_ended`, `crashed`, `unknown` for a run that left no note: a power cut or a kill, `first_start`), `gap_s` (since the last frame any run heard), `last_frame_ts`, `stopped_ts` (when the last run ended, if it left the note), `exit_code`, `note` |
+| `radio_missing` | notice | `radio`, `serial`, `port`, `placement`, `note`; a radio in `[[record.radios]]` not plugged in (or, for a tcp radio, with no relay connected) at start: the run starts with the rest and looks for it by serial every minute |
+| `radio_lost` | warning | `radio`, `serial`, `port`, `placement`, `note`; with another radio still up, one that stopped delivering for three minutes, whose sniffer died, whose dongle went away or whose relay disconnected: detached, the run goes on, and it is looked for every minute |
+| `radio_returned` | info | `radio`, `serial`, `port`, `placement`, `note`; a radio that was `radio_lost` is capturing again |
+| `radio_attached` | info | `radio`, `serial`, `port`, `placement`, `note`; a radio that was `radio_missing` was found and is capturing |
 | `border_router_address_changed` | notice | `addr`, `name`, `previous`, `hostname`, `evidence` (what corroborated the rotation), `note` |
 | `device_address_changed` | notice | `addr` (the new address), `name`, `previous`, `evidence` (the SRP registration that carried the same Matter service name, or Home Assistant's node diagnostics), `note`; once per rotation |
 | `border_router_unlisted` | notice | `addr`, `hostname`, `note` |

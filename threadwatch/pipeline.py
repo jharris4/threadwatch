@@ -59,6 +59,13 @@ from .pcap import BROADCAST_PAN, Frame, is_poll
 from .srp import Reassembler, fragment, matter_instances_in, parse_update
 
 MLE_REJOIN_COMMANDS = {"Parent Request", "Child ID Request", "Announce"}
+# The MLE commands only a router (or a router-eligible device keeping up
+# with one) sends, whose Leader Data is the sender's own current view of
+# the partition. A child's Child Update Request repeats what its parent
+# last told it.
+MLE_ROUTER_COMMANDS = {
+    "Link Request", "Link Accept", "Link Accept And Request", "Advertisement",
+    "Data Response", "Parent Response", "Child ID Response"}
 # The attachment and link exchanges kept for the key-transition journal,
 # spelled as crypto.MLE_COMMANDS names them (a test holds them to it).
 MLE_EXCHANGE_COMMANDS = {
@@ -3011,9 +3018,26 @@ class Pipeline:
                 row["rejoin_ts"] = f.ts
                 self.seen._dirty = True
             self._note_rejoin(f.ts, info.command_name, f.src, src_for_mle, name)
-        if info.partition_id is not None:
+        if info.partition_id is not None and self._leader_data_is_current(info, src_for_mle):
             self._note_partition((info.partition_id, info.leader_router_id), f.ts,
                                  src_for_mle, info.route_id_sequence)
+
+    def _leader_data_is_current(self, info, sender: str | None) -> bool:
+        """Whether the message's Leader Data is the sender's own view of the
+        partition: a command only routers send, or a sender holding a
+        router's RLOC16 (the message's Source Address, else the row's).
+        A child's Child Update Request repeats what its parent last told
+        it; after a merge that keeps children attached, each sleepy
+        child's next update still names the old partition, which flipped
+        the tracker there and back and paged a storm that never happened."""
+        if info.command_name in MLE_ROUTER_COMMANDS:
+            return True
+        if info.source_addr16 is not None:
+            short = f"{info.source_addr16:04x}"
+        else:
+            row = self.seen.table.get(sender) if sender else None
+            short = row.get("rloc16") if row else None
+        return (rloc16_role(short) or {}).get("role") == "router"
 
     # The name scraper is a regex over decrypted UDP payloads, most of
     # which are ciphertext: it fires on random bytes now and then, and an

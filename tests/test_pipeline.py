@@ -2411,8 +2411,9 @@ class MleExchangeTest(unittest.TestCase):
 
     def test_every_kept_command_is_a_name_the_decoder_gives(self):
         from threadwatch.crypto import MLE_COMMANDS
-        from threadwatch.pipeline import MLE_EXCHANGE_COMMANDS
+        from threadwatch.pipeline import MLE_EXCHANGE_COMMANDS, MLE_ROUTER_COMMANDS
         self.assertLessEqual(MLE_EXCHANGE_COMMANDS, set(MLE_COMMANDS.values()))
+        self.assertLessEqual(MLE_ROUTER_COMMANDS, set(MLE_COMMANDS.values()))
 
     def test_a_link_accept_and_request_is_kept_for_both_ends(self):
         from types import SimpleNamespace
@@ -5434,6 +5435,35 @@ class LeaderAndPartitionTest(unittest.TestCase):
         self._adv(t0 + 10, self.R2, 10)
         self.pipe.periodic(t0 + 10 + 300)                                 # silence all round: the sniffer's problem
         self.assertEqual(self._events("leader_stalled"), [])
+
+    def test_a_childs_stale_leader_data_is_not_a_change(self):
+        t0 = 1_700_000_000.0
+        self._adv(t0, ROUTER, 10)
+        self._adv(t0 + 5, self.R2, 10)
+
+        def child_update_request(src, rloc16, partition, leader):
+            body = bytes([13, 0, 2]) + bytes.fromhex(rloc16) + leader_data(partition, leader)
+            self.pipe.ingest(mle_frame(t0 + 10, src, 0, body))
+
+        # Porch Sensor is attached to Hall Router (child 1 of router 60).
+        child_update_request(SENSOR, "f001", self.PART, 60)
+        # The mesh merges under Den Router; the change settles.
+        self._adv(t0 + 30, self.R2, 12, partition=0x51119999, leader=11)
+        self._adv(t0 + 40, ROUTER, 12, partition=0x51119999, leader=11)
+        self.pipe.periodic(t0 + 71)
+        self.assertEqual(len(self._events("partition_or_leader_change")), 1)
+        # The sleepy child's next update still repeats what its parent told
+        # it before the merge: not a flip, and no storm once a router speaks.
+        child_update_request(SENSOR, "f001", self.PART, 60)
+        self.assertEqual(self.pipe.partition, (0x51119999, 11))
+        self._adv(t0 + 75, self.R2, 12, partition=0x51119999, leader=11)
+        self.pipe.periodic(t0 + 75 + 31)
+        self.assertEqual(self._events("partition_storm"), [])
+        self.assertEqual(len(self._events("partition_or_leader_change")), 1)
+        # A parent's own Child Update Request (a router's RLOC16) is its
+        # current view, and is followed.
+        child_update_request(ROUTER, "f000", 0x11111111, 3)
+        self.assertEqual(self.pipe.partition, (0x11111111, 3))
 
     def test_one_change_that_holds_is_a_partition_or_leader_change_after_the_window(self):
         t0 = 1_700_000_000.0

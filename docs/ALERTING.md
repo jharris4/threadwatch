@@ -442,7 +442,13 @@ seen, `changes` flips, `since`/`until`/`duration_s`, and a note that says
 whether the mesh split and merged back under the same leader or lost its
 leader to a successor. The 09-22 storm was 90 warnings in three seconds
 for 14 partitions; it is one record now. `settle_s = 0` logs every flip at
-once, as before.
+once, as before. Only a router's word moves the tracker: a command only
+routers send (Advertisement, Link Request and Accept, Parent Response,
+Child ID Response, Data Response) or a sender holding a router's RLOC16.
+A child's Child Update Request repeats the Leader Data its parent last
+gave it, which after a merge that keeps children attached is the old
+partition; taken at face value it flipped the tracker there and back for
+a storm that never happened.
 
 `rejoin_wave` is the minute after a partition change, or after a parent
 router dropped its children, seen as one record instead of one notice per

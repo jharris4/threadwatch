@@ -1247,11 +1247,31 @@ class TwoRadiosRunTest(unittest.TestCase):
                 if test.on_stop is not None:
                     test.on_stop()
 
+        offset = time.time() - 1000.0
+
+        class FixedClock:
+            """Both radios on one epoch mapping from the start. The fakes
+            stamp 1000.0.. and write it all at once, so a real RadioClock
+            anchors at whichever copy the main loop stamps first: the
+            primary's later copies jumped to the epoch while the other
+            radio's, not yet anchored, stayed on 1000.0.., and never paired
+            when the scheduler let the annex in before the hub's second
+            frame. The vendor's stamps are on the epoch already, so live
+            radios never differ by more than their queue delay."""
+            last_step_s = 0.0
+
+            def __init__(self):
+                self.offset = offset
+
+            def stamp(self, raw):
+                return raw + self.offset
+
         self.on_stop = None
         module = types.ModuleType("nrf802154_sniffer")
         module.Nrf802154Sniffer = FakeSniffer
         for patcher in (mock.patch.dict(sys.modules, {"nrf802154_sniffer": module}),
                         mock.patch.object(os, "_exit", self._exit),
+                        mock.patch.object(record, "RadioClock", FixedClock),
                         mock.patch.object(record, "resolve_radio_port", lambda serial: test.ports.get(serial)),
                         mock.patch.object(record, "REATTACH_S", 0.0),
                         mock.patch.object(record.EventLog, "close", autospec=True,

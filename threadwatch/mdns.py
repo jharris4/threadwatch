@@ -50,12 +50,19 @@ def clean_text(raw: bytes, limit: int = TEXT_MAX) -> str:
     return "".join("?" if (ord(c) < 0x20 or 0x7F <= ord(c) < 0xA0) else c for c in text)
 
 
+class Name(str):
+    """A name read off the wire: its printable text, and the raw labels it
+    was sent as. Asking about the name again needs the labels; a dot inside
+    one, a control character or a non-ASCII capital does not survive the
+    text."""
+    labels: tuple[bytes, ...]
+
+
 def encode_name(name: str) -> bytes:
-    out = b""
-    for label in name.rstrip(".").split("."):
-        raw = label.encode("utf-8")
-        out += bytes([len(raw)]) + raw
-    return out + b"\x00"
+    labels = getattr(name, "labels", None)
+    if labels is None:
+        labels = tuple(label.encode("utf-8") for label in name.rstrip(".").split("."))
+    return b"".join(bytes([len(raw)]) + raw for raw in labels) + b"\x00"
 
 
 def build_query(questions: list[tuple[str, int]], unicast_reply: bool = True) -> bytes:
@@ -66,17 +73,23 @@ def build_query(questions: list[tuple[str, int]], unicast_reply: bool = True) ->
     return head + b"".join(encode_name(n) + struct.pack(">HH", t, qclass) for n, t in questions)
 
 
-def read_name(data: bytes, off: int, depth: int = 0,
-              end: int | None = None) -> tuple[str, int]:
+def read_name(data: bytes, off: int, end: int | None = None) -> tuple[Name, int]:
     """A possibly compressed name at ``off``: (name, offset after it)."""
-    labels: list[str] = []
+    labels, off = _read_labels(data, off, 0, end)
+    name = Name(".".join(clean_text(raw, LABEL_MAX) for raw in labels))
+    name.labels = tuple(labels)
+    return name, off
+
+
+def _read_labels(data: bytes, off: int, depth: int, end: int | None) -> tuple[list[bytes], int]:
+    labels: list[bytes] = []
     limit = len(data) if end is None else min(end, len(data))
     while True:
         if off < 0 or off >= limit:
             raise ValueError("truncated name")
         n = data[off]
         if n == 0:
-            return ".".join(labels), off + 1
+            return labels, off + 1
         if n & 0xC0 == 0xC0:
             if depth > 16:
                 raise ValueError("compression loop")
@@ -85,14 +98,14 @@ def read_name(data: bytes, off: int, depth: int = 0,
             ptr = struct.unpack(">H", data[off:off + 2])[0] & 0x3FFF
             # The pointer must fit this record; its target can be elsewhere
             # in the message, as ordinary DNS compression requires.
-            tail, _ = read_name(data, ptr, depth + 1)
-            return ".".join(labels + ([tail] if tail else [])), off + 2
+            tail, _ = _read_labels(data, ptr, depth + 1, None)
+            return labels + tail, off + 2
         if n & 0xC0:
             raise ValueError("unsupported label encoding")
         off += 1
         if off + n > limit:
             raise ValueError("truncated label")
-        labels.append(clean_text(data[off:off + n], LABEL_MAX))
+        labels.append(data[off:off + n])
         off += n
 
 
@@ -287,11 +300,15 @@ def browse(service: str = SERVICE, timeout: float = 4.0, log=lambda m: None) -> 
                         log(f"mDNS record limit ({RECORDS_MAX}) reached; new records ignored for this browse")
                 except (ValueError, struct.error):
                     continue
-            # Instances announced without their SRV/TXT: ask for those.
+            # Instances announced without their SRV/TXT: ask for those, under
+            # the name as the PTR sent it; the responder owns that one, not
+            # the cleaned, lower-cased key.
+            sent_as = {_norm_host(v): v for _n, t, v in records.values() if t == TYPE_PTR}
             for full, info in collect_routers(list(records.values()), service).items():
                 if not info["complete"] and full not in asked_detail:
                     asked_detail.add(full)
-                    query_sock.sendto(build_query([(full, TYPE_SRV), (full, TYPE_TXT)]), (MDNS_GROUP, MDNS_PORT))
+                    name = sent_as.get(full, full)
+                    query_sock.sendto(build_query([(name, TYPE_SRV), (name, TYPE_TXT)]), (MDNS_GROUP, MDNS_PORT))
     finally:
         for s in socks:
             s.close()

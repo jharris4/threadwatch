@@ -256,8 +256,24 @@ class BrowseTest(unittest.TestCase):
         self.assertEqual([addr for _d, addr in query.sent], [(mdns.MDNS_GROUP, mdns.MDNS_PORT)] * 3)
         self.assertEqual(sent[:2], [build_query([(SERVICE, TYPE_PTR)]),
                                     build_query([(SERVICE, TYPE_PTR)], unicast_reply=False)])
-        self.assertEqual(sent[2], build_query([("otb." + SERVICE, TYPE_SRV), ("otb." + SERVICE, TYPE_TXT)]))
+        self.assertEqual(sent[2], build_query([("OTB." + SERVICE, TYPE_SRV), ("OTB." + SERVICE, TYPE_TXT)]))
         self.assertEqual(group.sent, [])
+
+    def test_details_are_asked_for_under_the_name_the_ptr_sent(self):
+        # A dot inside an instance label is legal in DNS-SD, and the
+        # printable text cleans control characters and lower-cases the
+        # key. The SRV/TXT query was built from that key, so it asked for
+        # two labels, '?' and 'ä', a name the responder does not own.
+        raw = "Hub Ä v1.2\x07".encode()
+        full = bytes([len(raw)]) + raw + encode_name(SERVICE)
+        ptr_only = response([rr(encode_name(SERVICE), TYPE_PTR, full)])
+        details = response([rr(full, TYPE_SRV, struct.pack(">HHH", 0, 0, 49153) + encode_name("hub.local")),
+                            rr(full, TYPE_TXT, txt(b"xa=" + EXT))])
+        found, made, _log = self._browse([ptr_only, details])
+        question = struct.pack(">HH", TYPE_SRV, 0x8001) + full + struct.pack(">HH", TYPE_TXT, 0x8001)
+        self.assertEqual(made[0].sent[2][0][12:], full + question)
+        self.assertEqual([(r["instance"], r["ext"], r["complete"]) for r in found],
+                         [("Hub Ä v1.2?", EXT.hex(), True)])
 
     def test_without_the_multicast_group_the_browse_says_so_and_carries_on(self):
         ptr_only, details = self._answers()

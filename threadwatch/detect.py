@@ -177,6 +177,16 @@ class Detector:
                     self.storm_since = recent[0]
                     self.storm_confirmed = self.cfg.confirm_s <= 0
                     self.storm_gap_max = 0.0
+                elif not self.storm_confirmed and self.storm_gap_max > 1.5 * mean:
+                    # The beat resumed after a lull the gap check would
+                    # refuse for ever (one burst under the threshold, or one
+                    # the sniffer under-heard): the storm stays called, and
+                    # the confirmation clock starts over at this run. Its
+                    # onsets all follow the lull: a run whose gaps are
+                    # within a quarter of their mean holds no gap over
+                    # 1.5 x the mean.
+                    self.storm_since = recent[0]
+                    self.storm_gap_max = 0.0
                 self.storm_active = True
                 self.storm_details = {"period": mean, "onsets": [round(t, 1) for t in recent]}
                 self._alert(self.window_start)

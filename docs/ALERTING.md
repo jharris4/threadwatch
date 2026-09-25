@@ -542,7 +542,11 @@ when a border router changed address or the partition changed in the
 previous 15 minutes, and says the critical is coming if the floods
 persist. The critical follows once the newest flood is `[detect]
 confirm_s` (10 min) past the first periodic onset, cooldown or not, and
-names the warning's snapshot instead of taking another. On 2026-09-22 a
+names the warning's snapshot instead of taking another. A lull of more
+than a period and a half refuses the confirmation, so when the beat
+resumes after one (a burst under the flood threshold, or one the sniffer
+under-heard) the clock starts over at the resumed run's first onset, which
+the critical then reports as `storm_since`; the storm itself stays called. On 2026-09-22 a
 hub re-establishing its sessions after the other Apple TV was restarted
 produced three onsets 100 s apart and stopped after six minutes: a
 warning then, not the critical page and snapshot it had been. On

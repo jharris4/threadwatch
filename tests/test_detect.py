@@ -66,6 +66,17 @@ class StormLatchTest(unittest.TestCase):
         # The same, with the floods keeping their beat past confirm_s: confirmed.
         det, active = self._run(list(range(200, 560, 90)) + list(range(560, 1000, 90)), until=1100)
         self.assertTrue(det.storm_confirmed)
+        # One burst of the beat missed (under the threshold, or under-heard):
+        # the storm is still called, the lull would refuse the confirmation
+        # for ever, so the clock restarts at the run that resumed and the
+        # storm confirms confirm_s after its first onset.
+        det, active = self._run([t for t in range(200, 1400, 80) if t != 600], until=1500)
+        self.assertTrue(det.storm_active)
+        self.assertAlmostEqual(det.storm_since, 680.0, delta=0.1)
+        self.assertTrue(det.storm_confirmed)                   # 680 + 600 <= the flood at 1320
+        det, active = self._run([t for t in range(200, 1300, 80) if t != 600], until=1300)
+        self.assertTrue(det.storm_active)
+        self.assertFalse(det.storm_confirmed)                  # the newest flood, 1240, is not
         # confirm_s = 0: confirmed at the call, the old behaviour.
         det = Detector(DetectorConfig(alert_cooldown_s=0, confirm_s=0))
         for w in range(0, 400, 10):

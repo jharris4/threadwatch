@@ -404,6 +404,21 @@ def capture_healthy(last_frame_mono: float | None, now: float,
 REATTACH_S = 60.0
 
 
+def release_consumer(sniffer, timeout: float = 1.0) -> None:
+    """_stop() kills the serial process but does not wake the vendor's
+    non-daemon consumer thread, left in queue.get() holding the FIFO's
+    write end, so the reader never sees EOF either: a detach that skipped
+    this leaked both threads and their descriptors every cycle, and a relay
+    stopped by Ctrl-C hung at interpreter exit. Give it its exit sentinel
+    and bound the join."""
+    if getattr(sniffer, "queue", None) is not None:
+        from nrf802154_sniffer import ExitEvent
+        sniffer.queue.put(ExitEvent())
+    thread = getattr(sniffer, "thread", None)
+    if thread is not None and thread.ident is not None:
+        thread.join(timeout=timeout)
+
+
 class Radio:
     """One dongle of the recorder: its configuration, its vendor sniffer
     and FIFO while attached, the thread reading its stream, its clock,
@@ -628,7 +643,7 @@ class Radio:
             try:
                 self.stop_sniffer()
             finally:
-                self._release_consumer()
+                release_consumer(self.sniffer)
         finally:
             if fd is not None:
                 os.close(fd)
@@ -638,19 +653,6 @@ class Radio:
                     self._owns_fifo = False
             finally:
                 self.close_listener()
-
-    def _release_consumer(self) -> None:
-        """_stop() kills the serial process but does not wake the vendor's
-        non-daemon consumer thread, left in queue.get() holding the FIFO's
-        write end, so the reader thread never sees EOF either: a detach
-        that skipped this leaked both threads and their descriptors every
-        cycle. Give it its exit sentinel and bound the join."""
-        if getattr(self.sniffer, "queue", None) is not None:
-            from nrf802154_sniffer import ExitEvent
-            self.sniffer.queue.put(ExitEvent())
-        thread = getattr(self.sniffer, "thread", None)
-        if thread is not None and thread.ident is not None:
-            thread.join(timeout=1.0)
 
     def _forked(self) -> bool:
         processes = getattr(self.sniffer, "processes", None)
@@ -704,7 +706,7 @@ class Radio:
                 self.stop_sniffer()
             except Exception as exc:  # a dongle that is gone raises on the way out
                 self.log(f"{self.describe()}: sniffer stop failed: {exc}")
-            self._release_consumer()
+            release_consumer(self.sniffer)
             try:
                 fd = os.open(self.fifo, os.O_WRONLY | os.O_NONBLOCK)
                 os.close(fd)

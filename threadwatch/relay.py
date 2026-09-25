@@ -201,7 +201,7 @@ def run_relay(cfg, label: str, to: str, serial_port: str | None = None) -> int:
     at ``to`` (host:port) as radio ``label``. Returns 3 when the capture
     stream ends (dongle unplugged, sniffer died), for a supervisor to
     restart; runs until then."""
-    from .record import find_sniffer_port, find_sniffers, vendor_on_path
+    from .record import find_sniffer_port, find_sniffers, release_consumer, vendor_on_path
 
     def _log(msg: str) -> None:
         print(f"[threadwatch relay] {msg}", file=sys.stderr, flush=True)
@@ -232,6 +232,23 @@ def run_relay(cfg, label: str, to: str, serial_port: str | None = None) -> int:
             sniffer._stop()
         except Exception as exc:
             _log(f"sniffer stop failed: {exc}")
+        # After a Ctrl-C the vendor's non-daemon consumer thread is still
+        # alive, and the interpreter would wait on it at exit for ever.
+        release_consumer(sniffer)
+        if getattr(sniffer, "thread", None) is not None and sniffer.thread.is_alive():
+            # Interrupted before this end was opened: the consumer is still
+            # opening the FIFO for writing. A reader lets it through to its
+            # exit sentinel; closed, it makes any write it tries fail.
+            try:
+                peer = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+            except OSError:
+                peer = None
+            release_consumer(sniffer)
+            if peer is not None:
+                os.close(peer)
+                sniffer.thread.join(timeout=1.0)
+            if sniffer.thread.is_alive():
+                _log("the sniffer's consumer thread did not end; kill the process if it does not exit")
         fifo.unlink(missing_ok=True)
     _log(f"capture stream ended (dongle unplugged? sniffer died?) after {stats['sent']} frames sent, "
          f"{stats['dropped']} dropped")

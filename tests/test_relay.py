@@ -338,6 +338,71 @@ class RunRelayTest(unittest.TestCase):
         self.assertIn("capturing channel 25 from /dev/fake as radio annex", err.getvalue())
         self.assertIn("after 3 frames sent, 0 dropped", err.getvalue())
 
+    def test_ctrl_c_releases_the_vendors_consumer_thread(self):
+        # The vendor's consumer is a non-daemon thread in queue.get()
+        # holding the FIFO's write end, or still opening it when the
+        # interrupt came first. _stop() alone left it there, and the
+        # interpreter waited on it at exit until a second Ctrl-C or a kill.
+        import os
+        for where in ("while streaming", "before the FIFO was opened"):
+            with self.subTest(where=where):
+                received, sniffer, streamed, fifo, exit_event = self._interrupt(where)
+                self.assertEqual([type(r) for r in received], [exit_event])
+                self.assertFalse(sniffer.thread.is_alive())
+                self.assertFalse(os.path.exists(fifo))
+                self.assertEqual(streamed, where == "while streaming")
+
+    def _interrupt(self, where: str):
+        """run_relay with a Ctrl-C at ``where``; what the fake consumer
+        received, the sniffer, whether the stream was read, the FIFO path
+        and the exit sentinel's class."""
+        import contextlib
+        import queue
+        import tempfile
+        import types
+
+        from threadwatch.config import Config
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        received, sniffers, streaming = [], [], threading.Event()
+
+        class ExitEvent:
+            pass
+
+        class FakeSniffer:
+            def start_threaded(self, fifo, dev, channel, metadata=None):
+                sniffers.append(self)
+                self.queue = queue.Queue()
+
+                def consumer():                   # the vendor's: header written, then waiting for packets
+                    with open(fifo, "wb") as fh:
+                        fh.write(pcap_bytes(0))
+                        fh.flush()
+                        received.append(self.queue.get(timeout=10))
+                # Daemon here only so a failure cannot hang the suite.
+                self.thread = threading.Thread(target=consumer, daemon=True)
+                self.thread.start()
+
+            def _stop(self):
+                pass
+
+        def interrupted(fh, *_args):
+            fh.read(24)
+            streaming.set()
+            raise KeyboardInterrupt
+
+        module = types.ModuleType("nrf802154_sniffer")
+        module.Nrf802154Sniffer, module.ExitEvent = FakeSniffer, ExitEvent
+        cfg = Config(data_dir=Path(tmp.name) / "data")
+        cut = (mock.patch.object(relay, "relay_stream", interrupted) if where == "while streaming"
+               else mock.patch.object(relay, "open", side_effect=KeyboardInterrupt, create=True))
+        with mock.patch.dict(sys.modules, {"nrf802154_sniffer": module}), \
+                mock.patch.object(sys, "path", list(sys.path)), \
+                mock.patch("threadwatch.record.find_sniffers", return_value=[]), cut, \
+                contextlib.redirect_stderr(io.StringIO()), self.assertRaises(KeyboardInterrupt):
+            relay.run_relay(cfg, "annex", "127.0.0.1:1", serial_port="/dev/fake")
+        return received, sniffers[0], streaming.is_set(), cfg.state_dir / "relay-annex.fifo", ExitEvent
+
     def test_a_to_without_a_port_is_refused_before_the_sniffer_starts(self):
         from threadwatch.config import Config
         with mock.patch.object(sys, "path", list(sys.path)), self.assertRaises(SystemExit) as cm:

@@ -1506,6 +1506,26 @@ class QuietPolicyTest(unittest.TestCase):
                  if r["event"] == "device_quiet"]
         self.assertEqual(len({r["ts"] for r in quiet}), 2)
 
+    def test_a_silence_whose_record_retention_pruned_is_not_announced_again(self):
+        # The record check is for a run killed between the save and the
+        # append. Once a silence outlived [events] keep_days, its record's
+        # day file was pruned and every start paged the silence again.
+        from threadwatch.events import EventLog, read_all
+        self.cfg.events_keep_days = 30
+        now = time.time()
+        pipe = Pipeline(self.cfg, EventLog(self.cfg.events_dir), stub_decryptor())
+        pipe.ingest(frame(now - 41 * 86400, SENSOR))
+        pipe.ingest(frame(now, ROUTER))
+        row = pipe.seen.table[SENSOR]
+        row["quiet_reported"], row["quiet_reported_ts"] = True, now - 40 * 86400
+        pipe.seen.save()
+        self._status(updated=now, last_frame_ts=now)
+        for _ in range(3):
+            pipe2 = Pipeline(self.cfg, EventLog(self.cfg.events_dir), stub_decryptor())
+            self.assertEqual(pipe2.quiet_reported, {SENSOR})
+        self.assertEqual([r for r in read_all(self.cfg.events_dir) if r["event"] == "device_quiet"], [])
+        self.assertEqual(pipe2.seen.table[SENSOR]["quiet_reported_ts"], now - 40 * 86400)
+
     def test_replay_neither_reads_nor_writes_live_state(self):
         now = time.time()
         live = self._pipe()

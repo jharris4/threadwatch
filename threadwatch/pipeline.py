@@ -622,9 +622,15 @@ class Pipeline:
                     # run killed between the two left a silence flagged as
                     # announced that nobody was told about. The flag names
                     # the record it stands for; a flag without its record
-                    # is announced now.
+                    # is announced now. A record on a day past [events]
+                    # keep_days was pruned, not lost: a silence that
+                    # outlived retention was paged again at every start. A
+                    # missing day file alone does not say which, since a
+                    # run killed before a day's first append leaves none.
                     stamp = row.get("quiet_reported_ts")
-                    if stamp is None or self.events.on_record("device_quiet", stamp, addr):
+                    keep = self.cfg.events_keep_days
+                    if stamp is None or (keep > 0 and day_of(stamp) < day_of(now - keep * 86400)) \
+                            or self.events.on_record("device_quiet", stamp, addr):
                         self.quiet_reported.add(addr)
                         continue
                     row.pop("quiet_reported", None)

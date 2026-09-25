@@ -203,7 +203,7 @@ credentials.toml too (docs/HOME-ASSISTANT.md).
 | `note` | no | free text for the person editing the file |
 | `borderRouter` | no | the mDNS hostname of a border router (`appletv-living-room.local`), so a new address announced under that hostname is named from this entry without an edit (docs/HOME-ASSISTANT.md) |
 | `hold_s` | no | seconds, more than 0: this device's own hold before a warning, replacing `[quiet] silence_s` for `device_quiet` and `[ha_availability] hold_s` for `ha_unavailable`; for a device that drops out on its own for a while and comes back (`threadwatch hold NAME 2h`, `--clear` to remove) |
-| `mute` | no | `true`: every record for this device is a notice, logged and never paged, and it never counts toward a burst (`threadwatch mute NAME`, `--off` to lift) |
+| `mute` | no | `true`: the device's own trouble (`device_quiet`, `ha_unavailable`, `poll_starvation`, `rssi_degradation`) is a notice, logged and never paged, and it never counts toward a burst; `key_lag`, `frame_counter_mismatch`, `srp_refused` and `poll_unserved` still page (`threadwatch mute NAME`, `--off` to lift) |
 
 Anything else is ignored, so a file produced by another tool loads as
 long as it has names and addresses. What a device is doing on the mesh

@@ -3584,6 +3584,13 @@ class Pipeline:
             return f"around the partition change at {time.strftime('%H:%M:%S', time.localtime(part))}"
         return None
 
+    # What `mute` in devices.json covers: the records a flaky device makes
+    # about itself (ha_unavailable, the fourth, is haavail's). Mesh trouble
+    # a muted device is part of (key_lag, frame_counter_mismatch,
+    # srp_refused) and its parent dropping its polls (poll_unserved) still
+    # page: those are about more than the device.
+    MUTED_EVENTS = frozenset({"device_quiet", "poll_starvation", "rssi_degradation"})
+
     def _emit(self, event: str, severity: str = "info", ts: float | None = None,
               **fields) -> dict:
         """Log an event, and save the ring when it is a critical one. Every
@@ -3592,10 +3599,22 @@ class Pipeline:
         call some future handler has to remember to make. The two paths
         that stay on events.emit say why where they are.
 
+        A MUTED_EVENTS record carries `muted`; for a device the inventory
+        mutes it is at most a notice, and its note says so.
+
         A critical event carries auto_snapshot (the snapshot label, or None
         when saving is off, replaying, or inside the cooldown) and a
         closing sentence saying where its packets went."""
         ts = time.time() if ts is None else ts
+        if event in self.MUTED_EVENTS:
+            muted = self.names.muted(fields["addr"])
+            fields["muted"] = muted
+            if muted:
+                if severity in ("warning", "critical"):
+                    severity = "notice"
+                note = fields.get("note") or ""
+                sep = " " if note.endswith((".", ".)")) or not note else ". "
+                fields["note"] = f"{note}{sep}Muted in devices.json: logged, not paged."
         label = None
         if severity == "critical":
             # keep_packets: the caller already has the packets (a notice
@@ -5195,16 +5214,12 @@ class Pipeline:
             note += (f"; {what} {round((now - vouched) / 60)} min ago, "
                      f"{round((vouched - row['last_seen']) / 60)} min after its last frame heard here, "
                      "so it was alive then, out of the recorder's earshot")
-        # The inventory's mute: the person has said this device's silences
-        # are not worth a page. Logged all the same, and the record says so.
-        muted = self.names.muted(addr)
-        if muted:
-            note += " Muted in devices.json: logged, not paged."
+        # The inventory's mute is applied in _emit (MUTED_EVENTS).
         soft = (marginal or unheard) and not corroborated
         self._emit(
-            "device_quiet", "notice" if soft or muted else "warning", now, addr=addr,
+            "device_quiet", "notice" if soft else "warning", now, addr=addr,
             name=self.names.name(addr), silent_for_s=round(wall), unheard_s=round(unheard_s),
-            blind_s=round(blind), last_seen=row["last_seen"], hold_s=self.quiet_threshold_s(addr), muted=muted,
+            blind_s=round(blind), last_seen=row["last_seen"], hold_s=self.quiet_threshold_s(addr),
             rssi_dbm=rssi, reception="unheard" if unheard else "marginal" if marginal else "good",
             radio_down=unheard, was_leader=bool(lost and abs(row["last_seen"] - lost["ts"]) <= 600),
             ha_unavailable_since=ha_since, note=note, **proxy)

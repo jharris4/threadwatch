@@ -21,7 +21,8 @@ The inventory is identity plus the person's own judgement of a device: a
 name, the addresses it has used, optionally a `model` and a free-text
 `note`, and the two tolerances nothing on the air can tell the recorder,
 `hold_s` (silent, or unavailable in Home Assistant, this long before a
-warning) and `mute` (every record for the device a notice, never paged).
+warning) and `mute` (the device's own trouble a notice, never paged:
+device_quiet, ha_unavailable, poll_starvation, rssi_degradation).
 What a device is doing on the mesh (router or child, leader, parent)
 changes without anyone editing a file, so the recorder learns it from
 traffic and never reads it from here. Other fields are ignored, so a
@@ -347,7 +348,7 @@ class DeviceNames:
         return None if hold is None or hold_value_error(hold) else float(hold)
 
     def muted(self, addr: str) -> bool:
-        """Whether the entry says every record for the device is a notice."""
+        """Whether the entry says the device's own trouble is a notice."""
         entry = self.by_addr.get(_norm(addr))
         return bool(entry) and entry.get("mute") is True
 
@@ -1053,9 +1054,11 @@ def set_hold(inventory_path: Path, target: str, hold_s: float | None) -> str:
 
 
 def set_mute(inventory_path: Path, target: str, mute: bool) -> str:
-    """`threadwatch mute`: make every record for the device a notice
-    (never paged, never counted toward a burst), or with False lift
-    that. Returns a one-line description of what changed."""
+    """`threadwatch mute`: make the device's own trouble (device_quiet,
+    ha_unavailable, poll_starvation, rssi_degradation) a notice, never
+    paged and never counted toward a burst, or with False lift that. Mesh
+    trouble it is part of still pages. Returns a one-line description of
+    what changed."""
     with inventory_lock(inventory_path):
         entries = read_inventory(inventory_path)
         entry = _entry_for(entries, target, inventory_path)

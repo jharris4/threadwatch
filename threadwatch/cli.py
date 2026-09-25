@@ -183,8 +183,9 @@ def main(argv=None) -> int:
     hold_how.add_argument("duration", nargs="?", help="2h, 30m, 1h30m or seconds; for a known flapper")
     hold_how.add_argument("--clear", action="store_true", help="back to the configured default")
 
-    p_mute = sub.add_parser("mute", help="every record for a device a notice: logged, never paged, never counted "
-                                         "toward a burst (mute in devices.json)")
+    p_mute = sub.add_parser("mute", help="a device's own trouble (quiet, HA unavailable, starved polls, weak signal) "
+                                         "a notice: logged, never paged, never counted toward a burst; mesh "
+                                         "trouble still pages (mute in devices.json)")
     p_mute.add_argument("device", help="an inventory name (or a fragment of one) or a 16-hex extended address")
     p_mute.add_argument("--off", action="store_true", help="lift the mute")
 

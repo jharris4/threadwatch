@@ -1996,6 +1996,26 @@ class PollStarvationTest(unittest.TestCase):
         self.assertEqual(evs[0]["acked_polls"], 0)
         self.assertIn("before the recorder's last restart", evs[0]["note"])
 
+    def test_a_muted_device_starving_is_never_paged_but_its_mesh_trouble_is(self):
+        (Path(self.tmp.name) / "devices.json").write_text(json.dumps(
+            [{"name": "Porch Sensor", "extendedAddress": SENSOR, "mute": True}]))
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t = self._answered_polls(pipe, 1_700_000_000.0, 5)
+        for i in range(80):                                # past [polls] confirm_s, nobody answers
+            pipe.ingest(poll(t + 10 * i, SENSOR, 100 + i))
+        evs = self._events(pipe, "poll_starvation")
+        self.assertEqual([(e["severity"], e["confirmed"], e["muted"]) for e in evs],
+                         [("notice", False, True), ("notice", True, True)])
+        self.assertTrue(evs[1]["note"].endswith("not on air.) Muted in devices.json: logged, not paged."))
+        # Its signal fading is its own trouble too; a note with no stop gets one.
+        rec = pipe._emit("rssi_degradation", "notice", t + 900, addr=SENSOR, note="the link is fading")
+        self.assertEqual((rec["muted"], rec["note"]),
+                         (True, "the link is fading. Muted in devices.json: logged, not paged."))
+        # A refused SRP registration is about the mesh, not the device: paged.
+        rec = pipe._emit("srp_refused", "warning", t + 900, addr=SENSOR, note="refused")
+        self.assertEqual((rec["severity"], rec["note"]), ("warning", "refused"))
+        self.assertNotIn("muted", rec)
+
     def test_a_broadcast_is_never_a_transmission_awaiting_an_ack(self):
         """MLE advertisements go out to ffff and are never acknowledged. If a
         broadcast left an ACK pending, the next ACK the sniffer hears - for

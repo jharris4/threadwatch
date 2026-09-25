@@ -119,8 +119,8 @@ cupboard door. That is a fact about the device, not about Home
 Assistant, so it lives on the device's entry in `devices.json`:
 `hold_s` (unavailable, or silent on the air, this long before a warning,
 replacing `[ha_availability] hold_s` and `[quiet] silence_s` for that
-device) and `mute` (every record for it a notice, never paged, never
-counted toward a burst). `device_quiet` honours both, so the sensor that
+device) and `mute` (its own trouble a notice, never paged, never
+counted toward a burst; docs/ALERTING.md lists what that covers). `device_quiet` honours both, so the sensor that
 drops out at four o'clock is one setting, not two (README, devices.json):
 
 ```bash

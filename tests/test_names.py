@@ -633,6 +633,9 @@ class MalformedInventoryTest(unittest.TestCase):
             names = self._names(doc)
             with self.assertRaises(ValueError):
                 names.resolve("nothing-matches-this")
+        # ...and the valid entry beside a stray is still loaded
+        self.assertEqual(names.name("00112233445566aa"), "ok")
+        self.assertEqual(names.resolve("ok"), (["00112233445566aa"], "ok"))
 
     def test_a_syntax_error_is_announced_and_ignored_not_fatal(self):
         import contextlib

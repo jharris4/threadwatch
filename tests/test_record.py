@@ -908,7 +908,7 @@ class RunRecordTest(unittest.TestCase):
         while time.monotonic() < deadline and self._watchdogs() - before:
             time.sleep(0.02)
         self.assertEqual(self._watchdogs() - before, set())
-        self.assertTrue((self.cfg.state_dir / "status.json").exists() or True)   # written by ticks only
+        self.assertFalse((self.cfg.state_dir / "status.json").exists())   # written by ticks only, and none ran
 
     def test_a_sniffer_that_will_not_stop_does_not_keep_the_note_or_the_log_from_closing(self):
         self.fail_stop = True
@@ -1460,7 +1460,7 @@ class TwoRadiosRunTest(unittest.TestCase):
                       str(code))
 
     def test_the_status_file_carries_every_radio(self):
-        frames = self._frames(2)
+        frames = self._frames(3)
         self.scripts["/dev/fake-hub"] = frames
         self.scripts["/dev/fake-annex"] = [(ts + 0.010, psdu, -70.0) for ts, psdu, _ in frames]   # the same frames
         hub_hold = self.holds.setdefault("/dev/fake-hub", threading.Event())
@@ -1478,11 +1478,12 @@ class TwoRadiosRunTest(unittest.TestCase):
         self.assertEqual(sorted(st["radios"]), ["annex", "hub"])
         hub, annex = st["radios"]["hub"], st["radios"]["annex"]
         self.assertEqual((hub["state"], hub["serial"], hub["placement"], hub["frames_total"], hub["lock"]),
-                         ("up", "AA", "by the router", 2, None))
-        self.assertEqual((annex["state"], annex["port"], annex["frames_total"]), ("up", "/dev/fake-annex", 2))
-        self.assertIn("locked", annex["lock"])
+                         ("up", "AA", "by the router", 3, None))
+        self.assertEqual((annex["state"], annex["port"], annex["frames_total"]), ("up", "/dev/fake-annex", 3))
+        lock = annex["lock"]                            # three shared frames, 10 ms apart, lock the annex
+        self.assertEqual((lock["locked"], lock["offset_ms"], lock["pairs"]), (True, 10.0, 3))
         self.assertTrue(annex["current_file"].endswith("-annex.pcap"))
-        self.assertEqual((st["merge"]["merged"], st["merge"]["duplicates"]), (2, 2))
+        self.assertEqual((st["merge"]["merged"], st["merge"]["duplicates"]), (3, 3))
 
 
 class RelayRadioRunTest(TwoRadiosRunTest):
@@ -1534,19 +1535,19 @@ class RelayRadioRunTest(TwoRadiosRunTest):
 
     # The parent's tests assume two USB dongles; only the ones below run here.
     def test_both_radios_write_their_own_series_and_the_run_ends_when_both_have(self):
-        pass
+        self.skipTest("two USB dongles")
 
     def test_a_radio_missing_at_start_is_reported_and_attached_when_it_appears(self):
-        pass
+        self.skipTest("two USB dongles")
 
     def test_nothing_plugged_in_is_a_start_failure_naming_every_radio(self):
-        pass
+        self.skipTest("two USB dongles")
 
     def test_a_watchdog_tick_during_the_shutdown_attaches_nothing(self):
-        pass
+        self.skipTest("two USB dongles")
 
     def test_the_status_file_carries_every_radio(self):
-        pass
+        self.skipTest("two USB dongles")
 
     def test_a_relay_is_adopted_streams_its_copies_and_its_loss_is_the_radios_not_the_runs(self):
         from threadwatch.pcap import PcapStreamReader

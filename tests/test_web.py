@@ -74,7 +74,7 @@ class RequestTimeoutTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_the_shipped_handler_bounds_how_long_a_request_may_take(self):
-        self.assertIsNotNone(self.httpd.RequestHandlerClass.timeout)
+        self.assertEqual(self.httpd.RequestHandlerClass.timeout, 30)
 
     def test_a_connection_that_never_sends_a_request_is_dropped_not_parked(self):
         self.httpd.RequestHandlerClass.timeout = 0.5      # the shipped 30 s, sped up

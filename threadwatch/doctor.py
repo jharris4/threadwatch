@@ -150,9 +150,32 @@ def check_credentials(cfg) -> list[Check]:
                         f"{path.name}: network_key must be 32 hex digits; the recorder will not start"))
         else:
             out.append((OK, "credentials", f"{path.name} loads"))
+    except PermissionError:
+        # setup-host.sh locks the file to 0400 for the service user. Run
+        # by anyone else, doctor cannot read it, but the recorder can, so
+        # this is not "the recorder will not start": the key was simply
+        # not checked.
+        out.append((WARN, "credentials", f"{path.name} is not readable by {_whoami()} (owner {_owner(path)}, "
+                                         f"mode {mode:04o}); the key was not checked. Run doctor as the "
+                                         "recorder's user to check it"))
     except Exception as exc:
         out.append((FAIL, "credentials", f"{path.name} unusable ({exc}); the recorder will not start"))
     return out
+
+
+def _whoami() -> str:
+    try:
+        import pwd
+        return pwd.getpwuid(os.geteuid()).pw_name
+    except (ImportError, KeyError):
+        return f"uid {os.geteuid()}"
+
+
+def _owner(path: Path) -> str:
+    try:
+        return path.owner()
+    except (KeyError, NotImplementedError, OSError):
+        return f"uid {path.stat().st_uid}"
 
 
 def check_dongle(cfg, find: Callable[[], str] | None = None,

@@ -144,6 +144,30 @@ else
   echo "    no alerts.env (fine unless a sink references \${VARS}; see docs/ALERTING.md)"
 fi
 
+echo "==> Data directory for $RUN_USER"
+# data/ is gitignored, so a fresh clone has none, and the clone belongs to
+# whoever made it. The recorder creates state/, ring/ and snapshots/ on
+# start-up as $RUN_USER; with --user NAME that is not the cloning user,
+# and the mkdir fails with PermissionError before a frame is heard. The
+# directory is the config's [record] data_dir (relative to the config
+# file) or <repo>/data, read from the same loader the recorder uses.
+DATA_DIR="$(cd "$REPO" && PYTHONPATH="$REPO" "$PY" -c '
+from threadwatch.config import load
+print(load("config/config.toml").data_dir)' 2>/dev/null || true)"
+if [ -z "$DATA_DIR" ]; then
+  DATA_DIR="$REPO/data"
+  echo "    WARN: config/config.toml did not load (the recorder will say why); assuming $DATA_DIR"
+fi
+RUN_GROUP="$(id -gn "$RUN_USER")"
+for d in "$DATA_DIR" "$DATA_DIR/state" "$DATA_DIR/ring" "$DATA_DIR/snapshots"; do
+  mkdir -p "$d"
+  # The directories only, not their contents: a week of ring files is
+  # already the recorder's, and a mount may refuse ownership changes
+  # (doctor's writable line says when that matters).
+  chown "$RUN_USER:$RUN_GROUP" "$d" 2>/dev/null || echo "    WARN: could not chown $d to $RUN_USER"
+done
+echo "    $DATA_DIR owned by $RUN_USER"
+
 echo "==> systemd services"
 if ! command -v systemctl >/dev/null; then
   echo "    no systemd on this host: run '$REPO/bin/threadwatch record' and 'serve' under your own supervisor"

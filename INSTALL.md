@@ -27,7 +27,8 @@ venv where there is no apt/dnf/pacman/zypper; serial-port group
 membership (dialout or uucp); `config/config.toml` from the example if
 missing; `credentials.toml`, `alerts.env` and `ha.env` locked to 0400 if
 present (0400 is why `threadwatch import` cannot rewrite `ha.env` on the
-host afterwards); the two systemd units installed, enabled and started
+host afterwards); the data directory created and owned by the service
+user; the two systemd units installed, enabled and started
 with your user and clone path filled in. Re-run it after any change, including an update.
 
 **On a first install this ends with a `systemctl status` dump,

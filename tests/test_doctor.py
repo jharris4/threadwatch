@@ -97,6 +97,24 @@ class DoctorTest(unittest.TestCase):
         cred.write_text('[credentials]\nnetwork_key = "tooshort"\n')
         self.assertEqual(doctor.check_credentials(self.cfg)[0][0], "FAIL")
 
+    def test_a_key_file_another_user_owns_is_unchecked_not_a_recorder_that_will_not_start(self):
+        # setup-host.sh --user NAME leaves credentials.toml 0400 and NAME's.
+        # doctor run by the operator cannot read it; the recorder can.
+        cred = self.d / "credentials.toml"
+        self.cfg.credentials_path = cred
+        cred.write_text('[credentials]\nnetwork_key = "00112233445566778899aabbccddeeff"\n')
+        os.chmod(cred, 0)
+        try:
+            if os.access(cred, os.R_OK):
+                self.skipTest("running as root: file permissions do not bind")
+            checks = doctor.check_credentials(self.cfg)
+        finally:
+            os.chmod(cred, 0o600)
+        self.assertEqual(self.levels(checks), [("warn", "credentials")])
+        self.assertIn("not readable by", checks[0][2])
+        self.assertIn("mode 0000", checks[0][2])
+        self.assertNotIn("will not start", checks[0][2])
+
     def test_daemon_and_ring_age(self):
         now = 1_700_000_000.0
         self.assertEqual(doctor.check_daemon(self.cfg, now)[0][0], "warn")

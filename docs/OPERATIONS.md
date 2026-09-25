@@ -169,6 +169,7 @@ non-`ok` line means and what to do about it:
 | `credentials` missing | no Thread network key: the recorder does not start | docs/CREDENTIALS.md, or `bin/threadwatch import --write` with Home Assistant |
 | `credentials` is mode NNNN: readable by others | the key is world- or group-readable | `chmod 600 config/credentials.toml` |
 | `credentials` network_key must be 32 hex digits / unusable | the file is there but the key is not | recreate it (docs/CREDENTIALS.md); a key from `ot-ctl networkkey` is 32 hex digits |
+| `credentials` is not readable by USER | the file belongs to the recorder's user (`setup-host.sh --user`) and doctor ran as someone else; the key was not checked | `sudo -u <service user> bin/threadwatch doctor` |
 | `border routers` none found over mDNS | this host cannot hear the border routers' mDNS; an Apple hub's new address after a reboot will stay unnamed | put the host on the routers' subnet or reflect mDNS between VLANs (docs/HOME-ASSISTANT.md); `browse_s = 0` silences it if you have no Apple hubs |
 | `dongle` configured port does not exist | `serial_port` in config.toml names a port that is gone | `ls /dev/serial/by-id/ /dev/ttyACM*`; fix or unset `serial_port` |
 | `dongle` pyserial is not installed | as for `cryptography` above | same fix |

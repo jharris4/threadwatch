@@ -1239,6 +1239,54 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertAlmostEqual(rec["silent_for_s"], 31 * 60, delta=5)
         self.assertEqual(len([r for r in pipe.events.records if r["event"] == "clock_step"]), 1)
 
+    def test_a_clock_step_back_moves_the_stretch_of_presence_with_it(self):
+        # heard_since was left where it was while last_seen moved back, so
+        # the stretch shrank by the step: an unnamed device heard for ten
+        # minutes read as heard for minus twenty, and its silence was filed
+        # as a visit with a negative duration instead of paged.
+        T = time.time()
+        pipe = self._pipe()
+        clock = {"wall": T, "mono": 0.0}
+        pipe._wall, pipe._mono, pipe._clock = (lambda: clock["wall"]), (lambda: clock["mono"]), (T, 0.0)
+        for i in range(0, 600, 20):
+            pipe.ingest(frame(T + i, STRANGER))
+        clock.update(wall=T + 600 - 1800 + 20, mono=620.0)       # the clock steps back 30 min
+        pipe.periodic(clock["wall"])
+        row = pipe.seen.table[STRANGER]
+        self.assertEqual((row["heard_since"], row["last_seen"]), (T - 1800, T + 580 - 1800))
+        clock.update(wall=clock["wall"] + 31 * 60, mono=620.0 + 31 * 60)
+        pipe.periodic(clock["wall"])
+        self.assertEqual(self._quiet(pipe), [STRANGER])
+        self.assertNotIn("visitor_left", [r["event"] for r in pipe.events.records])
+
+    def test_a_clock_step_back_moves_the_nested_row_stamps_and_what_they_are_rewritten_from(self):
+        # The SRP grace, the counter generations, the advertised counters
+        # and the key facts: each compared against now, and each left the
+        # step ahead held its check back for the length of the step.
+        T = time.time()
+        pipe = self._pipe()
+        pipe.ingest(frame(T, SENSOR, counter=5))
+        row = pipe.seen.table[SENSOR]
+        row["srp"] = {"refused": 2, "since": T - 60, "last_ts": T, "accepted_ts": None, "pending_ts": T}
+        row["counter_prev"] = [3, T, 7]
+        row["adv_mle"] = [9, 0, T, "Child ID Request"]
+        pipe._advertised[SENSOR] = {"mle": {"value": 9, "sequence": 0, "ts": T, "command": "Child ID Request",
+                                            "below": 3, "lowest": 4, "said_ts": T}}
+        pipe._rewind(T + 20 - 1800, 1800, 20.0)
+        self.assertEqual(row["counter_ts"], T - 1800)
+        self.assertEqual([row["srp"][k] for k in ("since", "last_ts", "accepted_ts", "pending_ts")],
+                         [T - 60 - 1800, T - 1800, None, T - 1800])
+        self.assertEqual(row["counter_prev"], [3, T - 1800, 7])
+        self.assertEqual(row["adv_mle"], [9, 0, T - 1800, "Child ID Request"])
+        adv = pipe._advertised[SENSOR]["mle"]
+        self.assertEqual((adv["ts"], adv["said_ts"]), (T - 1800, T - 1800))
+        self.assertEqual({ts for gens in pipe._mac_counter[SENSOR].values() for _, ts in [gens]}, {T - 1800})
+        facts = row["key_facts"]
+        self.assertEqual(facts["mac"]["latest"]["ts"], T - 1800)
+        self.assertEqual(facts["highest_authenticated"]["ts"], T - 1800)
+        self.assertEqual([(s["first_ts"], s["last_ts"]) for s in facts["mac"]["accepted"]],
+                         [(T - 1800, T - 1800)])
+
     def test_a_silence_of_exactly_quiet_s_at_start_up_is_not_yet_quiet(self):
         # The start-up reconciliation decides a device has returned with
         # `silence_s(row, now) <= quiet_threshold_s(addr)`. Nothing said

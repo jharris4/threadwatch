@@ -1129,10 +1129,15 @@ class Pipeline:
     # at an appended device_quiet record, which the step does not move. Moving
     # the pointer alone makes the start-up reconciliation miss the record,
     # discard the flag, and page the same unbroken silence a second time.
-    ROW_STAMPS = ("first_seen", "last_seen", "rloc16_ts", "rssi_heard_ts", "rssi_ref_ts",
-                  "starve_confirm_at", "resumed_ts", "vouched_ts", "rejoin_ts",
+    ROW_STAMPS = ("first_seen", "last_seen", "heard_since", "rloc16_ts", "rssi_heard_ts", "rssi_ref_ts",
+                  "starve_confirm_at", "starve_closed", "resumed_ts", "vouched_ts", "rejoin_ts",
                   "keylag_since", "keylag_confirm_at", "keylag_closed",
-                  "unserved_confirm_at", "counter_mismatch_ts")
+                  "unserved_confirm_at", "unserved_closed", "counter_ts", "mle_counter_ts",
+                  "counter_mismatch_ts")
+    # The stamps nested inside a row: the SRP refusal streak, and the
+    # [value, ts, sequence] and [value, sequence, ts, command] lists.
+    SRP_STAMPS = ("since", "last_ts", "accepted_ts", "pending_ts")
+    ROW_LIST_STAMPS = (("counter_prev", 1), ("mle_counter_prev", 1), ("adv_mac", 2), ("adv_mle", 2))
     STATS_STAMPS = ("last_poll_ts", "ack_pending_ts", "poll_pending_ts", "unanswered_since", "confirm_at",
                     "served_wait_ts", "unserved_since", "unserved_confirm_at")
 
@@ -1158,7 +1163,29 @@ class Pipeline:
             for label, t in list((row.get("last_seen_by") or {}).items()):
                 if before(t):
                     row["last_seen_by"][label] = t - back
+            srp = row.get("srp")
+            if isinstance(srp, dict):
+                for key in self.SRP_STAMPS:
+                    if before(srp.get(key)):
+                        srp[key] -= back
+            for key, i in self.ROW_LIST_STAMPS:
+                stamped = row.get(key)
+                if isinstance(stamped, list) and len(stamped) > i and before(stamped[i]):
+                    stamped[i] -= back
+            self._rewind_key_facts(row.get("key_facts"), before, back)
         self.seen._dirty = True
+        # What the row's counter and advertisement stamps are rewritten
+        # from at the next frame.
+        for table in (self._mac_counter, self._mle_counter):
+            for gens in table.values():
+                for seq, (counter, t) in list(gens.items()):
+                    if before(t):
+                        gens[seq] = (counter, t - back)
+        for layers in self._advertised.values():
+            for adv in layers.values():
+                for key in ("ts", "said_ts"):
+                    if before(adv.get(key)):
+                        adv[key] -= back
         self._blind = [(since - back if before(since) else since, length) for since, length in self._blind]
         self._save_blind()
         for stats in self.devices.values():
@@ -1204,6 +1231,35 @@ class Pipeline:
         # retransmission detection, and keeps stamps from before the step
         # out of the comparison entirely.
         self.dup_recent.clear()
+
+    @staticmethod
+    def _rewind_key_facts(state, before, back: float) -> None:
+        """The key-facts stamps, moved as _rewind moves the row's: the
+        latest accepted transmission per layer, which keyfacts.observe
+        refuses to replace with anything older, the highest authenticated,
+        and each span's first and last sighting. A span whose last sighting
+        moves and whose first does not is closed up to it rather than left
+        inverted, which keyfacts.facts would discard."""
+        if not isinstance(state, dict):
+            return
+        points = [state.get("highest_authenticated")]
+        spans = []
+        for layer in ("mac", "mle"):
+            entry = state.get(layer)
+            if isinstance(entry, dict):
+                points.append(entry.get("latest"))
+                for decision in ("accepted", "rejected"):
+                    spans.extend(s for s in entry.get(decision) or () if isinstance(s, dict))
+        for point in points:
+            if isinstance(point, dict) and before(point.get("ts")):
+                point["ts"] -= back
+        for span in spans:
+            for key in ("first_ts", "last_ts"):
+                if before(span.get(key)):
+                    span[key] -= back
+            first, last = span.get("first_ts"), span.get("last_ts")
+            if isinstance(first, (int, float)) and isinstance(last, (int, float)) and first > last:
+                span["first_ts"] = last
 
     # ------------------------------------------------------------ radios
 

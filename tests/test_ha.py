@@ -633,10 +633,11 @@ class WritePrivateTest(unittest.TestCase):
             p = Path(d) / "credentials.toml"
             write_private(p, "[credentials]\nnetwork_key = \"00\"\n")
             self.assertEqual(oct(p.stat().st_mode & 0o777), "0o600")
-            write_private(p, "[credentials]\nnetwork_key = \"11\"\n")
-            self.assertIn('"11"', p.read_text())
+            write_private(p, "[credentials]\nnetwork_key = \"00112233 44556677 8899AABB CCDDEEFF\"\n")
+            self.assertIn('"00112233 44556677', p.read_text())
             self.assertEqual(oct(p.stat().st_mode & 0o777), "0o600")
-            self.assertEqual(ha.current_key(p), "11")
+            # Parsed as the recorder parses it, spelled as the dataset spells it.
+            self.assertEqual(ha.current_key(p), "00112233445566778899aabbccddeeff")
             self.assertEqual(sorted(x.name for x in Path(d).iterdir()), ["credentials.toml"])
 
     def test_a_pre_existing_permissive_temp_file_is_not_written_through(self):

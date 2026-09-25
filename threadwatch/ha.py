@@ -550,8 +550,13 @@ def write_private(path: Path, text: str) -> None:
 
 
 def current_key(path: Path) -> str | None:
+    """The stored network key as the dataset spells it, parsed as the
+    recorder parses it: a key grouped with spaces is the same key."""
     try:
         import tomllib
-        return str(tomllib.loads(path.read_text()).get("credentials", {}).get("network_key", "")).lower() or None
+
+        from .pipeline import parse_network_key
+        key = parse_network_key(tomllib.loads(path.read_text()))
     except Exception:
         return None
+    return key.hex() if key else None

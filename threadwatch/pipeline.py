@@ -1936,6 +1936,12 @@ class Pipeline:
                 self._apply_border_routers([pending], ts)
             if was_new and not self._flooded(ts):
                 known = self._visits.get(who)
+                if known and self.names.name(who) is not None:
+                    # A visitor the operator has since named is a device
+                    # now, first seen under its name; its visits are over.
+                    del self._visits[who]
+                    self._save_visits()
+                    known = None
                 if known:
                     # Back for another visit: its row went with the last
                     # one, but the recorder has not forgotten it.

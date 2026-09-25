@@ -598,6 +598,22 @@ class QuietPolicyTest(unittest.TestCase):
         pipe2.ingest(frame(t0 + 6 * 3600, STRANGER))
         self.assertEqual(about(pipe2), [("visitor_returned", 3)])
 
+    def test_a_visitor_named_since_its_last_visit_is_first_seen_as_the_device(self):
+        pipe = self._pipe()
+        t0 = 1_700_000_000.0
+        for i in range(10):
+            pipe.ingest(frame(t0 + i, STRANGER))
+        pipe.periodic(t0 + 40 * 60)
+        d = Path(self.tmp.name)
+        inventory = json.loads((d / "devices.json").read_text())
+        (d / "devices.json").write_text(json.dumps(inventory + [{"name": "Hall Sensor", "extendedAddress": STRANGER}]))
+        pipe2 = self._pipe()
+        pipe2.ingest(frame(t0 + 3 * 3600, STRANGER))
+        self.assertEqual([(r["event"], r.get("name")) for r in pipe2.events.records if r.get("addr") == STRANGER],
+                         [("device_first_seen", "Hall Sensor")])
+        self.assertNotIn(STRANGER, pipe2._visits)
+        self.assertNotIn(STRANGER, self._pipe()._visits)
+
     def test_a_visitor_back_within_the_quiet_window_is_judged_by_its_latest_stretch(self):
         """The lock opened twice ten minutes apart: the phone attached twice,
         with no silence announced between. Measured from the row's first

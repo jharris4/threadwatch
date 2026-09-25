@@ -1197,7 +1197,10 @@ class TwoRadiosRunTest(unittest.TestCase):
 
             def _stop(self):
                 test.calls.append(("stop",))
+                if test.on_stop is not None:
+                    test.on_stop()
 
+        self.on_stop = None
         module = types.ModuleType("nrf802154_sniffer")
         module.Nrf802154Sniffer = FakeSniffer
         for patcher in (mock.patch.dict(sys.modules, {"nrf802154_sniffer": module}),
@@ -1344,6 +1347,49 @@ class TwoRadiosRunTest(unittest.TestCase):
                          [("start", "/dev/fake-hub"), ("start", "/dev/fake-annex")])
         self.assertIn("stopped after 4 frames", out)
 
+    def test_a_watchdog_tick_during_the_shutdown_attaches_nothing(self):
+        # The stop flag used to be set after the sniffers were stopped: a
+        # tick in between, with the annex just plugged in, attached it and
+        # forked a serial reader that os._exit then abandoned holding the
+        # port, and the next start could not open it.
+        import os
+        import signal
+        for signo in (signal.SIGTERM, signal.SIGINT):
+            self.addCleanup(signal.signal, signo, signal.getsignal(signo))
+        self.ports["BB"] = None
+        self.scripts["/dev/fake-hub"] = self._frames(2)
+        before = {t for t in threading.enumerate() if t.name == "watchdog"}     # objects: idents are reused
+        watchdog_left = []
+
+        def tick_while_stopping():
+            self.ports["BB"] = "/dev/fake-annex"          # plugged in as the run stops
+            ours = [t for t in threading.enumerate() if t.name == "watchdog" and t not in before]
+            self.tick.set()
+            for t in ours:
+                t.join(5)
+            watchdog_left.append(bool(ours) and not any(t.is_alive() for t in ours))
+        self.on_stop = tick_while_stopping
+
+        def stop():
+            time.sleep(0.3)
+            os.kill(os.getpid(), signal.SIGTERM)
+        threading.Thread(target=stop, daemon=True).start()
+        code, out = self._run()
+        self.assertEqual(code, 0)
+        self.assertEqual([c for c in self.calls if c[0] == "start"], [("start", "/dev/fake-hub")])
+        self.assertEqual(watchdog_left, [True])
+        self.assertNotIn("capturing channel 25 from /dev/fake-annex", out)
+        self.assertEqual(self._events(), [("radio_missing", "annex")])
+
+    def test_a_radio_does_not_attach_once_the_run_is_stopping(self):
+        from threadwatch import record
+        radio = record.Radio("annex", "BB", "", None, Path(self.tmp.name) / "annex.fifo", lambda msg: None)
+        stop = threading.Event()
+        stop.set()
+        self.assertFalse(radio.attach(object, 25, None, threading.Lock(), time.monotonic(), stop))
+        self.assertIsNone(radio.sniffer)
+        self.assertFalse(radio.fifo.exists())
+
     def test_nothing_plugged_in_is_a_start_failure_naming_every_radio(self):
         self.ports = {"AA": None, "BB": None}
         code, _out = self._run()
@@ -1431,6 +1477,9 @@ class RelayRadioRunTest(TwoRadiosRunTest):
         pass
 
     def test_nothing_plugged_in_is_a_start_failure_naming_every_radio(self):
+        pass
+
+    def test_a_watchdog_tick_during_the_shutdown_attaches_nothing(self):
         pass
 
     def test_the_status_file_carries_every_radio(self):

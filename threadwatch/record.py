@@ -471,19 +471,24 @@ class Radio:
         where = f" ({self.placement})" if self.placement else ""
         return f"{who}{where}"
 
-    def attach(self, sniffer_cls, channel: int, q, lock: threading.Lock, mono: float) -> bool:
+    def attach(self, sniffer_cls, channel: int, q, lock: threading.Lock, mono: float,
+               stop: threading.Event | None = None) -> bool:
         """Find the dongle and start capturing from it. False when a radio
         named by serial is not enumerated (the single unnamed dongle's port
         was found before the run started, so it always starts here; a port
         that cannot be opened shows up as a sniffer that died). A tcp radio
         opens its listener here and is attached when its relay connects
-        (adopt), so this returns False for it: missing until then."""
+        (adopt), so this returns False for it: missing until then. Nothing
+        is started once ``stop`` is set: the run's shutdown sets it, then
+        stops the sniffers under the same lock."""
         if self.source == "tcp":
             self._listen(q)
             if self.state != "up":
                 self.state, self.state_mono = "missing", mono
             return False
         with lock:
+            if stop is not None and stop.is_set():
+                return False
             if self.serial is not None:
                 port = resolve_radio_port(self.serial)
                 if port is None:
@@ -906,7 +911,7 @@ def run_record(cfg: Config) -> None:
         that stalled while another hears is detached and reported, not the
         whole run restarted; a radio missing or down is looked for again.
         With one radio the whole-run verdicts below are the supervision."""
-        if len(radios) < 2:
+        if len(radios) < 2 or watchdog_stop.is_set():
             return
         hearing = [r for r in radios if r.state == "up" and r.last_frame_mono is not None
                    and not capture_stalled(mono - r.last_frame_mono)]
@@ -927,7 +932,7 @@ def run_record(cfg: Config) -> None:
                 continue                                     # its relay reconnects by itself
             if r.state in ("missing", "down") and mono - r.state_mono >= REATTACH_S:
                 was = r.state
-                if r.attach(Nrf802154Sniffer, cfg.channel, frames_q, attach_lock, mono):
+                if r.attach(Nrf802154Sniffer, cfg.channel, frames_q, attach_lock, mono, watchdog_stop):
                     _log(f"capturing channel {cfg.channel} from {r.port} ({r.describe()})")
                     _radio_event(r, "radio_returned" if was == "down" else "radio_attached", "info",
                                  f"{r.describe()} is capturing again from {r.port}" if was == "down"
@@ -951,6 +956,8 @@ def run_record(cfg: Config) -> None:
                 _supervise(mono)
             except Exception as exc:  # supervision must not take the watchdog down
                 _log(f"radio supervision failed: {exc}")
+            if watchdog_stop.is_set():
+                return          # the run stopped during this tick: no verdict on its shutdown
             verdict = watchdog_verdict(age, ring_open=beat["ring"] is not None,
                                        sniffer_alive=any(r.sniffer_alive() for r in radios))
             if verdict == EXIT_SNIFFER_DIED:
@@ -1105,6 +1112,9 @@ def run_record(cfg: Config) -> None:
         _log("recorder crashed; exiting for supervisor restart")
         exit_code = 1
     finally:
+        # First: a watchdog tick from here on would write status.json, take
+        # an exit decision or attach a sniffer while the run is put away.
+        watchdog_stop.set()
         # A second Ctrl-C here (or a SIGTERM racing a Ctrl-C) would raise
         # SystemExit out of this block, skip the os._exit below, and leave
         # the interpreter hanging on the sniffer's non-daemon thread until
@@ -1128,12 +1138,21 @@ def run_record(cfg: Config) -> None:
                     return True
 
             def stop_sniffers():
-                failed = []
-                for r in radios:
-                    try:
-                        r.stop_sniffer()
-                    except Exception as exc:
-                        failed.append(f"{r.describe()}: {exc}")
+                # Under the attach lock: a watchdog tick that was already
+                # past its stop check finishes its attach first and that
+                # sniffer is stopped here too, or sees the stop and starts
+                # none. An attach waits at most 10 s for its fork.
+                locked = attach_lock.acquire(timeout=15)
+                failed = [] if locked else ["attach lock not released; stopping without it"]
+                try:
+                    for r in radios:
+                        try:
+                            r.stop_sniffer()
+                        except Exception as exc:
+                            failed.append(f"{r.describe()}: {exc}")
+                finally:
+                    if locked:
+                        attach_lock.release()
                 if failed:
                     raise RuntimeError("; ".join(failed))
 
@@ -1157,7 +1176,6 @@ def run_record(cfg: Config) -> None:
             # pipeline before the rings close: the last quarter second.
             cleanup("merger flush", lambda: [_take(out) for out in merger.release(flush=True)])
             lost = cleanup("sniffer stop", stop_sniffers)
-            watchdog_stop.set()
             lost |= cleanup("last-seen save", pipe.seen.save)
             lost |= cleanup("key journal save", lambda: pipe.journal.save(force=True))
             lost |= cleanup("ring close", close_rings)

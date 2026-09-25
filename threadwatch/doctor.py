@@ -587,8 +587,8 @@ def _check_archive(cfg, slug: str, now: float) -> list[Check]:
     text = f"{slug}: archive up to {last} UTC ({age / 60:.0f} min behind)"
     if status.get("pending"):
         text += f", {len(status['pending'])} hour(s) pending"
-    if status.get("lost"):
-        text += f", {len(status['lost'])} lost"
+    if status.get("lost_hours"):
+        text += f", {status['lost_hours']} lost"
     if age > ARCHIVE_STALE_S:
         return [(WARN, "ha-logs", text + ": the archive has not kept up; is the recorder running, and does HA answer?")]
     return [(OK, "ha-logs", text)]

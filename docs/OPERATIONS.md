@@ -335,7 +335,7 @@ file.) The fields:
 | `crypto` | the decryption counters, below, and `key_sequence`, the highest Thread key sequence a frame has decrypted under (null until one has) |
 | `ha_availability` | null unless `[ha_availability]` is on; then `enabled`, `reachable`, `last_poll_ts`, `last_ok_ts`, `devices_mapped`, `burst` (the live burst's id) and `open`: the devices unavailable in HA right now, each with `name`, `addr`, `since`, `paged`, `severity`, `burst_id` |
 | `otbr_inventory` | null when disabled or not yet sampled; otherwise the latest optional SSH inventory sample status, start/completion times and per-command outcomes (see below) |
-| `ha_logs_archive` | null unless `[ha_logs] archive` is on; then per add-on `last_archived` (the newest hour in `data/ha-logs/`, a UTC hour name), `hours_on_disk`, `pending` (hours a fetch has failed for and will be retried) and `lost` (hours that rolled out of HA's journal before they could be fetched) |
+| `ha_logs_archive` | null unless `[ha_logs] archive` is on; then per add-on `last_archived` (the newest hour in `data/ha-logs/`, a UTC hour name), `hours_on_disk`, `pending` (hours a fetch has failed for and will be retried) and `lost_hours` / `lost` (how many hours rolled out of HA's journal before they could be fetched, and which, consecutive hours as `first..last`; forgotten past `[record] keep_hours`) |
 | `keys` | the key generations as the recorder records them (docs/ALERTING.md, `key_sequence_advanced`): `highest` and `previous`, `highest_first_ts` and `previous_first_ts` (when each was first heard), `first_sender` (which address was heard first under the highest), `suspects` (unconfirmed origin candidates: the first sender, and every device since whose first frame on the new generation came while its parent was still on the old one; each with `evidence`, `parent` and `parent_generation`, as `key_sequence_advanced` records them) and `scope`, `confidence`, `reasons` (observation provenance; legacy state defaults to unknown), the interval facts of the last advance (`observed_interval_s`, `sequence_delta`, `observation_kind`, `coverage`, `scheduled_expectation`, `early_against_configured_interval`, as `key_sequence_advanced` records them; absent in legacy state), plus `census_at` (when the census for it is due, null once sent) and optional `snapshot_pair` (`sequence`, `observed_at`, `census_claimed`: the persisted automatic pair reservation). Empty until a frame has been accepted under any generation. `highest` can trail `crypto.key_sequence` for a moment: the decryptor's value moves on any frame that decrypts, this one on a frame the pipeline accepted as a sighting |
 | `alerts` | this run's deliveries: `delivered`, `queued` (held for a send or a retry), `retrying` (failed at least once), `given_up` (too old to retry), `resumed` (taken from the spool the last run left; docs/ALERTING.md) |
 
@@ -405,8 +405,9 @@ it up if you care about the history; nothing else holds it.
                              restart never announces a rotation twice (docs/ALERTING.md,
                              key_sequence_advanced)
         ha-logs-archive.json with [ha_logs] archive: per add-on the last hour archived, the hours
-                             still pending (attempts, last error) and the hours lost, plus the
-                             outage in progress, so a restart carries on where the archive stopped
+                             still pending (attempts, last error) and the hours lost (back to
+                             [record] keep_hours), plus the outage in progress, so a restart
+                             carries on where the archive stopped
         ha-map.json          with [ha_availability]: HA device id -> extended address, HA name, the
                              inventory's name for it, and the entities whose state counts; rebuilt
                              over the websocket once an hour and cached so a restart polls at once

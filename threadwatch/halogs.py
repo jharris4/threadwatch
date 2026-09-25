@@ -521,6 +521,37 @@ def hours_between(since: float, until: float) -> list[str]:
     return [hour_name(t) for t in range(int(first), int(until - 1e-9) + 1, 3600) if t < until]
 
 
+def hour_ranges(names) -> list[str]:
+    """Hour names as runs: consecutive hours as "first..last", a lone
+    hour as itself. Names may carry a "slug/" prefix: add-ons keep the
+    order they first appear in, each one's hours oldest first, and runs
+    never cross add-ons."""
+    by_slug: dict[str, set[str]] = {}
+    for name in names:
+        prefix, sep, h = name.rpartition("/")
+        by_slug.setdefault(prefix + sep, set()).add(h)
+    out = []
+    for prefix, hours in by_slug.items():
+        run: list[str] = []
+        for h in sorted(hours) + [None]:
+            if run and h is not None and hour_start(h) - hour_start(run[-1]) == 3600.0:
+                run.append(h)
+                continue
+            if run:
+                out.append(prefix + (run[0] if len(run) == 1 else f"{run[0]}..{run[-1]}"))
+            run = [h]
+    return out
+
+
+def lookback_start(cfg, now: float) -> float:
+    """The oldest hour the archive keeps any record of: [record] keep_hours
+    back (the ring's reach, and the archive files'), or [ha_logs]
+    max_hours when that is longer. A catch-up never walks further back,
+    and a lost hour older than this is forgotten."""
+    hours = max(cfg.keep_hours, cfg.ha_logs_max_hours)
+    return float(int((now - hours * 3600.0) // 3600) * 3600)
+
+
 def archive_dir(cfg) -> Path:
     return cfg.data_dir / ARCHIVE_DIR
 
@@ -574,8 +605,9 @@ def hours_due(cfg, state: dict, slug: str, now: float) -> tuple[list[str], list[
     ARCHIVE_GRACE_S ago), oldest first; and the ones that have rolled out
     of the journal since they were missed, which are recorded as lost
     rather than asked for again. The catch-up starts at the hour after the
-    last archived one (the recorder was down, HA was down), or at the
-    window's edge on the very first pass. An hour still pending is due
+    last archived one (the recorder was down, HA was down), never before
+    lookback_start, or at the window's edge on the very first pass. An
+    hour still pending is due
     whatever is on disk for it: a fetch that broke off part-way leaves
     the hour pending, and the retry asks for the whole hour again."""
     entry = _slug_state(state, slug)
@@ -585,11 +617,13 @@ def hours_due(cfg, state: dict, slug: str, now: float) -> tuple[list[str], list[
     if hour_start(newest_whole) + 3600.0 + ARCHIVE_GRACE_S > now:
         newest_whole = hour_name(hour_start(newest_whole) - 3600.0)
     if entry["last_archived"]:
-        start = hour_start(entry["last_archived"]) + 3600.0
+        start = max(hour_start(entry["last_archived"]) + 3600.0, lookback_start(cfg, now))
     else:
         start = int(floor // 3600) * 3600
     span = hours_between(start, hour_start(newest_whole) + 3600.0)
-    candidates = sorted(h for h in set(span) | set(entry["pending"]) if h not in have and h not in entry["lost"])
+    oldest = lookback_start(cfg, now)
+    candidates = sorted(h for h in set(span) | set(entry["pending"])
+                        if h not in have and h not in entry["lost"] and hour_start(h) >= oldest)
     lost = [h for h in candidates if hour_start(h) + 3600.0 <= floor]
     due = [h for h in candidates if h not in lost]
     return due, lost
@@ -605,7 +639,10 @@ def archive_pass(cfg, now: float, settings: tuple | None, secrets=(), state: dic
     pending. A fetch cut short (a read timeout, the deadline, a reset)
     leaves nothing in the archive: the hour stays pending and is fetched
     whole on the retry, so every file on disk is a whole hour. Hours that
-    roll out of the journal while pending are marked lost. Returns {archived, lost, pending, failed, events, state}: the
+    roll out of the journal while pending are marked lost, and forgotten
+    once older than lookback_start, so the state stays bounded however
+    long the outage. Returns {archived, lost, pending, failed, events,
+    state}: the
     events are ha_logs_archive_stalled (once per outage, when hours have
     been pending ARCHIVE_STALLED_S) and ha_logs_archive_resumed (once,
     when the catch-up completes), for the caller to emit."""
@@ -616,8 +653,12 @@ def archive_pass(cfg, now: float, settings: tuple | None, secrets=(), state: dic
         return out
     url, token = settings
     stopped = False
+    oldest = lookback_start(cfg, now)
     for slug in cfg.ha_logs_addons:
         entry = _slug_state(state, slug)
+        for table in (entry["pending"], entry["lost"]):
+            for h in [h for h in table if hour_start(h) < oldest]:
+                del table[h]
         due, lost = hours_due(cfg, state, slug, now)
         for h in lost:
             was = entry["pending"].pop(h, None)
@@ -669,15 +710,16 @@ def archive_pass(cfg, now: float, settings: tuple | None, secrets=(), state: dic
         archived_now = out["archived"]
         lost_now = out["lost"]
         out["events"].append(("ha_logs_archive_resumed", "info", {
-            "archived": archived_now, "lost": lost_now, "since": outage["since"],
+            "archived": archived_now, "lost": hour_ranges(lost_now), "since": outage["since"],
             "note": (f"the HA add-on log archive caught up after {(now - outage['since']) / 60:.0f} min: "
                      f"{len(archived_now)} hour(s) archived"
-                     + (f", {len(lost_now)} lost (" + ", ".join(lost_now) + ")" if lost_now else ", nothing lost"))}))
+                     + (f", {len(lost_now)} lost (" + ", ".join(hour_ranges(lost_now)) + ")" if lost_now
+                        else ", nothing lost"))}))
         state["outage"] = {}
     save_archive_state(cfg, state)
     if log is not None and (out["archived"] or out["lost"] or out["failed"]):
         log(f"ha-logs archive: {len(out['archived'])} hour(s) archived"
-            + (f", lost {', '.join(out['lost'])}" if out["lost"] else "")
+            + (f", lost {', '.join(hour_ranges(out['lost']))}" if out["lost"] else "")
             + (f", failed: {out['failed']}" if out["failed"] else ""))
     return out
 
@@ -712,7 +754,8 @@ def prune_archive(cfg, keep_hours: int | None = None, keep_bytes: int | None = N
 
 def archive_status(cfg, state: dict | None = None) -> dict:
     """The status.json entry: per add-on the last hour archived, the hours
-    on disk, the hours pending and the hours lost."""
+    on disk, the hours pending, and the hours lost as a count and as
+    hour_ranges."""
     state = state if state is not None else load_archive_state(cfg)
     out = {}
     for slug in cfg.ha_logs_addons:
@@ -720,7 +763,7 @@ def archive_status(cfg, state: dict | None = None) -> dict:
         have = archived_hours(cfg, slug)
         out[slug] = {"last_archived": entry["last_archived"] or (have[-1] if have else None),
                      "hours_on_disk": len(have), "pending": sorted(entry["pending"]),
-                     "lost": sorted(entry["lost"])}
+                     "lost_hours": len(entry["lost"]), "lost": hour_ranges(entry["lost"])}
     return out
 
 

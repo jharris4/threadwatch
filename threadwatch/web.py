@@ -970,8 +970,8 @@ class Site:
                     text = f'{esc(slug)}: ' + (f'up to {esc(last)} UTC' if last else "nothing archived yet")
                     if a.get("pending"):
                         text += f' <span class="warn">{len(a["pending"])} pending</span>'
-                    if a.get("lost"):
-                        text += (f' <span class="bad">{len(a["lost"])} lost</span> '
+                    if a.get("lost_hours"):
+                        text += (f' <span class="bad">{a["lost_hours"]} lost</span> '
                                  f'<span class="muted">({esc(", ".join(a["lost"]))})</span>')
                     parts.append(text)
                 row("HA log archive", "; ".join(parts) or '<span class="muted">no add-ons</span>')

@@ -778,7 +778,8 @@ class ArchiveTest(unittest.TestCase):
         out = self._pass(self.H22 + 3600 + 120)
         self.assertEqual(out["archived"], [f"{OTBR}/20250913-22", f"{MATTER}/20250913-22"])
         self.assertEqual(halogs.archive_status(self.cfg)[OTBR],
-                         {"last_archived": "20250913-22", "hours_on_disk": 7, "pending": [], "lost": []})
+                         {"last_archived": "20250913-22", "hours_on_disk": 7, "pending": [], "lost_hours": 0,
+                          "lost": []})
 
     def test_while_ha_is_down_each_pass_sends_one_request_and_the_catch_up_is_oldest_first(self):
         self._pass(self.H22 + 120)
@@ -858,6 +859,43 @@ class ArchiveTest(unittest.TestCase):
         n = len(self.srv.requests)
         self._pass(t + 25 * 900)
         self.assertFalse(any(rng.startswith(f"realtime={int(self.H22)}:") for _s, rng in self._requests(n)))
+
+    def test_a_long_outage_keeps_lost_hours_back_to_keep_hours_and_lists_them_as_ranges(self):
+        self._pass(self.H22 + 120)                                  # 16:00-21:00 archived
+        self.cfg.keep_hours = 24
+        self.srv.status = 503
+        # A month with the recorder off; HA down too at the first pass.
+        # Lost: the hours from keep_hours back up to the max_hours (6 h)
+        # window, 22:00 to 15:00 the day before; 16:00 onwards is due.
+        t = self.H22 + 30 * 86400 + 120
+        n = len(self.srv.requests)
+        out = self._pass(t)
+        first, last = halogs.hour_name(self.H22 + 29 * 86400), halogs.hour_name(self.H22 + 30 * 86400 - 7 * 3600)
+        self.assertEqual(halogs.hour_ranges(x for x in out["lost"] if x.startswith(OTBR)), [f"{OTBR}/{first}..{last}"])
+        self.assertEqual(len(halogs.load_archive_state(self.cfg)["addons"][OTBR]["lost"]), 18)
+        self.assertEqual(self._requests(n), [(OTBR, f"realtime={int(self.H22 + 30 * 86400 - 6 * 3600)}:"
+                                                    f"{int(self.H22 + 30 * 86400 - 5 * 3600)}")])
+        # A week later, HA back: last week's lost and pending hours are
+        # past keep_hours and forgotten, not joined by a week more.
+        self.srv.status = 200
+        t2 = t + 7 * 86400
+        out = self._pass(t2)
+        first, last = halogs.hour_name(self.H22 + 36 * 86400), halogs.hour_name(self.H22 + 37 * 86400 - 7 * 3600)
+        state = halogs.load_archive_state(self.cfg)
+        self.assertEqual((len(state["addons"][OTBR]["lost"]), state["addons"][OTBR]["pending"]), (18, {}))
+        self.assertEqual(min(state["addons"][OTBR]["lost"]), first)
+        self.assertEqual(halogs.archive_status(self.cfg, state)[OTBR]["lost"], [f"{first}..{last}"])
+        self.assertEqual(halogs.archive_status(self.cfg, state)[OTBR]["lost_hours"], 18)
+        resumed = [e[2] for e in out["events"] if e[0] == "ha_logs_archive_resumed"][0]
+        self.assertEqual(resumed["lost"], [f"{OTBR}/{first}..{last}", f"{MATTER}/{first}..{last}"])
+        self.assertIn(f"36 lost ({OTBR}/{first}..{last}, {MATTER}/{first}..{last})", resumed["note"])
+
+    def test_hour_ranges_join_consecutive_hours_per_addon_in_first_seen_order(self):
+        self.assertEqual(halogs.hour_ranges(["20250913-23", "20250914-00", "20250914-02", "20250913-22"]),
+                         ["20250913-22..20250914-00", "20250914-02"])
+        self.assertEqual(halogs.hour_ranges([f"{OTBR}/20250913-22", f"{MATTER}/20250913-23", f"{OTBR}/20250913-23"]),
+                         [f"{OTBR}/20250913-22..20250913-23", f"{MATTER}/20250913-23"])
+        self.assertEqual(halogs.hour_ranges([]), [])
 
     def test_a_fetch_cut_short_leaves_no_file_and_the_hour_is_fetched_whole_on_the_next_pass(self):
         self._pass(self.H22 + 120)
@@ -1190,12 +1228,13 @@ class RecorderArchiveTest(unittest.TestCase):
         (self.cfg.state_dir / "status.json").write_text(json.dumps({
             "updated": now, "last_frame_age_s": 1,
             "ha_logs_archive": {OTBR: {"last_archived": "20250913-21", "hours_on_disk": 6,
-                                        "pending": ["20250913-22"], "lost": ["20250913-15"]}}}))
+                                        "pending": ["20250913-22"], "lost_hours": 3,
+                                        "lost": ["20250913-13..20250913-15"]}}}))
         body = Site(self.cfg).status_page()
         self.assertIn("<th>HA log archive</th>", body)
         self.assertIn(f"{OTBR}: up to 20250913-21 UTC", body)
         self.assertIn('<span class="warn">1 pending</span>', body)
-        self.assertIn('<span class="bad">1 lost</span> <span class="muted">(20250913-15)</span>', body)
+        self.assertIn('<span class="bad">3 lost</span> <span class="muted">(20250913-13..20250913-15)</span>', body)
 
     def test_with_the_archive_off_nothing_runs_and_status_is_null(self):
         self.cfg.ha_logs_archive = False

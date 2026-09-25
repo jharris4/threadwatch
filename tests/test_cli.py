@@ -1054,10 +1054,6 @@ class ConfigValidationTest(unittest.TestCase):
         self.assertEqual(levels["config"], "warn")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class SnapshotLogSummaryTest(unittest.TestCase):
     """The lines `threadwatch snapshot` prints for the HA add-on logs: an
     add-on whose hours came from the archive says how many were kept, not
@@ -1089,3 +1085,7 @@ class SnapshotLogSummaryTest(unittest.TestCase):
                       "1 lost (20260922-15); 1 partial", text)
         self.assertIn("  matter: nothing kept (HTTP 502)", text)
         self.assertIn("ha-logs: partial", text)
+
+
+if __name__ == "__main__":
+    unittest.main()

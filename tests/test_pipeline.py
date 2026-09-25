@@ -5037,10 +5037,6 @@ class DeviceRssiEwmaTest(unittest.TestCase):
             self.assertEqual(pipe.seen.table[ROUTER]["rssi"], -61.8)      # the table's average agrees
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class RadiosTest(unittest.TestCase):
     """What the pipeline keeps per radio, and what a radio going down
     changes about a silence."""
@@ -6272,3 +6268,7 @@ class RouterSetChangedTest(unittest.TestCase):
         self.assertEqual(rec["previous_sample_ts"], t0 + 600)        # the failed sample was skipped over
         self.assertIn("after the partition change at " + time.strftime("%H:%M:%S", time.localtime(t0 + 1500)),
                       rec["note"])
+
+
+if __name__ == "__main__":
+    unittest.main()

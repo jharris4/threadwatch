@@ -1093,10 +1093,6 @@ class RunRecordTest(unittest.TestCase):
                     self.assertEqual(self._exit_note()["reason"], "stopped")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class FindSniffersTest(unittest.TestCase):
     """Dongles by serial, one entry each, and no guessing between two."""
 
@@ -1599,3 +1595,7 @@ class RelayRadioRunTest(TwoRadiosRunTest):
         self.assertIn("refused: relay is radio 'attic', this listener is 'annex'", out)
         self.assertIn("refused: relay captures channel 11, this recorder channel 25", out)
         self.assertEqual(self._events(), [("radio_missing", "annex")])
+
+
+if __name__ == "__main__":
+    unittest.main()

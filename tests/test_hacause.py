@@ -83,10 +83,6 @@ class ClassifyTest(unittest.TestCase):
         self.assertEqual(classify(row(last_seen=SINCE - 60, quiet_reported=True), None, SINCE, NOW)[0], "unheard")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class DroppedPollsAndMismatchTest(unittest.TestCase):
     def test_the_two_causes_sit_between_key_lag_and_lost_parent(self):
         parent = row(counter_seq=86, counter_ts=NOW - 30)
@@ -96,3 +92,7 @@ class DroppedPollsAndMismatchTest(unittest.TestCase):
         self.assertEqual(classify(row(counter_mismatch_ts=NOW - 3 * 3600), None, SINCE, NOW)[0], "radio_ok")
         self.assertEqual(classify(row(counter_seq=84, counter_ts=NOW - 30, counter_mismatch_ts=NOW - 60),
                                   parent, SINCE, NOW)[0], "key_lag")
+
+
+if __name__ == "__main__":
+    unittest.main()

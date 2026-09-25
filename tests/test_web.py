@@ -462,10 +462,6 @@ class PageBranchTest(unittest.TestCase):
             self.assertIn("error", json.loads(cm.exception.read()), path)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class DevicesByModelTest(unittest.TestCase):
     """The devices page tallies the inventory's models: how many of each
     are tracked and how many of them are quiet, marginal or unavailable."""
@@ -506,3 +502,7 @@ class DevicesByModelTest(unittest.TestCase):
                           '<td class="n">1</td></tr>'
                           '<tr><td>Apple TV 4K</td><td class="n">1</td><td class="n"></td><td class="n"></td>'
                           '<td class="n"></td></tr>', body)
+
+
+if __name__ == "__main__":
+    unittest.main()

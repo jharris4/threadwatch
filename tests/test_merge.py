@@ -334,10 +334,6 @@ class OfflineTest(unittest.TestCase):
         self.assertEqual([f.radio for f in out], [None] * 5)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class SoakTest(unittest.TestCase):
     def test_ten_simulated_minutes_at_the_measured_drift_merge_exactly(self):
         """Every on-air event heard by any radio comes out once, with
@@ -387,3 +383,7 @@ class SoakTest(unittest.TestCase):
                 self.assertLess(abs(f.ts - t), 200e-6)      # a mapped annex-only copy
         self.assertTrue(m.aligners["annex"].locked)
         self.assertAlmostEqual(m.aligners["annex"].b * 1e6, 79.0, delta=3.0)
+
+
+if __name__ == "__main__":
+    unittest.main()

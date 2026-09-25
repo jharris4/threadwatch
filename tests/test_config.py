@@ -755,10 +755,6 @@ class UnknownNamesTest(unittest.TestCase):
         self.assertEqual(opaque, {"heartbeats"})
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class RadiosTest(unittest.TestCase):
     """[record] radios: every dongle by serial, or nothing at all."""
 
@@ -818,3 +814,7 @@ class RadiosTest(unittest.TestCase):
             with self.subTest(what), self.assertRaises(ValueError) as cm:
                 self._load(text)
             self.assertIn("radios", str(cm.exception), what)
+
+
+if __name__ == "__main__":
+    unittest.main()

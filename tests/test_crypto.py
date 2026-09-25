@@ -150,10 +150,6 @@ class ParseMleTest(unittest.TestCase):
         self.assertEqual(len(d._keys_for_index(1)), d.INITIAL_GENERATIONS)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 def mac_2015(src_ext: str, counter: int, payload: bytes, *, ftype: int = 1, ies: bytes = b"",
              sequence: int = 0) -> bytes:
     """A frame version 2 (802.15.4-2015) frame secured as Thread secures
@@ -205,3 +201,7 @@ class FrameCounterTlvTest(unittest.TestCase):
                          ("Child ID Request", 1_280_176_180, 1029, 1029))
         plain = d.parse_mle(mle_mode1(SED, 15, 1030, advertisement()), SED, SRC_IP, DST_IP)
         self.assertEqual((plain.link_frame_counter, plain.mle_frame_counter), (None, None))
+
+
+if __name__ == "__main__":
+    unittest.main()

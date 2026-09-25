@@ -79,6 +79,19 @@ class CollectionTest(unittest.TestCase):
         self.assertEqual(stray, [], "classes with test_ methods that are not unittest.TestCase "
                                     "subclasses; unittest collects none of their tests.")
 
+    def test_nothing_follows_the_main_guard(self):
+        # `python tests/test_x.py` runs unittest.main() when it reaches
+        # the guard, so a class defined below it is never collected on a
+        # direct run, which still reports OK. discover imports the whole
+        # module and hides it.
+        late = []
+        for path, tree in self._modules():
+            for i, node in enumerate(tree.body):
+                if isinstance(node, ast.If) and "__name__" in ast.unparse(node.test):
+                    late += [f"{path.name}:{n.lineno}" for n in tree.body[i + 1:]]
+        self.assertEqual(late, [], "code below `if __name__ == \"__main__\"`; a direct run of the "
+                                   "file skips it. Move the guard to the end.")
+
     def test_nothing_depends_on_pytest(self):
         # Fixtures, parametrize and pytest.raises all vanish under
         # unittest discover, and installing pytest in CI is not the

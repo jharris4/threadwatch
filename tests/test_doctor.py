@@ -833,10 +833,6 @@ class CheckBorderRoutersTest(unittest.TestCase):
         self.assertIn("none found over mDNS", routers[0][2])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class RadiosDoctorTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -1001,3 +997,7 @@ class OtbrCheckTest(unittest.TestCase):
         self.cfg.otbr_enabled = False
         checks = doctor.run_doctor(self.cfg, find_port=lambda: "/dev/x", now=self.now)
         self.assertEqual([c for c in checks if c[1] == "otbr"], [])
+
+
+if __name__ == "__main__":
+    unittest.main()

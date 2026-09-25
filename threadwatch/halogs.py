@@ -416,13 +416,26 @@ def recover_interrupted(snapshots_dir: Path) -> list[str]:
         if fd is None:
             continue                       # a fetch by hand, still running
         try:
-            for part in sorted((d / LOG_DIR).glob("*" + PART_SUFFIX)) if (d / LOG_DIR).is_dir() else []:
+            stopped = "the recorder stopped during the fetch; what arrived is kept"
+            logs = d / LOG_DIR
+            for part in sorted(logs.glob("*" + PART_SUFFIX)) if logs.is_dir() else []:
                 final = part.with_suffix(".gz")
                 part.replace(final)
                 slug = final.name[:-len(".log.gz")]
                 entry = status["addons"].setdefault(slug, {"slug": slug})
                 entry.update(file=f"{LOG_DIR}/{final.name}", complete=False, bytes_gz=final.stat().st_size,
-                             error="the recorder stopped during the fetch; what arrived is kept", source="live")
+                             error=stopped, source="live")
+            # With the archive on: ha-logs/<slug>/<hour>.log.part, an hour fetched live.
+            for part in sorted(logs.glob("*/*" + PART_SUFFIX)) if logs.is_dir() else []:
+                final = part.with_suffix(".gz")
+                part.replace(final)
+                slug, h = part.parent.name, final.name[:-len(".log.gz")]
+                entry = status["addons"].setdefault(slug, {"slug": slug})
+                hours = entry["hours"] if isinstance(entry.get("hours"), dict) else {}
+                hours[h] = {"source": "live", "file": f"{LOG_DIR}/{slug}/{final.name}", "complete": False,
+                            "bytes_gz": final.stat().st_size, "error": stopped}
+                entry.update(hours=dict(sorted(hours.items())), complete=False, source="archive+live",
+                             error=f"{h}: {stopped}")
             for entry in status["addons"].values():
                 if not entry.get("complete") and not entry.get("error"):
                     entry["error"] = "the recorder stopped before this add-on's log was fetched"

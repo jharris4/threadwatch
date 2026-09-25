@@ -515,6 +515,34 @@ class SnapshotLogsTest(unittest.TestCase):
         self.assertEqual(halogs.recover_interrupted(self.cfg.snapshots_dir), [])      # once
         self.assertEqual(halogs.retries_due(self.cfg, self.now + 900), [dest])          # and the retry takes it
 
+    def test_an_hour_the_recorder_died_fetching_into_the_archive_layout_is_recovered(self):
+        dest = self._snapshot()
+        hours = dest / "ha-logs" / OTBR
+        hours.mkdir(parents=True)
+        with gzip.open(hours / "20250913-15.log.gz", "wb") as gz:
+            gz.write(journal_line(self.hour, "an archive hour copied before the stop").encode())
+        with gzip.open(hours / "20250913-16.log.part", "wb") as gz:
+            gz.write(journal_line(self.hour + 3600, "arrived before the stop").encode())
+        (dest / "ha-logs.json").write_text(json.dumps({
+            "status": "fetching", "reason": None, "saved_at": self.now, "requested": [self.hour, self.now],
+            "attempts": 1, "addons": {OTBR: {"slug": OTBR, "file": None, "complete": False, "error": None},
+                                      MATTER: {"slug": MATTER, "file": None, "complete": False, "error": None}}}))
+        self.assertEqual(halogs.recover_interrupted(self.cfg.snapshots_dir), [dest.name])
+        status = json.loads((dest / "ha-logs.json").read_text())
+        self.assertEqual(status["status"], "partial")
+        otbr = status["addons"][OTBR]
+        self.assertEqual(list(otbr["hours"]), ["20250913-16"])
+        self.assertEqual((otbr["hours"]["20250913-16"]["file"], otbr["hours"]["20250913-16"]["complete"]),
+                         (f"ha-logs/{OTBR}/20250913-16.log.gz", False))
+        self.assertIn("stopped during the fetch", otbr["error"])
+        self.assertFalse(otbr["complete"])
+        self.assertTrue((hours / "20250913-16.log.gz").exists())
+        self.assertFalse((hours / "20250913-16.log.part").exists())
+        manifest = json.loads((dest / "manifest.json").read_text())
+        self.assertIn(f"ha-logs/{OTBR}/20250913-16.log.gz", manifest["files"])
+        self.assertEqual(manifest["ha_logs"]["addons"][OTBR]["hours"]["20250913-16"]["complete"], False)
+        self.assertEqual(halogs.retries_due(self.cfg, self.now + 900), [dest])
+
     def test_ctrl_c_before_a_log_line_arrives_settles_the_status_and_the_retry_takes_it(self):
         from unittest import mock
         srv = FakeSupervisor(self.lines)

@@ -233,6 +233,11 @@ class Tracker:
         # these after apply and retires the old rows, which live on its
         # thread and are never written here.
         self.rotations: list[dict] = []
+        # device id -> when this run's polls stopped reporting a device
+        # whose episode is open, and the map entry it had (a refresh that
+        # drops the device drops its name and address too). In memory: a
+        # restart starts the count again.
+        self.absent: dict[str, dict] = {}
         self.state = load_state(state_path)
         # Every start is a baseline: an episode carried over that was not
         # paged is one the last run never got to, and is said at notice.
@@ -264,7 +269,7 @@ class Tracker:
         return self.cfg.ha_availability_hold_s if hold is None else hold
 
     def _info(self, device_id: str) -> dict:
-        return self.mapping.get(device_id) or {}
+        return self.mapping.get(device_id) or (self.absent.get(device_id) or {}).get("info") or {}
 
     def _label(self, device_id: str) -> str:
         info = self._info(device_id)
@@ -328,12 +333,15 @@ class Tracker:
         st["fail_since"] = None
         st["ha_last_ok_ts"] = now
         self.baseline_pending = False
+        episodes = st["episodes"]
         if isinstance(result.get("map"), dict):
             self._note_rotations(result["map"], now)
+            for device_id in episodes:
+                if device_id not in result["map"] and device_id in self.mapping:
+                    self.absent.setdefault(device_id, {"since": now, "info": self.mapping[device_id]})
             self.mapping = result["map"]
         devices = result.get("devices") or {}
         self.mapped = len(devices)
-        episodes = st["episodes"]
         for device_id, (down, since) in devices.items():
             ep = episodes.get(device_id)
             if down and ep is None:
@@ -343,6 +351,20 @@ class Tracker:
                                        "at_start": baseline, "episode": 1}
             elif not down and ep is not None:
                 self._close(device_id, ep, now)
+        # An open episode can close only on a poll that reports its device,
+        # and one HA stopped reporting (removed, re-paired under a new
+        # device id, its entities gone from the states) would stay open for
+        # ever: reported still unavailable in every summary, under its bare
+        # id once the map lost it. Missing for two map rebuilds is gone: a
+        # device whose diagnostics one rebuild could not fetch is back at
+        # the next.
+        for device_id, ep in list(episodes.items()):
+            if device_id in devices:
+                self.absent.pop(device_id, None)
+                continue
+            absent = self.absent.setdefault(device_id, {"since": now, "info": self._info(device_id)})
+            if now - absent["since"] >= 2 * self.cfg.ha_availability_registry_refresh_s:
+                self._close(device_id, ep, now, gone=True)
         self._bursts(devices, now)
         for device_id, ep in list(episodes.items()):
             if device_id not in devices or ep.get("paged"):
@@ -383,25 +405,33 @@ class Tracker:
             fields["already_unavailable_at_start"] = True
         self.emit("ha_unavailable", severity, now, **fields)
 
-    def _close(self, device_id: str, ep: dict, now: float) -> None:
-        """Rule 4: available again. ha_available only if the episode was
-        said, and only then is the close remembered for the flap guard:
-        a blip inside the hold (every device, at each Home Assistant or
-        Matter Server restart) paged nothing, so there is nothing to
-        guard, and remembering it demoted the next real outage."""
+    def _close(self, device_id: str, ep: dict, now: float, gone: bool = False) -> None:
+        """Rule 4: available again, or ``gone`` from what HA reports.
+        ha_available only if the episode was said, and only then is the
+        close remembered for the flap guard: a blip inside the hold (every
+        device, at each Home Assistant or Matter Server restart) paged
+        nothing, so there is nothing to guard, and remembering it demoted
+        the next real outage."""
         if ep.get("paged"):
             radio, _cause = self._radio(device_id, ep["since"], now)
             rejoin = radio.get("rejoin_ts")
             rejoined = isinstance(rejoin, (int, float)) and ep["since"] <= rejoin <= now
-            self.emit("ha_available", "info", now, addr=radio["addr"], name=self._label(device_id),
+            name = self._label(device_id)
+            if gone:
+                note = (f"{name} has not been in Home Assistant's states for "
+                        f"{round((now - self.absent[device_id]['since']) / 60)} min (removed, re-paired under a "
+                        f"new device id, or its entities gone), {round((now - ep['since']) / 60)} min after it "
+                        "went unavailable: the episode is closed without it coming back")
+            else:
+                note = (f"{name} is available in Home Assistant again after {round((now - ep['since']) / 60)} min"
+                        + (f"; it rejoined the mesh at {time.strftime('%H:%M:%S', time.localtime(rejoin))}"
+                           if rejoined else ""))
+            self.emit("ha_available", "info", now, addr=radio["addr"], name=name,
                       ha_device_id=device_id, since=ep["since"], down_for_s=round(now - ep["since"]),
-                      rejoined=rejoined, generation=radio.get("generation"),
-                      note=(f"{self._label(device_id)} is available in Home Assistant again after "
-                            f"{round((now - ep['since']) / 60)} min"
-                            + (f"; it rejoined the mesh at {time.strftime('%H:%M:%S', time.localtime(rejoin))}"
-                               if rejoined else "")))
+                      rejoined=rejoined, generation=radio.get("generation"), left_ha=gone, note=note)
             self.state["closed"][device_id] = {"closed_ts": now, "episodes": int(ep.get("episode") or 1)}
         del self.state["episodes"][device_id]
+        self.absent.pop(device_id, None)
 
     def _note_rotations(self, new_map: dict, now: float) -> None:
         """A device whose extended address differs between the map the

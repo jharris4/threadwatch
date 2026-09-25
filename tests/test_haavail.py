@@ -416,6 +416,35 @@ class TrackerTest(unittest.TestCase):
         self.assertEqual([(e["severity"], e["episode"]) for e in evs], [("warning", 1)])
         self.assertNotIn("since the last page", evs[0]["note"])
 
+    def test_an_episode_whose_device_leaves_ha_closes_after_two_map_rebuilds_without_it(self):
+        tr = self._tracker()
+        self._poll(tr, T0)
+        for t in range(60, 700, 60):
+            self._poll(tr, T0 + t, {IDS[0]: T0 + 50})
+        self.assertEqual(len(self._events("ha_unavailable")), 1)
+        new_map = {d: info for d, info in self.mapping.items() if d != IDS[0]}
+        devices = {d: (False, None) for d in new_map}
+        # One rebuild could not fetch it, the next has it back: still open.
+        tr.apply({"ok": True, "devices": devices, "map": new_map}, T0 + 3700)
+        for t in range(3760, 7300, 600):
+            tr.apply({"ok": True, "devices": devices}, T0 + t)
+        self.assertEqual(tr.status()["open"][0]["name"], "Device 0")
+        tr.apply({"ok": True, "devices": {**devices, IDS[0]: (True, T0 + 50)}, "map": self.mapping}, T0 + 7300)
+        tr.apply({"ok": True, "devices": devices, "map": new_map}, T0 + 10900)      # removed from HA
+        for t in range(10960, 18100, 600):
+            tr.apply({"ok": True, "devices": devices}, T0 + t)
+        self.assertEqual(self._events("ha_available"), [])
+        self.assertEqual([o["name"] for o in tr.status()["open"]], ["Device 0"])
+        tr.apply({"ok": True, "devices": devices, "map": new_map}, T0 + 18100)
+        back = self._events("ha_available")
+        self.assertEqual([(b["name"], b["addr"], b["ha_device_id"], b["left_ha"], b["down_for_s"]) for b in back],
+                         [("Device 0", ADDRS[0], IDS[0], True, 18050)])
+        self.assertIn("not been in Home Assistant's states for 120 min", back[0]["note"])
+        self.assertEqual(tr.status()["open"], [])
+        self.assertEqual(tr.absent, {})
+        state = json.loads((self.d / "ha-availability.json").read_text())
+        self.assertEqual((state["episodes"], list(state["closed"])), ({}, [IDS[0]]))
+
     def test_status_and_the_pages_view(self):
         from threadwatch.haavail import availability_by_addr, save_map
         tr = self._tracker()

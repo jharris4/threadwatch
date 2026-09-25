@@ -122,7 +122,7 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `ha_logs_archive_resumed` | info | `archived`, `lost` (hour names), `since`, `note`; once, when the catch-up after an outage completes |
 | `ha_unavailable` | warning once a device has been unavailable in Home Assistant for its hold; notice when `muted`, part of a burst (`burst_id`), reopened within `[ha_availability] rearm_s` (`episode` > 1) or `already_unavailable_at_start` | `addr`, `name`, `ha_device_id`, `entities`, `since`, `unavailable_for_s`, `hold_s`, `muted`, `burst_id`, `episode`, `cause` (`key_lag`, `counter_mismatch`, `dropped_polls`, `lost_parent`, `leader_lost`, `silent`, `radio_ok`, `unheard`), the radio evidence (`last_seen`, `silent_for_s`, `rssi_dbm`, `reception`, `starved`, `unserved`, `role`, `parent`, `generation`, `parent_generation`, `rejoin_ts`), `note` (with `[ha_availability] enabled`) |
 | `ha_unavailable_burst` | critical | `burst_id`, `devices` (each `name`, `addr`, `since`, `cause`), `count`, `window_s`, `first_since`, `note` (the causes, and "HA or Matter Server side" when most mapped devices dropped at once while the recorder still heard them); once per burst, with the automatic snapshot |
-| `ha_available` | info | `addr`, `name`, `ha_device_id`, `since`, `down_for_s`, `rejoined`, `generation`, `note`; only after an `ha_unavailable` went out |
+| `ha_available` | info | `addr`, `name`, `ha_device_id`, `since`, `down_for_s`, `rejoined`, `generation`, `left_ha` (the device stopped being in HA's states rather than coming back), `note`; only after an `ha_unavailable` went out |
 | `ha_unreachable` | notice | `failing_for_s`, `error`, `note`; once, after five minutes of failed polls |
 | `ha_reachable` | info | `unreachable_for_s`, `note`; the next poll is a baseline, not transitions |
 | `daily_summary` | `[summary] severity` (notice) | `frames_24h`, `devices_heard_24h`, `devices_tracked`, `quiet`, `unknown`, `marginal`, `degraded`, `storm_active`, `events_24h`, `key_generation` (the mesh's), `key_lag_1` and `key_lag_2plus` (device names one, and two or more, generations behind right now), `ha_unavailable_24h` (with `[ha_availability]`: the day's Home Assistant unavailabilities, each `name`, `down_for_s`, `open`), `note` |
@@ -730,7 +730,11 @@ opens an episode without paging (a notice with
 paged before the restart), and an episode reopening within `rearm_s` of
 the close of one that paged is a notice with `episode` > 1, like a
 flapping starvation. An episode that closed inside its hold paged nothing
-and arms nothing.
+and arms nothing. A device HA stops reporting while it is unavailable
+(removed from HA, re-paired under a new device id, its entities gone) is
+never coming back under that id: once two hourly map rebuilds have passed
+without it (`2 × registry_refresh_s`), its episode closes with an
+`ha_available` carrying `left_ha`.
 
 Home Assistant being down is not a device being down: a failed poll (a
 refused connection, a 5xx while HA restarts) opens and closes nothing,

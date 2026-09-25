@@ -773,18 +773,22 @@ def check_alerts(cfg) -> list[Check]:
 
 def check_web(cfg) -> list[Check]:
     import urllib.request
-    url = f"http://127.0.0.1:{cfg.web_port}/api/status"
+    # Ask where [web] bind listens: a server bound to one LAN address does
+    # not answer on loopback. A wildcard bind answers on loopback too.
+    host = "127.0.0.1" if cfg.web_bind in ("", "0.0.0.0") else cfg.web_bind
+    where = f"port {cfg.web_port}" + ("" if host == "127.0.0.1" else f" of {host}")
+    url = f"http://{host}:{cfg.web_port}/api/status"
     try:
         with urllib.request.urlopen(url, timeout=2) as r:
             json.loads(r.read())
-        return [(OK, "web", f"review pages answer on port {cfg.web_port}")]
+        return [(OK, "web", f"review pages answer on {where}")]
     except Exception as exc:
         if _in_container():
             # 127.0.0.1 is this container; the review pages serve from their
             # own, which doctor has no way to reach or to tell apart from one
             # that is down.
             return [(OK, "web", "review pages run in their own container (not checked from in here)")]
-        return [(WARN, "web", f"nothing answers on port {cfg.web_port} ({type(exc).__name__}); "
+        return [(WARN, "web", f"nothing answers on {where} ({type(exc).__name__}); "
                               "'threadwatch serve' or threadwatch-web.service")]
 
 

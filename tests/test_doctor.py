@@ -434,6 +434,32 @@ class DoctorTest(unittest.TestCase):
             self.assertEqual((level, subject), ("ok", "web"))
             self.assertIn("own container", text)
 
+    def test_web_is_asked_where_web_bind_listens(self):
+        # A server bound to one LAN address does not answer on loopback:
+        # probing 127.0.0.1 warned while the pages were up.
+        import io
+        asked = []
+
+        def urlopen(url, timeout):
+            asked.append(url)
+            return io.BytesIO(b"{}")
+        with mock.patch("urllib.request.urlopen", urlopen), \
+             mock.patch.object(doctor, "_in_container", return_value=False):
+            for bind, url, text in (
+                    ("127.0.0.1", "http://127.0.0.1:8080/api/status", "review pages answer on port 8080"),
+                    ("0.0.0.0", "http://127.0.0.1:8080/api/status", "review pages answer on port 8080"),
+                    ("192.0.2.7", "http://192.0.2.7:8080/api/status",
+                     "review pages answer on port 8080 of 192.0.2.7")):
+                with self.subTest(bind=bind):
+                    self.cfg.web_bind, self.cfg.web_port = bind, 8080
+                    self.assertEqual(doctor.check_web(self.cfg), [("ok", "web", text)])
+                    self.assertEqual(asked.pop(), url)
+        with mock.patch("urllib.request.urlopen", side_effect=ConnectionRefusedError()), \
+             mock.patch.object(doctor, "_in_container", return_value=False):
+            level, _s, text = doctor.check_web(self.cfg)[0]
+        self.assertEqual(level, "warn")
+        self.assertIn("nothing answers on port 8080 of 192.0.2.7", text)
+
     def test_container_detection_reads_the_marks_a_container_leaves(self):
         real = pathlib.Path.exists
         with mock.patch.object(doctor, "_run", return_value="none"), \

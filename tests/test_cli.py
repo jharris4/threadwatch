@@ -338,6 +338,26 @@ class EventsFilterTest(CliCase):
         self.assertEqual(code, 0, err)
         self.assertIn("Office AQ quiet for 16h00m", out)       # the day's most serious event, not dropped
 
+    def test_a_day_lists_a_device_in_a_burst_another_device_opened(self):
+        # --day grouped every device's records and then kept an episode
+        # by its first record's address: an Office first sighting inside
+        # a first_seen burst the Apple TV opened was not listed, while
+        # the same query without --day, and the device page, listed it.
+        from threadwatch.config import load
+        from threadwatch.events import EventLog, day_of
+        log = EventLog(load(Path(self.cfg)).events_dir)
+        t = 1_756_800_000.0
+        log.emit("device_first_seen", "info", t + 90, addr="26976e7f7d20964a", name="Office AQ")
+        day = day_of(t)
+        code, out, err = self.run_cli("events", "--day", day, "--episodes", "--device", "Office")
+        self.assertEqual(code, 0, err)
+        self.assertIn("1 device first seen", out)
+        self.assertIn("Office AQ", out)
+        self.assertNotIn("Living Room", out)
+        code, out, err = self.run_cli("events", "--episodes", "--device", "Office")
+        self.assertEqual(code, 0, err)
+        self.assertIn("1 device first seen", out)
+
     def test_episodes_without_a_day_group_over_the_days_read_not_the_last_n_records(self):
         # -n truncated the records before grouping, so an episode whose
         # opening record fell outside the slice was rebuilt from its close.

@@ -524,16 +524,20 @@ def episode_onset(ep: dict) -> float:
     return ep["start"]
 
 
-def day_episodes(events_dir: Path, day: str, now: float | None = None) -> list[dict]:
+def day_episodes(events_dir: Path, day: str, now: float | None = None,
+                 addrs: set[str] | None = None) -> list[dict]:
     """Episodes that touch a day. Grouping runs over the days around it
     (EPISODE_WINDOW_DAYS either side), so a silence that began days ago
     and is still open appears on every day it covers with its real
     duration, and closes everywhere once the device returns. The day
-    files are small and cached (events.read_day)."""
+    files are small and cached (events.read_day). With ``addrs`` only
+    those addresses' records are grouped, so a burst another device
+    opened (first_seen, join-scan) still lists theirs."""
     start, end = day_bounds(day)
     first = day_of(start - EPISODE_WINDOW_DAYS * 86400)
     last = day_of(end + EPISODE_WINDOW_DAYS * 86400)
-    records = [r for _day, recs in iter_days(events_dir, first, last) for r in recs]
+    records = [r for _day, recs in iter_days(events_dir, first, last) for r in recs
+               if addrs is None or (_addr(r) or "").lower() in addrs]
     out = []
     for ep in group_episodes(records, now):
         ep_end = ep["end"] if ep["end"] is not None else (now or time.time())

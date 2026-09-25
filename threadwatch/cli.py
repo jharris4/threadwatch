@@ -429,8 +429,11 @@ def main(argv=None) -> int:
                 # record: a different kind, a shorter duration and a
                 # notice where the page showed a warning, so a 15-hour
                 # outage was missing from --severity warning entirely.
+                # The device's records are picked before grouping, as the
+                # device page does: a multi-device burst another device
+                # opened is keyed by that device's address.
                 from .review import day_episodes
-                episodes = [ep for ep in day_episodes(cfg.events_dir, args.day) if mine(ep)]
+                episodes = day_episodes(cfg.events_dir, args.day, addrs=addrs)
                 return _print_episodes(episodes, floor, SEVERITY_RANK, f"{what} on {args.day}")
             records = [r for r in read_day(cfg.events_dir, args.day) if wanted(r)]
             if not records:

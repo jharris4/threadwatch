@@ -115,12 +115,16 @@ def tolerance_field_error(entry: dict) -> str | None:
     return None
 
 
-_DURATION = re.compile(r"^\s*(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s?)?\s*$", re.I)
+# The seconds unit is required after an h or m part: a trailing bare
+# number read `1h30` as 1 h 0 min 30 s. A bare number alone is seconds.
+_DURATION = re.compile(r"^\s*(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s)?\s*$", re.I)
 
 
 def parse_duration(text: str) -> float:
     """'2h', '30m', '1h30m', '7200' or '90s' -> seconds. A bare number is
-    seconds."""
+    seconds only when it is the whole text."""
+    if re.fullmatch(r"\s*\d+\s*", text or ""):
+        return float(int(text))
     m = _DURATION.match(text or "")
     if not m or not any(m.groups()):
         raise ValueError(f"{text!r} is not a duration (try 2h, 30m, 1h30m or 7200)")

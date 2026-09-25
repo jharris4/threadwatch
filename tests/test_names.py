@@ -336,7 +336,8 @@ class ToleranceTest(unittest.TestCase):
         for text, want in (("2h", 7200), ("30m", 1800), ("1h30m", 5400), ("7200", 7200), ("90s", 90),
                            ("1h 5m 2s", 3902)):
             self.assertEqual(parse_duration(text), want, text)
-        for bad in ("", "soon", "2 hours", "-5"):
+        # 1h30 is the natural typo for 1h30m, and was read as 3630 s.
+        for bad in ("", "soon", "2 hours", "-5", "1h30", "2m15", "1h 5"):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 parse_duration(bad)
         self.assertEqual([fmt_hold(x) for x in (None, 7200, 1800, 90)], ["default", "2h", "30m", "90s"])

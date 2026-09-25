@@ -233,12 +233,22 @@ class ReassemblerTest(unittest.TestCase):
         self.assertEqual(srp.matter_instances_in(label + b"\xc0\x64", ZONE, 100), [])
         self.assertEqual(srp.matter_instances_in(label + b"\xc1\x00", ZONE, 100), [])
 
-    def test_the_table_of_partial_datagrams_is_bounded(self):
-        r = srp.Reassembler()
-        for i in range(srp.Reassembler.MAX + 10):
+    def _fresh_tags(self, r, count, ts):
+        for i in range(count):
             frag = self.frags[0][:2] + bytes([i >> 8, i & 0xFF]) + self.frags[0][4:]   # a fresh tag each
-            r.add("f63e", srp.fragment(frag), self._first(frag), 100.0 + i)
+            r.add("f63e", srp.fragment(frag), self._first(frag), ts(i))
+
+    def test_the_table_of_partial_datagrams_is_bounded(self):
+        # Spread out, the age prune alone keeps the table small.
+        r = srp.Reassembler()
+        self._fresh_tags(r, srp.Reassembler.MAX + 10, lambda i: 100.0 + i)
         self.assertLessEqual(len(r.pending), srp.Reassembler.MAX)
+        # A flood inside HOLD_S leaves nothing old enough to prune: the
+        # hard cap lets the oldest go, one for each new tag.
+        r = srp.Reassembler()
+        self._fresh_tags(r, srp.Reassembler.MAX + 10, lambda i: 100.0)
+        self.assertEqual(len(r.pending), srp.Reassembler.MAX)
+        self.assertEqual(sorted(tag for _sender, tag in r.pending), list(range(10, srp.Reassembler.MAX + 10)))
 
 
 if __name__ == "__main__":

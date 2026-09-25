@@ -598,6 +598,17 @@ class QuietPolicyTest(unittest.TestCase):
         pipe2.ingest(frame(t0 + 6 * 3600, STRANGER))
         self.assertEqual(about(pipe2), [("visitor_returned", 3)])
 
+    def test_visits_forget_the_longest_gone_address_past_the_cap(self):
+        pipe = self._pipe()
+        pipe.VISITS_MAX = 3
+        t0 = 1_700_000_000.0
+        pipe._visits = {f"{i:016x}": {"visits": 1, "last_visit": t0 - 3600 * i} for i in range(1, 4)}
+        for i in range(10):
+            pipe.ingest(frame(t0 + i, STRANGER))
+        pipe.periodic(t0 + 40 * 60)
+        self.assertEqual(sorted(pipe._visits), sorted([STRANGER, f"{1:016x}", f"{2:016x}"]))
+        self.assertEqual(sorted(self._pipe()._visits), sorted(pipe._visits))
+
     def test_a_visitor_named_since_its_last_visit_is_first_seen_as_the_device(self):
         pipe = self._pipe()
         t0 = 1_700_000_000.0

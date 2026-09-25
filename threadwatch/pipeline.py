@@ -5126,6 +5126,10 @@ class Pipeline:
     # 2026-09-14 one attached, opened a session with a lock, and left 17 s
     # later, and its silence paged a warning half an hour on.
     BRIEF_VISIT_S = 5 * 60
+    # The addresses visits.json remembers. Household phones keep theirs,
+    # but every guest's phone or tablet adds one for good; past this the
+    # longest-gone are forgotten, and their next visit is first seen again.
+    VISITS_MAX = 256
 
     def _brief_visit(self, addr: str, row: dict) -> float | None:
         """How long a visitor was heard, or None for a device. A visitor is
@@ -5185,6 +5189,10 @@ class Pipeline:
         known.update(visits=visit, last_visit=row["last_seen"], last_heard_for_s=round(heard_for),
                      first_visit=min(since, known.get("first_visit") or since))
         self._visits[addr] = known
+        if len(self._visits) > self.VISITS_MAX:
+            oldest = sorted(self._visits, key=lambda a: _seconds(self._visits[a].get("last_visit")))
+            for a in oldest[:len(self._visits) - self.VISITS_MAX]:
+                del self._visits[a]
         self._save_visits()
         parent, parent_addr = self._last_parent(row)
         generations = []

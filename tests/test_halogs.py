@@ -515,6 +515,31 @@ class SnapshotLogsTest(unittest.TestCase):
         self.assertEqual(halogs.recover_interrupted(self.cfg.snapshots_dir), [])      # once
         self.assertEqual(halogs.retries_due(self.cfg, self.now + 900), [dest])          # and the retry takes it
 
+    def test_ctrl_c_before_a_log_line_arrives_settles_the_status_and_the_retry_takes_it(self):
+        from unittest import mock
+        srv = FakeSupervisor(self.lines)
+        self._env(srv.url)
+        dest = self._snapshot()
+        real = halogs.urlopen
+
+        def connect(req, **kw):
+            if f"/addons/{MATTER}/" in req.full_url:
+                raise KeyboardInterrupt                   # while the second add-on's request connects
+            return real(req, **kw)
+        try:
+            with mock.patch.object(halogs, "urlopen", connect):
+                status = halogs.attach_logs(self.cfg, dest, now=self.now + 5)
+        finally:
+            srv.close()
+        self.assertEqual((status["status"], status["reason"]), ("partial", "interrupted"))
+        self.assertTrue(status["addons"][OTBR]["complete"])
+        self.assertEqual(status["addons"][MATTER]["file"], None)
+        self.assertIn("interrupted before", status["addons"][MATTER]["error"])
+        self.assertEqual(halogs.read_status(dest)["status"], "partial")
+        self.assertEqual(json.loads((dest / "manifest.json").read_text())["ha_logs"]["status"], "partial")
+        self.assertFalse((dest / "ha-logs.lock").exists())
+        self.assertEqual(halogs.retries_due(self.cfg, self.now + 900), [dest])
+
     def test_a_fetch_still_running_by_hand_is_left_alone_at_start(self):
         import os
 
@@ -970,6 +995,35 @@ class ArchiveTest(unittest.TestCase):
         manifest = json.loads((dest / "manifest.json").read_text())
         self.assertEqual(manifest["ha_logs"]["addons"][OTBR]["hours"]["20250913-21"]["source"], "archive")
         self.assertIn(f"ha-logs/{OTBR}/20250913-21.log.gz", manifest["files"])
+
+    def test_ctrl_c_during_the_archive_copy_keeps_the_hours_copied_and_no_half_copy(self):
+        import shutil
+        from unittest import mock
+
+        from threadwatch.snapshot import save_snapshot
+        self._pass(self.H22 + 120)
+        self.cfg.ring_dir.mkdir(parents=True)
+        for utc in (self.H22 - 3 * 3600, self.H22 + 1800):
+            (self.cfg.ring_dir / time.strftime("threadwatch-%Y%m%d-%H.pcap", time.localtime(utc))).write_bytes(b"r")
+        saved = self.H22 + 1800
+        dest, _n = save_snapshot(self.cfg, "storm", now=saved)
+        real, copied = shutil.copy2, []
+
+        def copy(src, dst):
+            copied.append(Path(src).name)
+            if len(copied) == 2:
+                Path(dst).write_bytes(b"half an hour")      # the second hour's copy is cut short
+                raise KeyboardInterrupt
+            return real(src, dst)
+        with mock.patch.object(halogs.shutil, "copy2", copy):
+            status = halogs.attach_logs(self.cfg, dest, now=saved + 5)
+        self.assertEqual((status["status"], status["reason"]), ("partial", "interrupted"))
+        otbr = status["addons"][OTBR]
+        self.assertFalse(otbr["complete"])
+        self.assertEqual({h: v["source"] for h, v in otbr["hours"].items()}, {copied[0][:-len(".log.gz")]: "archive"})
+        self.assertEqual(sorted(p.name for p in (dest / "ha-logs" / OTBR).iterdir()), [copied[0]])
+        self.assertEqual(halogs.read_status(dest)["status"], "partial")
+        self.assertEqual(halogs.retries_due(self.cfg, saved + 900), [dest])
 
     def test_a_snapshot_records_pending_and_lost_hours_and_the_retry_fetches_the_pending_one(self):
         from threadwatch.snapshot import save_snapshot

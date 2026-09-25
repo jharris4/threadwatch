@@ -359,25 +359,35 @@ def attach_logs(cfg, snapshot_dir: Path, *, now: float | None = None, settings: 
         status["status"], status["reason"] = "fetching", None
         _write_status(snapshot_dir, status)
         interrupted = False
-        for slug in cfg.ha_logs_addons:
-            if status["addons"][slug].get("complete"):
-                continue
-            if cfg.ha_logs_archive:
-                result = _assemble_hours(cfg, snapshot_dir, slug, status["addons"][slug], url, token, now,
-                                         secrets, progress)
-            else:
-                dest = snapshot_dir / LOG_DIR / f"{slug}.log.gz"
-                result = fetch_addon_log(url, token, slug, since, until, dest,
-                                         read_timeout_s=cfg.ha_logs_read_timeout_s,
-                                         deadline_s=cfg.ha_logs_deadline_s, secrets=secrets, progress=progress)
-                if result["file"]:
-                    result["file"] = f"{LOG_DIR}/{result['file']}"
-                result.pop("requested", None)
-                result["source"] = "live"
-            status["addons"][slug] = result
-            if result.pop("interrupted", False):
-                interrupted = True
-                break
+        # Ctrl-C lands anywhere here, not only in a fetch's read loop (the
+        # connect, the archive copy, between add-ons): what was settled so
+        # far is kept and the add-on it cut short is said, never "fetching".
+        slug = None
+        try:
+            for slug in cfg.ha_logs_addons:
+                if status["addons"][slug].get("complete"):
+                    continue
+                if cfg.ha_logs_archive:
+                    result = _assemble_hours(cfg, snapshot_dir, slug, status["addons"][slug], url, token, now,
+                                             secrets, progress)
+                else:
+                    dest = snapshot_dir / LOG_DIR / f"{slug}.log.gz"
+                    result = fetch_addon_log(url, token, slug, since, until, dest,
+                                             read_timeout_s=cfg.ha_logs_read_timeout_s,
+                                             deadline_s=cfg.ha_logs_deadline_s, secrets=secrets, progress=progress)
+                    if result["file"]:
+                        result["file"] = f"{LOG_DIR}/{result['file']}"
+                    result.pop("requested", None)
+                    result["source"] = "live"
+                status["addons"][slug] = result
+                if result.pop("interrupted", False):
+                    interrupted = True
+                    break
+        except KeyboardInterrupt:
+            interrupted = True
+            entry = status["addons"].get(slug)
+            if entry is not None and not entry.get("complete") and not entry.get("error"):
+                entry["error"] = "interrupted before this add-on's log arrived"
         _settle(status, interrupted)
         _write_status(snapshot_dir, status)
         rewrite_manifest(snapshot_dir, ha_logs=summary(status))
@@ -720,38 +730,49 @@ def _assemble_hours(cfg, snapshot_dir: Path, slug: str, previous: dict, url: str
     hours = previous.get("hours") if isinstance(previous.get("hours"), dict) else {}
     out_dir = snapshot_dir / LOG_DIR / slug
     interrupted = False
-    for h in hours_between(span_start, until):
-        got = hours.get(h) or {}
-        if got.get("complete"):
-            continue
-        start = hour_start(h)
-        src = archive_dir(cfg) / slug / f"{h}.log.gz"
-        if src.exists() and h not in entry["pending"]:
-            out_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, out_dir / src.name)
-            with gzip.open(src, "rb") as fh:
-                lines = sum(1 for _ in fh)
-            hours[h] = {"source": "archive", "file": f"{LOG_DIR}/{slug}/{src.name}", "lines": lines,
-                        "bytes_gz": src.stat().st_size, "complete": True, "error": None}
-            continue
-        if h in entry["lost"]:
-            hours[h] = {"source": "lost", "file": None, "lines": 0, "complete": True,
-                        "error": entry["lost"][h].get("reason")}
-            continue
-        if start + 3600.0 <= floor:
-            hours[h] = {"source": "lost", "file": None, "lines": 0, "complete": True,
-                        "error": "older than [ha_logs] max_hours: the journal cannot have it"}
-            continue
-        result = fetch_addon_log(url, token, slug, max(start, floor), min(start + 3600.0, until),
-                                 out_dir / f"{h}.log.gz", read_timeout_s=cfg.ha_logs_read_timeout_s,
-                                 deadline_s=cfg.ha_logs_deadline_s, secrets=secrets, progress=progress)
-        hours[h] = {"source": "live", "file": f"{LOG_DIR}/{slug}/{result['file']}" if result["file"] else None,
-                    "lines": result["lines"], "bytes_gz": result["bytes_gz"], "complete": result["complete"],
-                    "received": result["received"], "gap_before_s": result["gap_before_s"],
-                    "error": result["error"], "http_status": result["http_status"]}
-        if result.get("interrupted"):
-            interrupted = True
-            break
+    copying = None
+    try:
+        for h in hours_between(span_start, until):
+            got = hours.get(h) or {}
+            if got.get("complete"):
+                continue
+            start = hour_start(h)
+            src = archive_dir(cfg) / slug / f"{h}.log.gz"
+            if src.exists() and h not in entry["pending"]:
+                out_dir.mkdir(parents=True, exist_ok=True)
+                # Through a .part, so a copy cut short is never a whole hour's name.
+                copying = (out_dir / src.name).with_suffix(PART_SUFFIX)
+                shutil.copy2(src, copying)
+                copying.replace(out_dir / src.name)
+                copying = None
+                with gzip.open(src, "rb") as fh:
+                    lines = sum(1 for _ in fh)
+                hours[h] = {"source": "archive", "file": f"{LOG_DIR}/{slug}/{src.name}", "lines": lines,
+                            "bytes_gz": src.stat().st_size, "complete": True, "error": None}
+                continue
+            if h in entry["lost"]:
+                hours[h] = {"source": "lost", "file": None, "lines": 0, "complete": True,
+                            "error": entry["lost"][h].get("reason")}
+                continue
+            if start + 3600.0 <= floor:
+                hours[h] = {"source": "lost", "file": None, "lines": 0, "complete": True,
+                            "error": "older than [ha_logs] max_hours: the journal cannot have it"}
+                continue
+            result = fetch_addon_log(url, token, slug, max(start, floor), min(start + 3600.0, until),
+                                     out_dir / f"{h}.log.gz", read_timeout_s=cfg.ha_logs_read_timeout_s,
+                                     deadline_s=cfg.ha_logs_deadline_s, secrets=secrets, progress=progress)
+            hours[h] = {"source": "live", "file": f"{LOG_DIR}/{slug}/{result['file']}" if result["file"] else None,
+                        "lines": result["lines"], "bytes_gz": result["bytes_gz"], "complete": result["complete"],
+                        "received": result["received"], "gap_before_s": result["gap_before_s"],
+                        "error": result["error"], "http_status": result["http_status"]}
+            if result.get("interrupted"):
+                interrupted = True
+                break
+    except KeyboardInterrupt:
+        # The hours settled so far are kept; the retry fetches the rest.
+        interrupted = True
+        if copying is not None:
+            copying.unlink(missing_ok=True)
     lines = sum(v.get("lines") or 0 for v in hours.values())
     errors = [f"{h}: {v['error']}" for h, v in sorted(hours.items()) if v.get("error") and v.get("source") != "lost"]
     return {"slug": slug, "file": None, "hours": dict(sorted(hours.items())), "lines": lines,

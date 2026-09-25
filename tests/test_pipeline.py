@@ -5833,7 +5833,7 @@ class SrpRefusedTest(unittest.TestCase):
         from threadwatch.pcap import parse_frame
         plain = lowpan_udp(sport, dport, payload)
         if mesh is not None:                    # a relayed hop: originator and final destination (short)
-            plain = bytes([0x85]) + bytes.fromhex(mesh[0]) + bytes.fromhex(mesh[1]) + plain
+            plain = bytes([0xB5]) + bytes.fromhex(mesh[0]) + bytes.fromhex(mesh[1]) + plain
         return parse_frame(ts, secured_psdu(src, next_counter(src), dst=dst, payload=plain), 230)
 
     def _request(self, ts, dns_id, src=SENSOR, via=ROUTER):

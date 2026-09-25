@@ -937,7 +937,7 @@ def iphc_packet(*, sac=False, sam=3, src=b"", m=True, dac=False, dam=3, dst=b"",
     if frag1:
         pkt = struct.pack(">HH", (0b11000 << 11) | 200, 0x1234) + pkt
     if mesh is not None:
-        head = bytes([0b10000000 | min(mesh, 0xF)]) + (bytes([mesh]) if mesh >= 0xF else b"")
+        head = bytes([0b10110000 | min(mesh, 0xF)]) + (bytes([mesh]) if mesh >= 0xF else b"")
         pkt = head + bytes.fromhex("c829") + bytes.fromhex("00cc") + pkt
     return pkt
 

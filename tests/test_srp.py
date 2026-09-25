@@ -165,7 +165,7 @@ class ReassemblerTest(unittest.TestCase):
 
     def test_out_of_order_fragments_and_a_mesh_header_still_complete(self):
         r = srp.Reassembler()
-        mesh = bytes([0x85, 0xd4, 0x05, 0xfc, 0x11])
+        mesh = bytes([0xB5, 0xd4, 0x05, 0xfc, 0x11])            # V=F=1: short originator and final
         order = [self.frags[0]] + self.frags[1:][::-1]
         got = None
         for i, frag in enumerate(order):

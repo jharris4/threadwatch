@@ -15,6 +15,18 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 RUN_USER="${SUDO_USER:-}"
 if [ "${1:-}" = "--user" ]; then RUN_USER="${2:?--user needs a name}"; fi
 
+# The clone path goes into the units' ExecStart, WorkingDirectory and
+# EnvironmentFile, where systemd splits on whitespace, expands % specifiers
+# and $ variables, and reads \ and quotes as escapes. Refused here, before
+# anything is changed, rather than quoted per directive in the unit files.
+case "$REPO" in
+  *[[:space:]%\\\"\'\$]*)
+    echo "the clone path $REPO has whitespace, %, \\, a quote or \$ in it, which systemd would" >&2
+    echo "split or expand in the service units; clone to a plain path such as ~/threadwatch" >&2
+    exit 1
+    ;;
+esac
+
 if [ "$(id -u)" -ne 0 ]; then
   echo "run with sudo: sudo $0" >&2
   exit 1
@@ -177,8 +189,9 @@ else
   # written, so a failure part-way left a half unit that systemd would
   # take at the next reload or reboot. The substitution is awk's, done by
   # index/substr rather than sed's s|| or awk's own gsub replacement: a
-  # |, & or \ in the clone path or the user name is a metacharacter to
-  # both, and would corrupt the ExecStart it landed in.
+  # | or & in the clone path or the user name is a metacharacter to both,
+  # and would corrupt the ExecStart it landed in (the characters systemd
+  # itself would misread are refused at the top).
   for unit in threadwatch threadwatch-web; do
     tmp="$(mktemp "/etc/systemd/system/$unit.service.XXXXXX")"
     # Values come through the environment, not -v: awk expands escape

@@ -22,6 +22,17 @@ from .pcap import DLT_TAP, Frame, PcapFormatError, PcapStreamReader, PcapWriter,
 from .pipeline import Pipeline, load_decryptor
 from .ring import ring_files, ring_name
 
+VENDOR = str(Path(__file__).resolve().parent.parent / "vendor")
+
+
+def vendor_on_path() -> None:
+    """Make the vendored sniffer importable as a top-level module. Once:
+    find_sniffers runs on every re-attach attempt for a missing radio,
+    and inserting the directory each time grew sys.path by one entry a
+    minute for as long as the radio stayed away."""
+    if VENDOR not in sys.path:
+        sys.path.insert(0, VENDOR)
+
 
 def find_sniffers(comports=None) -> list[tuple[str, str | None]]:
     """Every nRF 802.15.4 sniffer dongle enumerated, as (port, serial),
@@ -33,7 +44,7 @@ def find_sniffers(comports=None) -> list[tuple[str, str | None]]:
     if comports is None:
         from serial.tools import list_ports
         comports = list_ports.comports
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "vendor"))
+    vendor_on_path()
     from nrf802154_sniffer import Nrf802154Sniffer
     by_dongle: dict[str, tuple[str, str | None]] = {}
     for port in comports():
@@ -745,7 +756,7 @@ def plan_radios(cfg: Config, log) -> list[Radio]:
 
 
 def run_record(cfg: Config) -> None:
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "vendor"))
+    vendor_on_path()
     from nrf802154_sniffer import Nrf802154Sniffer
 
     from .merge import HOLD_S, Merger

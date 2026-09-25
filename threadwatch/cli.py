@@ -530,9 +530,11 @@ def main(argv=None) -> int:
                   "note": f"threadwatch alert-test from {socket.gethostname()}"}
         failures = len(unbuilt_sinks) + len(unbuilt_beats)
         print(f"sinks ({len(sinks) + len(unbuilt_sinks)}):")
-        for sink, err in Dispatcher(sinks, log).deliver_now(record):
+        dispatcher = Dispatcher(sinks, log)
+        for sink, err in dispatcher.deliver_now(record):
             print(f"  {'ok  ' if err is None else 'FAIL'} {sink.describe()}" + (f" -> {err}" if err else ""))
             failures += err is not None
+        dispatcher.close()
         for name, reason in unbuilt_sinks:
             print(f"  FAIL {name}: not built -> {reason}")
         for s in sinks:

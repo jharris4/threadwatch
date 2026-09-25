@@ -28,7 +28,6 @@ import sys
 import threading
 import time
 from collections import deque
-from pathlib import Path
 from typing import BinaryIO, Callable
 
 from . import __version__
@@ -202,12 +201,12 @@ def run_relay(cfg, label: str, to: str, serial_port: str | None = None) -> int:
     at ``to`` (host:port) as radio ``label``. Returns 3 when the capture
     stream ends (dongle unplugged, sniffer died), for a supervisor to
     restart; runs until then."""
-    from .record import find_sniffer_port, find_sniffers
+    from .record import find_sniffer_port, find_sniffers, vendor_on_path
 
     def _log(msg: str) -> None:
         print(f"[threadwatch relay] {msg}", file=sys.stderr, flush=True)
 
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "vendor"))
+    vendor_on_path()
     from nrf802154_sniffer import Nrf802154Sniffer
     host, _, port = to.rpartition(":")
     if not host or not port.isdigit():

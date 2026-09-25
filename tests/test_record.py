@@ -1091,6 +1091,16 @@ class FindSniffersTest(unittest.TestCase):
         self.assertEqual(resolve_radio_port("0123456789abcdef", ports), "/dev/ttyACM3")
         self.assertIsNone(resolve_radio_port("CC", ports))
 
+    def test_looking_for_a_missing_radio_does_not_grow_sys_path(self):
+        # The watchdog looks for a missing radio every REATTACH_S; each
+        # look inserted vendor/ into sys.path again, 1440 entries a day.
+        from threadwatch.record import VENDOR, resolve_radio_port
+        if VENDOR not in sys.path:
+            self.addCleanup(lambda: VENDOR in sys.path and sys.path.remove(VENDOR))
+        for _ in range(3):
+            self.assertIsNone(resolve_radio_port("CC", self._ports()))
+        self.assertEqual(sys.path.count(VENDOR), 1)
+
 
 class RingSeriesTest(unittest.TestCase):
     """One RingWriter per radio, each pruning only its own hours."""

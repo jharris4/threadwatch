@@ -98,6 +98,22 @@ class DoctorTest(unittest.TestCase):
         cred.write_text('[credentials]\nnetwork_key = "tooshort"\n')
         self.assertEqual(doctor.check_credentials(self.cfg)[0][0], "FAIL")
 
+    def test_a_key_the_recorder_loads_passes(self):
+        # bytes.fromhex skips whitespace between bytes: a grouped key or a
+        # trailing space starts the recorder, so doctor must not fail it.
+        from threadwatch.pipeline import CredentialsError, load_decryptor
+        cred = self.d / "credentials.toml"
+        self.cfg.credentials_path = cred
+        for key in ("00112233 44556677 8899aabb ccddeeff", "00112233445566778899aabbccddeeff "):
+            cred.write_text(f'[credentials]\nnetwork_key = "{key}"\n')
+            os.chmod(cred, 0o600)
+            self.assertEqual(self.levels(doctor.check_credentials(self.cfg)), [("ok", "credentials")], key)
+            self.assertEqual(load_decryptor(self.cfg).network_key, bytes.fromhex(key))
+        cred.write_text('[credentials]\nnetwork_key = "0011223344556677 8899aabbccddeeff00"\n')
+        self.assertEqual(doctor.check_credentials(self.cfg)[0][0], "FAIL")
+        with self.assertRaises(CredentialsError):
+            load_decryptor(self.cfg)
+
     def test_a_key_file_another_user_owns_is_unchecked_not_a_recorder_that_will_not_start(self):
         # setup-host.sh --user NAME leaves credentials.toml 0400 and NAME's.
         # doctor run by the operator cannot read it; the recorder can.

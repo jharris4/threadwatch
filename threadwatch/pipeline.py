@@ -5359,6 +5359,17 @@ def credentials_path(cfg) -> Path:
         else cfg.config_dir / "credentials.toml"
 
 
+def parse_network_key(raw: dict) -> bytes | None:
+    """The 16-byte network key from a parsed credentials.toml, or None.
+    bytes.fromhex skips whitespace between bytes, so a key grouped with
+    spaces or with a trailing one loads; doctor judges it by this too."""
+    try:
+        key = bytes.fromhex(str(raw.get("credentials", {}).get("network_key", "")))
+    except ValueError:
+        return None
+    return key if len(key) == 16 else None
+
+
 def load_decryptor(cfg):
     """The Decryptor for the configured network key. Raises CredentialsError,
     with the fix in the message, when the key file is missing or unusable:
@@ -5373,12 +5384,8 @@ def load_decryptor(cfg):
         raw = tomllib.loads(cred_path.read_text())
     except Exception as exc:
         raise CredentialsError(f"{cred_path} is unreadable ({exc}); {how}") from exc
-    key_hex = str(raw.get("credentials", {}).get("network_key", ""))
-    try:
-        key = bytes.fromhex(key_hex)
-    except ValueError:
-        key = b""
-    if len(key) != 16:
+    key = parse_network_key(raw)
+    if key is None:
         raise CredentialsError(f"{cred_path}: network_key must be 32 hex digits ({how})")
     try:
         from .crypto import Decryptor

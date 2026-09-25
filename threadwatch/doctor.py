@@ -128,7 +128,7 @@ def check_border_routers(cfg) -> list[Check]:
 
 
 def check_credentials(cfg) -> list[Check]:
-    from .pipeline import credentials_path
+    from .pipeline import credentials_path, parse_network_key
     try:
         import cryptography  # noqa: F401
     except ModuleNotFoundError:
@@ -144,8 +144,7 @@ def check_credentials(cfg) -> list[Check]:
         out.append((WARN, "credentials", f"{path.name} is mode {mode:04o}: readable by others; chmod 600 it"))
     try:
         import tomllib
-        key = tomllib.loads(path.read_text()).get("credentials", {}).get("network_key", "")
-        if len(key) != 32 or any(c not in "0123456789abcdefABCDEF" for c in key):
+        if parse_network_key(tomllib.loads(path.read_text())) is None:
             out.append((FAIL, "credentials",
                         f"{path.name}: network_key must be 32 hex digits; the recorder will not start"))
         else:

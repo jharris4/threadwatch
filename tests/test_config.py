@@ -57,6 +57,28 @@ class VisitorsFileTest(unittest.TestCase):
                 config_mod.load(path)
 
 
+class DataDirTest(unittest.TestCase):
+    """A relative data_dir names one directory per config file, not one per
+    caller cwd: the recorder runs from the repo and the CLI from anywhere,
+    and `status` or `snapshot` must see the recorder's data."""
+
+    def test_a_relative_data_dir_is_relative_to_the_config_file(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as cwd:
+            here = Path(d).resolve()
+            path = here / "config.toml"
+            path.write_text('[record]\ndata_dir = "tw-data"\n')
+            old = os.getcwd()
+            os.chdir(cwd)
+            try:
+                self.assertEqual(config_mod.load(path).data_dir, here / "tw-data")
+                path.write_text('[record]\ndata_dir = "../elsewhere"\n')
+                self.assertEqual(config_mod.load(path).data_dir, here.parent / "elsewhere")
+                path.write_text('[record]\ndata_dir = "/srv/tw"\n')
+                self.assertEqual(config_mod.load(path).data_dir, Path("/srv/tw"))
+            finally:
+                os.chdir(old)
+
+
 class KeepGbTest(unittest.TestCase):
     def _load(self, text):
         with tempfile.TemporaryDirectory() as d:

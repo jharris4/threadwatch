@@ -17,7 +17,8 @@ channel = 25
 
 [record]
 # serial_port = "/dev/ttyACM0"   # leave unset to auto-detect the dongle (one dongle only; see radios below)
-# data_dir = "~/threadwatch-data"  # default: <repo>/data; ~ and ${HOME}-style variables expand
+# data_dir = "~/threadwatch-data"  # default: <repo>/data; ~ and ${HOME}-style variables expand,
+                                  # and a relative path is relative to this file
 keep_hours = 168                  # ring files to retain, one per hour heard (168 = a week of them;
                                   # hours the recorder was down leave no file, so a week of files
                                   # reaches further back than a week after an outage)

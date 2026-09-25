@@ -516,7 +516,12 @@ def load(path: Path | None) -> Config:
             raise ValueError("[record] serial_port and radios exclude each other: radios names every dongle "
                              "by serial, so there is no one port to pin")
         if rec.get("data_dir"):
-            cfg.data_dir = Path(os.path.expandvars(str(rec["data_dir"]))).expanduser()
+            # Relative to the config file, like [devices] inventory and
+            # [credentials] file: the recorder runs with the repo as its
+            # cwd and the CLI from wherever the operator is, and a
+            # cwd-relative path would give each its own data directory.
+            data_dir = Path(os.path.expandvars(str(rec["data_dir"]))).expanduser()
+            cfg.data_dir = data_dir if data_dir.is_absolute() else (cfg.config_dir / data_dir).resolve()
         cfg.keep_hours = int(_finite("record", "keep_hours", rec.get("keep_hours", cfg.keep_hours)))
         if cfg.keep_hours < 1:
             raise ValueError(f"[record] keep_hours must be at least 1, not {cfg.keep_hours}")

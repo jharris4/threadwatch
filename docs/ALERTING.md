@@ -273,9 +273,11 @@ stack writes the advertisement and the radio driver writes the counters,
 so the two have lost sync inside the device, which is a firmware defect
 to report to the vendor: openthread/openthread#13599 documents one on an
 IKEA MYGGSPRAY (a Child ID Request advertising 1,280,176,180, then polls
-at 4,708). Said again at most once an hour while it goes on; the last
-advertisement is kept with the last-seen rows (`adv_mac`, `adv_mle`), so
-the floor survives a restart.
+at 4,708). Said again at most once an hour while it goes on: a refused
+child times out and re-attaches, and each Child ID Request repeating the
+wrong counter under the same key generation continues the episode rather
+than starting one. The last advertisement is kept with the last-seen
+rows (`adv_mac`, `adv_mle`), so the floor survives a restart.
 
 `key_sequence_advanced`, `key_lag_census`, `key_lag` and `key_lag_cleared`
 are the key-generation detectors, for the failure neither of the two above

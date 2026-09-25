@@ -2401,9 +2401,19 @@ class Pipeline:
                          command: str, ts: float) -> None:
         if sequence is None:
             return
-        self._advertised.setdefault(who, {})[layer] = {
-            "value": value, "sequence": sequence, "ts": ts, "command": command,
-            "below": 0, "lowest": None, "said_ts": None}
+        state = {"value": value, "sequence": sequence, "ts": ts, "command": command,
+                 "below": 0, "lowest": None, "said_ts": None}
+        prev = self._advertised.get(who, {}).get(layer)
+        if prev is not None and prev["sequence"] == sequence and prev["below"] >= self.COUNTER_BELOW_FRAMES:
+            # A confirmed mismatch re-advertised under the same key
+            # generation is the same fault going on: a refused child times
+            # out and re-attaches, and every Child ID Request repeats the
+            # wrong counter. The count and the hourly guard carry over,
+            # or the warning would go out again at each re-attachment.
+            # Below the threshold nothing carries: a frame or two queued
+            # behind each honest advertisement must not add up to a page.
+            state.update(below=prev["below"], lowest=prev["lowest"], said_ts=prev["said_ts"])
+        self._advertised.setdefault(who, {})[layer] = state
         row = self.seen.table.get(who)
         if row is not None:
             row[f"adv_{layer}"] = [value, sequence, ts, command]

@@ -5287,6 +5287,47 @@ class FrameCounterMismatchTest(unittest.TestCase):
         self.assertEqual(classify(row, None, t0 + 7000, t0 + 7010)[0], "counter_mismatch")
         self.assertNotEqual(classify(row, None, t0 + 20000, t0 + 20010)[0], "counter_mismatch")
 
+    def test_re_advertising_the_same_wrong_counter_continues_the_episode(self):
+        from tests.frames import next_counter
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t0 = 1_700_000_000.0
+        pipe.ingest(frame(t0, SENSOR))
+        c = next_counter(SENSOR)
+        # Refused by its parent, the child times out and re-attaches every
+        # four minutes; each Child ID Request repeats the wrong link counter
+        # and three polls follow it.
+        for i in range(20):
+            t = t0 + 240 * i
+            pipe.ingest(mle_frame(t, SENSOR, 0, child_id_request(1_280_176_180, 1029 + i),
+                                  mac_counter=c, mle_counter=1029 + i))
+            for j in range(3):
+                c += 1
+                pipe.ingest(poll(t + 1 + j, SENSOR, (4 * i + j) & 0xFF, counter=c))
+            c += 1
+        evs = self._events(pipe, "frame_counter_mismatch")
+        self.assertEqual([e["ts"] for e in evs], [t0 + 3, t0 + 3600 + 3])   # once, then the hour mark
+        # The hour-mark record counts every frame below since the first
+        # advertisement: three polls, then a request and three polls per re-attachment.
+        self.assertEqual((evs[1]["frames_below"], evs[1]["advertised_in"], evs[1]["advertised_ts"]),
+                         (3 + 15 * 4, "Child ID Request", t0 + 3600))
+        self.assertEqual(pipe.seen.table[SENSOR]["counter_mismatch_ts"], t0 + 3600 + 3)
+
+    def test_queued_frames_behind_honest_advertisements_do_not_add_up(self):
+        from tests.frames import next_counter
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t0 = 1_700_000_000.0
+        pipe.ingest(frame(t0, SENSOR))
+        c = next_counter(SENSOR)
+        # Three attachments, each advertising two frames ahead of the poll
+        # the device had already queued: two below each time, never three.
+        for i in range(3):
+            t = t0 + 3600 * i
+            pipe.ingest(mle_frame(t, SENSOR, 0, child_id_request(c + 3, 1029 + i), mac_counter=c, mle_counter=1029 + i))
+            pipe.ingest(poll(t + 1, SENSOR, 2 * i, counter=c + 1))
+            pipe.ingest(poll(t + 2, SENSOR, 2 * i + 1, counter=c + 2))
+            c += 10
+        self.assertEqual(self._events(pipe, "frame_counter_mismatch"), [])
+
     def test_mle_messages_below_the_advertised_mle_counter_are_reported(self):
         from tests.frames import next_counter
         pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())

@@ -688,32 +688,45 @@ def check_otbr(cfg, now: float | None = None, probe: Callable[[list[str]], dict]
 def check_alerts(cfg) -> list[Check]:
     from .alerts import SPOOL_FILE, ConfigError, build_heartbeats, build_sinks
 
-    def build(problems: list[str]) -> tuple[list, list]:
+    def build(problems: list[str], notes: list[str]) -> tuple[list, list]:
         # A sink or heartbeat the daemon would refuse (unknown type, no
         # url, two with one name) raises here as it does at capture
         # start. That is the failing configuration this check exists to
         # catch, so it is a FAIL line, not a "check crashed" warning and
-        # a green exit.
+        # a green exit. One kept out by a missing secret is a FAIL too.
+        # Anything else the builders log (an event filter naming an event
+        # the recorder does not emit) is a start-up note the recorder runs
+        # with, so here it is a warning: doctor exits 1 only when the box
+        # is not fit to record.
         sinks: list = []
         beats: list = []
+        logged: list[str] = []
+        unbuilt: list[tuple[str, str]] = []
         try:
-            sinks = build_sinks(cfg.alerts_raw, problems.append)
+            sinks = build_sinks(cfg.alerts_raw, logged.append, unbuilt)
         except ConfigError as exc:
             problems.append(f"{exc}: the recorder refuses to start on this [alerts] table")
         try:
-            beats = build_heartbeats(cfg.heartbeats_raw, problems.append)
+            beats = build_heartbeats(cfg.heartbeats_raw, logged.append, unbuilt)
         except ConfigError as exc:
             problems.append(f"{exc}: the recorder refuses to start on this [[heartbeats]] table")
+        disabled = tuple(f"disabled: {reason}" for _, reason in unbuilt)
+        for line in logged:
+            (problems if line.endswith(disabled) else notes).append(line)
         return sinks, beats
 
     problems: list[str] = []
-    sinks, beats = build(problems)
+    notes: list[str] = []
+    sinks, beats = build(problems, notes)
     out = load_env(cfg.config_dir / "alerts.env")
     if out:   # secrets may have arrived just now: build again with them
         problems.clear()
-        sinks, beats = build(problems)
+        notes.clear()
+        sinks, beats = build(problems, notes)
     for p in problems:
         out.append((FAIL, "alerts", p))
+    for n in notes:
+        out.append((WARN, "alerts", n))
     if not sinks:
         out.append((WARN, "alerts", "no sinks: warnings and criticals stay in the log (docs/ALERTING.md)"))
     else:

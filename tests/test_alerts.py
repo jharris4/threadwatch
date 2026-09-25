@@ -314,6 +314,14 @@ class EventFilterTests(unittest.TestCase):
         alerts.build_sink({"type": "http", "url": "http://x", "events": ["device_quiet"]}, 0, msgs.append)
         self.assertEqual(msgs, [])
 
+    def test_the_replay_history_cap_event_is_a_known_name(self):
+        # Emitted by the pipeline through Detector._emit, which the emit-site
+        # scan below does not see, so it is pinned here by name.
+        msgs = []
+        alerts.build_sink({"type": "http", "url": "http://x", "events": ["authentication_history_full"]},
+                          0, msgs.append)
+        self.assertEqual(msgs, [])
+
     def test_known_events_is_the_table_in_the_alerting_docs(self):
         doc = (Path(__file__).resolve().parent.parent / "docs" / "ALERTING.md").read_text()
         table = doc.split("## Events", 1)[1].split("\n## ", 1)[0]

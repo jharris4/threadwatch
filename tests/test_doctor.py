@@ -278,6 +278,30 @@ class DoctorTest(unittest.TestCase):
         self.assertEqual(self.levels(checks), [("warn", "services"), ("warn", "services")])
         self.assertIn("setup-host.sh", checks[0][2])
 
+    def test_a_filter_naming_an_unknown_event_is_a_warning_not_a_fail(self):
+        import contextlib
+        import io
+        # The recorder starts with this sink and logs a note about the name;
+        # doctor says the same at warn and stays green.
+        self.cfg.alerts_raw = {"sinks": [{"name": "phone", "type": "http", "url": "http://127.0.0.1:9/hook",
+                                          "events": ["device_quiet", "device_quite"]}]}
+        checks = doctor.check_alerts(self.cfg)
+        self.assertEqual(self.levels(checks)[:2], [("warn", "alerts"), ("ok", "alerts")])
+        self.assertIn("does not emit: device_quite", checks[0][2])
+        self.assertIn("1 sink(s): phone", checks[1][2])
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(doctor.print_report(checks), 0)
+        # A sink kept out by a missing secret is still a FAIL, with the note
+        # about the other sink's filter kept apart from it.
+        self.cfg.alerts_raw = {"sinks": [{"name": "phone", "type": "http", "url": "http://127.0.0.1:9/hook",
+                                          "events": ["device_quite"]},
+                                         {"name": "y", "type": "http", "url": "http://127.0.0.1:9/hook",
+                                          "headers": {"Authorization": "Bearer ${DOCTOR_TEST_TOKEN}"}}]}
+        checks = doctor.check_alerts(self.cfg)
+        self.assertEqual(self.levels(checks)[:3], [("FAIL", "alerts"), ("warn", "alerts"), ("ok", "alerts")])
+        self.assertIn("alert sink 'y' disabled", checks[0][2])
+        self.assertIn("does not emit: device_quite", checks[1][2])
+
     def test_a_sink_the_daemon_would_refuse_fails_the_check_and_the_exit_code(self):
         import contextlib
         import io

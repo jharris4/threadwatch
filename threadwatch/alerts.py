@@ -74,6 +74,7 @@ KNOWN_EVENTS = frozenset((
     "dominant_pan_changed", "configured_pan_silent", "mle_rejoin_attempt", "rejoin_wave", "device_quiet",
     "visitor_left", "visitor_returned",
     "poll_starvation", "poll_answered", "poll_unserved", "poll_served", "frame_counter_mismatch",
+    "authentication_history_full",
     "rssi_degradation", "rssi_recovered",
     "key_sequence_advanced", "key_lag_census", "key_lag", "key_lag_cleared",
     "retransmission_elevation", "partition_or_leader_change", "partition_storm",

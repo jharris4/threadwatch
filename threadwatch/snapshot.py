@@ -36,8 +36,9 @@ from .config import repo_commit, running_commit
 # border-routers.json is the hostname -> address history of every hub that
 # rotates its address: without it a snapshot cannot name the border
 # router on the very day it rebooted, the device most worth reading.
+# device-rotations.json is the same for a device that took a new address.
 STATE_FILES = ("status.json", "last-seen.json", "observed-names.json", "frames-by-hour.json",
-               "border-routers.json", "blind-spans.json", "retransmissions.json",
+               "border-routers.json", "device-rotations.json", "blind-spans.json", "retransmissions.json",
                "storm.json", "key-generations.json", "key-journal.json", "otbr-inventory.json",
                "ha-availability.json", "ha-map.json")
 # The configuration goes along with its secrets blanked: it is parsed as

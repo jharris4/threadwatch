@@ -242,6 +242,21 @@ class BundleTest(unittest.TestCase):
             self.assertEqual((m["inventory"], m["config"], m["span"], m["files"]), (None, None, None, {}))
 
 
+    def test_a_device_that_took_a_new_address_keeps_its_name_in_the_bundle(self):
+        from threadwatch.names import DeviceNames, load_names
+        old, new = "1111111111111111", "2222222222222222"
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "devices.json").write_text(json.dumps([{"name": "Porch Sensor", "extendedAddress": old}]))
+            cfg = Config(data_dir=d / "data", devices_path=d / "devices.json", config_dir=d)
+            cfg.ring_dir.mkdir(parents=True)
+            DeviceNames(cfg.devices_path, None, cfg.state_dir / "device-rotations.json").rotate(new, old, "srp", 10.0)
+            dest, _ = snapshot.save_snapshot(cfg, "x")
+            (cfg.state_dir / "device-rotations.json").unlink()        # the bundle stands alone
+            names = load_names(cfg.for_snapshot(dest))
+            self.assertEqual((names.name(old), names.name(new)), ("Porch Sensor", "Porch Sensor"))
+
+
 class SnapshotTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

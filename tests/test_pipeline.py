@@ -2856,6 +2856,28 @@ class KeyGenerationTest(unittest.TestCase):
             pipe._key_snapshot_slots.release()
         self.assertEqual(self._events(pipe, "snapshot_skipped")[-1]["reason"], "key_snapshot_workers_busy")
 
+    def test_a_finished_key_snapshot_worker_frees_its_slot(self):
+        # Two slots: without the release every key snapshot after the
+        # second would be skipped as busy, for the life of the process.
+        import threading
+        from unittest.mock import patch
+        pipe = self._pipe()
+        saved, workers = [], []
+        pipe._save_snapshot_now = lambda label, trigger, observation=None: saved.append(label)
+        spawn = threading.Thread
+
+        def thread(*args, **kwargs):
+            workers.append(spawn(*args, **kwargs))
+            return workers[-1]
+
+        observation = {"sequence": 86, "observed_at": self.T0, "phase": "advance"}
+        with patch("threadwatch.pipeline.threading.Thread", side_effect=thread):
+            for i in range(3):
+                pipe._snapshot_in_background(f"key-{i}", "key_sequence_advanced", observation)
+                workers[-1].join(10)
+        self.assertEqual(saved, ["key-0", "key-1", "key-2"])
+        self.assertEqual(self._events(pipe, "snapshot_skipped"), [])
+
     def test_key_snapshots_are_opt_in_and_replay_has_no_side_effects(self):
         for enabled, ephemeral, keep in ((False, False, 4), (True, True, 4), (True, False, 0)):
             with self.subTest(enabled=enabled, ephemeral=ephemeral, keep=keep):

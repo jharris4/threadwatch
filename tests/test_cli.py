@@ -393,6 +393,35 @@ class EventsFilterTest(CliCase):
         self.assertIn("[critical", out)                        # the newest at warning or above
 
 
+class KeyJournalCliTest(CliCase):
+    """key-journal reads the journal the recorder keeps and reports each
+    network advance, in text or JSON."""
+
+    def test_an_advance_whose_sender_had_no_known_parent_reports_in_text_and_json(self):
+        from threadwatch.config import load
+        from threadwatch.journal import STATE, Journal, unknown_coverage
+        (self.d / "devices.json").write_text("[]")
+        cfg = load(Path(self.cfg))
+        journal = Journal(cfg.state_dir / STATE)
+        t = time.time() - 3600
+        for seq, ts in ((85, t - 600), (86, t)):
+            # A null parent is a shape the journal accepts on load.
+            journal.observe("0a1b2c3d4e5f6071", "mac", seq, ts, row={},
+                            context=lambda: {"role": "child", "parent": None},
+                            packet=lambda ts=ts: {"ts": ts}, coverage=lambda *_: unknown_coverage())
+        journal.event({"event": "key_sequence_advanced", "ts": t, "sequence": 86, "previous": 85,
+                       "first_sender": "0a1b2c3d4e5f6071", "frame": "mac_poll"})
+        journal.save(force=True)
+        code, out, err = self.run_cli("key-journal")
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("85 -> 86: 0a1b2c3d4e5f6071; network interval", out)
+        self.assertNotIn("  parent ", out)
+        code, out, err = self.run_cli("key-journal", "--json")
+        self.assertEqual((code, err), (0, ""))
+        incident, = json.loads(out)["incidents"]
+        self.assertIsNone(incident["origin_observation"]["context"]["parent"])
+
+
 class DispatchTest(CliCase):
     """main()'s subcommand wiring: the exit codes scripts and the systemd
     unit key on, the argument conflicts, and the containment check that

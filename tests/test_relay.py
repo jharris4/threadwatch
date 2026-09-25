@@ -260,5 +260,90 @@ class RelayStreamTest(unittest.TestCase):
         self.assertEqual(sock.sent, b"{}\n" + header + recs[0])
 
 
+class RunRelayTest(unittest.TestCase):
+    """`threadwatch relay` end to end: the vendored sniffer faked as
+    test_record fakes it, writing a capture into the FIFO, and a listener
+    on localhost standing in for the recorder."""
+
+    def test_the_dongle_is_streamed_to_the_recorder_and_the_end_of_capture_exits_3(self):
+        import contextlib
+        import os
+        import socket
+        import tempfile
+        import types
+
+        from threadwatch.cli import main
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        d = Path(tmp.name)
+        (d / "config.toml").write_text(f'[record]\ndata_dir = "{d / "data"}"\n')
+        (d / "devices.json").write_text("[]")
+        capture = pcap_bytes(3)
+        srv = socket.create_server(("127.0.0.1", 0))
+        srv.settimeout(10)
+        self.addCleanup(srv.close)
+        received = []
+
+        def recorder():
+            conn, _ = srv.accept()
+            with conn:
+                conn.settimeout(10)
+                buf = b""
+                while chunk := conn.recv(65536):
+                    buf += chunk
+                received.append(buf)
+
+        listener = threading.Thread(target=recorder, daemon=True)
+        listener.start()
+        calls, connected = [], threading.Event()
+
+        class FakeSniffer:
+            def start_threaded(self, fifo, dev, channel, metadata=None):
+                calls.append(("start", dev, channel, metadata, os.path.exists(fifo)))
+
+                def run():
+                    with open(fifo, "wb") as fh:
+                        fh.write(capture[:24])
+                        fh.flush()
+                        connected.wait(10)            # records read before the connection are dropped
+                        fh.write(capture[24:])
+                threading.Thread(target=run, daemon=True).start()
+
+            def _stop(self):
+                calls.append(("stop",))
+
+        real_stream = relay.relay_stream
+
+        def stream(fh, connect, handshake, log, sleep=None):
+            def spy(msg):
+                log(msg)
+                if msg == "connected to the recorder":
+                    connected.set()
+            return real_stream(fh, connect, handshake, spy, sleep)
+
+        module = types.ModuleType("nrf802154_sniffer")
+        module.Nrf802154Sniffer = FakeSniffer
+        err = io.StringIO()
+        with mock.patch.dict(sys.modules, {"nrf802154_sniffer": module}), \
+                mock.patch.object(sys, "path", list(sys.path)), \
+                mock.patch("threadwatch.record.find_sniffers", return_value=[("/dev/fake", "0123456789ABCDEF")]), \
+                mock.patch.object(relay, "relay_stream", stream), contextlib.redirect_stderr(err):
+            code = main(["--config", str(d / "config.toml"), "relay", "--label", "annex",
+                         "--to", f"127.0.0.1:{srv.getsockname()[1]}", "--serial-port", "/dev/fake"])
+        listener.join(10)
+        self.assertEqual(code, 3)
+        self.assertEqual(calls, [("start", "/dev/fake", 25, "ieee802154-tap", True), ("stop",)])
+        self.assertEqual(received, [handshake_line("annex", "0123456789ABCDEF", 25) + capture])
+        self.assertFalse((d / "data" / "state" / "relay-annex.fifo").exists())
+        self.assertIn("capturing channel 25 from /dev/fake as radio annex", err.getvalue())
+        self.assertIn("after 3 frames sent, 0 dropped", err.getvalue())
+
+    def test_a_to_without_a_port_is_refused_before_the_sniffer_starts(self):
+        from threadwatch.config import Config
+        with mock.patch.object(sys, "path", list(sys.path)), self.assertRaises(SystemExit) as cm:
+            relay.run_relay(Config(), "annex", "recorder.local")
+        self.assertIn("--to must be host:port", str(cm.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -71,6 +71,49 @@ class MapAndPollTest(unittest.TestCase):
             (Path(d) / "ha-map.json").write_text("nope")
             self.assertEqual(haavail.load_map(Path(d)), {})
 
+    def test_refresh_map_builds_the_map_over_a_real_websocket_and_closes_it(self):
+        import threading
+
+        from tests.test_ha import _serve, _upgrade, server_frame
+        answers = {"config/device_registry/list": lambda m: self.REGISTRY,
+                   "matter/node_diagnostics": lambda m: self.DIAGS[m["device_id"]],
+                   "config/entity_registry/list": lambda m: self.ENTITIES}
+        seen, closed = [], threading.Event()
+
+        def recv(conn, n):
+            buf = b""
+            while len(buf) < n:
+                chunk = conn.recv(n - len(buf))
+                if not chunk:
+                    raise OSError("closed without a close frame")
+                buf += chunk
+            return buf
+
+        def handler(conn, request):
+            conn.sendall(_upgrade(request) + server_frame(0x1, b'{"type": "auth_required"}'))
+            while True:
+                head = recv(conn, 2)
+                n = head[1] & 0x7F
+                if n == 126:
+                    n = int.from_bytes(recv(conn, 2), "big")
+                mask = recv(conn, 4)
+                data = bytes(b ^ mask[i & 3] for i, b in enumerate(recv(conn, n)))
+                if head[0] & 0x0F == 0x8:
+                    closed.set()
+                    return
+                msg = json.loads(data)
+                seen.append(msg["type"])
+                reply = ({"type": "auth_ok"} if msg["type"] == "auth" else
+                         {"id": msg["id"], "type": "result", "success": True, "result": answers[msg["type"]](msg)})
+                conn.sendall(server_frame(0x1, json.dumps(reply).encode()))
+
+        mapping = haavail.refresh_map(_serve(handler), "tok", ENTRIES)
+        self.assertEqual(mapping, haavail.build_map(self._fake(), ENTRIES))
+        self.assertEqual(sorted(mapping), sorted([MOTION, GARDEN]))
+        self.assertTrue(closed.wait(5), "the websocket was left open")
+        self.assertEqual(seen, ["auth", "config/device_registry/list"] + ["matter/node_diagnostics"] * 3
+                         + ["config/entity_registry/list"])
+
     def test_a_state_file_of_the_wrong_shape_loads_as_what_fits(self):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "ha-availability.json"

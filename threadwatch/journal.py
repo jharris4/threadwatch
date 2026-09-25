@@ -505,7 +505,8 @@ def text_report(report):
                          f"evidence {', '.join(adoption['observations'])}")
         origin = incident.get("origin_observation")
         if origin:
-            parent = origin["context"].get("parent", {})
+            # _valid lets a transition's parent be null (none known).
+            parent = origin["context"].get("parent") or {}
             if parent.get("addr"):
                 lines.append(f"  parent {parent['addr']} last sequence {parent.get('sequence')}, "
                              f"age {parent.get('age_s')} s; child-parent delta "

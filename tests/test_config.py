@@ -271,6 +271,39 @@ class DetectValuesTest(unittest.TestCase):
         self.assertEqual(self._load("[detect]\nalert_cooldown_s = 0\n").detector.alert_cooldown_s, 0.0)
 
 
+class WrongTypeTest(unittest.TestCase):
+    """A value of the wrong TOML type is refused by its [section] key.
+    An array or table raised a bare TypeError from float(), int() or a
+    path join, a traceback for every command, record included; a word
+    where a number goes raised a ValueError that named no setting."""
+
+    def _load(self, text):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "config.toml"
+            path.write_text(text)
+            (Path(d) / "devices.json").write_text("{}")
+            return config_mod.load(path)
+
+    def test_numbers_and_paths_name_the_setting(self):
+        for section, key, bad, message in (
+                ("quiet", "silence_s", "[1800]", "[quiet] silence_s must be a number, not [1800]"),
+                ("quiet", "silence_s", '"abc"', "[quiet] silence_s must be a number, not 'abc'"),
+                ("web", "port", "[8080]", "[web] port must be a whole number, not [8080]"),
+                ("web", "port", '"http"', "[web] port must be a whole number, not 'http'"),
+                ("events", "keep_days", "{ days = 3 }", "[events] keep_days must be a whole number"),
+                ("network", "channel", "[25]", "[network] channel must be a whole number"),
+                ("devices", "inventory", "5", "[devices] inventory must be a path in quotes, not 5"),
+                ("visitors", "file", "5", "[visitors] file must be a path in quotes, not 5"),
+                ("credentials", "file", "[1]", "[credentials] file must be a path in quotes, not [1]")):
+            with self.assertRaises(ValueError, msg=f"{key} = {bad}") as cm:
+                self._load(f"[{section}]\n{key} = {bad}\n")
+            self.assertIn(message, str(cm.exception))
+
+    def test_a_quoted_number_still_loads(self):
+        cfg = self._load('[quiet]\nsilence_s = "600"\n[web]\nport = "8081"\n')
+        self.assertEqual((cfg.quiet_s, cfg.web_port), (600.0, 8081))
+
+
 class EventsKeepDaysTest(unittest.TestCase):
     def _load(self, text):
         with tempfile.TemporaryDirectory() as d:

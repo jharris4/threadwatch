@@ -588,6 +588,13 @@ class DispatchTest(CliCase):
             self.assertEqual(code, 2, cmd)
             self.assertIn(f"threadwatch {cmd}: credentials.toml is missing", err)
 
+    def test_a_wrong_typed_setting_is_one_line_and_exit_2(self):
+        (self.d / "config.toml").write_text(f'[record]\ndata_dir = "{self.d / "data"}"\n[web]\nport = [8080]\n')
+        for cmd in ("events", "record"):
+            code, _, err = self.run_cli(cmd)
+            self.assertEqual(code, 2, cmd)
+            self.assertEqual(err, "threadwatch: [web] port must be a whole number, not [8080]\n")
+
     def test_replay_needs_something_to_read(self):
         code, _, err = self.run_cli("replay")
         self.assertEqual(code, 2)

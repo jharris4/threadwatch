@@ -404,6 +404,34 @@ def _finite(section: str, key: str, value):
     return value
 
 
+def _float(section: str, key: str, value) -> float:
+    """``_finite`` then ``float``, a wrong type named by its key: float() of
+    a TOML array or table raised a bare TypeError, a traceback for every
+    command, and of "abc" a ValueError that did not say which setting."""
+    value = _finite(section, key, value)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"[{section}] {key} must be a number, not {value!r}") from None
+
+
+def _int(section: str, key: str, value) -> int:
+    """``_finite`` then ``int``, a wrong type named by its key, as ``_float``."""
+    value = _finite(section, key, value)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"[{section}] {key} must be a whole number, not {value!r}") from None
+
+
+def _file(section: str, key: str, value) -> str:
+    """A file setting, or a ValueError naming it: a number joined onto the
+    config directory raised a bare TypeError."""
+    if not isinstance(value, str):
+        raise ValueError(f"[{section}] {key} must be a path in quotes, not {value!r}")
+    return value
+
+
 _RADIO_KEYS = frozenset(("label", "serial", "placement", "source", "listen"))
 _SERIAL_RE = re.compile(r"^[0-9A-Za-z]{1,64}$")
 _LISTEN_RE = re.compile(r"^(?P<host>[^:\s]+|\[[0-9a-fA-F:]+\]):(?P<port>\d{1,5})$")
@@ -497,14 +525,14 @@ def load(path: Path | None) -> Config:
         cfg.loaded_config = redact_config(source)
         check_sections(raw, Path(path))
         net = raw.get("network", {})
-        cfg.channel = int(_finite("network", "channel", net.get("channel", cfg.channel)))
+        cfg.channel = _int("network", "channel", net.get("channel", cfg.channel))
         if not 11 <= cfg.channel <= 26:
             raise ValueError(f"[network] channel must be 11-26, not {cfg.channel}")
         if net.get("pan_id") is not None:
             raw_pan = net["pan_id"]
             try:
                 cfg.pan_id = (int(raw_pan, 0) if isinstance(raw_pan, str)
-                              else int(_finite("network", "pan_id", raw_pan)))
+                              else _int("network", "pan_id", raw_pan))
             except ValueError:
                 raise ValueError(f"[network] pan_id must be a PAN id such as \"0x4e21\", not {raw_pan!r}") from None
             if not 0 <= cfg.pan_id <= 0xfffe:
@@ -522,7 +550,7 @@ def load(path: Path | None) -> Config:
             # cwd-relative path would give each its own data directory.
             data_dir = Path(os.path.expandvars(str(rec["data_dir"]))).expanduser()
             cfg.data_dir = data_dir if data_dir.is_absolute() else (cfg.config_dir / data_dir).resolve()
-        cfg.keep_hours = int(_finite("record", "keep_hours", rec.get("keep_hours", cfg.keep_hours)))
+        cfg.keep_hours = _int("record", "keep_hours", rec.get("keep_hours", cfg.keep_hours))
         if cfg.keep_hours < 1:
             raise ValueError(f"[record] keep_hours must be at least 1, not {cfg.keep_hours}")
         if rec.get("keep_gb") is not None:
@@ -551,9 +579,11 @@ def load(path: Path | None) -> Config:
                 raise ValueError(f"[record] keep_snapshots must be -1 (no cap) or more, not {keep}")
             cfg.keep_snapshots = keep
         if raw.get("devices", {}).get("inventory"):
-            cfg.devices_path = (Path(path).parent / raw["devices"]["inventory"]).resolve()
+            name = _file("devices", "inventory", raw["devices"]["inventory"])
+            cfg.devices_path = (Path(path).parent / name).resolve()
         if raw.get("visitors", {}).get("file"):
-            cfg.visitors_path = (Path(path).parent / raw["visitors"]["file"]).resolve()
+            name = _file("visitors", "file", raw["visitors"]["file"])
+            cfg.visitors_path = (Path(path).parent / name).resolve()
         det = raw.get("detect", {})
         # Every value is a number by the time the detector sees it: a
         # quoted "400" compares fine against nothing at load time and
@@ -563,7 +593,7 @@ def load(path: Path | None) -> Config:
             value = det[key]
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ValueError(f"[detect] {key} must be a number of {unit}, not {value!r}")
-            return float(_finite("detect", key, value))
+            return _float("detect", key, value)
         if "flood_multiplier" in det:
             cfg.detector.flood_multiplier = _number("flood_multiplier", "times the baseline")
             if not cfg.detector.flood_multiplier > 0:
@@ -617,7 +647,7 @@ def load(path: Path | None) -> Config:
             raise ValueError(f"[detect] period_onsets must be at most {ONSETS_MAX}, not "
                              f"{cfg.detector.period_onsets}")
         quiet = raw.get("quiet", {})
-        cfg.quiet_s = float(_finite("quiet", "silence_s", quiet.get("silence_s", cfg.quiet_s)))
+        cfg.quiet_s = _float("quiet", "silence_s", quiet.get("silence_s", cfg.quiet_s))
         # There is no "disable" value here, though [summary] hour = -1 and
         # [border_routers] browse_s = 0 both mean that in the same file. At
         # zero or less the quiet test is true for every device on every
@@ -626,34 +656,34 @@ def load(path: Path | None) -> Config:
         # about a real silence again.
         if not cfg.quiet_s > 0:
             raise ValueError(f"[quiet] silence_s must be more than 0 seconds, not {cfg.quiet_s:g}")
-        cfg.quiet_min_rssi_dbm = float(_finite("quiet", "min_rssi_dbm",
-                                              quiet.get("min_rssi_dbm", cfg.quiet_min_rssi_dbm)))
-        cfg.quiet_forget_unnamed_s = float(_finite("quiet", "forget_unnamed_s",
-                                                  quiet.get("forget_unnamed_s", cfg.quiet_forget_unnamed_s)))
+        cfg.quiet_min_rssi_dbm = _float("quiet", "min_rssi_dbm",
+                                        quiet.get("min_rssi_dbm", cfg.quiet_min_rssi_dbm))
+        cfg.quiet_forget_unnamed_s = _float("quiet", "forget_unnamed_s",
+                                            quiet.get("forget_unnamed_s", cfg.quiet_forget_unnamed_s))
         if cfg.quiet_forget_unnamed_s < 0:
             raise ValueError(f"[quiet] forget_unnamed_s must be 0 (keep every address) or more, not "
                              f"{cfg.quiet_forget_unnamed_s:g}")
         link = raw.get("link", {})
-        cfg.link_drop_db = float(_finite("link", "drop_db", link.get("drop_db", cfg.link_drop_db)))
-        cfg.link_hold_s = float(_finite("link", "hold_s", link.get("hold_s", cfg.link_hold_s)))
+        cfg.link_drop_db = _float("link", "drop_db", link.get("drop_db", cfg.link_drop_db))
+        cfg.link_hold_s = _float("link", "hold_s", link.get("hold_s", cfg.link_hold_s))
         polls = raw.get("polls", {})
-        cfg.poll_rearm_s = float(_finite("polls", "rearm_s", polls.get("rearm_s", cfg.poll_rearm_s)))
-        cfg.poll_confirm_s = float(_finite("polls", "confirm_s", polls.get("confirm_s", cfg.poll_confirm_s)))
+        cfg.poll_rearm_s = _float("polls", "rearm_s", polls.get("rearm_s", cfg.poll_rearm_s))
+        cfg.poll_confirm_s = _float("polls", "confirm_s", polls.get("confirm_s", cfg.poll_confirm_s))
         if cfg.poll_confirm_s < 0:
             raise ValueError(f"[polls] confirm_s must be 0 (page at once) or more, not {cfg.poll_confirm_s:g}")
         keys = raw.get("keys", {})
         for name, attr, floor in (("confirm_s", "key_confirm_s", "0 (page at once)"),
                                   ("census_delay_s", "key_census_delay_s", "0 (log at the rotation)"),
                                   ("rearm_s", "key_rearm_s", "0 (page every episode)")):
-            value = float(_finite("keys", name, keys.get(name, getattr(cfg, attr))))
+            value = _float("keys", name, keys.get(name, getattr(cfg, attr)))
             if value < 0:
                 raise ValueError(f"[keys] {name} must be {floor} or more, not {value:g}")
             setattr(cfg, attr, value)
-        cfg.key_fresh_s = float(_finite("keys", "fresh_s", keys.get("fresh_s", cfg.key_fresh_s)))
+        cfg.key_fresh_s = _float("keys", "fresh_s", keys.get("fresh_s", cfg.key_fresh_s))
         if not cfg.key_fresh_s > 0:
             raise ValueError(f"[keys] fresh_s must be more than 0 seconds, not {cfg.key_fresh_s:g}")
         if keys.get("rotation_hours") is not None:
-            cfg.key_rotation_hours = float(_finite("keys", "rotation_hours", keys["rotation_hours"]))
+            cfg.key_rotation_hours = _float("keys", "rotation_hours", keys["rotation_hours"])
             if not cfg.key_rotation_hours > 0:
                 raise ValueError(f"[keys] rotation_hours must be more than 0, not {cfg.key_rotation_hours:g}")
         otbr = raw.get("otbr", {})
@@ -672,7 +702,7 @@ def load(path: Path | None) -> Config:
         validate_target(cfg.otbr_ssh_target or "unconfigured", cfg.otbr_ssh_port, cfg.otbr_container)
         if cfg.otbr_enabled and not cfg.otbr_ssh_target:
             raise ValueError("[otbr] ssh_target is required when enabled")
-        cfg.otbr_poll_s = float(_finite("otbr", "poll_s", otbr.get("poll_s", cfg.otbr_poll_s)))
+        cfg.otbr_poll_s = _float("otbr", "poll_s", otbr.get("poll_s", cfg.otbr_poll_s))
         if not 300 <= cfg.otbr_poll_s <= 900:
             raise ValueError("[otbr] poll_s must be between 300 and 900 seconds")
         ha_logs = raw.get("ha_logs", {})
@@ -688,7 +718,7 @@ def load(path: Path | None) -> Config:
         cfg.ha_logs_addons = list(addons)
         for name, attr in (("max_hours", "ha_logs_max_hours"), ("read_timeout_s", "ha_logs_read_timeout_s"),
                            ("deadline_s", "ha_logs_deadline_s")):
-            value = float(_finite("ha_logs", name, ha_logs.get(name, getattr(cfg, attr))))
+            value = _float("ha_logs", name, ha_logs.get(name, getattr(cfg, attr)))
             if not value > 0:
                 raise ValueError(f"[ha_logs] {name} must be more than 0, not {value:g}")
             setattr(cfg, attr, value)
@@ -703,7 +733,7 @@ def load(path: Path | None) -> Config:
                                      ("burst_hold_s", "ha_availability_burst_hold_s", False),
                                      ("rearm_s", "ha_availability_rearm_s", False),
                                      ("registry_refresh_s", "ha_availability_registry_refresh_s", True)):
-            value = float(_finite("ha_availability", name, avail.get(name, getattr(cfg, attr))))
+            value = _float("ha_availability", name, avail.get(name, getattr(cfg, attr)))
             if positive and not value > 0:
                 raise ValueError(f"[ha_availability] {name} must be more than 0, not {value:g}")
             if not positive and value < 0:
@@ -714,23 +744,23 @@ def load(path: Path | None) -> Config:
             raise ValueError(f"[ha_availability] burst_devices must be a whole number of 2 or more, not {devices!r}")
         cfg.ha_availability_burst_devices = devices
         retrans = raw.get("retransmissions", {})
-        cfg.retrans_confirm_s = float(_finite("retransmissions", "confirm_s",
-                                             retrans.get("confirm_s", cfg.retrans_confirm_s)))
+        cfg.retrans_confirm_s = _float("retransmissions", "confirm_s",
+                                       retrans.get("confirm_s", cfg.retrans_confirm_s))
         if cfg.retrans_confirm_s < 0:
             raise ValueError("[retransmissions] confirm_s must be 0 (page at the first minute) or more, "
                              f"not {cfg.retrans_confirm_s:g}")
         partition = raw.get("partition", {})
-        cfg.partition_stall_s = float(_finite("partition", "stall_s",
-                                              partition.get("stall_s", cfg.partition_stall_s)))
+        cfg.partition_stall_s = _float("partition", "stall_s",
+                                       partition.get("stall_s", cfg.partition_stall_s))
         if not cfg.partition_stall_s > 0:
             raise ValueError(f"[partition] stall_s must be more than 0 seconds, not {cfg.partition_stall_s:g}")
-        cfg.partition_settle_s = float(_finite("partition", "settle_s",
-                                               partition.get("settle_s", cfg.partition_settle_s)))
+        cfg.partition_settle_s = _float("partition", "settle_s",
+                                        partition.get("settle_s", cfg.partition_settle_s))
         if cfg.partition_settle_s < 0:
             raise ValueError("[partition] settle_s must be 0 (log every change at once) or more, "
                              f"not {cfg.partition_settle_s:g}")
         rejoins = raw.get("rejoins", {})
-        cfg.rejoin_wave_s = float(_finite("rejoins", "wave_s", rejoins.get("wave_s", cfg.rejoin_wave_s)))
+        cfg.rejoin_wave_s = _float("rejoins", "wave_s", rejoins.get("wave_s", cfg.rejoin_wave_s))
         if cfg.rejoin_wave_s < 0:
             raise ValueError("[rejoins] wave_s must be 0 (log every attempt at once) or more, "
                              f"not {cfg.rejoin_wave_s:g}")
@@ -743,18 +773,18 @@ def load(path: Path | None) -> Config:
         if isinstance(refusals, bool) or not isinstance(refusals, int) or refusals < 1:
             raise ValueError(f"[srp] refusals must be a whole number of 1 or more, not {refusals!r}")
         cfg.srp_refusals = refusals
-        cfg.srp_grace_s = float(_finite("srp", "grace_s", srp.get("grace_s", cfg.srp_grace_s)))
+        cfg.srp_grace_s = _float("srp", "grace_s", srp.get("grace_s", cfg.srp_grace_s))
         if cfg.srp_grace_s < 0:
             raise ValueError(f"[srp] grace_s must be 0 or more seconds, not {cfg.srp_grace_s:g}")
         brs = raw.get("border_routers", {})
-        cfg.border_router_browse_s = float(_finite("border_routers", "browse_s",
-                                                  brs.get("browse_s", cfg.border_router_browse_s)))
+        cfg.border_router_browse_s = _float("border_routers", "browse_s",
+                                            brs.get("browse_s", cfg.border_router_browse_s))
         cfg.border_router_rotation = str(brs.get("rotation", cfg.border_router_rotation))
         if cfg.border_router_rotation not in ROTATION_POLICIES:
             raise ValueError(f"[border_routers] rotation must be one of "
                              f"{', '.join(sorted(ROTATION_POLICIES))}, not {cfg.border_router_rotation!r}")
         summary = raw.get("summary", {})
-        cfg.summary_hour = int(_finite("summary", "hour", summary.get("hour", cfg.summary_hour)))
+        cfg.summary_hour = _int("summary", "hour", summary.get("hour", cfg.summary_hour))
         if not -1 <= cfg.summary_hour <= 23:
             raise ValueError(f"[summary] hour must be 0-23, or -1 to disable, not {cfg.summary_hour}")
         cfg.summary_severity = str(summary.get("severity", cfg.summary_severity))
@@ -762,19 +792,20 @@ def load(path: Path | None) -> Config:
             raise ValueError(f"[summary] severity must be info, notice, warning or critical, "
                              f"not {cfg.summary_severity!r}")
         events = raw.get("events", {})
-        cfg.events_keep_days = int(_finite("events", "keep_days", events.get("keep_days", cfg.events_keep_days)))
+        cfg.events_keep_days = _int("events", "keep_days", events.get("keep_days", cfg.events_keep_days))
         if cfg.events_keep_days < 0:
             raise ValueError(f"[events] keep_days must be 0 (keep for ever) or more, not {cfg.events_keep_days}")
         web = raw.get("web", {})
         cfg.web_bind = str(web.get("bind", cfg.web_bind))
-        cfg.web_port = int(_finite("web", "port", web.get("port", cfg.web_port)))
+        cfg.web_port = _int("web", "port", web.get("port", cfg.web_port))
         # Sinks and heartbeats are built lazily (alerts.build_sinks /
         # build_heartbeats) so ${ENV} expansion and validation happen where
         # a disabled sink can be logged rather than crash config loading.
         cfg.alerts_raw = dict(raw.get("alerts", {}))
         cfg.heartbeats_raw = list(raw.get("heartbeats", []) or [])
         if raw.get("credentials", {}).get("file"):
-            cfg.credentials_path = (Path(path).parent / raw["credentials"]["file"]).resolve()
+            name = _file("credentials", "file", raw["credentials"]["file"])
+            cfg.credentials_path = (Path(path).parent / name).resolve()
     if cfg.devices_path is None:
         if explicit_path:
             # This is both the read location and the destination for name/import,

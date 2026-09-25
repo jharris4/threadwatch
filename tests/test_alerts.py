@@ -95,13 +95,6 @@ class RenderTests(unittest.TestCase):
 
 
 class SinkBuildTests(unittest.TestCase):
-    def test_legacy_webhook_url_becomes_http_sink(self):
-        sinks = alerts.build_sinks({"webhook_url": "http://x/hook", "min_severity": "critical"}, print)
-        self.assertEqual(len(sinks), 1)
-        self.assertIsInstance(sinks[0], alerts.HttpSink)
-        self.assertEqual(sinks[0].min_severity, 3)
-        self.assertIsNone(sinks[0].body)
-
     def test_missing_env_disables_sink_with_message(self):
         msgs = []
         sinks = alerts.build_sinks({"sinks": [{"name": "p", "type": "http", "url": "http://x",
@@ -175,9 +168,6 @@ class SinkBuildTests(unittest.TestCase):
                 alerts.build_sinks({"sinks": [{"name": "phone", "url": "http://x", "min_severity": bad}]}, print)
             self.assertEqual(str(cm.exception), "alert sink 'phone': min_severity must be one of info, notice, "
                                                 f"warning, critical, not {bad!r}")
-        with self.assertRaises(alerts.ConfigError) as cm:
-            alerts.build_sinks({"webhook_url": "http://x/hook", "min_severity": "notce"}, print)
-        self.assertIn("alert sink 'webhook': min_severity must be one of", str(cm.exception))
         for idx, name in enumerate(alerts.SEVERITIES):
             sinks = alerts.build_sinks({"sinks": [{"url": "http://x", "min_severity": name}]}, print)
             self.assertEqual(sinks[0].min_severity, idx)
@@ -273,9 +263,6 @@ class EventFilterTests(unittest.TestCase):
         s = alerts.build_sink({"type": "http", "url": "http://x"}, 0, lambda m: None)
         self.assertIsNone(s.events)
         self.assertEqual(s.ignore_events, frozenset())
-        legacy = alerts.build_sinks({"webhook_url": "http://x"}, lambda m: None)[0]
-        self.assertIsNone(legacy.events)
-        self.assertEqual(legacy.ignore_events, frozenset())
 
     def test_both_lists_on_one_sink_are_refused_by_message(self):
         with self.assertRaises(alerts.ConfigError) as cm:
@@ -369,16 +356,6 @@ class DeliveryTests(unittest.TestCase):
         sink = alerts.HttpSink(name="n", url=raw["url"], body=raw["body"], severity_values=raw["severity_values"])
         body = json.loads(sink.payload({**REC, "severity": "notice"}))
         self.assertEqual(body["priority"], 3)
-
-    def test_legacy_webhook_url_expands_env_or_is_disabled(self):
-        msgs = []
-        self.assertEqual(alerts.build_sinks({"webhook_url": "${TW_NOPE_HOOK}"}, msgs.append), [])
-        self.assertIn("TW_NOPE_HOOK", msgs[0])
-        os.environ["TW_HOOK"] = "http://hook"
-        try:
-            self.assertEqual(alerts.build_sinks({"webhook_url": "${TW_HOOK}"}, print)[0].url, "http://hook")
-        finally:
-            del os.environ["TW_HOOK"]
 
     def test_raw_record_when_no_template(self):
         alerts.HttpSink(name="t", url=self.srv.url).send(REC)
@@ -1391,7 +1368,6 @@ class TimeoutDefaultsTest(unittest.TestCase):
     def test_sinks_and_heartbeats_wait_ten_seconds_by_default(self):
         self.assertEqual(alerts.HttpSink(name="h", url="http://x").timeout_s, 10.0)
         self.assertEqual(alerts.CommandSink(name="c", command=["true"]).timeout_s, 10.0)
-        self.assertEqual(alerts.build_sinks({"webhook_url": "http://x"}, print)[0].timeout_s, 10.0)
         self.assertEqual(alerts.build_sinks({"sinks": [{"url": "http://x"}]}, print)[0].timeout_s, 10.0)
         self.assertEqual(alerts.build_sinks({"sinks": [{"url": "http://x", "timeout_s": 2}]}, print)[0].timeout_s, 2.0)
         self.assertEqual(alerts.Heartbeat(name="b", url="http://x").timeout_s, 10.0)
@@ -1577,30 +1553,27 @@ class AlertTestCommandTest(unittest.TestCase):
 class CooldownDefaultsTest(unittest.TestCase):
     """Five minutes per event name, per sink, is the rate limit that turns
     a 40-device outage into two messages. Every way of building a sink
-    must land on it, the legacy webhook_url shorthand included: that one
-    is built straight from the dataclass, so a changed default there is
-    a phone that buzzes once per device."""
+    must land on it, so a changed default is a phone that buzzes once
+    per device."""
 
     def test_every_way_of_building_a_sink_gets_five_minutes(self):
         self.assertEqual(alerts.Sink.__dataclass_fields__["cooldown_s"].default, 300.0)
         self.assertEqual(alerts.HttpSink(name="h", url="http://x").cooldown_s, 300.0)
         self.assertEqual(alerts.CommandSink(name="c", command=["true"]).cooldown_s, 300.0)
-        legacy = alerts.build_sinks({"webhook_url": "http://x"}, print)[0]
-        self.assertEqual(legacy.cooldown_s, 300.0)
         self.assertEqual(alerts.build_sinks({"sinks": [{"url": "http://x"}]}, print)[0].cooldown_s, 300.0)
         self.assertEqual(alerts.build_sinks({"sinks": [{"type": "command", "command": "true"}]}, print)[0].cooldown_s,
                          300.0)
         self.assertEqual(alerts.build_sinks({"sinks": [{"url": "http://x", "cooldown_s": 0}]}, print)[0].cooldown_s,
                          0.0)
 
-    def test_the_legacy_sink_holds_a_repeat_for_five_minutes(self):
-        legacy = alerts.build_sinks({"webhook_url": "http://x"}, print)[0]
+    def test_a_default_sink_holds_a_repeat_for_five_minutes(self):
+        sink = alerts.build_sinks({"sinks": [{"url": "http://x"}]}, print)[0]
         now = 1_700_000_000.0
-        self.assertTrue(legacy.wants(REC, now))
-        self.assertFalse(legacy.wants(REC, now + 1))
-        self.assertFalse(legacy.wants(REC, now + 299))
-        self.assertEqual(legacy.next_digest_at(), now + 300)
-        self.assertTrue(legacy.wants(REC, now + 300))
+        self.assertTrue(sink.wants(REC, now))
+        self.assertFalse(sink.wants(REC, now + 1))
+        self.assertFalse(sink.wants(REC, now + 299))
+        self.assertEqual(sink.next_digest_at(), now + 300)
+        self.assertTrue(sink.wants(REC, now + 300))
 
 
 if __name__ == "__main__":

@@ -916,11 +916,6 @@ any URL in it cut back to scheme and host: `curl` echoing an address it
 could not reach would otherwise put the topic or webhook id in the journal.
 Anything else your command prints to stderr is logged as written.
 
-### Legacy shorthand
-
-`webhook_url = "..."` (plus optional `min_severity`) under `[alerts]` still
-works and is equivalent to one `http` sink named `webhook` with no template.
-
 ## Heartbeats
 
 ```toml

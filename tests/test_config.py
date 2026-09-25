@@ -512,7 +512,7 @@ class ExampleConfigTest(unittest.TestCase):
         ("credentials", "file"): ("credentials_path", "credentials.toml", "creds.toml"),
     }
     # Read verbatim into alerts_raw / heartbeats_raw and built by alerts.py.
-    RAW = {("alerts", "webhook_url"), ("alerts", "sinks"), ("heartbeats",)}
+    RAW = {("alerts", "sinks"), ("heartbeats",)}
     # Keys the example may carry that config.load does not read. Empty:
     # network_name was the only one, and it was removed rather than
     # documented, since setting it did nothing at all.
@@ -606,13 +606,13 @@ class ExampleConfigTest(unittest.TestCase):
             sinks = alerts.build_sinks(cfg.alerts_raw, logs.append)
             self.assertEqual(logs, [])
             self.assertEqual([(s.name, type(s).__name__) for s in sinks],
-                             [("webhook", "HttpSink"), ("home-assistant", "HttpSink"),
-                              ("phone", "HttpSink"), ("local-script", "CommandSink")])
-            self.assertEqual(sinks[2].headers["Authorization"], "Bearer tk_ntfy")
-            self.assertEqual((sinks[1].min_severity, sinks[1].cooldown_s), (2, 300.0))
-            self.assertEqual(sinks[3].command, ["/usr/local/bin/my-alert.sh"])
-            self.assertEqual((sinks[1].events, sinks[1].ignore_events), (None, frozenset({"poll_starvation"})))
-            self.assertEqual((sinks[2].events, sinks[2].ignore_events),
+                             [("home-assistant", "HttpSink"), ("phone", "HttpSink"),
+                              ("local-script", "CommandSink")])
+            self.assertEqual(sinks[1].headers["Authorization"], "Bearer tk_ntfy")
+            self.assertEqual((sinks[0].min_severity, sinks[0].cooldown_s), (2, 300.0))
+            self.assertEqual(sinks[2].command, ["/usr/local/bin/my-alert.sh"])
+            self.assertEqual((sinks[0].events, sinks[0].ignore_events), (None, frozenset({"poll_starvation"})))
+            self.assertEqual((sinks[1].events, sinks[1].ignore_events),
                              (frozenset({"device_quiet", "credentials_stale", "phase_locked_storm"}), frozenset()))
             beats = alerts.build_heartbeats(cfg.heartbeats_raw, logs.append)
             self.assertEqual(logs, [])
@@ -724,6 +724,14 @@ class UnknownNamesTest(unittest.TestCase):
         self.assertEqual(cfg.alerts_raw["sinks"][0]["whatever"], 1)
         self.assertEqual(cfg.heartbeats_raw[0]["anything"], 2)
 
+    def test_alerts_takes_only_sinks(self):
+        # The single webhook_url form is gone; a file still carrying it
+        # must say so rather than start with no alerts at all.
+        for line in ('webhook_url = "http://x"', 'min_severity = "warning"'):
+            with self.subTest(line=line), self.assertRaises(ValueError) as e:
+                self._load(f"[alerts]\n{line}\n")
+            self.assertIn(f"unknown key '{line.split()[0]}' in [alerts]", str(e.exception))
+
     def test_the_quiet_split_that_silence_s_replaced_is_gone(self):
         # Dropped rather than carried: nothing on any host still writes
         # them, and an old file saying end_device_s now says so loudly
@@ -742,9 +750,9 @@ class UnknownNamesTest(unittest.TestCase):
         loaded = {(section, key)
                   for section, keys in config_mod.SECTIONS.items() if keys
                   for key in keys}
-        self.assertEqual(loaded, documented - {p for p in documented if p[0] == "alerts"})
+        self.assertEqual(loaded, documented)
         opaque = {s for s, keys in config_mod.SECTIONS.items() if keys is None}
-        self.assertEqual(opaque, {"alerts", "heartbeats"})
+        self.assertEqual(opaque, {"heartbeats"})
 
 
 if __name__ == "__main__":

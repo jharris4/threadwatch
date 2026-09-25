@@ -370,7 +370,7 @@ SECTIONS: dict[str, frozenset[str] | None] = {
     "events": frozenset(("keep_days",)),
     "web": frozenset(("bind", "port")),
     "credentials": frozenset(("file",)),
-    "alerts": None,
+    "alerts": frozenset(("sinks",)),
     "heartbeats": None,
 }
 

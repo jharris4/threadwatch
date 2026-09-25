@@ -341,10 +341,6 @@ port = 8080
 # recipes (Home Assistant, ntfy, Gotify, Discord, ...): docs/ALERTING.md
 # Test everything below with:  bin/threadwatch alert-test
 #
-# Shorthand kept from earlier versions - one plain JSON POST of the event
-# record, warning and above:
-# webhook_url = "http://homeassistant.local:8123/api/webhook/threadwatch-<random>"
-#
 # [[alerts.sinks]]
 # name = "home-assistant"
 # type = "http"

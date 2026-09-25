@@ -579,18 +579,6 @@ def _check_unique_names(kind: str, items) -> None:
 
 def build_sinks(alerts_raw: dict, log: Callable[[str], None], unbuilt: list | None = None) -> list[Sink]:
     sinks: list[Sink] = []
-    # Legacy single-webhook form, kept working as a shorthand.
-    if alerts_raw.get("webhook_url"):
-        missing: set[str] = set()
-        url = expand_env(str(alerts_raw["webhook_url"]), missing)
-        if missing:
-            reason = f"environment variable(s) not set: {', '.join(sorted(missing))} (see config/alerts.env)"
-            log(f"alert sink 'webhook' disabled: {reason}")
-            if unbuilt is not None:
-                unbuilt.append(("webhook", reason))
-        else:
-            sinks.append(HttpSink(name="webhook", url=url,
-                                  min_severity=_min_severity(alerts_raw.get("min_severity", "warning"), "webhook")))
     for i, raw in enumerate(alerts_raw.get("sinks", []) or []):
         s = build_sink(raw, i, log, unbuilt)
         if s is not None:

@@ -713,7 +713,9 @@ away from the mesh. A device already unavailable when the recorder starts
 opens an episode without paging (a notice with
 `already_unavailable_at_start`, unless a persisted episode says it was
 paged before the restart), and an episode reopening within `rearm_s` of
-its close is a notice with `episode` > 1, like a flapping starvation.
+the close of one that paged is a notice with `episode` > 1, like a
+flapping starvation. An episode that closed inside its hold paged nothing
+and arms nothing.
 
 Home Assistant being down is not a device being down: a failed poll (a
 refused connection, a 5xx while HA restarts) opens and closes nothing,

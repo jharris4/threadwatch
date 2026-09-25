@@ -402,6 +402,20 @@ class TrackerTest(unittest.TestCase):
         self.assertEqual([(e["severity"], e["episode"]) for e in evs], [("warning", 1), ("notice", 2)])
         self.assertIn("Episode 2 since the last page", evs[1]["note"])
 
+    def test_a_blip_that_never_paged_does_not_demote_the_next_outage(self):
+        tr = self._tracker()
+        self._poll(tr, T0)
+        everyone = {d: T0 + 50 for d in self.mapping}
+        self._poll(tr, T0 + 60, everyone)                     # an HA restart: every device, one poll
+        self._poll(tr, T0 + 120)
+        self.assertEqual(self.records, [])
+        self.assertEqual(tr.state["closed"], {})
+        for t in range(1800, 2500, 60):                       # one device down for real
+            self._poll(tr, T0 + t, {IDS[0]: T0 + 1790})
+        evs = self._events("ha_unavailable")
+        self.assertEqual([(e["severity"], e["episode"]) for e in evs], [("warning", 1)])
+        self.assertNotIn("since the last page", evs[0]["note"])
+
     def test_status_and_the_pages_view(self):
         from threadwatch.haavail import availability_by_addr, save_map
         tr = self._tracker()

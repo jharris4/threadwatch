@@ -385,7 +385,10 @@ class Tracker:
 
     def _close(self, device_id: str, ep: dict, now: float) -> None:
         """Rule 4: available again. ha_available only if the episode was
-        said; the close is remembered either way for the flap guard."""
+        said, and only then is the close remembered for the flap guard:
+        a blip inside the hold (every device, at each Home Assistant or
+        Matter Server restart) paged nothing, so there is nothing to
+        guard, and remembering it demoted the next real outage."""
         if ep.get("paged"):
             radio, _cause = self._radio(device_id, ep["since"], now)
             rejoin = radio.get("rejoin_ts")
@@ -397,7 +400,7 @@ class Tracker:
                             f"{round((now - ep['since']) / 60)} min"
                             + (f"; it rejoined the mesh at {time.strftime('%H:%M:%S', time.localtime(rejoin))}"
                                if rejoined else "")))
-        self.state["closed"][device_id] = {"closed_ts": now, "episodes": int(ep.get("episode") or 1)}
+            self.state["closed"][device_id] = {"closed_ts": now, "episodes": int(ep.get("episode") or 1)}
         del self.state["episodes"][device_id]
 
     def _note_rotations(self, new_map: dict, now: float) -> None:

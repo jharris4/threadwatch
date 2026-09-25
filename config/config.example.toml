@@ -339,7 +339,7 @@ port = 8080
 # severity floor and per-event cooldown. Secrets go in config/alerts.env as
 # environment variables and are referenced as ${NAME}. Full reference and
 # recipes (Home Assistant, ntfy, Gotify, Discord, ...): docs/ALERTING.md
-# Test everything below with:  bin/threadwatch alert-test
+# Test everything below with:  set -a; . config/alerts.env; set +a; bin/threadwatch alert-test
 #
 # [[alerts.sinks]]
 # name = "home-assistant"

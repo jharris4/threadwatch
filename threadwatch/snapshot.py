@@ -434,14 +434,27 @@ def prune_auto_snapshots(snapshots_dir: Path, keep: int) -> list[str]:
     pruned (is_auto_snapshot, from the manifest): a snapshot somebody
     saved by hand is kept, however old and whatever it is called, because
     nothing else remembers to.
-    ``keep`` of 0 prunes every automatic one; a negative keep is no cap."""
+    ``keep`` of 0 prunes every automatic one; a negative keep is no cap.
+    A snapshot whose HA logs are being fetched (its ha-logs.lock is held)
+    is left for the next pass: removing it under the fetch failed that
+    fetch, and the retry pass with it."""
+    from .halogs import LOCK_FILE
     if keep < 0 or not snapshots_dir.is_dir():
         return []
     autos = sorted(d for d in snapshots_dir.iterdir()
                    if d.is_dir() and d.name != STAGING_DIR and is_auto_snapshot(d))
     removed = []
     for d in autos[:max(0, len(autos) - keep)]:
-        shutil.rmtree(d, ignore_errors=True)
+        try:
+            fd = _take_lock(d / LOCK_FILE, wait=False)
+        except OSError:
+            continue
+        if fd is None:
+            continue
+        try:
+            shutil.rmtree(d, ignore_errors=True)
+        finally:
+            os.close(fd)
         removed.append(d.name)
     return removed
 

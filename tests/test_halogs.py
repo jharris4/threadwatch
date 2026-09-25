@@ -446,6 +446,33 @@ class SnapshotLogsTest(unittest.TestCase):
         finally:
             srv.close()
 
+    def test_one_snapshot_failing_its_retry_does_not_cost_the_others_theirs(self):
+        # A snapshot pruned while its fetch ran raised out of the pass,
+        # and the pass's results for every other snapshot went with it.
+        from unittest.mock import patch
+
+        from threadwatch.snapshot import save_snapshot
+        srv = FakeSupervisor(self.lines, status=503)
+        self._env(srv.url)
+        gone, _n = save_snapshot(self.cfg, "first", now=self.now)
+        kept, _n = save_snapshot(self.cfg, "second", now=self.now)
+        real = halogs.attach_logs
+
+        def attach(cfg, d, **kw):
+            if d == gone:
+                raise FileNotFoundError(d / halogs.LOCK_FILE)
+            return real(cfg, d, **kw)
+
+        try:
+            for d in (gone, kept):
+                halogs.attach_logs(self.cfg, d, now=self.now + 5)
+            srv.status = 200
+            with patch.object(halogs, "attach_logs", attach), patch("sys.stderr"):
+                tried = halogs.retry_pending(self.cfg, self.now + 900)
+        finally:
+            srv.close()
+        self.assertEqual([(d.name, st["status"]) for d, st, _final in tried], [(kept.name, "complete")])
+
     def test_a_partial_fetch_retries_only_the_addons_that_are_not_whole(self):
         srv = FakeSupervisor({OTBR: self.lines[OTBR]})                          # the Matter slug is unknown: 404
         self._env(srv.url)

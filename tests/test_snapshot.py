@@ -1,6 +1,7 @@
 """save_snapshot against a ring that keeps rotating."""
 
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -583,6 +584,21 @@ class SnapshotRetentionTest(unittest.TestCase):
         self.assertEqual(snapshot.prune_auto_snapshots(self.cfg.snapshots_dir, 0),
                          ["20260902T000000_auto-storm"])
         self.assertEqual(self._names(), ["20260901T000000_auto-investigation"])
+
+    def test_a_snapshot_whose_ha_logs_are_being_fetched_is_left_for_the_next_pass(self):
+        # Removing it under the fetch failed the fetch and the HA log
+        # retry pass it ran in.
+        busy = self._snapshot("20260901T000000_auto-storm", trigger="phase_locked_storm")
+        self._snapshot("20260902T000000_auto-storm", trigger="phase_locked_storm")
+        fd = snapshot._take_lock(busy / "ha-logs.lock", wait=False)
+        try:
+            self.assertEqual(snapshot.prune_auto_snapshots(self.cfg.snapshots_dir, 0),
+                             ["20260902T000000_auto-storm"])
+            self.assertEqual(self._names(), ["20260901T000000_auto-storm"])
+        finally:
+            os.close(fd)
+        self.assertEqual(snapshot.prune_auto_snapshots(self.cfg.snapshots_dir, 0), ["20260901T000000_auto-storm"])
+        self.assertEqual(self._names(), [])
 
     def test_a_bundle_with_no_readable_manifest_is_kept(self):
         # Only a copy cut short has no manifest, and one whose manifest

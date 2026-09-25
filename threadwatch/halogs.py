@@ -32,6 +32,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -456,11 +457,18 @@ def retries_due(cfg, now: float) -> list[Path]:
 def retry_pending(cfg, now: float | None = None, secrets=None) -> list[tuple[Path, dict, bool]]:
     """One pass of the retry schedule: every snapshot due is fetched again
     (attach_logs on its own ha-logs.json). Returns (snapshot, status,
-    final) per snapshot tried, ``final`` meaning no retry remains."""
+    final) per snapshot tried, ``final`` meaning no retry remains. One
+    snapshot's failure (pruned while its fetch ran) is said and skipped,
+    so it does not cost the others their results."""
     now = now if now is not None else time.time()
     out = []
     for d in retries_due(cfg, now):
-        status = attach_logs(cfg, d, now=now, secrets=secrets)
+        try:
+            status = attach_logs(cfg, d, now=now, secrets=secrets)
+        except Exception as exc:
+            print(f"[threadwatch] HA log retry for {d.name} failed: {type(exc).__name__}: {exc}",
+                  file=sys.stderr, flush=True)
+            continue
         if status is None:
             continue
         final = (all(r.get("complete") for r in status.get("addons", {}).values())

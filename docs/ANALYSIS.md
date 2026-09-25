@@ -149,7 +149,8 @@ snapshot on disk). Automatic snapshots are capped by
 `[record] keep_snapshots` (4 by default): the oldest of the ones the
 recorder took go before each new snapshot is taken, told apart by the
 `trigger` in their manifests rather than by their labels, so a snapshot
-you saved by hand and called `auto-anything` is still yours to delete. `-1` keeps every automatic snapshot,
+you saved by hand and called `auto-anything` is still yours to delete. One whose Home Assistant logs
+are still being fetched is left until the next. `-1` keeps every automatic snapshot,
 and `0` takes none of them at all — the critical event is still logged
 and still alerts, and `threadwatch snapshot <label>` still saves by hand. Snapshots you saved by hand are never
 pruned, so delete them yourself with `threadwatch snapshots --delete`. A

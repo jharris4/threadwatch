@@ -50,6 +50,7 @@ class OpenerTest(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as cm:
                 httpclient.urlopen(req, timeout=2)
             self.assertEqual(cm.exception.code, 302)
+            self.assertTrue(cm.exception.fp.closed)          # its socket is not left for the collector
             self.assertEqual(len(bounce.requests), 1)
             self.assertEqual(bounce.requests[0]["authorization"], "Bearer tk_SECRET")
             self.assertEqual(sink.requests, [])

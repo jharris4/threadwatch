@@ -16,6 +16,7 @@ the availability poll use the same ones.
 from __future__ import annotations
 
 import re
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -34,8 +35,15 @@ opener = urllib.request.build_opener(NoRedirect())
 
 def urlopen(req: urllib.request.Request, timeout: float):
     """urllib's urlopen, minus redirects. ``timeout`` bounds the connect
-    and every socket read, not the whole transfer."""
-    return opener.open(req, timeout=timeout)
+    and every socket read, not the whole transfer. An HTTP error status
+    is raised with its response already closed: every caller reads the
+    code and the reason, none the body, and an open one held its socket
+    until the collector found the exception."""
+    try:
+        return opener.open(req, timeout=timeout)
+    except urllib.error.HTTPError as exc:
+        exc.close()
+        raise
 
 
 def redact_url(url: str) -> str:

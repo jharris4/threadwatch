@@ -305,6 +305,18 @@ class AddressFloodTest(unittest.TestCase):
         self.assertEqual(set(pipe.devices) - set(pipe.seen.table), set())
         self.assertEqual(pipe.quiet_reported, set())
 
+    def test_a_flood_that_never_pauses_is_warned_about_once_an_hour(self):
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        cap = Pipeline.TRACK_MAX
+        t0 = 1_700_000_000.0
+        # A fresh address every 1.2 s for two hours: the table overflows
+        # about every 20 minutes, never an hour apart.
+        for n in range(3 * cap):
+            pipe.ingest(frame(t0 + n * 1.2, f"{0x3000000000000000 + n:016x}"))
+        floods = [r["ts"] for r in pipe.events.records if r["event"] == "address_flood"]
+        self.assertEqual(len(floods), 2)
+        self.assertGreaterEqual(floods[1] - floods[0], Pipeline.CAP_NOTE_S)
+
     def test_beacons_from_ever_new_sources_do_not_grow_the_stats_either(self):
         pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
         t0 = 1_700_000_000.0

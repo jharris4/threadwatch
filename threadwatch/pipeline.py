@@ -442,6 +442,7 @@ class Pipeline:
         self._summary_day: str | None = None      # local day whose summary is settled
         self._pruned_day: str | None = None       # local day the event log was last pruned on
         self._capped_at: float | None = None      # when rows were last dropped to stay under TRACK_MAX
+        self._flood_said_at: float | None = None  # when address_flood was last emitted
         # The highest frame counter accepted from each device, MAC and MLE,
         # with when, per key generation (see _verify and _counter_advances);
         # seeded from the rows so a restart does not take a replay of
@@ -1433,7 +1434,8 @@ class Pipeline:
         dropped = evictable[:max(1, len(evictable) // 2)]
         for _frames, _last, a in dropped:
             self._forget(a)
-        if self._capped_at is None or ts - self._capped_at >= self.CAP_NOTE_S:
+        if self._flood_said_at is None or ts - self._flood_said_at >= self.CAP_NOTE_S:
+            self._flood_said_at = ts
             self._emit("address_flood", "warning", ts, dropped=len(dropped), kept=len(self.seen.table),
                        note=(f"{len(dropped)} addresses heard once or twice were dropped from the "
                              f"device table to keep it at {self.TRACK_MAX} rows: something in range "

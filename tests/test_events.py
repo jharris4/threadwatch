@@ -139,7 +139,9 @@ class MalformedLineTest(unittest.TestCase):
         from threadwatch import events as events_mod
         from threadwatch.review import day_episodes
         with tempfile.TemporaryDirectory() as tmp:
-            d = Path(tmp)
+            root = Path(tmp)
+            d = root / "events"             # EventLog reads events.jsonl and keeps its spool one up
+            d.mkdir()
             day = day_of(TS)
             good = [{"ts": TS + 60, "event": "device_quiet", "severity": "warning", "addr": "a" * 16,
                      "name": None, "silent_for_s": 1800, "note": "quiet"},
@@ -167,8 +169,8 @@ class MalformedLineTest(unittest.TestCase):
             from threadwatch.crypto import Decryptor
             from threadwatch.events import EventLog
             from threadwatch.pipeline import Pipeline
-            (d / "devices.json").write_text("[]")
-            cfg = Config(data_dir=d / "data", devices_path=d / "devices.json")
+            (root / "devices.json").write_text("[]")
+            cfg = Config(data_dir=root / "data", devices_path=root / "devices.json")
             log = EventLog(d, [])
             pipe = Pipeline(cfg, log, Decryptor(network_key=bytes(16)))
             summary = pipe.summary(TS + 7200)

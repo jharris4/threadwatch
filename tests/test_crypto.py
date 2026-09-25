@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from cryptography.hazmat.primitives.ciphers.aead import AESCCM
 
+import tests  # noqa: F401  (the mDNS guard, installed on a direct run too: tests/no_lan)
 from threadwatch.crypto import Decryptor, derive_keys
 
 KEY = bytes(range(16))

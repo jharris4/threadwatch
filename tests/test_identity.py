@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # is read - and the guards suggested a configuration nobody tests.
 from cryptography.hazmat.primitives.ciphers.aead import AESCCM
 
+import tests  # noqa: F401  (the mDNS guard, installed on a direct run too: tests/no_lan)
 from threadwatch.config import Config
 from threadwatch.crypto import Decryptor, derive_keys
 from threadwatch.events import NullEventLog

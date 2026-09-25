@@ -13,7 +13,9 @@ for the next one (test_doctor reached a real browse through a check).
 tests/__init__.py now calls install() before any test module is
 imported, so the guard costs nothing to get right: the browse answers at
 once with an empty LAN, the thread logic still runs, and nothing leaves
-the box. A test of the browse itself asks for the real one back with
+the box. A direct `python tests/test_x.py` skips that package import, so
+every test module also imports `tests` itself (test_collection checks).
+A test of the browse itself asks for the real one back with
 real_browse() (test_mdns does), or installs its own fake over this one
 (test_pipeline does).
 """

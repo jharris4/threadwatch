@@ -6,6 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import tests  # noqa: F401  (the mDNS guard, installed on a direct run too: tests/no_lan)
 from threadwatch.link import DAY_S, PAUSE_GAP_S, WARMUP_FRAMES, assess
 
 T0 = 1_700_000_000.0

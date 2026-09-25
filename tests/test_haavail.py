@@ -11,6 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import tests  # noqa: F401  (the mDNS guard, installed on a direct run too: tests/no_lan)
 from threadwatch import haavail
 
 MOTION = "3f9c2e7a4b1d4c8e9f0a1b2c3d4e5f60"

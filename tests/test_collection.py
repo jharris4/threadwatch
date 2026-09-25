@@ -18,6 +18,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import tests  # noqa: F401  (the mDNS guard, installed on a direct run too: tests/no_lan)
+
 TESTS_DIR = Path(__file__).resolve().parent
 
 
@@ -79,18 +81,33 @@ class CollectionTest(unittest.TestCase):
         self.assertEqual(stray, [], "classes with test_ methods that are not unittest.TestCase "
                                     "subclasses; unittest collects none of their tests.")
 
-    def test_nothing_follows_the_main_guard(self):
+    def test_every_module_ends_with_the_main_guard(self):
         # `python tests/test_x.py` runs unittest.main() when it reaches
         # the guard, so a class defined below it is never collected on a
-        # direct run, which still reports OK. discover imports the whole
-        # module and hides it.
-        late = []
+        # direct run, and a module without one runs nothing; both still
+        # report OK. discover imports the whole module and hides it.
+        wrong = []
         for path, tree in self._modules():
-            for i, node in enumerate(tree.body):
-                if isinstance(node, ast.If) and "__name__" in ast.unparse(node.test):
-                    late += [f"{path.name}:{n.lineno}" for n in tree.body[i + 1:]]
-        self.assertEqual(late, [], "code below `if __name__ == \"__main__\"`; a direct run of the "
-                                   "file skips it. Move the guard to the end.")
+            last = tree.body[-1] if tree.body else None
+            if not (isinstance(last, ast.If) and "__name__" in ast.unparse(last.test)):
+                wrong.append(path.name)
+        self.assertEqual(wrong, [], "modules whose last statement is not `if __name__ == \"__main__\"`; "
+                                    "a direct run of them skips tests. Put the guard at the end.")
+
+    def test_every_module_imports_the_tests_package(self):
+        # discover imports tests/__init__.py, which installs the mDNS
+        # guard (tests/no_lan); `python tests/test_x.py` does not, unless
+        # the module itself imports the package. Without it a direct run
+        # sends real multicast and fails the tests that expect an empty LAN.
+        missing = []
+        for path, tree in self._modules():
+            if not any(isinstance(n, ast.Import) and any(a.name.split(".")[0] == "tests" for a in n.names)
+                       or isinstance(n, ast.ImportFrom) and n.level == 0
+                       and (n.module or "").split(".")[0] == "tests"
+                       for n in tree.body):
+                missing.append(path.name)
+        self.assertEqual(missing, [], "modules that do not import the tests package; a direct run of "
+                                      "them has no mDNS guard. Add `import tests  # noqa: F401`.")
 
     def test_nothing_depends_on_pytest(self):
         # Fixtures, parametrize and pytest.raises all vanish under

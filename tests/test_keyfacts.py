@@ -1,7 +1,12 @@
 """Chronological TX observations must not inherit counter high-water semantics."""
 
+import sys
 import unittest
+from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import tests  # noqa: F401  (the mDNS guard, installed on a direct run too: tests/no_lan)
 from threadwatch.keyfacts import HISTORY_LIMIT, facts, latest_generation, observe, summary
 
 
@@ -79,3 +84,7 @@ class KeyFactsTest(unittest.TestCase):
         self.assertEqual(latest_generation(row), (None, None))
         observe(row, "mac", 85, 10, accepted=True)
         self.assertEqual(latest_generation(row), (85, 10))
+
+
+if __name__ == "__main__":
+    unittest.main()

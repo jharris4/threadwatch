@@ -2,10 +2,13 @@
 
 import gzip
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests.test_otbr import T, log_lines
 from tests.test_pipeline import SENSOR, frame, stub_decryptor

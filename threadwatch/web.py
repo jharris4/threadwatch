@@ -195,6 +195,14 @@ LEGEND = [
      "find the device through mDNS, Apple Home among them, lose it once its last accepted registration "
      "expires; Home Assistant keeps the address it has and may not notice. The row closes on the next "
      "accepted registration. The refusal is the server's: an Apple TV or the OTBR."),
+    ("reboot", "Rebooted, reboots climbing",
+     "A Matter device restarted, and why, as it told the Matter Server (read from the archived Home "
+     "Assistant add-on log, so up to an hour late). Reboots less than six hours apart are one row. A "
+     "power-on reboot or brown-out is a device that lost power: on a battery device a battery sagging "
+     "under the radio's load, while the battery level Home Assistant shows can still read normal. A "
+     "firmware update, a commanded reset, or a reboot several devices share is information only. "
+     "Reboots climbing is a warning: at least five in 24 hours and three times the device's own daily "
+     "average, so a device that reboots every afternoon sets its own baseline and never pages."),
     ("partition", "Partition, leader change, leader stalled",
      "The Thread mesh split, merged, or elected a new leader (credentials needed to see this). "
      "Routine after a border router reboots; a problem if it keeps happening. A leader stalled row "

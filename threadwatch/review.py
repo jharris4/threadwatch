@@ -37,7 +37,8 @@ SEVERITY_RANK = {"info": 0, "notice": 1, "warning": 2, "critical": 3}
 # device rejoining) is one row while its records keep coming, and a new row
 # after this much silence; without a limit a device that rejoins once a day
 # would be a single row for the whole history.
-GAP_S = {"retransmissions": 3600.0, "rejoin": 3600.0, "foreign_pan": 86400.0, "recorder": 1800.0}
+GAP_S = {"retransmissions": 3600.0, "rejoin": 3600.0, "foreign_pan": 86400.0, "recorder": 1800.0,
+         "reboot": 6 * 3600.0}
 
 
 def _label(rec: dict) -> str:
@@ -76,6 +77,7 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
     retrans: dict[tuple, dict] = {}
     foreign: dict[tuple, dict] = {}
     rejoin: dict[str, dict] = {}
+    reboot: dict[str, dict] = {}
     open_link: dict[str, dict] = {}
     open_leader: dict[str, dict] = {}
     open_srp: dict[str, dict] = {}
@@ -369,6 +371,21 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
                 ep["title"] += f" for {fmt_duration(rec.get('refused_for_s') or 0)}"
             else:
                 new("srp", rec, f"{_label(rec)} SRP registration accepted", rec.get("note", ""))
+        elif ev == "device_rebooted":
+            key = _label(rec) or str(rec.get("node_id"))
+            ep = reboot.get(key)
+            if ep is None or rec["ts"] - ep["end"] > GAP_S["reboot"]:
+                ep = reboot[key] = new("reboot", rec, f"{key} rebooted", rec.get("reason_name") or "",
+                                       reasons={})
+            else:
+                bump(ep, rec)
+                ep["title"] = f"{key} rebooted {ep['count']} times"
+            why = rec.get("reason_name") or "?"
+            ep["reasons"][why] = ep["reasons"].get(why, 0) + 1
+            ep["detail"] = ", ".join(f"{n} {r}" if n > 1 else r for r, n in ep["reasons"].items())
+        elif ev == "reboots_climbing":
+            new("reboot", rec, f"{_label(rec)} reboots climbing: {rec.get('reboots_24h')} in 24 h",
+                rec.get("note", ""))
         elif ev == "rejoin_wave":
             ep = new("rejoin", rec, f"rejoin wave: {rec.get('devices')} devices",
                      (f"after {rec['trigger']}: " if rec.get("trigger") else "")

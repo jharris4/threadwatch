@@ -22,7 +22,8 @@ name, the addresses it has used, optionally a `model` and a free-text
 `note`, and the two tolerances nothing on the air can tell the recorder,
 `hold_s` (silent, or unavailable in Home Assistant, this long before a
 warning) and `mute` (the device's own trouble a notice, never paged:
-device_quiet, ha_unavailable, poll_starvation, rssi_degradation).
+device_quiet, ha_unavailable, poll_starvation, rssi_degradation,
+reboots_climbing).
 What a device is doing on the mesh (router or child, leader, parent)
 changes without anyone editing a file, so the recorder learns it from
 traffic and never reads it from here. Other fields are ignored, so a
@@ -1059,8 +1060,8 @@ def set_hold(inventory_path: Path, target: str, hold_s: float | None) -> str:
 
 def set_mute(inventory_path: Path, target: str, mute: bool) -> str:
     """`threadwatch mute`: make the device's own trouble (device_quiet,
-    ha_unavailable, poll_starvation, rssi_degradation) a notice, never
-    paged and never counted toward a burst, or with False lift that. Mesh
+    ha_unavailable, poll_starvation, rssi_degradation, reboots_climbing) a
+    notice, never paged and never counted toward a burst, or with False lift that. Mesh
     trouble it is part of still pages. Returns a one-line description of
     what changed."""
     with inventory_lock(inventory_path):

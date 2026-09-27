@@ -408,6 +408,9 @@ it up if you care about the history; nothing else holds it.
                              still pending (attempts, last error) and the hours lost (back to
                              [record] keep_hours), plus the outage in progress, so a restart
                              carries on where the archive stopped
+        reboots.json         with [ha_logs] archive: the Matter node reboots already logged (a
+                             week back) and the devices whose climb has paged, so a restart
+                             neither logs a reboot twice nor pages the same climb again
         ha-map.json          with [ha_availability]: HA device id -> extended address, HA name, the
                              inventory's name for it, and the entities whose state counts; rebuilt
                              over the websocket once an hour and cached so a restart polls at once
@@ -449,7 +452,9 @@ often a pending one was tried; the next pass starts the catch-up at the
 edge of `[ha_logs] max_hours`, and every hour the archive already holds is
 left alone. `ha-logs/` is the archive itself: delete it and the hours it
 held are gone for good, since HA's journal has long since let them go.
-`ha-map.json` is rebuilt at the next poll; `ha-availability.json` costs
+`reboots.json` costs nothing but the reboots of the week on disk: the next
+pass takes them as already logged, and an open climb pages again only if
+it is still climbing. `ha-map.json` is rebuilt at the next poll; `ha-availability.json` costs
 one `already_unavailable_at_start` notice per device down at the time and
 one repeated page for an episode already paged. `border-routers.json` is rebuilt at the next mDNS
 browse, but the retired addresses in it are forgotten, so an Apple hub's

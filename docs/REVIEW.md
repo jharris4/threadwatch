@@ -142,6 +142,8 @@ The raw log is the wrong unit for people, so the pages group it:
 | `partition_or_leader_change`, `partition_storm`, `router_set_changed`, `daily_summary` | one row each, always |
 | `phase_locked_storm` | one row per storm: the notice-level call opens it, the confirmed critical joins it |
 | `rejoin_wave` | one row, always, naming the devices |
+| `device_rebooted` x N, same device | one row per run of reboots less than 6 h apart: *X rebooted 3 times*, with the count per reason |
+| `reboots_climbing` | one row, always: *X reboots climbing: 8 in 24 h* |
 | `srp_refused` ... `srp_accepted` | one row: *X SRP registration refused for 5d02h* (or open) |
 | `leader_stalled` | one row per stall, closed by `leader_resumed` |
 

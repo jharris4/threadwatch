@@ -404,6 +404,9 @@ class Pipeline:
         self._archive_result: dict | None = None
         self._next_archive = 0.0
         self._archive_status: dict | None = None
+        # Device reboots, read from the archived Matter Server hours by the
+        # same worker (reboots.scan) and applied with its result.
+        self._reboots = None
         self._otbr_inventory = None
         if not ephemeral and cfg.otbr_enabled:
             from .otbr import InventoryPoller
@@ -3713,8 +3716,9 @@ class Pipeline:
     # about itself (ha_unavailable, the fourth, is haavail's). Mesh trouble
     # a muted device is part of (key_lag, frame_counter_mismatch,
     # srp_refused) and its parent dropping its polls (poll_unserved) still
-    # page: those are about more than the device.
-    MUTED_EVENTS = frozenset({"device_quiet", "poll_starvation", "rssi_degradation"})
+    # page: those are about more than the device. reboots_climbing may
+    # name a Matter node the map has no address for: nothing to mute.
+    MUTED_EVENTS = frozenset({"device_quiet", "poll_starvation", "rssi_degradation", "reboots_climbing"})
 
     def _emit(self, event: str, severity: str = "info", ts: float | None = None,
               **fields) -> dict:
@@ -3732,7 +3736,7 @@ class Pipeline:
         closing sentence saying where its packets went."""
         ts = time.time() if ts is None else ts
         if event in self.MUTED_EVENTS:
-            muted = self.names.muted(fields["addr"])
+            muted = bool(fields["addr"]) and self.names.muted(fields["addr"])
             fields["muted"] = muted
             if muted:
                 if severity in ("warning", "critical"):
@@ -4034,6 +4038,8 @@ class Pipeline:
             if result is not None:
                 if result.get("key_journal_scan") is not None:
                     self.journal.apply_archive_scan(result["key_journal_scan"])
+                if result.get("reboot_scan") is not None:
+                    self._apply_reboots(result["reboot_scan"], now)
                 for event, severity, fields in result.get("events", []):
                     # events.emit: a report on the archive is never a
                     # reason to snapshot, and never pages.
@@ -4051,7 +4057,7 @@ class Pipeline:
         journal_scanned = dict(self.journal.archive_scan["files"])
 
         def run():
-            from .halogs import archive_pass, credentials, prune_archive
+            from .halogs import archive_dir, archive_pass, credentials, prune_archive
             try:
                 result = archive_pass(self.cfg, now, credentials(self.cfg), secrets=secrets,
                                       log=lambda msg: print(f"[threadwatch] {msg}", file=sys.stderr, flush=True))
@@ -4059,6 +4065,9 @@ class Pipeline:
                 # subsequent passes. No gzip scans on the capture path.
                 from .journal import scan_archive
                 result["key_journal_scan"] = scan_archive(self.cfg.data_dir, journal_scanned)
+                from .reboots import SLUG, scan
+                if SLUG in self.cfg.ha_logs_addons:
+                    result["reboot_scan"] = scan(archive_dir(self.cfg))
                 pruned = prune_archive(self.cfg)
                 if pruned:
                     print(f"[threadwatch] ha-logs archive: dropped {len(pruned)} hour(s) past [record] keep_hours",
@@ -4071,6 +4080,27 @@ class Pipeline:
 
         self._archive_thread = threading.Thread(target=run, name="ha-logs-archive", daemon=True)
         self._archive_thread.start()
+
+    def _apply_reboots(self, scan: dict, now: float) -> None:
+        """The archive worker's reboot scan, applied on this thread
+        (reboots.RebootWatch): device_rebooted for each new boot,
+        reboots_climbing when a device's rate climbs."""
+        from .reboots import STATE_FILE, RebootWatch
+        if self._reboots is None:
+            self._reboots = RebootWatch(self.cfg.state_dir / STATE_FILE, emit=self._emit,
+                                        device=self._matter_device)
+        self._reboots.apply(scan, now)
+
+    def _matter_device(self, node: int) -> tuple[str | None, str | None]:
+        """(address, name) for a Matter node id, through the
+        [ha_availability] map and then the inventory; (None, None) for a
+        node the map does not have."""
+        from .haavail import load_map
+        for entry in load_map(self.cfg.state_dir).values():
+            if entry.get("node_id") == node:
+                addr = (entry.get("addr") or "").lower() or None
+                return addr, (self.names.name(addr) if addr else None) or entry.get("name")
+        return None, None
 
     def otbr_inventory_status(self) -> dict | None:
         return self._otbr_inventory.status if self._otbr_inventory is not None else None

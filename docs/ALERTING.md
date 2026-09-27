@@ -98,6 +98,8 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `leader_resumed` | info | `partition`, `leader_router`, `leader`, `addr`, `name`, `since`, `stalled_for_s`, `note`; closes a `leader_stalled` |
 | `srp_refused` | warning | `addr`, `name`, `rcode`, `rcode_name`, `refusals`, `since`, `refused_for_s`, `accepted_ts` (the last accepted registration, if one was heard), `server` (the anycast locator answered from, when readable), `note`; once per streak |
 | `srp_accepted` | info | `addr`, `name`, `refusals`, `since`, `refused_for_s`, `server`, `note`; only after an `srp_refused` went out |
+| `device_rebooted` | notice; info for a planned reboot (a firmware update, a commanded reset) or one shared by three or more devices within 5 min | `addr` (null for a Matter node the `[ha_availability]` map does not have), `name`, `node_id`, `reason` (Matter BootReason, 0-6), `reason_name`, `crowd`, `note`; dated when the Matter Server logged it, up to an hour before it is logged here (with `[ha_logs] archive` and the `core_matter_server` add-on) |
+| `reboots_climbing` | warning | `addr`, `name`, `node_id`, `reboots_24h`, `baseline_per_day`, `baseline_h` (the archived hours the average is over), `reasons` (count per `reason_name`), `since` (the first reboot in the 24 h), `muted`, `note`; once per climb |
 | `credentials_stale` | warning | `failed`, `note` |
 | `clock_step` | info | `step_s` (signed), `note`. The host clock jumped, NTP correcting a boot without an RTC. Forward: silences spanning the jump are not counted against any device. Backward: every timestamp the recorder holds, `last-seen.json` included, is moved back with it |
 | `recorder_started` | info after a requested stop or on the first start ever, notice when the last run ended any other way | `cause` (`stopped`, `stalled`, `sniffer_died`, `stream_ended`, `crashed`, `unknown` for a run that left no note: a power cut or a kill, `first_start`), `gap_s` (since the last frame any run heard), `last_frame_ts`, `stopped_ts` (when the last run ended, if it left the note), `exit_code`, `note` |
@@ -493,6 +495,41 @@ smoke sensor's registrations started coming back SERVFAIL, hourly, from
 the same server that accepted its siblings; Apple Home lost it five days
 later, after a partition change broke the session it still had.
 
+`device_rebooted` is a Matter device that restarted. The radio does not
+see it: a sleepy child that browns out comes back under the same parent
+without a rejoin the sniffer catches, and Home Assistant keeps it
+available through a restart that takes under a minute. The device says why
+it last started (General Diagnostics BootReason) when the Matter Server
+resubscribes, and the Matter Server logs it; with `[ha_logs] archive` on
+and `core_matter_server` among the add-ons, the recorder reads each
+archived hour after the pass that fetched it, so a reboot is logged up to
+an hour late, dated when it happened. The node is named through the
+`[ha_availability]` map. A startup logged twice within a minute is one
+reboot. A power-on reboot or a brown-out is a device that lost power: on
+a battery device, a battery sagging under the radio's load, while the
+battery level Home Assistant shows (estimated from the resting voltage)
+can still read normal. A watchdog reset is firmware that hung. A firmware
+update's reboot or a commanded reset is info, and so is a reboot three or
+more devices share within 5 min (a power cut, or a Matter Server restart
+replaying startup events); neither counts toward a climb.
+
+`reboots_climbing` is a device rebooting far more than it usually does: at
+least 5 reboots in the last 24 h, and at least three times its own daily
+average over the archived days before them (up to six: the archive keeps
+`[record] keep_hours`, a week). The comparison is with the device's own
+history, so a sensor that reboots two or three times every sunny
+afternoon sets its own baseline and never pages, while a device that never
+rebooted pages at its fifth in a day. A device is judged only once 72
+archived hours cover it before the last 24 h (from its first mention in
+the Matter Server log), so a new device or a new archive logs its reboots
+and pages nothing for three days. A climb pages once and stays open while
+the last 24 h hold 5 reboots, however far its baseline catches up; it
+closes without a record. From 2026-09-22 a door button went from one
+power-on reboot a day to 25, its battery level reading about 40%
+throughout, and stopped coming back on 09-27; replayed over that week,
+`reboots_climbing` pages on 09-24, and the motion sensor that reboots in
+the afternoon sun every day never does. `mute` makes it a notice.
+
 `device_address_changed` is a device that took a new extended address:
 on 2026-09-22 a climate sensor came back from a firmware update under
 one, registered the same three `_matter._tcp` service names it always
@@ -703,7 +740,8 @@ half an hour in the afternoon sun gets two hours there and still pages
 when it really fails. A device that recovers inside its hold produces
 nothing at all. `mute` (`threadwatch mute`) makes the device's own
 trouble a notice and keeps it out of bursts: `ha_unavailable`,
-`device_quiet`, `poll_starvation` and `rssi_degradation`, each carrying
+`device_quiet`, `poll_starvation`, `rssi_degradation` and
+`reboots_climbing`, each carrying
 `muted` and the note "Muted in devices.json: logged, not paged". It was
 built for a sensor that overheats in the afternoon sun, which goes quiet,
 drops out of Home Assistant, starves its polls and fades all at once.

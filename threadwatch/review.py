@@ -28,6 +28,7 @@ from .names import (
     reception,
     rloc16_role,
     router_holders,
+    routers_on_mesh,
 )
 from .snapshot import STAGING_DIR
 
@@ -833,7 +834,8 @@ def device_rows(seen: LastSeen, names: DeviceNames, min_rssi_dbm: float,
     or hangs off, and whether it holds the partition's leader id. The key
     generation is the newest its frames were accepted under; ``lag`` is
     how far behind its parent's (a child) or ``mesh_generation`` (a
-    router, from status.json's crypto.key_sequence) that is, whatever the
+    router, from status.json's crypto.key_sequence, and only once two
+    routers are fresh on it, as the recorder has it) that is, whatever the
     age of either reading: the recorder judges only fresh ones, and
     ``key_lagging`` says whether it has an episode open. ``ha`` is
     haavail.availability_by_addr's view: for every device Home Assistant
@@ -844,6 +846,7 @@ def device_rows(seen: LastSeen, names: DeviceNames, min_rssi_dbm: float,
     ha = ha or {}
     holders = router_holders(seen.table)
     generations = {addr: newest_generation(row) for addr, row in seen.table.items()}
+    mesh_judged = routers_on_mesh(seen.table, mesh_generation, now, key_fresh_s) >= 2
     rows = []
     for addr, row in seen.table.items():
         rssi = row.get("rssi")
@@ -852,7 +855,7 @@ def device_rows(seen: LastSeen, names: DeviceNames, min_rssi_dbm: float,
         br = names.border_routers.get(addr)
         generation, generation_ts = generations[addr]
         parent_generation = generations[parent_addr][0] if parent_addr else None
-        reference = mesh_generation if live.get("role") == "router" else parent_generation
+        reference = (mesh_generation if mesh_judged else None) if live.get("role") == "router" else parent_generation
         ha_info = ha.get(addr)
         rows.append({
             "ha_state": (None if ha_info is None else "unavailable" if ha_info.get("since") is not None

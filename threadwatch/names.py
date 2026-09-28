@@ -794,6 +794,27 @@ def newest_generation(row: dict) -> tuple[int | None, float | None]:
     return best
 
 
+def routers_on_mesh(table: dict[str, dict], mesh: int | None, now: float, fresh_s: float,
+                    dominant: int | None = None) -> int:
+    """How many routers of our PAN were heard within ``fresh_s`` under
+    ``mesh``, the newest key generation heard. A router is judged against
+    the mesh only once two are: one device alone on a newer key (a child
+    advancing locally, or a router's straggler frame) would otherwise put
+    every router behind."""
+    n = 0
+    for row in table.values():
+        if row.get("rotated_to"):
+            continue
+        pan = row.get("pan")
+        if dominant is not None and pan is not None and pan != dominant:
+            continue
+        seq, ts = newest_generation(row)
+        if (mesh is not None and seq == mesh and now - ts <= fresh_s
+                and (rloc16_role(row.get("rloc16")) or {}).get("role") == "router"):
+            n += 1
+    return n
+
+
 def key_standing(entries: list[dict]) -> dict:
     """Where the devices stand on the network key, for the status page and
     the daily summary alike. Each entry carries ``generation`` (None when

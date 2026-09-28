@@ -391,6 +391,31 @@ class PageBranchTest(unittest.TestCase):
         self.assertIn(f'<tr><td><a href="/device/{AQ}">Office AQ</a></td><td><span class="bad">cut off</span></td>'
                       f'<td>84</td><td><a href="/device/{TV2}">Living Room Apple TV</a></td><td>86</td></tr>', status)
 
+    def test_one_child_on_a_newer_key_does_not_put_the_routers_behind(self):
+        # 2026-09-28: a child advanced to 89 by itself; with the routers
+        # judged against 89, every router on 87 read as cut off.
+        r1, r2, r3, c1 = (f"f00d00000000001{i}" for i in range(1, 5))
+        (self.d / "devices.json").write_text(json.dumps(
+            [{"name": n, "extendedAddress": a} for n, a in
+             (("Router A", r1), ("Router B", r2), ("Router C", r3), ("Sensor Ahead", c1))]))
+        self.status(updated=self.now, last_frame_age_s=3, crypto={"key_sequence": 89},
+                    keys={"highest": 89, "previous": 88, "first_sender": c1, "highest_first_ts": self.now - 7200})
+
+        def dev(rloc16, seq):
+            return {"first_seen": self.now - 8000, "last_seen": self.now - 30, "frames": 100, "rssi": -60.0,
+                    "pan": 0x4e21, "types": {}, "rloc16": rloc16, "rloc16_ts": self.now - 30,
+                    "counter_seq": seq, "counter_ts": self.now - 30}
+
+        self.seen({r1: dev("0400", 88), r2: dev("0800", 88), r3: dev("0c00", 87), c1: dev("0401", 89)})
+        _st, status = self.get("/status")
+        self.assertIn('<th>keys</th><td><span class="ok"><b>OK</b></span> &middot; 1 device on 89 &middot; '
+                      '2 on 88 &middot; 1 on 87<br>', status)
+        self.assertNotIn("cut off", status)
+        _st, devices = self.get("/devices")
+        self.assertNotIn("behind 89", devices)
+        _st, raw = self.get(f"/api/device/{r3}")
+        self.assertIsNone(json.loads(raw)["live"]["lag"])
+
     def test_the_status_page_lists_the_children_one_behind_their_parent(self):
         r1, r2, r3, r4, c1, c2, gone = (f"f00d00000000000{i}" for i in range(1, 8))
         (self.d / "devices.json").write_text(json.dumps(

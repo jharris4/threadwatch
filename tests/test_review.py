@@ -535,9 +535,19 @@ class DayViewTest(unittest.TestCase):
         rows = device_rows(seen, DeviceNames(self.cfg.devices_path), self.cfg.quiet_min_rssi_dbm, T0 + 7200,
                            mesh_generation=87)
         by = {r["addr"]: r for r in rows}
+        # No router is on 87 yet: one device alone on a newer key does not
+        # put the routers behind, as the recorder has it.
         self.assertEqual((by[AQ]["generation"], by[AQ]["generation_ts"], by[AQ]["parent_generation"],
                           by[AQ]["mesh_generation"], by[AQ]["lag"], by[AQ]["key_lagging"]),
-                         (86, T0 + 7000, None, 87, 1, False))
+                         (86, T0 + 7000, None, 87, None, False))
+        for addr, rloc16 in (("0e0e0e0e0e0e0e01", "0800"), ("0e0e0e0e0e0e0e02", "0c00")):
+            seen.table[addr] = {"first_seen": T0, "last_seen": T0 + 7100, "frames": 10, "pan": 0x4e21,
+                                "types": {}, "rloc16": rloc16, "rloc16_ts": T0 + 7100,
+                                "counter_seq": 87, "counter_ts": T0 + 7100}
+        rows = device_rows(seen, DeviceNames(self.cfg.devices_path), self.cfg.quiet_min_rssi_dbm, T0 + 7200,
+                           mesh_generation=87)
+        by = {r["addr"]: r for r in rows}
+        self.assertEqual(by[AQ]["lag"], 1)                                          # two routers on it: judged
         self.assertEqual((by[PLUG]["generation"], by[PLUG]["parent_generation"], by[PLUG]["lag"],
                           by[PLUG]["key_lagging"]), (84, 86, 2, True))
         self.assertEqual((by[TV1]["generation"], by[TV1]["lag"]), (None, None))   # a row from before generations

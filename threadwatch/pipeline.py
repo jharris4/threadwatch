@@ -55,6 +55,7 @@ from .names import (
     reception,
     rloc16_role,
     router_holders,
+    routers_on_mesh,
 )
 from .pcap import BROADCAST_PAN, Frame, is_poll
 from .srp import Reassembler, fragment, matter_instances_in, parse_update
@@ -4562,8 +4563,7 @@ class Pipeline:
             if dominant is not None and pan is not None and pan != dominant:
                 continue
             gens[addr] = self._generation(row, now)
-        on_mesh = sum(1 for addr, (seq, _ts) in gens.items() if seq is not None and seq == mesh
-                      and (rloc16_role(self.seen.table[addr].get("rloc16")) or {}).get("role") == "router")
+        on_mesh = routers_on_mesh(self.seen.table, mesh, now, self.cfg.key_fresh_s, dominant)
         out = []
         for addr, (seq, ts) in gens.items():
             row = self.seen.table[addr]

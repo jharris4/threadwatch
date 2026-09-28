@@ -56,7 +56,7 @@ proxy that authenticates.
   and an Apple hub's retired address, after a reboot gave it a new one,
   says which address it became. The key generation is the newest the
   device's frames were accepted under, with how far behind its parent's
-  (a router: the mesh's) that is: *1 behind* is normal after a rotation,
+  (a router: the mesh's, once two routers are fresh on it) that is: *1 behind* is normal after a rotation,
   *2 behind* is a device whose frames are being dropped, and *cut off*
   marks the recorder's open `key_lag` episode (docs/ALERTING.md). With
   `[ha_availability]` on, an *HA* column says *available* or *unavailable
@@ -79,7 +79,9 @@ proxy that authenticates.
   frames, the threadwatch version and commit
   that is recording, partition and
   which device leads it (linked, once its RLOC16 has been matched),
-  the highest key generation heard and from whom, storm detector, crypto
+  keys (OK or problem, the named devices counted by key generation, the
+  newest generation heard and from whom, and a table of the devices cut
+  off and of the children one behind their parent), storm detector, crypto
   counters) plus storage: ring size and hourly
   rate, snapshots and event log size, and free disk against what a full
   ring still needs (keep_hours hours at the measured rate, or keep_gb

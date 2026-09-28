@@ -2952,6 +2952,38 @@ class Pipeline:
             self._emit("device_returned", "notice", now, addr=previous, name=name,
                        note=f"back under a new address, {addr}")
 
+    def _retire_listed_addresses(self, now: float) -> None:
+        """An entry that lists several addresses is one device that has used
+        each (`name <new-address> <existing-name>`, or import from Home
+        Assistant): the one heard last is where it is now, and every other
+        is retired to it, as a rotation the recorder saw for itself would
+        be. Without this only a rotation witnessed live (a registration,
+        the HA map, mDNS) retired the old row, and a device that moved
+        while the recorder was down kept its old row live on the devices
+        page and in /api/devices, silent and a key generation behind.
+
+        The entry's own list, as in _identity_silence_s: a shared name is
+        not one device. An address heard after the newest one began is
+        another device the entry wrongly holds, and stays judged. When the
+        newest listed address is itself retired, the device moved to one
+        the entry does not list, and the entry is left to that rotation."""
+        done: set[str] = set()
+        for addr in list(self.names.by_addr):
+            if addr in done:
+                continue
+            listed = self.names.entry_addresses_of(addr)
+            done.update(listed)
+            heard = [a for a in listed if "last_seen" in self.seen.table.get(a, {})]
+            if len(heard) < 2:
+                continue
+            live = max(heard, key=lambda a: self.seen.table[a]["last_seen"])
+            if self.seen.table[live].get("rotated_to"):
+                continue
+            for old in heard:
+                if (old != live and self.seen.table[old].get("rotated_to") != live
+                        and not self._heard_since_start(old, live)):
+                    self._retire_rotated(old, live, self.names.name(live), now)
+
     # How long a registration's request stands for its answer. Answers come
     # back within a second or two; a request whose answer the sniffer missed
     # must not stand for longer, or the next device to draw the same 16-bit
@@ -3523,6 +3555,7 @@ class Pipeline:
             if samples:
                 self.journal.inventory(samples[-1])
                 self._check_router_set(samples, now)
+        self._retire_listed_addresses(now)
         # Devices on another PAN (a neighbour's mesh, an unpaired device
         # announcing itself) are tracked for the report but never alerted on:
         # their absence says nothing about this network.

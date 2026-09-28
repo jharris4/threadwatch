@@ -181,7 +181,9 @@ returns, then name it:
 `name` appends to `config/devices.json` (an existing name gains the
 address, which is how a rotation is recorded: from then on the device is
 judged quiet only when every address that entry lists has gone silent, so
-the one it left does not page on its own); `--suggest` prefills names
+the one it left does not page on its own, and each address unheard since
+the newest one began is retired to it on the devices page and in the key
+census); `--suggest` prefills names
 from SRP hostnames, and flags an unknown
 address that appeared just as a named device's last address fell silent
 as probably that device's new address, with the `name` line to run. If

@@ -365,9 +365,10 @@ class QuietPolicyTest(unittest.TestCase):
         pipe.ingest(frame(t + 2000, ROUTER))               # the address it rotated to
         pipe.periodic(t + 2000)
         self.assertEqual(self._quiet(pipe), [])
-        # Silent at both, and it is reported again.
+        # Silent at both, and it is reported again, once: the address it
+        # left is retired to the one it moved to.
         pipe.periodic(t + 2000 + 31 * 60)
-        self.assertEqual(sorted(set(self._quiet(pipe))), sorted({SENSOR, ROUTER}))
+        self.assertEqual(self._quiet(pipe), [ROUTER])
 
     def test_manual_rotation_stays_active_after_restart_and_closes_old_quiet(self):
         self.cfg.devices_path.write_text(json.dumps([
@@ -401,6 +402,74 @@ class QuietPolicyTest(unittest.TestCase):
         pipe.ingest(frame(t + 2000, ROUTER))
         pipe.periodic(t + 2000)
         self.assertEqual(self._quiet(pipe), [SENSOR])
+        self.assertIsNone(pipe.seen.table[SENSOR].get("rotated_to"))
+
+    def _hall_sensor(self):
+        self.cfg.devices_path.write_text(json.dumps([
+            {"name": "Hall Sensor", "extendedAddresses": [SENSOR, ROUTER]}]))
+        return self._pipe()
+
+    def test_an_entry_retires_the_address_its_device_left(self):
+        """A rotation recorded in devices.json while the recorder was not
+        watching left the old row live on the devices page, silent and a
+        key generation behind; the address heard last is where the device
+        is, and the one it left is retired to it."""
+        from threadwatch.review import device_rows
+        pipe = self._hall_sensor()
+        t = 1_700_000_000.0
+        pipe.ingest(frame(t, SENSOR))
+        pipe.ingest(frame(t + 2000, ROUTER))
+        pipe.periodic(t + 2000)
+        self.assertEqual(pipe.seen.table[SENSOR].get("rotated_to"), ROUTER)
+        self.assertIsNone(pipe.seen.table[ROUTER].get("rotated_to"))
+        rows = {r["addr"]: r for r in device_rows(pipe.seen, pipe.names, self.cfg.quiet_min_rssi_dbm, now=t + 2000)}
+        self.assertEqual(rows[SENSOR]["rotated_to"], ROUTER)
+        self.assertEqual([r for r in pipe.events.records if r["event"] == "device_returned"], [])
+
+    def test_an_address_heard_after_the_newest_began_is_not_retired(self):
+        """Both addresses on air together are two devices one entry wrongly
+        holds, not a rotation: neither is retired, so neither stops being
+        judged."""
+        pipe = self._hall_sensor()
+        t = 1_700_000_000.0
+        for i, addr in enumerate([SENSOR, ROUTER, SENSOR, ROUTER]):
+            pipe.ingest(frame(t + 10 * i, addr))
+        pipe.periodic(t + 40)
+        self.assertIsNone(pipe.seen.table[SENSOR].get("rotated_to"))
+        self.assertIsNone(pipe.seen.table[ROUTER].get("rotated_to"))
+
+    def test_a_device_back_at_an_address_it_left_retires_the_other(self):
+        pipe = self._hall_sensor()
+        t = 1_700_000_000.0
+        pipe.ingest(frame(t, SENSOR))
+        pipe.ingest(frame(t + 100, ROUTER))
+        pipe.periodic(t + 100)
+        pipe.ingest(frame(t + 200, SENSOR))                # A -> B -> A
+        pipe.periodic(t + 200)
+        self.assertIsNone(pipe.seen.table[SENSOR].get("rotated_to"))
+        self.assertEqual(pipe.seen.table[ROUTER].get("rotated_to"), SENSOR)
+
+    def test_a_listed_address_moved_to_an_unlisted_one_is_left_to_that_rotation(self):
+        pipe = self._hall_sensor()
+        t = 1_700_000_000.0
+        pipe.ingest(frame(t, SENSOR))
+        pipe.ingest(frame(t + 100, ROUTER))
+        pipe.seen.table[ROUTER]["rotated_to"] = STRANGER   # the registration path saw it move on
+        pipe.periodic(t + 100)
+        self.assertIsNone(pipe.seen.table[SENSOR].get("rotated_to"))
+        self.assertEqual(pipe.seen.table[ROUTER]["rotated_to"], STRANGER)
+
+    def test_retiring_an_address_whose_silence_was_closed_says_returned_once(self):
+        pipe = self._hall_sensor()
+        now = time.time()
+        pipe.ingest(frame(now - 2100, SENSOR))
+        pipe.periodic(now - 200)
+        self.assertIn(SENSOR, pipe.quiet_reported)
+        pipe.ingest(frame(now - 100, ROUTER))
+        pipe.periodic(now - 50)
+        self.assertEqual(pipe.seen.table[SENSOR].get("rotated_to"), ROUTER)
+        returned = [r for r in pipe.events.records if r["event"] == "device_returned"]
+        self.assertEqual([r["addr"] for r in returned], [SENSOR])
 
     def test_a_device_with_its_own_hold_is_judged_by_it_and_the_rest_by_the_one_window(self):
         d = Path(self.tmp.name)

@@ -391,7 +391,7 @@ class PageBranchTest(unittest.TestCase):
         self.assertIn(f'<tr><td><a href="/device/{AQ}">Office AQ</a></td><td><span class="bad">cut off</span></td>'
                       f'<td>84</td><td><a href="/device/{TV2}">Living Room Apple TV</a></td><td>86</td></tr>', status)
 
-    def test_the_status_page_names_a_child_two_behind_the_mesh_as_at_risk(self):
+    def test_the_status_page_lists_the_children_one_behind_their_parent(self):
         r1, r2, r3, r4, c1, c2, gone = (f"f00d00000000000{i}" for i in range(1, 8))
         (self.d / "devices.json").write_text(json.dumps(
             [{"name": n, "extendedAddress": a} for n, a in
@@ -405,29 +405,31 @@ class PageBranchTest(unittest.TestCase):
                     "pan": 0x4e21, "types": {}, "rloc16": rloc16, "rloc16_ts": self.now - age,
                     "counter_seq": seq, "counter_ts": self.now - age}
 
-        table = {r1: dev("0400", 88), r2: dev("0800", 88), r4: dev("1000", 88), r3: dev("0c00", 87),
-                 c1: dev("0c01", 86),                   # one behind Router C, two behind the mesh
-                 c2: dev("0401", 87),                   # one behind Router A: normal
+        table = {r1: dev("0400", 88), r2: dev("0800", 88), r4: dev("1000", 88),
+                 r3: dev("0c00", 87),                   # a router one behind the mesh: not listed
+                 c1: dev("0c01", 86),                   # one behind Router C
+                 c2: dev("0401", 87),                   # one behind Router A
                  gone: dev("0402", 88, age=4000)}       # no fresh reading
         self.seen(table)
         _st, status = self.get("/status")
-        self.assertIn('<th>keys</th><td><span class="warn"><b>at risk</b></span> &middot; 3 devices on 88 &middot; '
+        self.assertIn('<th>keys</th><td><span class="ok"><b>OK</b></span> &middot; 3 devices on 88 &middot; '
                       '2 on 87 &middot; 1 on 86 &middot; <span class="muted">1 not heard recently</span> &middot; '
-                      '<span class="muted">1 one behind their parent (normal)</span><br><span class="muted">newest 88, '
+                      '<span class="muted">2 one behind their parent</span><br><span class="muted">newest 88, '
                       f'first heard from <a href="/device/{r1}">Router A</a>', status)
         self.assertIn('previously 87</span><table class="keys">', status)
-        self.assertIn(f'<tr><td><a href="/device/{c1}">Sensor One</a></td><td><span class="warn">at risk</span></td>'
-                      f'<td>86</td><td><a href="/device/{r3}">Router C</a></td><td>87</td></tr>', status)
-        self.assertNotIn("Sensor Two</a></td>", status)
+        self.assertIn(f'<tr><td><a href="/device/{c1}">Sensor One</a></td><td>one behind</td>'
+                      f'<td>86</td><td><a href="/device/{r3}">Router C</a></td><td>87</td></tr>'
+                      f'<tr><td><a href="/device/{c2}">Sensor Two</a></td><td>one behind</td>'
+                      f'<td>87</td><td><a href="/device/{r1}">Router A</a></td><td>88</td></tr></table>', status)
+        self.assertNotIn("Router C</a></td><td>one behind", status)
 
-        # Sensor One catches up: nothing to list, the counts stay.
-        table[c1] = dev("0c01", 87)
+        # Both catch up: the counts stay, the table goes.
+        table[c1], table[c2] = dev("0c01", 87), dev("0401", 88)
         self.seen(table)
         _st, status = self.get("/status")
-        self.assertIn('<th>keys</th><td><span class="ok"><b>OK</b></span> &middot; 3 devices on 88 &middot; '
-                      '3 on 87 &middot; <span class="muted">1 not heard recently</span> &middot; '
-                      '<span class="muted">1 one behind their parent (normal)</span><br><span class="muted">newest 88, '
-                      f'first heard from <a href="/device/{r1}">Router A</a>', status)
+        self.assertIn('<th>keys</th><td><span class="ok"><b>OK</b></span> &middot; 4 devices on 88 &middot; '
+                      '2 on 87 &middot; <span class="muted">1 not heard recently</span><br><span class="muted">'
+                      f'newest 88, first heard from <a href="/device/{r1}">Router A</a>', status)
         self.assertIn('previously 87</span></td>', status)
         self.assertNotIn('<table class="keys">', status)
 

@@ -127,7 +127,7 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `ha_available` | info | `addr`, `name`, `ha_device_id`, `since`, `down_for_s`, `rejoined`, `generation`, `left_ha` (the device stopped being in HA's states rather than coming back), `note`; only after an `ha_unavailable` went out |
 | `ha_unreachable` | notice | `failing_for_s`, `error`, `note`; once, after five minutes of failed polls |
 | `ha_reachable` | info | `unreachable_for_s`, `note`; the next poll is a baseline, not transitions |
-| `daily_summary` | `[summary] severity` (notice) | `frames_24h`, `devices_heard_24h`, `devices_tracked`, `quiet`, `unknown`, `marginal`, `degraded`, `storm_active`, `events_24h`, `key_generation` (the mesh's), `key_lag_1` and `key_lag_2plus` (device names one, and two or more, generations behind right now), `ha_unavailable_24h` (with `[ha_availability]`: the day's Home Assistant unavailabilities, each `name`, `down_for_s`, `open`), `note` |
+| `daily_summary` | `[summary] severity` (notice) | `frames_24h`, `devices_heard_24h`, `devices_tracked`, `quiet`, `unknown`, `marginal`, `degraded`, `storm_active`, `events_24h`, `key_counts` (named devices per key generation, newest first), `key_one_behind` (children one behind their parent right now: working, but the next key change cuts them off unless they catch up first) and `key_cut_off` (devices two or more behind, or with a `key_lag` episode open), `ha_unavailable_24h` (with `[ha_availability]`: the day's Home Assistant unavailabilities, each `name`, `down_for_s`, `open`), `note` |
 | `alert_test` | as requested | `name`, `addr`, `note` (from `alert-test`) |
 
 `name` is null for addresses not in `devices.json`.
@@ -409,8 +409,8 @@ detector at -85 dBm still matters; the record carries `reception` all the
 same. An episode that reopens within `[keys] rearm_s` (default 60 min) of
 its close is logged at notice with `episode` > 1, like a flapping
 starvation. Nothing is ever emitted for one generation behind: that would
-fire after every rotation. It shows on the devices page, in the census and
-in `daily_summary`'s `key_lag_1` instead.
+fire after every rotation. It shows on the devices page, in the census, in
+the status page's keys row and in `daily_summary`'s `key_one_behind` instead.
 
 The budget, then: a normal week is about two info records per rotation and
 no page. A rotation like 2026-09-13's is one `key_lag` per stranded device

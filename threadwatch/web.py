@@ -17,7 +17,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from .events import DAY_RE, day_bounds, day_of, next_day, prev_day
-from .names import AmbiguousName, DeviceNames, LastSeen, VisitorNames, load_names, load_visitor_names
+from .names import AmbiguousName, DeviceNames, LastSeen, VisitorNames, key_standing, load_names, load_visitor_names
 from .review import (
     DEVICE_FILTERS,
     DEVICE_HISTORY_DAYS,
@@ -392,62 +392,49 @@ class Site:
         return text
 
     def keys_html(self, now: float, newest: str) -> str:
-        """The status page's keys row. One line in every state: how many of
-        this network's named devices are on each key generation, newest
-        first. Then ``newest``, the newest generation heard: who sent it
-        first, when, and who may have started it. Under both, when there
-        are any, a table of the devices cut off
-        (two or more behind their parent, or with a key_lag episode open)
-        and those at risk (two or more behind the generation most devices
-        are on, but still within one of their parent: the next time the
-        parent moves, they are cut off)."""
+        """The status page's keys row (key_standing has the rules). One line
+        in every state: problem or OK, and how many of this network's named
+        devices are on each key generation, newest first. Then ``newest``,
+        the newest generation heard: who sent it first, when, and who may
+        have started it. Under both, when there are any, a table of the
+        devices cut off and then those one behind their parent."""
         seen = self.seen()
         rows = device_rows(seen, self.names(), self.cfg.quiet_min_rssi_dbm, now,
                            leader_router=self.leader_router(), mesh_generation=self.mesh_generation(),
                            key_fresh_s=self.cfg.key_fresh_s)
         dominant = dominant_pan(seen, self.cfg.pan_id, self.cfg.state_dir)
-        mine = [r for r in rows if r["name"] and not r.get("rotated_to")
-                and (r["pan"] is None or dominant is None or r["pan"] == dominant)]
-        fresh = [r for r in mine if r["generation"] is not None and r["generation_ts"] is not None
-                 and now - r["generation_ts"] <= self.cfg.key_fresh_s]
-        counts: dict[int, int] = {}
-        for r in fresh:
-            counts[r["generation"]] = counts.get(r["generation"], 0) + 1
-        typical = max(counts, key=lambda g: (counts[g], g)) if counts else None
-        cut, risk = [], []
-        for r in fresh:
-            if r["key_lagging"] or (r["role"] == "child" and (r["lag"] or 0) >= 2):
-                cut.append(r)
-            elif typical is not None and typical - r["generation"] >= 2:
-                risk.append(r)
-        one_behind = sum(1 for r in fresh if r["role"] == "child" and r["lag"] == 1 and r not in risk)
-        state = ('<span class="bad"><b>problem</b></span>' if cut
-                 else '<span class="warn"><b>at risk</b></span>' if risk
-                 else '<span class="ok"><b>OK</b></span>')
+        # The pages show whatever reading is on record; judge only fresh ones.
+        standing = key_standing([
+            r if r["generation_ts"] is not None and now - r["generation_ts"] <= self.cfg.key_fresh_s
+            else dict(r, generation=None)
+            for r in rows if r["name"] and not r.get("rotated_to")
+            and (r["pan"] is None or dominant is None or r["pan"] == dominant)])
+        cut, behind = standing["cut_off"], standing["one_behind"]
+        state = '<span class="bad"><b>problem</b></span>' if cut else '<span class="ok"><b>OK</b></span>'
         spread = [f'{n} {"device" if n == 1 else "devices"} on {g}' if i == 0 else f'{n} on {g}'
-                  for i, (g, n) in enumerate(sorted(counts.items(), reverse=True))]
+                  for i, (g, n) in enumerate(sorted(standing["counts"].items(), reverse=True))]
         muted = []
-        if len(mine) > len(fresh):
-            muted.append(f'{len(mine) - len(fresh)} not heard recently')
-        if one_behind:
-            muted.append(f'{one_behind} one behind their parent (normal)')
+        if standing["unjudged"]:
+            muted.append(f'{standing["unjudged"]} not heard recently')
+        if behind:
+            muted.append(f'{len(behind)} one behind their parent')
         line = (f'{state} &middot; ' + " &middot; ".join(spread or ["no device heard recently"])
                 + "".join(f' &middot; <span class="muted">{m}</span>' for m in muted)
                 + f'<br><span class="muted">{newest}</span>')
-        if not cut and not risk:
+        if not cut and not behind:
             return line
 
         def link(addr, name):
             return f'<a href="/device/{esc(addr)}">{esc(name or addr)}</a>' if addr else '<span class="muted">-</span>'
 
         trs = []
-        for r, label in [(r, '<span class="bad">cut off</span>') for r in cut] + \
-                        [(r, '<span class="warn">at risk</span>') for r in risk]:
-            child = r["role"] == "child"
-            parent = link(r["parent_addr"], r["parent"]) if child else '<span class="muted">router</span>'
-            pgen = esc(r["parent_generation"]) if child and r["parent_generation"] is not None else ""
-            trs.append(f'<tr><td>{link(r["addr"], r["name"])}</td><td>{label}</td>'
-                       f'<td>{esc(r["generation"])}</td><td>{parent}</td><td>{pgen}</td></tr>')
+        for group, label in ((cut, '<span class="bad">cut off</span>'), (behind, "one behind")):
+            for r in sorted(group, key=lambda r: r["name"].lower()):
+                child = r["role"] == "child"
+                parent = link(r["parent_addr"], r["parent"]) if child else '<span class="muted">router</span>'
+                pgen = esc(r["parent_generation"]) if child and r["parent_generation"] is not None else ""
+                trs.append(f'<tr><td>{link(r["addr"], r["name"])}</td><td>{label}</td>'
+                           f'<td>{esc(r["generation"])}</td><td>{parent}</td><td>{pgen}</td></tr>')
         return (line + '<table class="keys"><tr><th>device</th><th>state</th><th>on</th><th>parent</th>'
                        '<th>parent on</th></tr>' + "".join(trs) + '</table>')
 

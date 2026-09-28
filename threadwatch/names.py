@@ -794,6 +794,31 @@ def newest_generation(row: dict) -> tuple[int | None, float | None]:
     return best
 
 
+def key_standing(entries: list[dict]) -> dict:
+    """Where the devices stand on the network key, for the status page and
+    the daily summary alike. Each entry carries ``generation`` (None when
+    no fresh reading says), ``role``, ``lag`` against its reference (a
+    child's parent, a router's mesh) and optionally ``key_lagging`` (a
+    key_lag episode open). ``counts``: devices per generation. ``cut_off``:
+    two or more behind, or with an episode open; its frames are dropped.
+    ``one_behind``: a child one behind its parent; it works, but the next
+    key change cuts it off unless it catches up first. ``unjudged``: how
+    many had no fresh reading."""
+    counts: dict[int, int] = {}
+    cut_off, one_behind, unjudged = [], [], 0
+    for e in entries:
+        if e.get("generation") is None:
+            unjudged += 1
+            continue
+        counts[e["generation"]] = counts.get(e["generation"], 0) + 1
+        lag = e.get("lag")
+        if e.get("key_lagging") or (lag is not None and lag >= 2):
+            cut_off.append(e)
+        elif e.get("role") == "child" and lag == 1:
+            one_behind.append(e)
+    return {"counts": counts, "cut_off": cut_off, "one_behind": one_behind, "unjudged": unjudged}
+
+
 def reception(rssi: float | None, min_rssi_dbm: float) -> str:
     """How much a silence from this address means, given how well we hear it."""
     if rssi is None:

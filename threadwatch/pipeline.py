@@ -48,6 +48,7 @@ from .names import (
     DeviceNames,
     LastSeen,
     VisitorNames,
+    key_standing,
     load_border_routers,
     newest_generation,
     parent_address,
@@ -4262,9 +4263,11 @@ class Pipeline:
         # tracker.
         ha_down: list[dict] = []
         visits: list[dict] = []
-        lags = self._key_lags(now, dominant)
-        lag_1 = sorted(e["name"] or e["addr"] for e in lags if e["lag"] == 1)
-        lag_2plus = sorted(e["name"] or e["addr"] for e in lags if e["lag"] is not None and e["lag"] >= 2)
+        standing = key_standing([dict(e, key_lagging=self.seen.table[e["addr"]].get("keylag_since") is not None)
+                                 for e in self._key_lags(now, dominant) if e["name"]])
+        key_counts = {str(g): n for g, n in sorted(standing["counts"].items(), reverse=True)}
+        one_behind = sorted(e["name"] for e in standing["one_behind"])
+        cut_off = sorted(e["name"] for e in standing["cut_off"])
         counts = {"critical": 0, "warning": 0, "notice": 0, "info": 0}
         # Every local day the window touches: after the spring clock change
         # 24 hours can span three of them, and reading the first and last
@@ -4300,17 +4303,16 @@ class Pipeline:
             parts.append("HA unavailable: " + ", ".join(
                 f"{d['name']} ({round((d['down_for_s'] or 0) / 60)} min{', still' if d['open'] else ''})"
                 for d in ha_down[:8]) + (" ..." if len(ha_down) > 8 else ""))
-        mesh = self.decryptor.key_sequence
-        if mesh is not None and (lag_1 or lag_2plus):
-            parts.append(f"key generation {mesh}: "
-                         + ", ".join(p for p in (f"{len(lag_1)} one behind" if lag_1 else "",
-                                                 "cut off: " + ", ".join(lag_2plus) if lag_2plus else "") if p))
+        if key_counts:
+            parts.append("keys: " + ", ".join(f"{n} on {g}" for g, n in key_counts.items())
+                         + (f"; {len(one_behind)} one behind their parent" if one_behind else "")
+                         + ("; cut off: " + ", ".join(cut_off) if cut_off else ""))
         logged = ", ".join(f"{n} {sev}" for sev, n in counts.items() if n and sev != "info")
         parts.append("events: " + (logged or "none above info"))
         return {"frames_24h": frames, "devices_heard_24h": len(heard), "devices_tracked": len(ours),
                 "quiet": quiet, "unknown": unknown, "marginal": marginal, "degraded": degraded,
                 "storm_active": bool(self.detector.storm_active), "events_24h": counts,
-                "key_generation": mesh, "key_lag_1": lag_1, "key_lag_2plus": lag_2plus,
+                "key_counts": key_counts, "key_one_behind": one_behind, "key_cut_off": cut_off,
                 "ha_unavailable_24h": ha_down, "visits_24h": visits,
                 "note": "last 24 h: " + "; ".join(parts)}
 

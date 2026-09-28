@@ -3323,11 +3323,13 @@ class KeyGenerationTest(unittest.TestCase):
         self.assertIn("1 not judged", ev["note"])
         pipe.periodic(due + 3600)                                        # once per rotation
         self.assertEqual(len(self._events(pipe, "key_lag_census")), 1)
-        # The daily summary carries the same reading.
+        # The daily summary carries the same reading, by the status page's
+        # rules: a router one behind the mesh is the census's to name.
         summary = pipe.summary(due + 10)
-        self.assertEqual((summary["key_generation"], summary["key_lag_1"], summary["key_lag_2plus"]),
-                         (6, ["Porch Sensor", "Shed Router"], ["Garage Sensor"]))
-        self.assertIn("key generation 6: 2 one behind, cut off: Garage Sensor", summary["note"])
+        self.assertEqual((summary["key_counts"], summary["key_one_behind"], summary["key_cut_off"]),
+                         ({"6": 2, "5": 2, "4": 1}, ["Porch Sensor"], ["Garage Sensor"]))
+        self.assertIn("keys: 2 on 6, 2 on 5, 1 on 4; 1 one behind their parent; cut off: Garage Sensor",
+                      summary["note"])
 
     def test_the_census_survives_a_restart_and_the_state_file_is_in_snapshots(self):
         from threadwatch.snapshot import STATE_FILES

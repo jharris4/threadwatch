@@ -379,12 +379,57 @@ class PageBranchTest(unittest.TestCase):
         self.assertEqual((live["generation"], live["parent_generation"], live["mesh_generation"], live["lag"],
                           live["key_lagging"]), (84, 86, 86, 2, True))
         _st, status = self.get("/status")
-        self.assertIn("<th>key generation</th>", status)
-        self.assertIn(f'86 <span class="muted">first heard from <a href="/device/{TV2}">Living Room Apple TV</a>',
-                      status)
-        self.assertIn(f'; origin candidates: <a href="/device/{TV2}">Living Room Apple TV</a>, '
-                      f'<a href="/device/{AQ}">Office AQ</a> (ahead of last known parent sequence)</span>', status)
-        self.assertIn("previously 85", status)
+        # One row: the whole mesh by generation, then the newest generation's
+        # story, then the child that is cut off.
+        self.assertNotIn("<th>key generation</th>", status)
+        self.assertIn('<th>keys</th><td><span class="bad"><b>problem</b></span> &middot; '
+                      f'1 device on 86 &middot; 1 on 84<br><span class="muted">newest 86, first heard from '
+                      f'<a href="/device/{TV2}">Living Room Apple TV</a>', status)
+        self.assertIn(f'previously 85; origin candidates: <a href="/device/{TV2}">Living Room Apple TV</a>, '
+                      f'<a href="/device/{AQ}">Office AQ</a> (ahead of last known parent sequence)</span>'
+                      '<table class="keys">', status)
+        self.assertIn(f'<tr><td><a href="/device/{AQ}">Office AQ</a></td><td><span class="bad">cut off</span></td>'
+                      f'<td>84</td><td><a href="/device/{TV2}">Living Room Apple TV</a></td><td>86</td></tr>', status)
+
+    def test_the_status_page_names_a_child_two_behind_the_mesh_as_at_risk(self):
+        r1, r2, r3, r4, c1, c2, gone = (f"f00d00000000000{i}" for i in range(1, 8))
+        (self.d / "devices.json").write_text(json.dumps(
+            [{"name": n, "extendedAddress": a} for n, a in
+             (("Router A", r1), ("Router B", r2), ("Router C", r3), ("Router D", r4),
+              ("Sensor One", c1), ("Sensor Two", c2), ("Sensor Gone", gone))]))
+        self.status(updated=self.now, last_frame_age_s=3, crypto={"key_sequence": 88},
+                    keys={"highest": 88, "previous": 87, "first_sender": r1, "highest_first_ts": self.now - 7200})
+
+        def dev(rloc16, seq, age=30):
+            return {"first_seen": self.now - 8000, "last_seen": self.now - age, "frames": 100, "rssi": -60.0,
+                    "pan": 0x4e21, "types": {}, "rloc16": rloc16, "rloc16_ts": self.now - age,
+                    "counter_seq": seq, "counter_ts": self.now - age}
+
+        table = {r1: dev("0400", 88), r2: dev("0800", 88), r4: dev("1000", 88), r3: dev("0c00", 87),
+                 c1: dev("0c01", 86),                   # one behind Router C, two behind the mesh
+                 c2: dev("0401", 87),                   # one behind Router A: normal
+                 gone: dev("0402", 88, age=4000)}       # no fresh reading
+        self.seen(table)
+        _st, status = self.get("/status")
+        self.assertIn('<th>keys</th><td><span class="warn"><b>at risk</b></span> &middot; 3 devices on 88 &middot; '
+                      '2 on 87 &middot; 1 on 86 &middot; <span class="muted">1 not heard recently</span> &middot; '
+                      '<span class="muted">1 one behind their parent (normal)</span><br><span class="muted">newest 88, '
+                      f'first heard from <a href="/device/{r1}">Router A</a>', status)
+        self.assertIn('previously 87</span><table class="keys">', status)
+        self.assertIn(f'<tr><td><a href="/device/{c1}">Sensor One</a></td><td><span class="warn">at risk</span></td>'
+                      f'<td>86</td><td><a href="/device/{r3}">Router C</a></td><td>87</td></tr>', status)
+        self.assertNotIn("Sensor Two</a></td>", status)
+
+        # Sensor One catches up: nothing to list, the counts stay.
+        table[c1] = dev("0c01", 87)
+        self.seen(table)
+        _st, status = self.get("/status")
+        self.assertIn('<th>keys</th><td><span class="ok"><b>OK</b></span> &middot; 3 devices on 88 &middot; '
+                      '3 on 87 &middot; <span class="muted">1 not heard recently</span> &middot; '
+                      '<span class="muted">1 one behind their parent (normal)</span><br><span class="muted">newest 88, '
+                      f'first heard from <a href="/device/{r1}">Router A</a>', status)
+        self.assertIn('previously 87</span></td>', status)
+        self.assertNotIn('<table class="keys">', status)
 
     def test_the_pages_show_home_assistant_availability_only_when_the_recorder_polls_it(self):
         self.status(updated=self.now, last_frame_age_s=3)

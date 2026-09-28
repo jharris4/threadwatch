@@ -75,6 +75,8 @@ h1{font-size:1.35em;margin:.4em 0 .5em}h2{font-size:1.05em;margin:1.4em 0 .5em;c
 .covl{font-size:.88em;margin:0 0 .8em}.covl li{margin:.1em 0}.covl ul{margin:.2em 0 0 1.2em;padding:0}
 table{border-collapse:collapse;width:100%;font-size:.94em}
 table.facts th{width:11em;text-transform:none;letter-spacing:0;font-size:.94em}
+table.keys{width:auto;margin-top:.5em}table.keys th{width:auto;text-transform:uppercase;font-size:.8em}
+table.keys td,table.keys th{padding:.3em 1.2em .3em 0}
 th,td{text-align:left;padding:.45em .6em;border-bottom:1px solid var(--line);vertical-align:top}
 th{color:var(--muted);font-weight:600;font-size:.85em;text-transform:uppercase;letter-spacing:.03em}
 td.t{white-space:nowrap;color:var(--muted);font-variant-numeric:tabular-nums}
@@ -388,6 +390,66 @@ class Site:
         if facts.get("recent_rejected"):
             text += f' <span class="muted">{facts["recent_rejected"]} rejected MIC-valid</span>'
         return text
+
+    def keys_html(self, now: float, newest: str) -> str:
+        """The status page's keys row. One line in every state: how many of
+        this network's named devices are on each key generation, newest
+        first. Then ``newest``, the newest generation heard: who sent it
+        first, when, and who may have started it. Under both, when there
+        are any, a table of the devices cut off
+        (two or more behind their parent, or with a key_lag episode open)
+        and those at risk (two or more behind the generation most devices
+        are on, but still within one of their parent: the next time the
+        parent moves, they are cut off)."""
+        seen = self.seen()
+        rows = device_rows(seen, self.names(), self.cfg.quiet_min_rssi_dbm, now,
+                           leader_router=self.leader_router(), mesh_generation=self.mesh_generation(),
+                           key_fresh_s=self.cfg.key_fresh_s)
+        dominant = dominant_pan(seen, self.cfg.pan_id, self.cfg.state_dir)
+        mine = [r for r in rows if r["name"] and not r.get("rotated_to")
+                and (r["pan"] is None or dominant is None or r["pan"] == dominant)]
+        fresh = [r for r in mine if r["generation"] is not None and r["generation_ts"] is not None
+                 and now - r["generation_ts"] <= self.cfg.key_fresh_s]
+        counts: dict[int, int] = {}
+        for r in fresh:
+            counts[r["generation"]] = counts.get(r["generation"], 0) + 1
+        typical = max(counts, key=lambda g: (counts[g], g)) if counts else None
+        cut, risk = [], []
+        for r in fresh:
+            if r["key_lagging"] or (r["role"] == "child" and (r["lag"] or 0) >= 2):
+                cut.append(r)
+            elif typical is not None and typical - r["generation"] >= 2:
+                risk.append(r)
+        one_behind = sum(1 for r in fresh if r["role"] == "child" and r["lag"] == 1 and r not in risk)
+        state = ('<span class="bad"><b>problem</b></span>' if cut
+                 else '<span class="warn"><b>at risk</b></span>' if risk
+                 else '<span class="ok"><b>OK</b></span>')
+        spread = [f'{n} {"device" if n == 1 else "devices"} on {g}' if i == 0 else f'{n} on {g}'
+                  for i, (g, n) in enumerate(sorted(counts.items(), reverse=True))]
+        muted = []
+        if len(mine) > len(fresh):
+            muted.append(f'{len(mine) - len(fresh)} not heard recently')
+        if one_behind:
+            muted.append(f'{one_behind} one behind their parent (normal)')
+        line = (f'{state} &middot; ' + " &middot; ".join(spread or ["no device heard recently"])
+                + "".join(f' &middot; <span class="muted">{m}</span>' for m in muted)
+                + f'<br><span class="muted">{newest}</span>')
+        if not cut and not risk:
+            return line
+
+        def link(addr, name):
+            return f'<a href="/device/{esc(addr)}">{esc(name or addr)}</a>' if addr else '<span class="muted">-</span>'
+
+        trs = []
+        for r, label in [(r, '<span class="bad">cut off</span>') for r in cut] + \
+                        [(r, '<span class="warn">at risk</span>') for r in risk]:
+            child = r["role"] == "child"
+            parent = link(r["parent_addr"], r["parent"]) if child else '<span class="muted">router</span>'
+            pgen = esc(r["parent_generation"]) if child and r["parent_generation"] is not None else ""
+            trs.append(f'<tr><td>{link(r["addr"], r["name"])}</td><td>{label}</td>'
+                       f'<td>{esc(r["generation"])}</td><td>{parent}</td><td>{pgen}</td></tr>')
+        return (line + '<table class="keys"><tr><th>device</th><th>state</th><th>on</th><th>parent</th>'
+                       '<th>parent on</th></tr>' + "".join(trs) + '</table>')
 
     @staticmethod
     def key_facts_html(facts: dict) -> str:
@@ -952,12 +1014,11 @@ class Site:
                     f'<a href="/device/{esc(s["addr"])}">{esc(self.names().name(s["addr"]) or s["addr"])}</a>'
                     + (" (ahead of last known parent sequence)" if s.get("evidence") == "ahead of its parent" else "")
                     for s in suspects)
-                row("key generation", f'{esc(keys["highest"])} <span class="muted">first heard from {who}'
-                                      + (f' {ago(when, now)}' if when else "")
-                                      + (f', previously {esc(keys["previous"])}' if keys.get("previous") is not None
-                                         else "")
-                                      + (f'; origin candidates: {suspected}' if suspected else "")
-                                      + '</span>')
+                newest = (f'newest {esc(keys["highest"])}, first heard from {who}'
+                          + (f' {ago(when, now)}' if when else "")
+                          + (f', previously {esc(keys["previous"])}' if keys.get("previous") is not None else "")
+                          + (f'; origin candidates: {suspected}' if suspected else ""))
+                row("keys", self.keys_html(now, newest))
             avail = st.get("ha_availability")
             if isinstance(avail, dict):
                 if not avail.get("enabled"):

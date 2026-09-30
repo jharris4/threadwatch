@@ -675,7 +675,7 @@ class Site:
                               f'<p class="muted">{pk} {live}</p>{sev}<h2>episodes</h2>{table}{raw}',
                          refresh=is_today)
 
-    def devices_page(self, only: str = "", sort: str = "name") -> str:
+    def devices_page(self, only: str = "", sort: str = "name", retired: str = "") -> str:
         now = time.time()
         names = self.names()
         seen = self.seen()
@@ -685,6 +685,13 @@ class Site:
                             visitors=self.visitors())
         dominant = dominant_pan(seen, self.cfg.pan_id, self.cfg.state_dir)
         rows = select_devices(every, dominant, only, sort)
+        # A retired address (a device that moved to a new one) is hidden
+        # unless asked for: its row is a frozen copy of the device, a key
+        # generation behind, beside the live row that carries it now.
+        retired = "show" if retired == "show" else ""
+        hidden = 0 if retired else sum(1 for r in rows if r.get("rotated_to"))
+        if hidden:
+            rows = [r for r in rows if not r.get("rotated_to")]
         show_ha = any(r.get("ha_state") for r in every)
         # With named radios: which radios hear each device, and how much of it.
         radio_labels = sorted({label for r in every for label in (r.get("heard_by") or {})})
@@ -692,7 +699,7 @@ class Site:
         sort = sort if sort in DEVICE_SORTS else "name"
 
         def link(param, value, label, cur):
-            q = {"only": only, "sort": sort}
+            q = {"only": only, "sort": sort, "retired": retired}
             q[param] = value
             keep = {k: v for k, v in q.items() if v and not (k == "sort" and v == "name")}
             href = "/devices" + ("?" + "&".join(f"{k}={v}" for k, v in keep.items()) if keep else "")
@@ -701,7 +708,10 @@ class Site:
         filters = ('<div class="filters"><span class="k">show</span>' + link("only", "", "all", not only)
                    + "".join(link("only", k, f"{v[0]}", only == k) for k, v in DEVICE_FILTERS.items())
                    + '</div><div class="filters"><span class="k">order</span>'
-                   + "".join(link("sort", k, v[0], sort == k) for k, v in DEVICE_SORTS.items()) + '</div>')
+                   + "".join(link("sort", k, v[0], sort == k) for k, v in DEVICE_SORTS.items())
+                   + '</div><div class="filters"><span class="k">retired addresses</span>'
+                   + link("retired", "", "hide", not retired) + link("retired", "show", "show", bool(retired))
+                   + '</div>')
         trs = []
         for r in rows:
             if r["pan"] is None:
@@ -744,7 +754,8 @@ class Site:
         unknown = sum(1 for r in every if r["name"] is None and not r.get("visitor"))
         note = (f'<p class="muted">{len(every)} addresses tracked'
                 + (f', <span class="warn">{unknown} not in devices.json</span>' if unknown else "")
-                + (f'; showing {len(rows)} ({DEVICE_FILTERS[only][0]})' if only else "") + '.</p>'
+                + (f'; showing {len(rows)} ({DEVICE_FILTERS[only][0]})' if only else "")
+                + (f'; {hidden} retired hidden' if hidden else "") + '.</p>'
                 + self.models_html(every, names, dominant))
         table = ('<table><tr><th>device</th><th>role (live)</th><th>key gen</th>'
                  + ('<th>HA</th>' if show_ha else "") + '<th>last heard</th><th>rssi</th>'
@@ -1192,7 +1203,7 @@ class Site:
             return 200, "text/html; charset=utf-8", self.day_page(day, query.get("min", "")).encode()
         if path == "/devices":
             return 200, "text/html; charset=utf-8", self.devices_page(
-                query.get("only", ""), query.get("sort", "name")).encode()
+                query.get("only", ""), query.get("sort", "name"), query.get("retired", "")).encode()
         if path == "/help":
             return 200, "text/html; charset=utf-8", self.help_page().encode()
         if path == "/status":

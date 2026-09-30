@@ -63,8 +63,10 @@ proxy that authenticates.
   since HH:MM* for every device Home Assistant knows.
   `?only=unknown|visitors|quiet|marginal|down|foreign|routers|children` narrows
   it and `?sort=last|rssi|frames` orders it (longest unheard, weakest,
-  busiest); the links at the top of the page set both. `/api/devices`
-  takes the same parameters.
+  busiest); the links at the top of the page set both. A retired address
+  is hidden unless `?retired=show` asks for it, and the note under the
+  heading counts the ones hidden. `/api/devices` takes `only` and `sort`
+  and lists retired addresses as before.
 - **/device/<addr>** or **/device/<name>**: one device's history over the
   last 90 days, as episodes, merged over every address it has used (a
   rotating device is several addresses with one story), with its role

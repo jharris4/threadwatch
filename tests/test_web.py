@@ -314,8 +314,19 @@ class PageBranchTest(unittest.TestCase):
                                           "model": "BorderRouter", "previous": [{"addr": TV1}]},
             "core-otbr.local": {"addr": "72d035122fdf06f6", "instance": "Home Assistant OpenThread Border Router",
                                 "vendor": "Home Assistant", "model": "OpenThread Border Router"}}))
+        # A retired address is hidden until asked for, and the note says so.
         _st, body = self.get("/devices")
+        self.assertNotIn("retired: now", body)
+        self.assertNotIn(TV1, body)
+        self.assertIn("1 retired hidden", body)
+        self.assertIn('<a href="/devices" class=cur>hide</a>', body)
+        self.assertEqual(body.count('Living Room Apple TV <span class="muted">border router</span></a>'), 1)
+        _st, body = self.get("/devices?retired=show")
         self.assertIn(f'retired: now <a href="/device/{TV2}">{TV2}</a>', body)
+        self.assertNotIn("retired hidden", body)
+        self.assertIn('<a href="/devices?only=routers&retired=show">', body)   # the other links keep it
+        self.assertIn('<a href="/devices?sort=last&retired=show">', body)
+        self.assertIn('<a href="/devices?retired=show" class=cur>show</a>', body)
         # A named border router carries only the tag, on its live and its
         # retired address alike; the unnamed one keeps the label that is all
         # it has.

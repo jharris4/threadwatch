@@ -325,8 +325,18 @@ class PageBranchTest(unittest.TestCase):
         self.assertIn(f'retired: now <a href="/device/{TV2}">{TV2}</a>', body)
         self.assertNotIn("retired hidden", body)
         self.assertIn('<a href="/devices?only=routers&retired=show">', body)   # the other links keep it
-        self.assertIn('<a href="/devices?sort=last&retired=show">', body)
+        self.assertIn('<a class="sort" href="/devices?sort=last&retired=show">', body)
         self.assertIn('<a href="/devices?retired=show" class=cur>show</a>', body)
+        # Each header sorts by its column; the sorted one flips direction and
+        # carries the arrow, and the filters keep both.
+        _st, by = self.get("/devices?sort=rssi")
+        self.assertIn('<a class="sort cur" href="/devices?sort=rssi&dir=desc">rssi &#9650;</a>', by)
+        self.assertIn('<a class="sort" href="/devices">device</a>', by)
+        self.assertLess(by.index("<code>1afe3b8423f332de</code>"), by.index(f"<code>{AQ}</code>"))  # weakest first
+        _st, by = self.get("/devices?sort=rssi&dir=desc")
+        self.assertIn('<a class="sort cur" href="/devices?sort=rssi">rssi &#9660;</a>', by)
+        self.assertIn('<a href="/devices?only=routers&sort=rssi&dir=desc">', by)
+        self.assertLess(by.index(f"<code>{AQ}</code>"), by.index("<code>1afe3b8423f332de</code>"))
         # A named border router carries only the tag, on its live and its
         # retired address alike; the unnamed one keeps the label that is all
         # it has.
@@ -376,7 +386,7 @@ class PageBranchTest(unittest.TestCase):
                                    "count": 3, "reason": "counter_not_advancing"}]}}},
         })
         _st, body = self.get("/devices")
-        self.assertIn("<th>key gen</th>", body)
+        self.assertIn('href="/devices?sort=gen">key gen</a></th>', body)
         # The list page marks only what is unusual; the breakdown is on the device page.
         self.assertIn('84 <span class="warn">2 behind 86</span> <span class="bad">cut off</span> '
                       '<span class="muted">3 rejected MIC-valid</span>', body)
@@ -478,7 +488,7 @@ class PageBranchTest(unittest.TestCase):
                  "pan": 0x4e21, "types": {}},
         })
         _st, body = self.get("/devices")
-        self.assertNotIn("<th>HA</th>", body)                                          # feature off: no column
+        self.assertNotIn(">HA</a></th>", body)                                          # feature off: no column
         self.cfg.ha_availability_enabled = True
         (self.cfg.state_dir / "ha-map.json").write_text(json.dumps({
             "id-aq": {"addr": AQ.upper(), "ha_name": "AQ", "name": "Office AQ", "matched": True, "entities": ["s.aq"]},
@@ -488,7 +498,7 @@ class PageBranchTest(unittest.TestCase):
             "episodes": {"id-aq": {"since": self.now - 900, "opened_ts": self.now - 840, "paged": True,
                                    "severity": "warning", "burst_id": None, "episode": 1}}}))
         _st, body = self.get("/devices")
-        self.assertIn("<th>HA</th>", body)
+        self.assertIn('href="/devices?sort=ha">HA</a></th>', body)
         self.assertIn('<span class="bad">unavailable</span>', body)
         self.assertIn('<span class="ok">available</span>', body)
         _st, page = self.get(f"/device/{AQ}")
@@ -498,7 +508,7 @@ class PageBranchTest(unittest.TestCase):
         self.assertEqual(json.loads(self.get(f"/api/device/{TV2}")[1])["live"]["ha_state"], "available")
         self.cfg.ha_availability_enabled = False                      # turned off: the files stay, unread
         _st, body = self.get("/devices")
-        self.assertNotIn("<th>HA</th>", body)
+        self.assertNotIn(">HA</a></th>", body)
         self.assertIsNone(json.loads(self.get(f"/api/device/{AQ}")[1])["live"]["ha_state"])
 
     def test_todays_card_names_what_is_quiet_and_what_is_fading_or_says_all_is_well(self):

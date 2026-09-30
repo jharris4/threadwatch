@@ -915,22 +915,71 @@ DEVICE_FILTERS = {
     "routers": ("routers", lambda r, dom: r["role"] == "router"),
     "children": ("children", lambda r, dom: r["role"] == "child"),
 }
+
+
+def _name_order(r: dict) -> tuple:
+    """Named devices A to Z, then unnamed addresses: the page's default
+    order and every other column's tie-break."""
+    return (r["name"] is None, (r["name"] or r["addr"]).lower())
+
+
+def _role_order(r: dict, dom: int | None):
+    if not r.get("role"):
+        return None
+    if r["role"] == "router":
+        return (0, not r.get("leader"), "", r.get("router_id") or 0)
+    return (1, False, (r.get("parent") or "").lower(), r.get("router_id") or 0)
+
+
+def _generation_order(r: dict, dom: int | None):
+    # Most behind first, then the oldest generation.
+    return None if r.get("generation") is None else (r.get("lag") or 0, -r["generation"])
+
+
+def _ha_order(r: dict, dom: int | None):
+    # Unavailable first, the longest unavailable first.
+    if not r.get("ha_state"):
+        return None
+    return (r["ha_state"] == "unavailable", -(r.get("ha_since") or 0))
+
+
+# Column key: (label, value, default direction). A value of None (no
+# role yet, never heard with a level, not in Home Assistant) sorts last
+# in either direction; a column opens with its problems first, and each
+# key of the old four-link order row names the same order it did.
 DEVICE_SORTS = {
-    "name": ("name", lambda r: ((r["name"] is None), (r["name"] or r["addr"]).lower())),
-    "last": ("longest unheard", lambda r: -r["silent_for_s"]),
-    "rssi": ("weakest", lambda r: (r["rssi_dbm"] is None, r["rssi_dbm"] or 0)),
-    "frames": ("busiest", lambda r: -r["frames"]),
+    "name": ("device", lambda r, dom: _name_order(r), "asc"),
+    "role": ("role (live)", _role_order, "asc"),
+    "gen": ("key gen", _generation_order, "desc"),
+    "ha": ("HA", _ha_order, "desc"),
+    "last": ("last heard", lambda r, dom: r["silent_for_s"], "desc"),
+    "rssi": ("rssi", lambda r, dom: r["rssi_dbm"], "asc"),
+    "reception": ("reception", lambda r, dom: {"marginal": 0, "good": 1}.get(r["reception"]), "asc"),
+    "frames": ("frames", lambda r, dom: r["frames"], "desc"),
+    "pan": ("pan", lambda r, dom: None if r["pan"] is None else (dom is None or r["pan"] == dom, r["pan"]), "asc"),
+    "addr": ("address", lambda r, dom: r["addr"], "asc"),
 }
 
 
-def select_devices(rows: list[dict], dominant: int | None, only: str = "", sort: str = "name") -> list[dict]:
-    """The devices page's subset and order. An unknown filter or sort name
-    is ignored rather than an error: the page still renders."""
+def sort_direction(sort: str, direction: str = "") -> str:
+    """'asc' or 'desc': the one asked for, else the column's own."""
+    if direction in ("asc", "desc"):
+        return direction
+    return (DEVICE_SORTS.get(sort) or DEVICE_SORTS["name"])[2]
+
+
+def select_devices(rows: list[dict], dominant: int | None, only: str = "", sort: str = "name",
+                   direction: str = "") -> list[dict]:
+    """The devices page's subset and order. An unknown filter, sort or
+    direction is ignored rather than an error: the page still renders."""
     f = DEVICE_FILTERS.get(only)
     if f:
         rows = [r for r in rows if f[1](r, dominant)]
-    s = DEVICE_SORTS.get(sort) or DEVICE_SORTS["name"]
-    return sorted(rows, key=s[1])
+    value = (DEVICE_SORTS.get(sort) or DEVICE_SORTS["name"])[1]
+    rows = sorted(rows, key=_name_order)
+    have = [r for r in rows if value(r, dominant) is not None]
+    blank = [r for r in rows if value(r, dominant) is None]
+    return sorted(have, key=lambda r: value(r, dominant), reverse=sort_direction(sort, direction) == "desc") + blank
 
 
 def dominant_pan(seen: LastSeen, configured: int | None = None,

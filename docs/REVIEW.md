@@ -62,10 +62,15 @@ proxy that authenticates.
   `[ha_availability]` on, an *HA* column says *available* or *unavailable
   since HH:MM* for every device Home Assistant knows.
   `?only=unknown|visitors|quiet|marginal|down|foreign|routers|children` narrows
-  it and `?sort=last|rssi|frames` orders it (longest unheard, weakest,
-  busiest); the links at the top of the page set both. A retired address
-  is hidden unless `?retired=show` asks for it, and the note under the
-  heading counts the ones hidden. `/api/devices` takes `only` and `sort`
+  it (the links at the top of the page) and every column header but
+  *heard by* sorts by that column, `?sort=name|role|gen|ha|last|rssi|reception|frames|pan|addr`.
+  A column opens with its problems first: most behind, longest
+  unavailable, longest unheard, weakest, marginal, busiest, foreign;
+  the device, role and address columns run A to Z. Clicking the sorted
+  column again flips it (`&dir=asc|desc`), and rows with nothing to sort
+  on (no reading yet) stay last either way. A retired address is hidden
+  unless `?retired=show` asks for it, and the note under the heading
+  counts the ones hidden. `/api/devices` takes `only`, `sort` and `dir`
   and lists retired addresses as before.
 - **/device/<addr>** or **/device/<name>**: one device's history over the
   last 90 days, as episodes, merged over every address it has used (a

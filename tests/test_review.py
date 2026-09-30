@@ -525,6 +525,37 @@ class DayViewTest(unittest.TestCase):
         self.assertEqual(pick(sort="frames"),
                          ["Basement AQ", TV, "Irrigation", TV, "72d035122fdf06f6", "1afe3b8423f332de"])
         self.assertEqual(pick(only="nonsense", sort="nonsense"), pick())
+        self.assertEqual(pick(sort="rssi", direction="nonsense"), pick(sort="rssi"))
+
+    def test_every_column_sorts_with_its_problems_first_and_blanks_last_either_way(self):
+        from threadwatch.review import select_devices
+
+        def row(name, **kw):
+            base = {"name": name, "addr": name.lower(), "silent_for_s": 10, "rssi_dbm": -60.0,
+                    "reception": "good", "frames": 100, "pan": 0x4e21, "role": None, "router_id": None,
+                    "leader": False, "parent": None, "generation": None, "lag": None,
+                    "ha_state": None, "ha_since": None}
+            return {**base, **kw}
+        rows = [
+            row("Alpha", role="router", router_id=3, generation=89, lag=0, ha_state="available"),
+            row("Bravo", role="child", router_id=3, parent="Alpha", generation=87, lag=2,
+                ha_state="unavailable", ha_since=T0 + 60, rssi_dbm=-88.0, reception="marginal"),
+            row("Charlie", role="router", router_id=9, leader=True, generation=88, lag=1,
+                ha_state="unavailable", ha_since=T0, pan=0x1234, frames=900),
+            row("Delta", rssi_dbm=None, reception="unknown", pan=None, silent_for_s=5000),
+        ]
+        pick = lambda **kw: [r["name"] for r in select_devices(rows, 0x4e21, **kw)]
+        self.assertEqual(pick(sort="gen"), ["Bravo", "Charlie", "Alpha", "Delta"])        # most behind first
+        self.assertEqual(pick(sort="gen", direction="asc"), ["Alpha", "Charlie", "Bravo", "Delta"])
+        self.assertEqual(pick(sort="ha"), ["Charlie", "Bravo", "Alpha", "Delta"])         # longest unavailable first
+        self.assertEqual(pick(sort="role"), ["Charlie", "Alpha", "Bravo", "Delta"])       # leader, routers, children
+        self.assertEqual(pick(sort="rssi"), ["Bravo", "Alpha", "Charlie", "Delta"])
+        self.assertEqual(pick(sort="rssi", direction="desc"), ["Alpha", "Charlie", "Bravo", "Delta"])
+        self.assertEqual(pick(sort="reception"), ["Bravo", "Alpha", "Charlie", "Delta"])
+        self.assertEqual(pick(sort="pan"), ["Charlie", "Alpha", "Bravo", "Delta"])         # foreign first
+        self.assertEqual(pick(sort="last"), ["Delta", "Alpha", "Bravo", "Charlie"])
+        self.assertEqual(pick(sort="frames")[0], "Charlie")
+        self.assertEqual(pick(sort="addr", direction="desc"), ["Delta", "Charlie", "Bravo", "Alpha"])
 
     def test_device_rows_carry_the_key_generation_and_the_lag_behind_parent_or_mesh(self):
         from threadwatch.names import DeviceNames, LastSeen

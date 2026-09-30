@@ -39,6 +39,7 @@ from .review import (
     recording_for_day,
     select_devices,
     snapshots,
+    sort_direction,
     status_state,
     storage,
     today,
@@ -90,6 +91,7 @@ td.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .card .k{color:var(--muted);font-size:.85em;text-transform:uppercase;letter-spacing:.03em;margin-right:.4em}
 .card .sep{color:var(--line);margin:0 .5em}
 .filters{display:flex;gap:.4em 1.2em;flex-wrap:wrap;margin:.3em 0 .8em;font-size:.9em}
+th a.sort{color:inherit;text-decoration:none}th a.sort.cur{color:var(--fg)}
 .filters span.k{color:var(--muted)}.filters a.cur{font-weight:650;color:var(--fg);text-decoration:underline}
 details{margin:1em 0}summary{cursor:pointer;color:var(--muted)}
 pre{font-size:.8em;overflow-x:auto;background:var(--card);padding:.6em;border-radius:6px}
@@ -675,7 +677,7 @@ class Site:
                               f'<p class="muted">{pk} {live}</p>{sev}<h2>episodes</h2>{table}{raw}',
                          refresh=is_today)
 
-    def devices_page(self, only: str = "", sort: str = "name", retired: str = "") -> str:
+    def devices_page(self, only: str = "", sort: str = "name", retired: str = "", direction: str = "") -> str:
         now = time.time()
         names = self.names()
         seen = self.seen()
@@ -684,7 +686,7 @@ class Site:
                             ha=self.ha_availability(),
                             visitors=self.visitors())
         dominant = dominant_pan(seen, self.cfg.pan_id, self.cfg.state_dir)
-        rows = select_devices(every, dominant, only, sort)
+        rows = select_devices(every, dominant, only, sort, direction)
         # A retired address (a device that moved to a new one) is hidden
         # unless asked for: its row is a frozen copy of the device, a key
         # generation behind, beside the live row that carries it now.
@@ -697,18 +699,33 @@ class Site:
         radio_labels = sorted({label for r in every for label in (r.get("heard_by") or {})})
         only = only if only in DEVICE_FILTERS else ""
         sort = sort if sort in DEVICE_SORTS else "name"
+        direction = sort_direction(sort, direction)
+
+        def href(**change) -> str:
+            q = {"only": only, "sort": sort, "dir": direction, "retired": retired, **change}
+            # The column's own direction and the default column go unsaid.
+            if q["dir"] == sort_direction(q["sort"]):
+                q["dir"] = ""
+            if q["sort"] == "name":
+                q["sort"] = ""
+            keep = {k: v for k, v in q.items() if v}
+            return "/devices" + ("?" + "&".join(f"{k}={v}" for k, v in keep.items()) if keep else "")
 
         def link(param, value, label, cur):
-            q = {"only": only, "sort": sort, "retired": retired}
-            q[param] = value
-            keep = {k: v for k, v in q.items() if v and not (k == "sort" and v == "name")}
-            href = "/devices" + ("?" + "&".join(f"{k}={v}" for k, v in keep.items()) if keep else "")
-            return f'<a href="{href}"{" class=cur" if cur else ""}>{label}</a>'
+            return f'<a href="{href(**{param: value})}"{" class=cur" if cur else ""}>{label}</a>'
+
+        def th(key: str) -> str:
+            """A column header that sorts by it; on the sorted column it
+            flips the direction and carries the arrow."""
+            label = esc(DEVICE_SORTS[key][0])
+            if key != sort:
+                return f'<th><a class="sort" href="{href(sort=key, dir="")}">{label}</a></th>'
+            flip = "asc" if direction == "desc" else "desc"
+            arrow = "&#9650;" if direction == "asc" else "&#9660;"
+            return f'<th><a class="sort cur" href="{href(dir=flip)}">{label} {arrow}</a></th>'
 
         filters = ('<div class="filters"><span class="k">show</span>' + link("only", "", "all", not only)
                    + "".join(link("only", k, f"{v[0]}", only == k) for k, v in DEVICE_FILTERS.items())
-                   + '</div><div class="filters"><span class="k">order</span>'
-                   + "".join(link("sort", k, v[0], sort == k) for k, v in DEVICE_SORTS.items())
                    + '</div><div class="filters"><span class="k">retired addresses</span>'
                    + link("retired", "", "hide", not retired) + link("retired", "show", "show", bool(retired))
                    + '</div>')
@@ -757,10 +774,9 @@ class Site:
                 + (f'; showing {len(rows)} ({DEVICE_FILTERS[only][0]})' if only else "")
                 + (f'; {hidden} retired hidden' if hidden else "") + '.</p>'
                 + self.models_html(every, names, dominant))
-        table = ('<table><tr><th>device</th><th>role (live)</th><th>key gen</th>'
-                 + ('<th>HA</th>' if show_ha else "") + '<th>last heard</th><th>rssi</th>'
-                 '<th>reception</th>' + ('<th>heard by</th>' if radio_labels else "")
-                 + f'<th>frames</th><th>pan</th><th>address</th></tr>{"".join(trs)}</table>'
+        table = ('<table><tr>' + th("name") + th("role") + th("gen") + (th("ha") if show_ha else "")
+                 + th("last") + th("rssi") + th("reception") + ('<th>heard by</th>' if radio_labels else "")
+                 + th("frames") + th("pan") + th("addr") + f'</tr>{"".join(trs)}</table>'
                  if trs else f'<p class="empty">no devices {DEVICE_FILTERS[only][0] if only else "tracked"}</p>')
         return self.page("devices", f'<h1>devices</h1>{note}{filters}{table}')
 
@@ -1147,7 +1163,7 @@ class Site:
                                ha=self.ha_availability())
             return {"devices": select_devices(rows, dominant_pan(seen, self.cfg.pan_id, self.cfg.state_dir),
                                               query.get("only", ""),
-                                              query.get("sort", "name"))}
+                                              query.get("sort", "name"), query.get("dir", ""))}
         if path.startswith("/api/device/"):
             names = self.names()
             try:
@@ -1203,7 +1219,8 @@ class Site:
             return 200, "text/html; charset=utf-8", self.day_page(day, query.get("min", "")).encode()
         if path == "/devices":
             return 200, "text/html; charset=utf-8", self.devices_page(
-                query.get("only", ""), query.get("sort", "name"), query.get("retired", "")).encode()
+                query.get("only", ""), query.get("sort", "name"), query.get("retired", ""),
+                query.get("dir", "")).encode()
         if path == "/help":
             return 200, "text/html; charset=utf-8", self.help_page().encode()
         if path == "/status":

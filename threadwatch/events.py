@@ -249,6 +249,12 @@ def read_day(events_dir: Path, day: str) -> list[dict]:
             dropped += 1
             continue
         out.append(rec)
+    # In time order, not append order: a record dated back to when the
+    # thing happened (a reboot read from the Matter Server log, a return
+    # logged at restart) is written after later ones, and `threadwatch
+    # events` printed a 17:21 reboot below a 17:59 return. Stable, so
+    # records with one stamp keep the order they were written in.
+    out.sort(key=lambda r: r["ts"])
     if dropped:
         with _read_lock:
             said = _dropped_said.get(path) == dropped

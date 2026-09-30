@@ -640,7 +640,9 @@ class Site:
             pk += ' &middot; snapshots: ' + ", ".join(
                 f'<a href="/snapshots#{esc(i)}">{esc(i)}</a>' for i in cap["snapshots"])
         rows = []
-        for ep in eps:
+        # Newest first, as on the device and snapshots pages: today's page
+        # reloads itself, and what just happened belongs at the top.
+        for ep in reversed(eps):
             span = ""
             if ep["kind"] == "quiet":
                 if ep["end"]:

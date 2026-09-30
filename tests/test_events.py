@@ -56,6 +56,14 @@ class PartialLineTest(unittest.TestCase):
 
         self.assertEqual([r["event"] for r in read_day(events, day)], ["after"])
 
+    def test_a_record_dated_back_reads_in_time_order_not_append_order(self):
+        from threadwatch.events import EventLog
+        d = self._dir()
+        log = EventLog(d, [])
+        log.emit("device_returned", "notice", ts=TS + 60)
+        log.emit("device_rebooted", "notice", ts=TS + 10)    # read from a log later, stamped when it happened
+        self.assertEqual([r["event"] for r in read_day(d, day_of(TS))], ["device_rebooted", "device_returned"])
+
     def test_a_second_legacy_log_does_not_overwrite_the_first_archive(self):
         import contextlib
         import io

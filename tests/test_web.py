@@ -541,6 +541,16 @@ class PageBranchTest(unittest.TestCase):
         self.assertEqual(json.loads(days)["days"],
                          [{"day": today, "total": 1, "info": 0, "notice": 0, "warning": 1, "critical": 0}])
 
+    def test_the_day_page_lists_the_newest_episode_first(self):
+        day = day_of(self.now - 86400)
+        noon = time.mktime(time.strptime(day + " 12:00", "%Y-%m-%d %H:%M"))
+        log = EventLog(self.cfg.events_dir)
+        log.emit("device_rebooted", "notice", noon - 3600, addr=AQ, name="Office AQ", reason_name="power-on reboot")
+        log.emit("device_rebooted", "notice", noon, addr=TV2, name="Living Room Apple TV",
+                 reason_name="power-on reboot")
+        _st, body = self.get(f"/day/{day}")
+        self.assertLess(body.index("Living Room Apple TV"), body.index("Office AQ"))
+
     def test_a_path_that_is_not_a_page_is_a_404_in_the_shape_the_caller_asked_for(self):
         for path, body in (("/nope", b"not found"), ("/day/notaday", b"bad day"),
                            ("/day/0001-01-01", b"bad day"), ("/day/9999-12-31", b"bad day"),

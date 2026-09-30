@@ -23,7 +23,7 @@ proxy that authenticates.
 
 ## Pages
 
-- **/** and **/day/YYYY-MM-DD**: the day's *episodes* with previous / next
+- **/** and **/day/YYYY-MM-DD**: the day's *episodes*, newest first, with previous / next
   links and a strip of recent days with their event counts. Under the
   headline card, a coverage bar says whether the recorder was there to
   hear the day ("Coverage", below). Whether the

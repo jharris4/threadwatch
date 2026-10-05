@@ -148,7 +148,7 @@ The raw log is the wrong unit for people, so the pages group it:
 | `ha_unavailable` ... `ha_available` | one row: *X unavailable in Home Assistant for 25m* (or *still unavailable*), with the cause |
 | `ha_unavailable_burst`, `ha_unreachable`, `ha_reachable` | one row each, always |
 | `key_sequence_advanced`, `key_lag_census` | one row each, always: *key sequence 85 -> 86*, *key generation census* |
-| `partition_or_leader_change`, `partition_storm`, `router_set_changed`, `daily_summary` | one row each, always |
+| `partition_or_leader_change`, `partition_storm`, `lone_partition`, `router_set_changed`, `daily_summary` | one row each, always |
 | `phase_locked_storm` | one row per storm: the notice-level call opens it, the confirmed critical joins it |
 | `rejoin_wave` | one row, always, naming the devices |
 | `device_rebooted` x N, same device | one row per run of reboots less than 6 h apart: *X rebooted 3 times*, with the count per reason |

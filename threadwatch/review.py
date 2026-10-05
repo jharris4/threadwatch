@@ -426,6 +426,12 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
                      f"leader {prev.get('leader')} -> {cur.get('leader')} in "
                      f"{fmt_duration(rec.get('duration_s') or 0)}, {rec.get('changes')} flips")
             ep["end"] = rec.get("until", rec["ts"])
+        elif ev == "lone_partition":
+            ep = new("partition", rec, f"lone partition: {rec.get('name') or rec.get('addr')}",
+                     f"led partition {rec.get('partition')} as r{rec.get('leader_router')} for "
+                     f"{fmt_duration(rec.get('duration_s') or 0)}; the mesh stayed under "
+                     f"{(rec.get('current') or {}).get('leader')}")
+            ep["end"] = rec.get("until", rec["ts"])
         elif ev == "router_set_changed":
             new("partition", rec, f"router set changed: +{len(rec.get('promoted') or [])} "
                                   f"-{len(rec.get('demoted') or [])}", rec.get("note", ""))

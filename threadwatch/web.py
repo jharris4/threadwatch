@@ -212,7 +212,9 @@ LEGEND = [
      "Routine after a border router reboots; a problem if it keeps happening. A leader stalled row "
      "names the leader whose router-id sequence stopped advancing: the storm follows about a minute "
      "later unless it recovers, and a partition storm row is that storm, every router briefly "
-     "leading a partition of its own before the merge. A router set changed row is the OTBR inventory "
+     "leading a partition of its own before the merge. A lone partition row is one router leading a "
+     "partition of its own for a moment while the rest of the mesh stayed put: a device that lost its "
+     "links, typically jumping key generations, and re-attached. A router set changed row is the OTBR inventory "
      "([otbr]) seeing router ids appear or vanish between two samples: promotions and demotions the "
      "air never says plainly."),
     ("rejoin", "Rejoin attempt",

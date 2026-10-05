@@ -3137,7 +3137,7 @@ class Pipeline:
             self._note_rejoin(f.ts, info.command_name, f.src, src_for_mle, name)
         if info.partition_id is not None and self._leader_data_is_current(info, src_for_mle):
             self._note_partition((info.partition_id, info.leader_router_id), f.ts,
-                                 src_for_mle, info.route_id_sequence)
+                                 src_for_mle, info.route_id_sequence, info.source_addr16)
 
     def _leader_data_is_current(self, info, sender: str | None) -> bool:
         """Whether the message's Leader Data is the sender's own view of the
@@ -3167,7 +3167,8 @@ class Pipeline:
 
     # ------------------------------------------------- partition and leader
 
-    def _note_partition(self, cur: tuple, ts: float, sender: str | None, sequence: int | None) -> None:
+    def _note_partition(self, cur: tuple, ts: float, sender: str | None, sequence: int | None,
+                        source_addr16: int | None = None) -> None:
         """A fresh MLE message's Leader Data (partition id, leader router
         id) and Route64 ID sequence. A change of partition or leader is
         held for [partition] settle_s and judged in _settle_partition: one
@@ -3188,7 +3189,7 @@ class Pipeline:
         if cur != self.partition:
             if hold is None:
                 hold = self._partition_hold = {"previous": self.partition, "first_ts": ts,
-                                               "last_ts": ts, "states": [], "changes": 0}
+                                               "last_ts": ts, "states": [], "changes": 0, "voices": {}}
                 self._partition_changed_ts = ts
             if cur not in (state for state, _ in hold["states"]):
                 hold["states"].append((cur, ts))
@@ -3197,11 +3198,24 @@ class Pipeline:
             self.partition = cur
             self._close_leader_stall(ts, "the partition or its leader changed")
             self._reset_leader_pulse(sequence, ts, sender)
+            self._note_partition_voice(hold, cur, sender, source_addr16)
             return
         if hold is not None and ts - hold["last_ts"] >= self.cfg.partition_settle_s:
             self._settle_partition(ts)
         elif hold is None:
             self._note_route_sequence(sequence, ts, sender)
+        else:
+            self._note_partition_voice(hold, cur, sender, source_addr16)
+
+    def _note_partition_voice(self, hold: dict, state: tuple, sender: str | None,
+                              source_addr16: int | None) -> None:
+        """Who announced each state while a change is held, with the router
+        id the message's Source Address gave (a router that falls back to
+        child is a child by the time the window settles): _settle_partition
+        reads it to tell one router leading a partition of its own from a
+        split."""
+        rid = source_addr16 >> 10 if source_addr16 is not None and not source_addr16 & 0x3FF else None
+        hold["voices"].setdefault(state, set()).add((sender, rid))
 
     # ------------------------------------------------------- router set
 
@@ -3376,6 +3390,20 @@ class Pipeline:
                                  "leader_router": prev[1], "partition": prev[0], "ts": hold["first_ts"],
                                  "leader": before, "successor": after}
         states = hold["states"]
+        lone = self._lone_partition_router(hold, prev, cur)
+        if lone is not None:
+            addr, foreign = lone
+            name = self.names.name(addr)
+            label = self.leader_label(foreign[0][1])
+            duration = hold["last_ts"] - hold["first_ts"]
+            self._emit("lone_partition", "notice", hold["first_ts"], previous=previous, current=current,
+                       addr=addr, name=name, partition=foreign[0][0], leader_router=foreign[0][1],
+                       changes=hold["changes"],
+                       since=hold["first_ts"], until=hold["last_ts"], duration_s=round(duration, 1),
+                       note=f"{label} led a partition of its own for {fmt_span(duration)} while the mesh "
+                            f"carried on under {after}: one router that lost its links (a key generation "
+                            "jump or a lost parent) and re-attached, not a split")
+            return
         if len(states) == 1 and hold["changes"] == 1:
             self._emit("partition_or_leader_change", "warning", hold["first_ts"],
                        previous=previous, current=current,
@@ -3403,6 +3431,31 @@ class Pipeline:
                    since=hold["first_ts"], until=hold["last_ts"], duration_s=round(duration, 1),
                    note=f"{what}: every router hit the leader-age timeout together and re-elected; "
                         "sleepy children re-attach in the minute after")
+
+    @staticmethod
+    def _lone_partition_router(hold: dict, prev: tuple, cur: tuple) -> tuple[str, list] | None:
+        """(addr, its states) when the held flips were one router leading a
+        partition of its own while every other router stayed with the old
+        one: on 2026-10-05 a child two key generations behind jumped ahead
+        on a Parent Request, advertised one partition of its own as r58 and
+        re-attached under the leader 21 s later. Each foreign state has to
+        be announced only by the router that leads it, and by one device;
+        a router announcing a partition led by another is a real split."""
+        if prev != cur:
+            return None
+        foreign = [state for state, _ in hold["states"] if state != prev]
+        if not foreign:
+            return None
+        lone = None
+        for state in foreign:
+            voices = hold["voices"].get(state, set())
+            if len(voices) != 1:
+                return None
+            addr, rid = next(iter(voices))
+            if addr is None or rid != state[1] or lone not in (None, addr):
+                return None
+            lone = addr
+        return lone, foreign
 
     # ------------------------------------------------------------ rejoins
 

@@ -77,7 +77,7 @@ KNOWN_EVENTS = frozenset((
     "authentication_history_full",
     "rssi_degradation", "rssi_recovered",
     "key_sequence_advanced", "key_lag_census", "key_lag", "key_lag_cleared",
-    "retransmission_elevation", "partition_or_leader_change", "partition_storm",
+    "retransmission_elevation", "partition_or_leader_change", "partition_storm", "lone_partition",
     "leader_stalled", "leader_resumed", "router_set_changed", "srp_refused", "srp_accepted",
     "device_rebooted", "reboots_climbing",
     "credentials_stale", "clock_step",

@@ -5774,6 +5774,39 @@ class LeaderAndPartitionTest(unittest.TestCase):
         rec = self._events("partition_storm")[1]
         self.assertIn("split into 2 partitions and merged back under r57 after 1 s (2 flips)", rec["note"])
 
+    def test_one_router_leading_a_partition_of_its_own_is_a_lone_partition_not_a_storm(self):
+        t0 = 1_700_000_000.0
+        self._adv(t0, ROUTER, 10)
+        self._adv(t0 + 5, self.R2, 10)
+        # Loft Router jumps key generations, loses its links and advertises
+        # a partition of its own as router 58 (RLOC16 0xe800) once; the
+        # mesh carries on under Hall Router and Loft Router re-attaches.
+        body = advertisement(0x5ca1ab1e, 58, 165) + bytes([0, 2]) + bytes.fromhex("e800")
+        self.pipe.ingest(mle_frame(t0 + 100, self.R3, 0, body))
+        self._adv(t0 + 102, self.R2, 11)
+        self._adv(t0 + 110, ROUTER, 12)
+        self.pipe.periodic(t0 + 140)
+        self.assertEqual(self._events("partition_storm"), [])
+        self.assertEqual(self._events("partition_or_leader_change"), [])
+        lone = self._events("lone_partition")
+        self.assertEqual(len(lone), 1)
+        rec = lone[0]
+        self.assertEqual((rec["severity"], rec["addr"], rec["name"]), ("notice", self.R3, "Loft Router"))
+        self.assertEqual((rec["partition"], rec["leader_router"], rec["changes"], rec["duration_s"]),
+                         (0x5ca1ab1e, 58, 2, 2.0))
+        self.assertIn("r58 (Loft Router) led a partition of its own for 2 s while the mesh carried on "
+                      "under r60 (Hall Router)", rec["note"])
+        self.assertIsNone(self.pipe._lost_leader)
+        # Two routers each leading their own is a split, whoever leads.
+        body = advertisement(0x11111111, 58, 1) + bytes([0, 2]) + bytes.fromhex("e800")
+        self.pipe.ingest(mle_frame(t0 + 400, self.R3, 0, body))
+        body = advertisement(0x22222222, 59, 1) + bytes([0, 2]) + bytes.fromhex("ec00")
+        self.pipe.ingest(mle_frame(t0 + 401, self.R2, 0, body))
+        self._adv(t0 + 402, ROUTER, 13)
+        self.pipe.periodic(t0 + 440)
+        self.assertEqual(len(self._events("partition_storm")), 1)
+        self.assertEqual(len(self._events("lone_partition")), 1)
+
     def test_settle_zero_logs_every_flip_at_once(self):
         self.cfg.partition_settle_s = 0
         t0 = 1_700_000_000.0

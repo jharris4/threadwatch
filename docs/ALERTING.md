@@ -93,6 +93,7 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `retransmission_elevation` | notice for the first elevated minute, warning once the rate has stayed up for `[retransmissions] confirm_s` (`confirmed`); notice regardless when one sender-target pair is `top_share` >= 0.5 of the retries (a chronic bad link, not a storm precursor) | `rate`, `baseline`, `addr`, `name`, `top_sender`, `top_target`, `top_share`, `confirmed`, `sustained_s`, `cause` (`rejoin_wave` when the mesh was re-attaching after a partition change inside the last five minutes), `note` |
 | `partition_or_leader_change` | warning | `previous`, `current`, each with `partition`, `leader_router` and `leader` (the router id with the device's name once the MLE layer has matched it); logged once the change has held for `[partition] settle_s` |
 | `partition_storm` | warning | `previous`, `current` (as above), `partitions` (distinct states seen), `leaders`, `changes` (flips), `since`, `until`, `duration_s`, `note`; several changes inside `[partition] settle_s`, logged as one |
+| `lone_partition` | notice | `previous`, `current` (as above, the same state), `addr`, `name`, `partition`, `leader_router` (the lone router's own partition and router id), `changes`, `since`, `until`, `duration_s`, `note`; held changes that were one router leading a partition of its own, logged instead of `partition_storm` |
 | `leader_stalled` | warning | `partition`, `leader_router`, `leader`, `addr`, `name`, `id_sequence`, `since`, `stalled_for_s`, `last_carried_by`, `leader_last_seen`, `leader_silent_for_s`, `note` |
 | `router_set_changed` | notice | `promoted`, `demoted` (each a list of `router_id`, `rloc16`, `addr`, `name`, `label`), `routers`, `previous_routers`, `previous_sample_ts`, `sample_ts`, `note`; from the `[otbr]` inventory's router table, one per pair of samples that differ |
 | `leader_resumed` | info | `partition`, `leader_router`, `leader`, `addr`, `name`, `since`, `stalled_for_s`, `note`; closes a `leader_stalled` |
@@ -456,6 +457,16 @@ A child's Child Update Request repeats the Leader Data its parent last
 gave it, which after a merge that keeps children attached is the old
 partition; taken at face value it flipped the tracker there and back for
 a storm that never happened.
+
+`lone_partition` (notice) replaces the storm when every flip in the window
+was one router announcing a partition it leads itself, and the mesh ends
+under the partition and leader it started with: one device lost its links
+and re-attached, nothing split. On 2026-10-05 a child two key generations
+behind answered a Child Update Request on its old key, sent a Parent
+Request, jumped to the mesh's generation on the replies, advertised one
+partition of its own as a router, and was back as a child of the leader
+21 s later; `partition_storm` had paged that as a 2-partition split. A
+partition announced by a router that does not lead it is still a split.
 
 `rejoin_wave` is the minute after a partition change, or after a parent
 router dropped its children, seen as one record instead of one notice per

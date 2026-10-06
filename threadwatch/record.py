@@ -361,10 +361,19 @@ class RadioClock:
         self.steps = 0                       # re-anchorings this run
         self.last_step_s = 0.0               # how far the last one moved
 
-    def stamp(self, raw_ts: float) -> float:
+    def stamp(self, raw_ts: float, arrived_mono: float | None = None) -> float:
         """The epoch timestamp to record for a frame the sniffer stamped
-        ``raw_ts``. Sets ``last_step_s`` non-zero on the frame that stepped."""
+        ``raw_ts``. Sets ``last_step_s`` non-zero on the frame that stepped.
+
+        ``arrived_mono`` is when the frame reached the recorder, when that
+        was earlier than now: with several radios a copy waits in the
+        merger for the others' (up to merge.HOLD_S), and anchoring on the
+        release put that wait into every stamp. On 2026-10-06 the primary
+        waited out the hold for a relay not yet connected, and its stamps
+        ran 250 ms late from then on."""
         now, mono = self._wall(), self._mono()
+        if arrived_mono is not None and arrived_mono <= mono:
+            now, mono = now - (mono - arrived_mono), arrived_mono
         previous_host = self._host_clock
         self._host_clock = (now, mono)
         self.last_step_s = 0.0
@@ -889,7 +898,7 @@ def run_record(cfg: Config) -> None:
     # share one epoch mapping; an unlocked radio's copies use its own.
     merger = Merger(primary.label, [r.label for r in radios], hold_s=HOLD_S,
                     epoch=lambda label, raw: raw + (by_label[label].clock.offset or 0.0),
-                    stamp=lambda label, raw: by_label[label].clock.stamp(raw))
+                    stamp=lambda label, raw, mono: by_label[label].clock.stamp(raw, mono))
     # What the pipeline may ask about the radios (per-radio blindness).
     for r in radios:
         pipe.radio_changed(r.label, r.state, time.time())

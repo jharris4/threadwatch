@@ -651,6 +651,19 @@ class RadioClockTest(unittest.TestCase):
             self.assertAlmostEqual(got, expected, delta=2 * clock.MAX_SLEW)
         self.assertEqual(out[0], wall[0])             # the first frame lands at wall clock
 
+    def test_a_copy_held_before_its_stamp_is_stamped_at_its_arrival(self):
+        """The merger holds a copy up to HOLD_S for the other radios; the
+        clock reads when it arrived, so the hold never enters a stamp."""
+        wall = [1_700_000_000.0]
+        clock = self._clock(wall)
+        arrived = wall[0]
+        wall[0] += 0.25                               # waited in the merger
+        self.assertEqual(clock.stamp(500.0, arrived_mono=arrived), arrived)
+        arrived = wall[0] + 0.75                      # the next second's frame, held the same
+        wall[0] += 1.0
+        self.assertEqual(clock.stamp(501.0, arrived_mono=arrived), arrived)
+        self.assertEqual(clock.steps, 0)
+
     def test_a_long_backlog_and_its_drain_do_not_step_the_clock(self):
         wall = [1_700_000_000.0]
         clock = self._clock(wall)
@@ -1259,7 +1272,7 @@ class TwoRadiosRunTest(unittest.TestCase):
             def __init__(self):
                 self.offset = offset
 
-            def stamp(self, raw):
+            def stamp(self, raw, arrived_mono=None):
                 return raw + self.offset
 
         self.on_stop = None

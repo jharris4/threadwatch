@@ -252,7 +252,7 @@ class TwoRadiosTest(unittest.TestCase):
                   for lb in ("hub", "annex")}
         m = Merger("hub", ["hub", "annex"],
                    epoch=lambda label, raw: raw + (clocks[label].offset or 0.0),
-                   stamp=lambda label, raw: clocks[label].stamp(raw))
+                   stamp=lambda label, raw, mono: clocks[label].stamp(raw, mono))
         for i in range(3):
             now[0] = T0 + i
             m.push("hub", frame(now[0], secured(i)), mono=i)
@@ -290,6 +290,48 @@ class TwoRadiosTest(unittest.TestCase):
         out = m.release(flush=True)
         self.assertEqual([sorted(f.heard) for f in out if f.psdu == secured(5)], [["hub"], ["hub"], ["annex"]])
         self.assertEqual([sorted(f.heard) for f in out if f.psdu == secured(6)], [["annex", "hub"]])
+
+    def test_estimates_further_apart_than_the_search_span_still_lock(self):
+        """A relay's epoch estimate sat 250 ms from the primary's
+        (2026-10-06), so no pair ever fell inside SEARCH_S and the radio
+        never locked. Frames each side heard once still lock it, and every
+        pair counts once."""
+        offsets = {"hub": 0.0, "annex": -0.25}
+        m = Merger("hub", ["hub", "annex"], epoch=lambda label, raw: raw + offsets[label])
+        out = []
+        for i in range(10):
+            t = T0 + i
+            m.push("hub", frame(t, secured(i)), mono=float(i))
+            m.push("annex", frame(t + self.OFFSET, secured(i)), mono=float(i))
+            out.extend(m.release(mono=i + merge.HOLD_S))
+        out.extend(m.release(flush=True))
+        al = m.aligners["annex"]
+        self.assertTrue(al.locked)
+        self.assertAlmostEqual(al.a, self.OFFSET, places=6)
+        self.assertEqual(al.pairs, 10)
+        merged = [f for f in out if len(f.heard) == 2]
+        self.assertEqual([f.psdu for f in merged], [secured(i) for i in range(10 - len(merged), 10)])
+        self.assertGreaterEqual(len(merged), 7)
+
+    def test_acquisition_takes_only_long_psdus_heard_once_on_each_side(self):
+        offsets = {"hub": 0.0, "annex": -0.25}
+        m = Merger("hub", ["hub", "annex"], epoch=lambda label, raw: raw + offsets[label])
+        for i in range(6):
+            t = T0 + i
+            short = b"\x02\x00" + bytes([i])                           # an ACK: too short to be one transmission
+            m.push("hub", frame(t, short))
+            m.push("annex", frame(t + self.OFFSET, short))
+            m.push("hub", frame(t + 0.3, secured(i)))                 # a retry: twice on the hub's side
+            m.push("hub", frame(t + 0.3025, secured(i)))
+            m.push("annex", frame(t + 0.3 + self.OFFSET, secured(i)))
+        self.assertEqual((m.aligners["annex"].pairs, m.aligners["annex"].locked), (0, False))
+
+    def test_the_stamp_reads_each_copys_arrival_not_its_release(self):
+        seen = []
+        m = Merger("hub", ["hub", "annex"], stamp=lambda label, raw, mono: seen.append((label, mono)) or raw)
+        m.push("hub", frame(T0, secured(1)), mono=10.0)
+        m.release(mono=10.0 + merge.HOLD_S)                           # it waited out the hold for the annex
+        self.assertEqual(seen, [("hub", 10.0)])
 
 
 class OfflineTest(unittest.TestCase):

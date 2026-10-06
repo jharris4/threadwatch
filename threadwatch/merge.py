@@ -29,6 +29,18 @@ estimate the recorder supplies for it, merged only when the pairing is
 unambiguous (one identical psdu, nothing else like it nearby from either
 radio), and each such pair is a sample toward a lock.
 
+Acquisition. Two radios' epoch estimates can sit further apart than the
+search span: each is anchored on when its own copies reached the
+recorder, and a relay's arrive through another host, a FIFO and TCP. So
+every arrival is also matched against what the other side delivered over
+the last few seconds, on psdus long enough to be one transmission (a
+secured frame carries its frame counter) and seen exactly once on each
+side; such a pair is a sample toward the lock too, whatever the two
+estimates say. Three that agree to a millisecond lock the radio, as
+any three pairs do. Measured 2026-10-06 with a relay across the house:
+the estimates 250 ms apart, 94% of the relay's non-ACK frames heard by
+both.
+
 Release. Copies wait in per-radio queues until every radio still
 delivering has delivered past them (plus the window, or the search span
 when unlocked), or they have waited hold_s. The oldest is released, the
@@ -59,6 +71,8 @@ RATE_CLAMP = 1e-3       # |b| <= 1000 ppm: nothing plausible drifts faster
 LOCK_SAMPLES = 3        # unambiguous pairs that must agree before the model is trusted
 LOCK_AGREE_S = 1e-3     # ...to within this
 SEARCH_S = 0.050        # s: how far an unlocked radio's copy may sit from the primary's
+ACQUIRE_S = 5.0         # s: ...and how far apart the epoch estimates may be for acquisition
+ACQUIRE_MIN_LEN = 12    # bytes: psdus shorter than this (ACKs) repeat too often to acquire on
 UNLOCK_AFTER_S = 300.0  # s at W_MAX without a pair before the model is dropped
 HOLD_S = 0.25           # s: the longest a live copy waits for the other radios
 CLAMP_S = 0.5           # s: a backwards step smaller than this is a correction, not a restart
@@ -176,19 +190,21 @@ class Merger:
 
     ``epoch(label, raw)`` places an unlocked radio's copies for ordering
     (the recorder passes its RadioClock's current offset; identity offline,
-    where stamps are epochs already). ``stamp(label, raw)`` makes the final
-    epoch stamp of a released frame in that radio's domain (the RadioClock;
-    identity offline). Both default to identity."""
+    where stamps are epochs already). ``stamp(label, raw, mono)`` makes the
+    final epoch stamp of a released frame in that radio's domain, given
+    when the copy arrived (``mono``, as pushed): the RadioClock reads the
+    arrival, not the release, which waits up to hold_s for the other
+    radios. Identity offline. Both default to identity."""
 
     def __init__(self, primary: str | None, labels: list[str | None], hold_s: float = HOLD_S,
                  epoch: Callable[[str | None, float], float] | None = None,
-                 stamp: Callable[[str | None, float], float] | None = None, offline: bool = False):
+                 stamp: Callable[[str | None, float, float], float] | None = None, offline: bool = False):
         self.primary = primary
         self.labels = list(labels)
         self.hold_s = hold_s
         self.offline = offline
         self._epoch = epoch or (lambda label, raw: raw)
-        self._stamp = stamp or (lambda label, raw: raw)
+        self._stamp = stamp or (lambda label, raw, mono: raw)
         self.aligners: dict[str | None, Aligner] = {label: Aligner() for label in self.labels if label != primary}
         self._queues: dict[str | None, deque] = {label: deque() for label in self.labels}
         self._by_psdu: dict[str | None, dict[bytes, list]] = {label: {} for label in self.labels}
@@ -197,6 +213,13 @@ class Merger:
         # alone because its twin was ambiguous must keep the twin from
         # pairing with the next radio's copy as if it were alone.
         self._recent: dict[str | None, deque] = {label: deque() for label in self.labels}
+        # What each radio delivered over the last 2 * ACQUIRE_S, for
+        # acquisition: (order, psdu, raw) in arrival order, and by psdu.
+        self._seen: dict[str | None, deque] = {label: deque() for label in self.labels}
+        self._seen_by_psdu: dict[str | None, dict[bytes, list]] = {label: {} for label in self.labels}
+        # psdus acquisition has already given each aligner, so their release
+        # does not count the same pair twice (until the next reset).
+        self._acquired: dict[str | None, deque] = {label: deque(maxlen=64) for label in self.aligners}
         self._ended: set = set()
         self._seq = 0
         self._last_out: float | None = None    # last released primary-domain stamp (monotone clamp)
@@ -221,6 +244,42 @@ class Merger:
         q.append(p)
         self._by_psdu[label].setdefault(frame.psdu, []).append(p)
         self._ended.discard(label)
+        if not self.offline and len(frame.psdu) >= ACQUIRE_MIN_LEN:
+            self._acquire(label, frame.psdu, p.order, frame.ts)
+
+    def _acquire(self, label: str | None, psdu: bytes, order: float, raw: float) -> None:
+        """Note this copy, and pair it for an unlocked aligner with the one
+        copy of its psdu the other side delivered within ACQUIRE_S."""
+        seen, by_psdu = self._seen[label], self._seen_by_psdu[label]
+        entry = (order, psdu, raw)
+        seen.append(entry)
+        by_psdu.setdefault(psdu, []).append(entry)
+        while seen and seen[0][0] < order - 2 * ACQUIRE_S:
+            old = seen.popleft()
+            lst = by_psdu[old[1]]
+            lst.remove(old)
+            if not lst:
+                del by_psdu[old[1]]
+        if label == self.primary:
+            others = [lb for lb, al in self.aligners.items() if not al.locked]
+        elif label in self.aligners and not self.aligners[label].locked:
+            others = [self.primary]
+        else:
+            return
+        mine = [e for e in by_psdu[psdu] if abs(e[0] - order) <= ACQUIRE_S]
+        if len(mine) != 1:
+            return
+        for other in others:
+            theirs = [e for e in self._seen_by_psdu[other].get(psdu, []) if abs(e[0] - order) <= ACQUIRE_S]
+            if len(theirs) != 1:
+                continue
+            secondary = other if label == self.primary else label
+            t_primary, t_other = (raw, theirs[0][2]) if label == self.primary else (theirs[0][2], raw)
+            al = self.aligners[secondary]
+            al.observe(t_primary, t_other)
+            self._acquired[secondary].append(psdu)
+            if al.locked:
+                self._refresh_orders(secondary)
 
     def end(self, label: str | None) -> None:
         """This radio's stream has ended (offline: EOF; live: the radio went
@@ -245,6 +304,11 @@ class Merger:
         self._last_ts.pop(label, None)
         for recent in self._recent.values():
             recent.clear()
+        for lb in self.labels if label == self.primary else [label]:
+            self._seen[lb].clear()
+            self._seen_by_psdu[lb].clear()
+            if lb in self._acquired:
+                self._acquired[lb].clear()
 
     # ------------------------------------------------------------ domains
 
@@ -425,6 +489,8 @@ class Merger:
             if label != self.primary and label in self.aligners:
                 al = self.aligners[label]
                 was_locked = al.locked
+                if c.frame.psdu in self._acquired[label]:
+                    continue                  # acquisition took this pair already
                 al.observe(pt, c.frame.ts)
                 if not was_locked and al.locked:
                     self._refresh_orders(label)
@@ -436,7 +502,7 @@ class Merger:
         # else the copy of a locked radio mapped into the primary's domain,
         # else the first copy in its own domain.
         if self.primary in copies:
-            domain, raw = self.primary, copies[self.primary].frame.ts
+            domain, raw, mono = self.primary, copies[self.primary].frame.ts, copies[self.primary].mono
         else:
             first = min(copies.values(), key=lambda c: (c.order, c.seq))
             al = self.aligners.get(first.label)
@@ -444,6 +510,7 @@ class Merger:
                 domain, raw = self.primary, al.to_primary(first.frame.ts)
             else:
                 domain, raw = first.label, first.frame.ts
+            mono = first.mono
         if domain == self.primary:
             # A relock correction can put a mapped copy a little before the
             # last frame out; held to it, so the RadioClock does not read a
@@ -452,7 +519,7 @@ class Merger:
             if self._last_out is not None and 0 < self._last_out - raw < CLAMP_S:
                 raw = self._last_out
             self._last_out = raw
-        ts = self._stamp(domain, raw)
+        ts = self._stamp(domain, raw, mono)
         if not self.offline and domain != self.primary:
             # The first independent stamp after expiration may initialize
             # a RadioClock that was unused while this radio was locked.

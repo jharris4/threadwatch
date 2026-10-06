@@ -190,6 +190,27 @@ reports the radio lost and back. Nothing authenticates the stream, which
 is the encrypted frames and their timing without the key: keep `listen`
 on a LAN address behind a firewall, or carry it over `ssh -R`.
 
+## A relay on a Raspberry Pi 3
+
+A Pi 3 (and older Pis: the `dwc_otg` USB driver) hands the dongle's
+output over in bursts: frames reach the relay 0.1-0.9 s after the
+dongle heard them, against under 50 ms on a Pi 4 or a Mac. The recorder
+waits 0.25 s for a relay's copy of a frame, so late copies are not
+merged with the primary's. The cause is the driver's NAK holdoff for
+full-speed bulk endpoints (`nak_holdoff`, default 8 microframes, 1 ms);
+at 0 the bursts go and the delay stays under 50 ms (direct) or about
+150 ms (through the relay), with no measurable CPU or Ethernet cost.
+Set it at every boot on the relay host:
+
+```bash
+echo 'w /sys/module/dwc_otg/parameters/nak_holdoff - - - - 0' | sudo tee /etc/tmpfiles.d/dwc-otg-nak-holdoff.conf
+sudo systemd-tmpfiles --create /etc/tmpfiles.d/dwc-otg-nak-holdoff.conf    # now, without a reboot
+cat /sys/module/dwc_otg/parameters/nak_holdoff                              # 0
+```
+
+A host without `/sys/module/dwc_otg` (Pi 4 and later, anything else)
+does not need it.
+
 ## Other radios
 
 Anything Wireshark-capable can substitute for ad-hoc work (an ESP32-C6

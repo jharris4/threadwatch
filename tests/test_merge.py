@@ -351,6 +351,49 @@ class TwoRadiosTest(unittest.TestCase):
         self.assertEqual([len(f.heard) for f in late], [2] * 5)
         self.assertTrue(all(abs(f.ts - (T0 + k)) < 0.05 for f, k in zip(late, after, strict=True)))
 
+    def test_a_copy_later_than_the_hold_is_recorded_not_judged(self):
+        """2026-10-06: a Pi 3 relay delivered a quarter of its copies after
+        the hold, each judged a second time as a MAC retry, and paged. The
+        late copy goes to the ring alone; a real retry is still judged."""
+        m = self._merger()
+        self._lock(m)
+        t = T0 + 20
+        m.push("hub", frame(t, secured(70)), mono=20.0)
+        first = m.release(mono=20.0 + merge.HOLD_S)                  # the annex's copy is not in yet
+        self.assertEqual([(f.psdu, f.unjudged, sorted(f.heard)) for f in first], [(secured(70), None, ["hub"])])
+        m.push("annex", frame(t + self.OFFSET, secured(70)), mono=20.6)           # 0.6 s late
+        m.push("annex", frame(t + self.OFFSET + 0.0025, secured(70)), mono=20.6)  # a retry, 2.5 ms on
+        later = m.release(flush=True)
+        self.assertEqual([(f.unjudged, sorted(f.heard)) for f in later], [("late_copy", ["annex"]), (None, ["annex"])])
+        self.assertEqual(m.status()["unjudged"], {"late_copy": 1, "unlocked": 0})
+
+    def test_an_unlocked_radios_own_frames_are_recorded_not_judged_until_it_locks(self):
+        m = self._merger()
+        m.push("annex", frame(T0, secured(900)), mono=0.0)           # heard by the annex alone, unlocked
+        self.assertEqual([f.unjudged for f in m.release(flush=True)], ["unlocked"])
+        self._lock(m, mono=1.0)
+        m.push("annex", frame(T0 + 30 + self.OFFSET, secured(901)), mono=30.0)
+        self.assertEqual([f.unjudged for f in m.release(flush=True)], [None])
+
+    def test_a_bursty_relay_has_every_transmission_judged_once(self):
+        """Copies 0.1-0.9 s late, as the Pi 3 delivered them: whatever pairs
+        or does not, no psdu reaches the detectors twice."""
+        rnd = random.Random(7)
+        m = self._merger()
+        self._lock(m)
+        out, arrivals = [], []
+        for i in range(200):
+            t = T0 + 20 + i * 0.05
+            arrivals.append((t - T0, "hub", frame(t, secured(2000 + i))))
+            arrivals.append((t - T0 + rnd.uniform(0.1, 0.9), "annex", frame(t + self.OFFSET, secured(2000 + i))))
+        for mono, label, f in sorted(arrivals, key=lambda a: a[0]):
+            m.push(label, f, mono=mono)
+            out.extend(m.release(mono=mono))
+        out.extend(m.release(flush=True))
+        judged = [f.psdu for f in out if f.unjudged is None]
+        self.assertEqual(sorted(judged), sorted(secured(2000 + i) for i in range(200)))
+        self.assertEqual(sum(len(f.heard) for f in out), 400)       # every copy recorded somewhere
+
     def test_acquisition_takes_only_long_psdus_heard_once_on_each_side(self):
         offsets = {"hub": 0.0, "annex": -0.25}
         m = Merger("hub", ["hub", "annex"], epoch=lambda label, raw: raw + offsets[label])

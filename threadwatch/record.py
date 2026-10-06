@@ -1035,7 +1035,8 @@ def run_record(cfg: Config) -> None:
 
     def _take(out: Frame) -> None:
         """One merged frame: every radio's copy into that radio's ring
-        series, the frame itself into the pipeline."""
+        series, the frame itself into the pipeline unless the merger kept
+        it from judgement (a late copy, an unlocked radio's: merge.py)."""
         nonlocal total
         for label, copy in out.heard.items():
             r = by_label[label]
@@ -1055,10 +1056,14 @@ def run_record(cfg: Config) -> None:
                 _log(f"capture clock re-anchored by {r.clock.last_step_s:+.3f} s "
                      "(sniffer restarted, it anchored on stale buffered packets, or the host clock stepped)")
                 r.clock.last_step_s = 0.0
+        # Unjudged frames still show the capture is alive (the watchdog
+        # and the heartbeat read this), they just do not reach the pipeline.
+        beat["last_frame_mono"] = time.monotonic()
+        if out.unjudged:
+            return
         pipe.ingest(out)
         total += 1
         beat["last_frame"] = out.ts
-        beat["last_frame_mono"] = time.monotonic()
         beat["total"] = total
         if housekeeping.due(out.ts, beat["last_frame_mono"]):
             pipe.periodic(out.ts)

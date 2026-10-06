@@ -48,6 +48,16 @@ other radios' queues are searched for its duplicates, and the merged
 frame goes out with every copy under ``heard``. Offline (replay, device),
 there is no hold: a reader that has ended is not waited for, and stamps
 on disk are already aligned.
+
+What is not judged. Live, two kinds of frame go to the ring and not to the
+detectors (Frame.unjudged). A copy that arrives after the hold, once its
+twin from another radio has gone out alone, would be the same
+transmission twice, and reads as a MAC retry: a relay on a Raspberry Pi 3
+delivered a quarter of its copies that late (2026-10-06) and paged a
+retransmission elevation. And a frame heard only by a radio whose clock is
+not locked is placed by an estimate nothing has checked: a relay anchored
+on stale packets put the leader 22 minutes in the future. Such a radio
+still records, and judges again from its lock.
 """
 
 from __future__ import annotations
@@ -74,6 +84,7 @@ SEARCH_S = 0.050        # s: how far an unlocked radio's copy may sit from the p
 ACQUIRE_S = 5.0         # s: ...and how far apart the epoch estimates may be for acquisition
 ACQUIRE_MIN_LEN = 12    # bytes: psdus shorter than this (ACKs) repeat too often to acquire on
 UNLOCK_AFTER_S = 300.0  # s at W_MAX without a pair before the model is dropped
+LATE_S = 2.0            # s: how long a released copy is remembered, to know its late twin
 HOLD_S = 0.25           # s: the longest a live copy waits for the other radios
 CLAMP_S = 0.5           # s: a backwards step smaller than this is a correction, not a restart
 
@@ -220,6 +231,10 @@ class Merger:
         # psdus acquisition has already given each aligner, so their release
         # does not count the same pair twice (until the next reset).
         self._acquired: dict[str | None, deque] = {label: deque(maxlen=64) for label in self.aligners}
+        # What each radio released over the last LATE_S, (order, psdu), to
+        # recognise a copy whose twin went out alone before it arrived.
+        self._released_recent: dict[str | None, deque] = {label: deque() for label in self.labels}
+        self.unjudged: dict[str, int] = {"late_copy": 0, "unlocked": 0}
         self._ended: set = set()
         self._seq = 0
         self._last_out: float | None = None    # last released primary-domain stamp (monotone clamp)
@@ -304,6 +319,8 @@ class Merger:
         self._last_ts.pop(label, None)
         for recent in self._recent.values():
             recent.clear()
+        for released in self._released_recent.values():
+            released.clear()
         for lb in self.labels if label == self.primary else [label]:
             self._seen[lb].clear()
             self._seen_by_psdu[lb].clear()
@@ -402,11 +419,43 @@ class Merger:
             match = self._match(p, label)
             if match is not None:
                 copies[label] = match
+        late = len(copies) == 1 and self._twin_released(p)
         for c in copies.values():
             self._take(c)
         self.duplicates += len(copies) - 1
         self._learn(copies)
-        return self._build(copies)
+        out = self._build(copies)
+        if not self.offline:
+            for c in copies.values():
+                released = self._released_recent[c.label]
+                released.append((c.order, c.frame.psdu))
+                while released and released[0][0] < c.order - LATE_S:
+                    released.popleft()
+            reason = "late_copy" if late else None
+            if reason is None and self.primary not in copies:
+                al = self.aligners.get(next(iter(copies)))
+                if al is not None and not al.locked:
+                    reason = "unlocked"
+            if reason is not None:
+                self.unjudged[reason] += 1
+                out = replace(out, unjudged=reason)
+        return out
+
+    def _twin_released(self, p: _Pending) -> bool:
+        """Whether another radio, aligned with p's, already released the
+        identical psdu within W_MAX of p: p is its copy, arrived after the
+        hold. A MAC retry is milliseconds later and is not one."""
+        if self.offline:
+            return False
+        for label, released in self._released_recent.items():
+            if label == p.label:
+                continue
+            al = self._aligner_between(p.label, label)
+            if al is None or not al.locked:
+                continue
+            if any(psdu == p.frame.psdu and abs(order - p.order) <= W_MAX for order, psdu in released):
+                return True
+        return False
 
     def _take(self, p: _Pending) -> None:
         self._queues[p.label].remove(p)
@@ -549,6 +598,7 @@ class Merger:
 
     def status(self) -> dict:
         return {"merged": self.merged, "duplicates": self.duplicates, "pending": self.pending(),
+                "unjudged": dict(self.unjudged),
                 "radios": {label or "radio": al.status() for label, al in self.aligners.items()}}
 
 

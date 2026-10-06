@@ -1438,7 +1438,13 @@ class TwoRadiosRunTest(unittest.TestCase):
                                           ("radio_lost", "annex")])
         self.assertEqual([c for c in self.calls if c[0] == "start"],
                          [("start", "/dev/fake-hub"), ("start", "/dev/fake-annex")])
-        self.assertIn("stopped after 4 frames", out)
+        # The annex heard nothing the hub did, so it never locked: its two
+        # frames are recorded in its own series and kept from the detectors.
+        self.assertIn("stopped after 2 frames", out)
+        from threadwatch.pcap import PcapStreamReader
+        (annex_file,) = self.cfg.ring_dir.glob("*-annex.pcap")
+        with open(annex_file, "rb") as fh:
+            self.assertEqual(len(list(PcapStreamReader(fh))), 2)
 
     def test_a_watchdog_tick_during_the_shutdown_attaches_nothing(self):
         # The stop flag used to be set after the sniffers were stopped: a

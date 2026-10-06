@@ -67,6 +67,11 @@ class Frame:
     # file, which is one radio's copy.
     radio: str | None = None
     heard: dict | None = None
+    # Set by the merger on a frame that goes to the ring but not to the
+    # detectors, saying why: "late_copy" (another radio's copy of it was
+    # already judged) or "unlocked" (heard only by a radio whose clock is
+    # not yet locked to the primary's). None: judge it.
+    unjudged: str | None = None
 
 
 def _read_exact(stream: BinaryIO, n: int) -> bytes:

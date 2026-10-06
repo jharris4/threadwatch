@@ -19,14 +19,17 @@
 # name`, a credentials.toml from `threadwatch import`) stops the push until
 # it is copied back, or FORCE_CONFIG=1 says the workstation's copy wins.
 #
-# A relay host (a [relay] section with settings in its own config.toml,
-# SETUP.md "A dongle on another host") gets the code and never config/:
-# this workstation's config/ is the recorder's, and on a relay it would
-# land the network key and, at the next setup-host.sh, turn the relay into
-# a second recorder. --code-only does the same for any host, such as a new
-# relay before its config.toml is written.
+# config/ here is the recorder's. Another host's config lives in
+# config/hosts/<its hostname>/, found by asking the host its name, and is
+# pushed as that host's config/ in place of this one; config/hosts/ itself
+# never leaves this workstation. A relay host (a [relay] section with
+# settings in its own config.toml, SETUP.md "A dongle on another host")
+# with no such folder gets the code and never config/: the recorder's
+# would land the network key there and, at the next setup-host.sh, turn
+# the relay into a second recorder. --code-only sends no config to any
+# host.
 #
-# What deploys is what git tracks, plus config/. Everything else in the working
+# What deploys is what git tracks, plus the host's config. Everything else in the working
 # tree -- caches, scratch notes, data/, .venv/ -- stays on the workstation. That
 # list comes from git rather than a hand-kept set of --exclude flags, so new
 # junk needs no edit here; an uncommitted edit to a tracked file still ships.
@@ -95,6 +98,54 @@ if [ -n "$UNCOMMITTED_CODE" ]; then
   echo "  commit them if they belong on the host." >&2
 fi
 
+# The host's name and its config.toml, in one connection, before anything
+# is sent; a host that cannot be reached stops the push here.
+if ! HOST_STATE="$(ssh "$TARGET" "hostname; cat $DEST_DIR/config/config.toml 2>/dev/null || true")"; then
+  echo "push-to-host.sh: could not reach $TARGET; nothing pushed" >&2
+  exit 1
+fi
+HOST_NAME="$(printf '%s\n' "$HOST_STATE" | sed -n 1p)"
+HOST_CONFIG="$(printf '%s\n' "$HOST_STATE" | sed 1d)"
+case "$HOST_NAME" in
+  "" | .* | *[!A-Za-z0-9.-]*) HOST_NAME="" ;;     # nothing to look a folder up by
+esac
+
+# A relay is a config.toml whose [relay] has a setting in it; the example
+# ships the section empty, which is a recorder.
+role_of() {
+  if awk '
+      /^[[:space:]]*\[/ { in_relay = ($0 ~ /^[[:space:]]*\[relay\][[:space:]]*(#.*)?$/); next }
+      in_relay && /^[[:space:]]*[A-Za-z_]+[[:space:]]*=/ { found = 1 }
+      END { exit !found }'; then
+    echo relay
+  else
+    echo recorder
+  fi
+}
+
+CONFIG_SRC="$REPO/config"
+if [ -n "$HOST_NAME" ] && [ -d "$REPO/config/hosts/$HOST_NAME" ]; then
+  CONFIG_SRC="$REPO/config/hosts/$HOST_NAME"
+fi
+ROLE="$(printf '%s\n' "$HOST_CONFIG" | role_of)"
+if [ -n "$CODE_ONLY" ]; then
+  echo "--code-only: $TARGET's config/ is left as it is"
+elif [ "$CONFIG_SRC" != "$REPO/config" ]; then
+  if [ -f "$CONFIG_SRC/config.toml" ]; then ROLE="$(role_of < "$CONFIG_SRC/config.toml")"; fi
+  echo "$TARGET is $HOST_NAME: its config/ comes from config/hosts/$HOST_NAME ($ROLE)"
+elif [ "$ROLE" = relay ]; then
+  CODE_ONLY=1
+  echo "$TARGET is a relay ([relay] in its config.toml) with no config/hosts/$HOST_NAME here:" \
+       "pushing code only, its config/ is left as it is"
+fi
+# The tree push carries config/ only when it is this host's; a folder from
+# config/hosts/ goes on its own after it.
+if [ -n "$CODE_ONLY" ] || [ "$CONFIG_SRC" != "$REPO/config" ]; then
+  CONFIG_FILTER=(--exclude '/config/')
+else
+  CONFIG_FILTER=(--exclude '/config/hosts/' --filter 'P /config/***')
+fi
+
 # --delete removes what the workstation lacks; the protect filter exempts
 # config/ on the receiving side, so a file there is never removed - remove
 # one on the host by hand. It is still overwritten: the protect filter only
@@ -118,34 +169,9 @@ fi
 # copy of a network key was then gone. Now it stops, prints the copy-back
 # commands, and FORCE_CONFIG=1 is the one way to say the workstation's
 # copies are the ones wanted.
-# The host's role, from its own config.toml: a relay when [relay] has a
-# setting in it (the example ships the section empty, which is a
-# recorder). Read before anything is sent; a host that cannot be reached
-# stops the push here.
-if ! HOST_CONFIG="$(ssh "$TARGET" "cat $DEST_DIR/config/config.toml 2>/dev/null || true")"; then
-  echo "push-to-host.sh: could not reach $TARGET; nothing pushed" >&2
-  exit 1
-fi
-if printf '%s\n' "$HOST_CONFIG" | awk '
-    /^[[:space:]]*\[/ { in_relay = ($0 ~ /^[[:space:]]*\[relay\][[:space:]]*(#.*)?$/); next }
-    in_relay && /^[[:space:]]*[A-Za-z_]+[[:space:]]*=/ { found = 1 }
-    END { exit !found }'; then
-  ROLE=relay
-  CODE_ONLY=1
-  echo "$TARGET is a relay ([relay] in its config.toml): pushing code only, its config/ is left as it is"
-else
-  ROLE=recorder
-  if [ -n "$CODE_ONLY" ]; then echo "--code-only: $TARGET's config/ is left as it is"; fi
-fi
-CONFIG_FILTER=(--filter 'P /config/***')
-if [ -n "$CODE_ONLY" ]; then
-  CONFIG_FILTER=(--exclude '/config/')
-fi
-
 config_would_send() {
-  rsync -ac --dry-run --out-format='%n' "$@" \
-    --include '/config/' --include '/config/**' --exclude '*' \
-    "$REPO/" "$TARGET:$DEST_DIR/" 2>/dev/null | grep -v '/$' | sort -u || true
+  rsync -ac --dry-run --out-format='%n' "$@" --exclude '/hosts/' \
+    "$CONFIG_SRC/" "$TARGET:$DEST_DIR/config/" 2>/dev/null | grep -v '/$' | sort -u || true
 }
 REVERTS=""
 if [ -z "$CODE_ONLY" ]; then
@@ -154,13 +180,13 @@ fi
 if [ -n "$REVERTS" ]; then
   if [ "${FORCE_CONFIG:-}" = "1" ]; then
     echo "warning: FORCE_CONFIG=1: replacing the host's NEWER copy of these:" >&2
-    printf '%s\n' "$REVERTS" | sed 's/^/  /' >&2
+    printf '%s\n' "$REVERTS" | sed 's,^,  config/,' >&2
   else
     echo "push-to-host.sh: the host has a NEWER, different copy of these; nothing pushed:" >&2
-    printf '%s\n' "$REVERTS" | sed 's/^/  /' >&2
+    printf '%s\n' "$REVERTS" | sed 's,^,  config/,' >&2
     echo "  copy them back first:" >&2
     while IFS= read -r f; do
-      printf '    scp %q %q\n' "$TARGET:$DEST_DIR/$f" "$REPO/$f" >&2
+      printf '    scp %q %q\n' "$TARGET:$DEST_DIR/config/$f" "$CONFIG_SRC/$f" >&2
     done <<< "$REVERTS"
     echo "  or FORCE_CONFIG=1 to replace them with this workstation's copies." >&2
     exit 1
@@ -178,6 +204,9 @@ rsync -a --delete \
   --exclude 'data/' --exclude '.git/' --exclude '.venv/' \
   "${CONFIG_FILTER[@]}" --filter 'P /.venv/***' \
   "$REPO/" "$TARGET:$DEST_DIR/"
+if [ -z "$CODE_ONLY" ] && [ "$CONFIG_SRC" != "$REPO/config" ]; then
+  rsync -a "$CONFIG_SRC/" "$TARGET:$DEST_DIR/config/"
+fi
 ssh "$TARGET" "chmod 400 $DEST_DIR/config/credentials.toml $DEST_DIR/config/alerts.env $DEST_DIR/config/ha.env 2>/dev/null || true"
 
 # What the host holds, written on the host: rsync ships no .git, so

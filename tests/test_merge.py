@@ -313,6 +313,44 @@ class TwoRadiosTest(unittest.TestCase):
         self.assertEqual([f.psdu for f in merged], [secured(i) for i in range(10 - len(merged), 10)])
         self.assertGreaterEqual(len(merged), 7)
 
+    def test_a_relay_restarted_on_a_stale_backlog_locks_on_live_clocks(self):
+        """2026-10-06, end to end with real RadioClocks: the relay's vendor
+        anchored on 119 packets buffered 23 minutes earlier, so its live
+        frames reached the recorder stamped 1347 s ahead, and its copies
+        never met the primary's. Both clocks read arrivals; the relay's
+        steps on the first live frame, and shared traffic locks it."""
+        from threadwatch.record import RadioClock
+        now = [T0]
+        clocks = {lb: RadioClock(wall=lambda: now[0], mono=lambda: now[0] - T0) for lb in ("hub", "annex")}
+        m = Merger("hub", ["hub", "annex"],
+                   epoch=lambda label, raw: raw + (clocks[label].offset or 0.0),
+                   stamp=lambda label, raw, mono: clocks[label].stamp(raw, mono))
+        out = []
+        for i in range(20):                           # the backlog: old traffic, read at once
+            m.push("annex", frame(T0 + i * 0.01, secured(5000 + i)), mono=0.0)
+        out.extend(m.release(mono=merge.HOLD_S))
+        stale = 1347.0
+        for i in range(1, 31):                        # live: the relay's raw stamps run 1347 s ahead
+            now[0] = T0 + i
+            m.push("hub", frame(now[0] - 0.002, secured(i)), mono=float(i))
+            m.push("annex", frame(now[0] + stale + 0.01, secured(i)), mono=float(i) + 0.02)
+            out.extend(m.release(mono=i + merge.HOLD_S))
+            if m.aligners["annex"].locked:
+                break
+        self.assertTrue(m.aligners["annex"].locked, m.aligners["annex"].status())
+        self.assertLessEqual(i, 5)                    # seconds, not minutes
+        self.assertEqual(clocks["annex"].steps, 1)
+        after = range(i + 1, i + 6)                   # and from then on, one frame per transmission
+        for k in after:
+            now[0] = T0 + k
+            m.push("hub", frame(now[0] - 0.002, secured(k)), mono=float(k))
+            m.push("annex", frame(now[0] + stale + 0.01, secured(k)), mono=float(k) + 0.02)
+            out.extend(m.release(mono=k + merge.HOLD_S))
+        out.extend(m.release(flush=True))
+        late = [f for f in out if f.psdu in {secured(k) for k in after}]
+        self.assertEqual([len(f.heard) for f in late], [2] * 5)
+        self.assertTrue(all(abs(f.ts - (T0 + k)) < 0.05 for f, k in zip(late, after, strict=True)))
+
     def test_acquisition_takes_only_long_psdus_heard_once_on_each_side(self):
         offsets = {"hub": 0.0, "annex": -0.25}
         m = Merger("hub", ["hub", "annex"], epoch=lambda label, raw: raw + offsets[label])

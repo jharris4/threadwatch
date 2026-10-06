@@ -344,8 +344,17 @@ class RadioClock:
     cadence are all read off those intervals.
 
     Queue latency cannot distinguish drift from a clock jump. Only a host
-    wall/monotonic discontinuity or a backwards radio timestamp can step
-    the offset; ordinary disagreement is slewed at a bounded rate.
+    wall/monotonic discontinuity, a backwards radio timestamp or a stamp
+    in the future can step the offset; ordinary disagreement is slewed at
+    a bounded rate.
+
+    A stamp in the future: a frame cannot reach the recorder before it was
+    heard, so a stamp more than STEP_S past the frame's arrival means the
+    anchor was wrong. The vendor anchors the dongle's clock on the first
+    packet it reads, and a dongle left listening while nothing read it
+    hands over what it buffered then, first: on 2026-10-06 a relay
+    restarted after 23 minutes anchored on 119 such packets, and every
+    live frame after them was stamped 22.5 minutes ahead.
     """
 
     STEP_S = 2.0            # host wall/monotonic discontinuity threshold
@@ -391,6 +400,10 @@ class RadioClock:
             self.offset += host_step       # preserve any outstanding queue delay
             self.steps += 1
             self.last_step_s = host_step
+        elif error < -self.step_s:
+            self.offset += error           # stamped in the future: the anchor was a stale packet
+            self.steps += 1
+            self.last_step_s = error
         else:
             # Bounded by captured time, not by how many frames arrived: a
             # burst must not buy the correction a bigger budget.
@@ -1040,7 +1053,7 @@ def run_record(cfg: Config) -> None:
         for r in radios:
             if r.clock.last_step_s:
                 _log(f"capture clock re-anchored by {r.clock.last_step_s:+.3f} s "
-                     "(sniffer restarted, or the host clock stepped)")
+                     "(sniffer restarted, it anchored on stale buffered packets, or the host clock stepped)")
                 r.clock.last_step_s = 0.0
         pipe.ingest(out)
         total += 1

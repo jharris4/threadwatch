@@ -664,6 +664,23 @@ class RadioClockTest(unittest.TestCase):
         self.assertEqual(clock.stamp(501.0, arrived_mono=arrived), arrived)
         self.assertEqual(clock.steps, 0)
 
+    def test_a_stamp_in_the_future_re_anchors_on_the_arrival(self):
+        """The vendor anchored on packets the dongle buffered while nothing
+        read it, 22.5 minutes old (2026-10-06): the live frames after them
+        came stamped 1350 s ahead of their arrival. A frame cannot arrive
+        before it was heard, so that is a step, not a slew."""
+        wall = [1_700_000_000.0]
+        clock = self._clock(wall)
+        for i in range(5):                            # the stale backlog, drained at once
+            clock.stamp(100.0 + i * 0.01)
+        wall[0] += 0.1
+        stamped = clock.stamp(100.04 + 1350.0)       # the first live frame
+        self.assertEqual((stamped, clock.steps), (wall[0], 1))
+        self.assertAlmostEqual(clock.last_step_s, -1350.0, delta=0.2)
+        wall[0] += 1.0
+        self.assertAlmostEqual(clock.stamp(100.04 + 1351.0), wall[0], delta=clock.MAX_SLEW)
+        self.assertEqual(clock.steps, 1)
+
     def test_a_long_backlog_and_its_drain_do_not_step_the_clock(self):
         wall = [1_700_000_000.0]
         clock = self._clock(wall)

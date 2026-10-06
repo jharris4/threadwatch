@@ -1282,7 +1282,8 @@ def status_tick(cfg, port, beat: dict, started: float, started_mono: float, pipe
                              for r in radios}
             if merger is not None:
                 st = merger.status()
-                merge_status = {"merged": st["merged"], "duplicates": st["duplicates"], "pending": st["pending"]}
+                merge_status = {"merged": st["merged"], "duplicates": st["duplicates"],
+                                "unjudged": st["unjudged"], "pending": st["pending"]}
         try:
             _write_status(cfg, port, beat["total"], started, pipe, beat["ring"], decryptor,
                           last_frame_age=age, last_frame_ts=beat["last_frame"] or prior_frame,

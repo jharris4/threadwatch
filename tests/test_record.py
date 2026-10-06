@@ -1520,6 +1520,7 @@ class TwoRadiosRunTest(unittest.TestCase):
         self.assertEqual((lock["locked"], lock["offset_ms"], lock["pairs"]), (True, 10.0, 3))
         self.assertTrue(annex["current_file"].endswith("-annex.pcap"))
         self.assertEqual((st["merge"]["merged"], st["merge"]["duplicates"]), (3, 3))
+        self.assertEqual(st["merge"]["unjudged"], {"late_copy": 0, "unlocked": 0})
 
 
 class RelayRadioRunTest(TwoRadiosRunTest):

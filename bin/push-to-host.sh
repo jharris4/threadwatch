@@ -4,6 +4,7 @@
 #
 #     bin/push-to-host.sh pi@192.168.1.50            # push + setup (restarts the units)
 #     bin/push-to-host.sh pi@threadwatch.local --push-only
+#     bin/push-to-host.sh pi@relay.local --code-only  # leave the host's config/ alone
 #
 # A first install does not need this: `git clone` on the host and
 # `sudo bin/setup-host.sh` is enough (INSTALL.md). What this script adds is
@@ -18,20 +19,35 @@
 # name`, a credentials.toml from `threadwatch import`) stops the push until
 # it is copied back, or FORCE_CONFIG=1 says the workstation's copy wins.
 #
+# A relay host (a [relay] section with settings in its own config.toml,
+# SETUP.md "A dongle on another host") gets the code and never config/:
+# this workstation's config/ is the recorder's, and on a relay it would
+# land the network key and, at the next setup-host.sh, turn the relay into
+# a second recorder. --code-only does the same for any host, such as a new
+# relay before its config.toml is written.
+#
 # What deploys is what git tracks, plus config/. Everything else in the working
 # tree -- caches, scratch notes, data/, .venv/ -- stays on the workstation. That
 # list comes from git rather than a hand-kept set of --exclude flags, so new
 # junk needs no edit here; an uncommitted edit to a tracked file still ships.
 set -euo pipefail
 
-TARGET="${1:?usage: push-to-host.sh user@host [--push-only]}"
-MODE="${2:-}"
+TARGET="${1:?usage: push-to-host.sh user@host [--push-only] [--code-only]}"
+PUSH_ONLY="" CODE_ONLY=""
+for opt in "${@:2}"; do
+  case "$opt" in
+    --push-only) PUSH_ONLY=1 ;;
+    --code-only) CODE_ONLY=1 ;;
+    *) echo "usage: push-to-host.sh user@host [--push-only] [--code-only], not '$opt'; nothing pushed" >&2
+       exit 1 ;;
+  esac
+done
 # The host comes first. An option in its place (the host left out) reached
 # rsync as the destination "--push-only:threadwatch/", a usage error from
 # rsync instead of from here.
 case "$TARGET" in
   -*)
-    echo "usage: push-to-host.sh user@host [--push-only] (the host comes first, not '$TARGET'); nothing pushed" >&2
+    echo "usage: push-to-host.sh user@host [--push-only] [--code-only] (the host comes first, not '$TARGET'); nothing pushed" >&2
     exit 1 ;;
 esac
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -102,12 +118,39 @@ fi
 # copy of a network key was then gone. Now it stops, prints the copy-back
 # commands, and FORCE_CONFIG=1 is the one way to say the workstation's
 # copies are the ones wanted.
+# The host's role, from its own config.toml: a relay when [relay] has a
+# setting in it (the example ships the section empty, which is a
+# recorder). Read before anything is sent; a host that cannot be reached
+# stops the push here.
+if ! HOST_CONFIG="$(ssh "$TARGET" "cat $DEST_DIR/config/config.toml 2>/dev/null || true")"; then
+  echo "push-to-host.sh: could not reach $TARGET; nothing pushed" >&2
+  exit 1
+fi
+if printf '%s\n' "$HOST_CONFIG" | awk '
+    /^[[:space:]]*\[/ { in_relay = ($0 ~ /^[[:space:]]*\[relay\][[:space:]]*(#.*)?$/); next }
+    in_relay && /^[[:space:]]*[A-Za-z_]+[[:space:]]*=/ { found = 1 }
+    END { exit !found }'; then
+  ROLE=relay
+  CODE_ONLY=1
+  echo "$TARGET is a relay ([relay] in its config.toml): pushing code only, its config/ is left as it is"
+else
+  ROLE=recorder
+  if [ -n "$CODE_ONLY" ]; then echo "--code-only: $TARGET's config/ is left as it is"; fi
+fi
+CONFIG_FILTER=(--filter 'P /config/***')
+if [ -n "$CODE_ONLY" ]; then
+  CONFIG_FILTER=(--exclude '/config/')
+fi
+
 config_would_send() {
   rsync -ac --dry-run --out-format='%n' "$@" \
     --include '/config/' --include '/config/**' --exclude '*' \
     "$REPO/" "$TARGET:$DEST_DIR/" 2>/dev/null | grep -v '/$' | sort -u || true
 }
-REVERTS="$(comm -23 <(config_would_send) <(config_would_send --update))"
+REVERTS=""
+if [ -z "$CODE_ONLY" ]; then
+  REVERTS="$(comm -23 <(config_would_send) <(config_would_send --update))"
+fi
 if [ -n "$REVERTS" ]; then
   if [ "${FORCE_CONFIG:-}" = "1" ]; then
     echo "warning: FORCE_CONFIG=1: replacing the host's NEWER copy of these:" >&2
@@ -127,13 +170,13 @@ fi
 CHANGED="$(rsync -a --delete --dry-run --out-format='%n' \
   --exclude-from "$EXCLUDES" \
   --exclude 'data/' --exclude '.git/' --exclude '.venv/' \
-  --filter 'P /config/***' --filter 'P /.venv/***' \
+  "${CONFIG_FILTER[@]}" --filter 'P /.venv/***' \
   "$REPO/" "$TARGET:$DEST_DIR/" 2>/dev/null | grep -E '^threadwatch/.*\.py$' || true)"
 
 rsync -a --delete \
   --exclude-from "$EXCLUDES" \
   --exclude 'data/' --exclude '.git/' --exclude '.venv/' \
-  --filter 'P /config/***' --filter 'P /.venv/***' \
+  "${CONFIG_FILTER[@]}" --filter 'P /.venv/***' \
   "$REPO/" "$TARGET:$DEST_DIR/"
 ssh "$TARGET" "chmod 400 $DEST_DIR/config/credentials.toml $DEST_DIR/config/alerts.env $DEST_DIR/config/ha.env 2>/dev/null || true"
 
@@ -154,16 +197,18 @@ echo "pushed to $TARGET:$DEST_DIR ($REVISION)"
 # rsync renames each changed file into place, so the running units keep the
 # old code only for the modules they have already imported. Anything they
 # import later comes from the new file: one process, two versions.
-if [ "$MODE" = "--push-only" ] && [ -n "$CHANGED" ]; then
+if [ -n "$PUSH_ONLY" ] && [ -n "$CHANGED" ]; then
   echo "RESTART REQUIRED: this push changed $(printf '%s\n' "$CHANGED" | wc -l | tr -d ' ') module(s):" >&2
   printf '%s\n' "$CHANGED" | sed 's/^/  /' >&2
   echo "  the running units are on the old code until:" >&2
-  echo "    ssh $TARGET 'sudo systemctl restart threadwatch threadwatch-web'" >&2
-  echo "  or, on a relay host ([relay] in its config.toml):" >&2
-  echo "    ssh $TARGET 'sudo systemctl restart threadwatch-relay'" >&2
+  if [ "$ROLE" = relay ]; then
+    echo "    ssh $TARGET 'sudo systemctl restart threadwatch-relay'" >&2
+  else
+    echo "    ssh $TARGET 'sudo systemctl restart threadwatch threadwatch-web'" >&2
+  fi
 fi
 
-if [ "$MODE" != "--push-only" ]; then
+if [ -z "$PUSH_ONLY" ]; then
   echo "running remote setup (needs passwordless sudo on the host)..."
   ssh -t "$TARGET" "sudo $DEST_DIR/bin/setup-host.sh"
 fi

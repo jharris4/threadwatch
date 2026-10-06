@@ -157,7 +157,11 @@ to = "192.0.2.10:9154"              # the recorder's listen for this radio (belo
 label = "annex"                     # the radio's label there
 ```
 
-Then install threadwatch on it the same way as a recorder (INSTALL.md):
+Then install threadwatch on it the same way as a recorder (INSTALL.md).
+From a workstation, write that `config.toml` on the host first (in
+`~/threadwatch/config/`), or push with `--code-only` and write it after:
+`bin/push-to-host.sh` sends a relay host the code and never the
+workstation's `config/`, which is the recorder's and holds the key.
 `sudo bin/setup-host.sh` sees `[relay]` and installs
 `threadwatch-relay.service` instead of the recorder's and the web units
 (and removes those if the host had them). `bin/threadwatch doctor` there

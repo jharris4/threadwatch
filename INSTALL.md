@@ -145,6 +145,13 @@ logs `credentials_stale`). Keep one place to edit, the workstation. A
 push from a clone with no secrets removes none from the host. To remove
 a config file from the host, delete it there.
 
+A relay host (SETUP.md, "A dongle on another host") is the exception:
+when the host's own `config.toml` has a `[relay]` section with settings
+in it, the push sends the code and leaves `config/` there alone, since
+the workstation's is the recorder's and holds the network key.
+`--code-only` does the same for any host, such as a new relay whose
+`config.toml` is not written yet.
+
 ## 6. Placement and storage
 
 - Put the recorder and dongle **near your Thread border router**: the

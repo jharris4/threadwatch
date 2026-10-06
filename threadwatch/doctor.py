@@ -4,7 +4,9 @@ One line per check, each ok / warn / FAIL, for the things that have
 silently broken a recorder before: a dongle that is not there, a key file
 the world can read, a full SD card, a clock nobody synced, a service that
 is not running, a ring that stopped growing, sinks that will not build.
-Read-only; it changes nothing.
+Read-only; it changes nothing. On a relay host ([relay] in config.toml)
+it checks what a relay needs instead: the dongle, the connection to the
+recorder, the clock and the relay's unit.
 """
 
 from __future__ import annotations
@@ -421,7 +423,26 @@ def check_clock() -> list[Check]:
     return [(WARN, "clock", "no timedatectl: NTP state not checked")]
 
 
-def check_version() -> list[Check]:
+def check_relay(cfg) -> list[Check]:
+    """A relay host's link to its recorder: whether something here holds a
+    connection to [relay] to's port right now. Read from the socket table
+    rather than by connecting: a probe that sends no handshake is logged
+    on the recorder as a refused connection."""
+    where = f"radio {cfg.relay_label} to {cfg.relay_to}"
+    if not shutil.which("ss"):
+        return [(OK, "relay", f"{where} (no ss here: the connection is not checked)")]
+    port = cfg.relay_to.rpartition(":")[2]
+    got = _run(["ss", "-Htn", "state", "established", f"( dport = :{port} )"])
+    if got is None:
+        return [(WARN, "relay", f"{where}: ss gave no answer")]
+    peers = [line.split()[-1] for line in got.splitlines() if line.split()]
+    if not peers:
+        return [(WARN, "relay", f"{where}: not connected (the relay retries every 30 s at most; is the recorder "
+                                f"running with a source = \"tcp\" radio listening there?)")]
+    return [(OK, "relay", f"{where}: connected ({', '.join(peers)})")]
+
+
+def check_version(unit: str = "threadwatch") -> list[Check]:
     """Which code is running here, and since when. Every other check says
     whether the box is fit to record, and answers the same whether the
     host holds the code you just pushed or a six-month-old checkout: this
@@ -432,18 +453,18 @@ def check_version() -> list[Check]:
     commit = repo_commit()
     what = f"threadwatch {__version__}" + (f" ({commit})" if commit
                                           else " (no .git and no REVISION here: an old rsync deploy?)")
-    started = _run(["systemctl", "show", "-p", "ExecMainStartTimestamp", "--value", "threadwatch"]) \
+    started = _run(["systemctl", "show", "-p", "ExecMainStartTimestamp", "--value", unit]) \
         if shutil.which("systemctl") else None
     if started:
-        what += f"; threadwatch.service started {started}"
+        what += f"; {unit}.service started {started}"
     return [(OK, "version", what)]
 
 
-def check_services() -> list[Check]:
+def check_services(units: tuple[str, ...] = ("threadwatch", "threadwatch-web")) -> list[Check]:
     if not shutil.which("systemctl"):
         return [(OK, "services", "no systemd here (not checked)")]
     out = []
-    for unit in ("threadwatch", "threadwatch-web"):
+    for unit in units:
         state = _run(["systemctl", "is-active", unit]) or "unknown"
         enabled = _run(["systemctl", "is-enabled", unit]) or "unknown"
         if state == "active":
@@ -793,7 +814,14 @@ def check_web(cfg) -> list[Check]:
 
 def run_doctor(cfg, find_port: Callable[[], str] | None = None, now: float | None = None) -> list[Check]:
     checks = []
-    for step in (lambda: check_config(cfg), lambda: check_inventory(cfg), lambda: check_credentials(cfg),
+    if cfg.relay_to:
+        # A relay keeps no key, ring, events or pages: the recorder's
+        # checks would fail here for things this host is not meant to have.
+        steps = (lambda: check_config(cfg), lambda: check_dongle(cfg, find_port), lambda: check_relay(cfg),
+                 check_clock, lambda: check_services(("threadwatch-relay",)),
+                 lambda: check_version("threadwatch-relay"))
+    else:
+        steps = (lambda: check_config(cfg), lambda: check_inventory(cfg), lambda: check_credentials(cfg),
                  lambda: check_border_routers(cfg),
                  lambda: check_dongle(cfg, find_port), lambda: check_daemon(cfg, now), lambda: check_ring(cfg, now),
                  lambda: check_last_seen(cfg), lambda: check_blind_spans(cfg), lambda: check_disk(cfg),
@@ -801,7 +829,8 @@ def run_doctor(cfg, find_port: Callable[[], str] | None = None, now: float | Non
                  check_services,
                  lambda: check_alerts(cfg), lambda: check_ha_env(cfg), lambda: check_ha_logs(cfg, now),
                  lambda: check_ha_availability(cfg, now), lambda: check_otbr(cfg, now),
-                 lambda: check_web(cfg), check_version):
+                 lambda: check_web(cfg), check_version)
+    for step in steps:
         try:
             checks.extend(step())
         except Exception as exc:   # one broken check must not hide the rest

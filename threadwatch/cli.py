@@ -126,9 +126,10 @@ def main(argv=None) -> int:
     sub.add_parser("status", help="show the running daemon's status")
     p_relay = sub.add_parser("relay", help="stream this host's dongle to a recorder on another host, as one of "
                                            "its [record] radios (source = \"tcp\")")
-    p_relay.add_argument("--to", required=True, metavar="HOST:PORT",
-                         help="the recorder's listen address for this radio")
-    p_relay.add_argument("--label", required=True, help="the radio's label in the recorder's [record] radios")
+    p_relay.add_argument("--to", metavar="HOST:PORT",
+                         help="the recorder's listen address for this radio (default: [relay] to)")
+    p_relay.add_argument("--label", help="the radio's label in the recorder's [record] radios "
+                                         "(default: [relay] label)")
     p_relay.add_argument("--serial-port", metavar="PORT", help="the dongle's port here (default: found by USB id)")
 
     p_replay = sub.add_parser("replay", help="run detection over existing pcap files, as one run")
@@ -313,7 +314,11 @@ def main(argv=None) -> int:
 
     if args.cmd == "relay":
         from .relay import run_relay
-        return run_relay(cfg, args.label, args.to, args.serial_port)
+        to, label = args.to or cfg.relay_to, args.label or cfg.relay_label
+        if not to or not label:
+            parser.exit(2, "threadwatch relay: no recorder to stream to: set [relay] to and label in "
+                           "config.toml, or pass --to and --label\n")
+        return run_relay(cfg, label, to, args.serial_port)
 
     if args.cmd == "replay":
         from .record import run_replay

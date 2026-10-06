@@ -1,0 +1,25 @@
+[Unit]
+Description=threadwatch relay: stream this host's dongle to the recorder ([relay] in config.toml)
+# The recorder's unit (threadwatch.service) explains the ordering and the
+# start limits; a relay that cannot start (no [relay], no dongle) fails
+# fast in the same way and settles into failed the same way.
+After=network-online.target time-sync.target
+Wants=network-online.target time-sync.target
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+[Service]
+Type=simple
+# __USER__ and __REPO__ are filled in by bin/setup-host.sh, which installs
+# this unit in place of the recorder's when config.toml has a [relay].
+User=__USER__
+WorkingDirectory=__REPO__
+ExecStart=__REPO__/bin/threadwatch relay
+# Exit 3 is the dongle's stream ending (unplugged, sniffer died): restart.
+Restart=always
+RestartSec=10
+# The dongle re-enumerates on replug; give udev a moment.
+ExecStartPre=/bin/sleep 2
+
+[Install]
+WantedBy=multi-user.target

@@ -544,6 +544,8 @@ class ExampleConfigTest(unittest.TestCase):
         ("web", "bind"): ("web_bind", "127.0.0.1", "0.0.0.0"),
         ("web", "port"): ("web_port", 8080, 9090),
         ("credentials", "file"): ("credentials_path", "credentials.toml", "creds.toml"),
+        ("relay", "to"): ("relay_to", "192.0.2.10:9154", "192.0.2.11:9155"),
+        ("relay", "label"): ("relay_label", "attic", "annex"),
     }
     # Read verbatim into alerts_raw / heartbeats_raw and built by alerts.py.
     RAW = {("alerts", "sinks"), ("heartbeats",)}
@@ -598,6 +600,8 @@ class ExampleConfigTest(unittest.TestCase):
                 body = f"[{table}]\n{key} = {json.dumps(str(value) if isinstance(value, Path) else value)}\n"
                 if (table, key) == ("otbr", "enabled"):
                     body += 'ssh_target = "test@ha"\n'
+                if table == "relay":           # one without the other is refused
+                    body += 'label = "attic"\n' if key == "to" else 'to = "h:1"\n'
                 if key == "radios":            # an array of tables, which JSON cannot spell
                     body = "".join(f"[[record.radios]]\nlabel = {json.dumps(r['label'])}\n"
                                    f"serial = {json.dumps(r['serial'])}\n" for r in value)
@@ -626,12 +630,15 @@ class ExampleConfigTest(unittest.TestCase):
         self.addCleanup(lambda: [os.environ.pop(k) for k in ("NTFY_TOKEN", "GATUS_THREADWATCH_TOKEN")])
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
-            # serial_port and radios exclude each other, so the everything-on
-            # load leaves serial_port commented out; it is proven read above.
+            # serial_port and radios exclude each other, and so do radios and
+            # [relay], so the everything-on load leaves serial_port and the
+            # [relay] section out; both are proven read above.
             text = self._uncommented(self.EXAMPLE.read_text()).replace('\nserial_port = ', '\n# serial_port = ')
+            start = text.index("\n[relay]\n")
+            text = text[:start] + text[text.index("\n[", start + 1):]
             cfg = self._load(d, text)
             for (table, key), (attr, stated, _other) in self.SETTINGS.items():
-                if key == "serial_port":
+                if key == "serial_port" or table == "relay":
                     continue
                 with self.subTest(table=table, key=key):
                     got, want = self._value(cfg, attr, stated, d)
@@ -848,6 +855,40 @@ class RadiosTest(unittest.TestCase):
             with self.subTest(what), self.assertRaises(ValueError) as cm:
                 self._load(text)
             self.assertIn("radios", str(cm.exception), what)
+
+
+class RelayTest(unittest.TestCase):
+    """[relay]: this host streams its dongle to a recorder elsewhere."""
+
+    def _load(self, text):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "config.toml"
+            path.write_text(text)
+            return config_mod.load(path)
+
+    def test_to_and_label_load_and_their_absence_is_a_recorder(self):
+        cfg = self._load('[relay]\nto = "192.0.2.10:9154"\nlabel = "attic"\n')
+        self.assertEqual((cfg.relay_to, cfg.relay_label), ("192.0.2.10:9154", "attic"))
+        self.assertEqual(self._load('[relay]\nto = "[::1]:9154"\nlabel = "a"\n').relay_to, "[::1]:9154")
+        for text in ("[network]\nchannel = 15\n", "[relay]\n"):
+            cfg = self._load(text)
+            self.assertEqual((cfg.relay_to, cfg.relay_label), (None, None), text)
+
+    def test_what_is_refused(self):
+        cases = {
+            "no to": '[relay]\nlabel = "attic"\n',
+            "no label": '[relay]\nto = "h:9154"\n',
+            "to without a port": '[relay]\nto = "h"\nlabel = "attic"\n',
+            "a port out of range": '[relay]\nto = "h:70000"\nlabel = "attic"\n',
+            "a label that is not a file-name-safe word": '[relay]\nto = "h:1"\nlabel = "Attic"\n',
+            "an unknown key": '[relay]\nto = "h:1"\nlabel = "a"\nserial = "AA"\n',
+            "radios beside it": '[relay]\nto = "h:1"\nlabel = "a"\n'
+                                '[record]\n[[record.radios]]\nlabel = "hub"\nserial = "1"\n',
+        }
+        for what, text in cases.items():
+            with self.subTest(what), self.assertRaises(ValueError) as cm:
+                self._load(text)
+            self.assertIn("relay", str(cm.exception), what)
 
 
 if __name__ == "__main__":

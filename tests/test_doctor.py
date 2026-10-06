@@ -1016,5 +1016,52 @@ class OtbrCheckTest(unittest.TestCase):
         self.assertEqual([c for c in checks if c[1] == "otbr"], [])
 
 
+class RelayHostDoctorTest(unittest.TestCase):
+    """On a host with [relay], doctor checks what a relay needs and none of
+    the recorder's key, ring, events or pages."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.d = Path(self.tmp.name)
+        self.cfg = Config(data_dir=self.d / "data", config_dir=self.d,
+                          relay_to="192.0.2.10:9154", relay_label="attic")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_the_connection_is_read_from_the_socket_table(self):
+        with mock.patch.object(doctor.shutil, "which", return_value=None):
+            self.assertEqual(doctor.check_relay(self.cfg)[0][0], "ok")
+        asked = []
+
+        def ss(said):
+            return lambda cmd: asked.append(cmd) or said
+        with mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/ss"):
+            with mock.patch.object(doctor, "_run", ss("0  0  192.0.2.20:40122  192.0.2.10:9154\n")):
+                self.assertEqual(doctor.check_relay(self.cfg),
+                                 [("ok", "relay", "radio attic to 192.0.2.10:9154: connected (192.0.2.10:9154)")])
+            self.assertEqual(asked[0][-1], "( dport = :9154 )")
+            with mock.patch.object(doctor, "_run", ss("")):
+                level, _, text = doctor.check_relay(self.cfg)[0]
+            self.assertEqual(level, "warn")
+            self.assertIn("not connected", text)
+            with mock.patch.object(doctor, "_run", ss(None)):
+                self.assertEqual(doctor.check_relay(self.cfg)[0][0], "warn")
+
+    def test_a_relay_host_gets_the_relay_checks_only(self):
+        with mock.patch.object(doctor.shutil, "which", return_value=None):
+            checks = doctor.run_doctor(self.cfg, find_port=lambda: "/dev/ttyACM0")
+        self.assertEqual([c[1] for c in checks], ["config", "config", "dongle", "relay", "clock", "services",
+                                                  "version"])
+        self.assertNotIn("FAIL", [c[0] for c in checks])
+
+    def test_the_relay_unit_is_the_one_asked_about(self):
+        said = {("is-active", "threadwatch-relay"): "active", ("is-enabled", "threadwatch-relay"): "enabled"}
+        with mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/systemctl"), \
+             mock.patch.object(doctor, "_run", lambda cmd: said[(cmd[1], cmd[2])]):
+            self.assertEqual(doctor.check_services(("threadwatch-relay",)),
+                             [("ok", "services", "threadwatch-relay.service active, enabled")])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -114,6 +114,12 @@ class Config:
     pan_id: int | None = None
     serial_port: str | None = None          # auto-detect when unset
     radios: list[RadioConfig] = field(default_factory=list)   # [record] radios; empty = one dongle, found by id
+    # [relay]: this host is a relay, not a recorder. Its dongle is streamed
+    # to the recorder at relay_to (host:port, that recorder's tcp radio
+    # listen) as radio relay_label; setup-host.sh installs the relay unit
+    # in place of the recorder's, and doctor checks what a relay needs.
+    relay_to: str | None = None
+    relay_label: str | None = None
     data_dir: Path = REPO_ROOT / "data"
     keep_hours: int = 168                      # ring: one hourly file each, a week of them
     keep_bytes: int | None = None           # ring: total size cap ([record] keep_gb), None = files only
@@ -369,6 +375,7 @@ SECTIONS: dict[str, frozenset[str] | None] = {
                          "period_max_s", "period_onsets", "alert_cooldown_s", "confirm_s")),
     "events": frozenset(("keep_days",)),
     "web": frozenset(("bind", "port")),
+    "relay": frozenset(("to", "label")),
     "credentials": frozenset(("file",)),
     "alerts": frozenset(("sinks",)),
     "heartbeats": None,
@@ -491,6 +498,21 @@ def _radios(raw) -> list[RadioConfig]:
     return out
 
 
+def _relay(table: dict) -> tuple[str, str]:
+    """[relay] to and label, both required: the recorder's address for
+    this radio and the label its [[record.radios]] entry gives it."""
+    from .ring import LABEL_RE
+    to, label = table.get("to"), table.get("label")
+    m = _LISTEN_RE.match(to) if isinstance(to, str) else None
+    if m is None or not 1 <= int(m.group("port")) <= 65535:
+        raise ValueError(f"[relay] to must be the recorder's \"host:port\" (its [[record.radios]] listen), "
+                         f"not {to!r}")
+    if not isinstance(label, str) or not LABEL_RE.match(label):
+        raise ValueError(f"[relay] label must be the radio's label in the recorder's [[record.radios]] "
+                         f"(1-16 of a-z, 0-9 and _), not {label!r}")
+    return to, label
+
+
 def check_sections(raw: dict, path: Path) -> None:
     """Reject sections and keys load() would otherwise ignore in silence."""
     where = f" in {path}"
@@ -543,6 +565,11 @@ def load(path: Path | None) -> Config:
         if cfg.radios and cfg.serial_port:
             raise ValueError("[record] serial_port and radios exclude each other: radios names every dongle "
                              "by serial, so there is no one port to pin")
+        if raw.get("relay"):                      # an empty [relay], as the example ships, is a recorder
+            cfg.relay_to, cfg.relay_label = _relay(raw["relay"])
+            if cfg.radios:
+                raise ValueError("[relay] and [record] radios exclude each other: a relay streams its one dongle "
+                                 "to the recorder, whose [record] radios name it")
         if rec.get("data_dir"):
             # Relative to the config file, like [devices] inventory and
             # [credentials] file: the recorder runs with the repo as its

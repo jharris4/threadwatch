@@ -144,13 +144,27 @@ second radio adds coverage before it goes anywhere.
 
 A dongle plugged into another machine on the LAN (a second Pi, the one
 by the far end of the house) can be one of the recorder's radios too.
-On that machine, install threadwatch the same way (INSTALL.md; it needs
-no network key, only the channel in its config.toml and the dongle) and
-run the relay instead of the recorder:
+That machine is a relay: it needs no network key, only the channel and
+a `[relay]` section in its `config/config.toml`, saying where the
+recorder is and which radio this is:
 
-```bash
-bin/threadwatch relay --to recorder-host:9154 --label annex
+```toml
+[network]
+channel = 25
+
+[relay]
+to = "192.0.2.10:9154"              # the recorder's listen for this radio (below)
+label = "annex"                     # the radio's label there
 ```
+
+Then install threadwatch on it the same way as a recorder (INSTALL.md):
+`sudo bin/setup-host.sh` sees `[relay]` and installs
+`threadwatch-relay.service` instead of the recorder's and the web units
+(and removes those if the host had them). `bin/threadwatch doctor` there
+checks the dongle, the connection to the recorder, the clock and the
+relay's unit; `journalctl -u threadwatch-relay -f` follows it. By hand,
+`bin/threadwatch relay` runs it in the foreground, and `--to` and
+`--label` override the config.
 
 On the recorder, the radio is a `[[record.radios]]` entry with
 `source = "tcp"` and the address the relay connects to:
@@ -170,9 +184,7 @@ one. A dropped connection is retried with backoff (2 s doubling to 30 s)
 and the frames heard meanwhile are dropped and counted; the recorder
 reports the radio lost and back. Nothing authenticates the stream, which
 is the encrypted frames and their timing without the key: keep `listen`
-on a LAN address behind a firewall, or carry it over `ssh -R`. A systemd
-unit for the relay is the recorder's with `relay --to ... --label ...`
-in place of `record`.
+on a LAN address behind a firewall, or carry it over `ssh -R`.
 
 ## Other radios
 

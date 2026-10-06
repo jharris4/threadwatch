@@ -159,6 +159,8 @@ if [ "$MODE" = "--push-only" ] && [ -n "$CHANGED" ]; then
   printf '%s\n' "$CHANGED" | sed 's/^/  /' >&2
   echo "  the running units are on the old code until:" >&2
   echo "    ssh $TARGET 'sudo systemctl restart threadwatch threadwatch-web'" >&2
+  echo "  or, on a relay host ([relay] in its config.toml):" >&2
+  echo "    ssh $TARGET 'sudo systemctl restart threadwatch-relay'" >&2
 fi
 
 if [ "$MODE" != "--push-only" ]; then

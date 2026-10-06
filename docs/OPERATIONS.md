@@ -293,7 +293,8 @@ label, the channel, the dongle's serial when configured) and refuses
 one that does not match, with the reason in the journal; a relay
 connecting is `radio_attached` or `radio_returned`, one disconnecting
 `radio_lost`, and the relay reconnects by itself. The relay exits 3
-when its own dongle's stream ends, for its supervisor to restart.
+when its own dongle's stream ends, for its supervisor
+(`threadwatch-relay.service`) to restart.
 
 Attaching a dongle opens its port and forks the sniffer's reader
 process; the recorder does this one radio at a time, because a fork

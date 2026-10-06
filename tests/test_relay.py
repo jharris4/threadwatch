@@ -411,5 +411,41 @@ class RunRelayTest(unittest.TestCase):
         self.assertIn("--to must be host:port", str(cm.exception))
 
 
+class RelayArgumentsTest(unittest.TestCase):
+    """`threadwatch relay` takes the recorder and label from [relay] (what
+    threadwatch-relay.service runs), and the flags still win."""
+
+    def run_cli(self, config_text, *argv):
+        import contextlib
+        import tempfile
+
+        from threadwatch.cli import main
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "config.toml").write_text(config_text)
+            (d / "devices.json").write_text("[]")
+            calls = []
+            err = io.StringIO()
+            with mock.patch.object(relay, "run_relay", lambda cfg, *a: calls.append(a) or 3), \
+                    contextlib.redirect_stderr(err):
+                try:
+                    code = main(["--config", str(d / "config.toml"), "relay", *argv])
+                except SystemExit as exc:
+                    code = exc.code
+        return code, calls, err.getvalue()
+
+    def test_the_config_names_the_recorder_and_the_flags_override_it(self):
+        conf = '[relay]\nto = "192.0.2.10:9154"\nlabel = "attic"\n'
+        self.assertEqual(self.run_cli(conf)[:2], (3, [("attic", "192.0.2.10:9154", None)]))
+        self.assertEqual(self.run_cli(conf, "--to", "192.0.2.11:9155", "--label", "annex")[:2],
+                         (3, [("annex", "192.0.2.11:9155", None)]))
+        self.assertEqual(self.run_cli("", "--to", "h:1", "--label", "a")[:2], (3, [("a", "h:1", None)]))
+
+    def test_with_neither_it_says_what_is_missing(self):
+        code, calls, err = self.run_cli("", "--label", "attic")
+        self.assertEqual((code, calls), (2, []))
+        self.assertIn("set [relay] to and label in config.toml, or pass --to and --label", err)
+
+
 if __name__ == "__main__":
     unittest.main()

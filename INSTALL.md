@@ -151,7 +151,9 @@ a config file from the host, delete it there.
   capture should represent what the border router's radio hears. A
   second dongle on an extension elsewhere widens the capture; both are
   better a little away from the host (a Pi 4's USB 3 controller radiates
-  at 2.4 GHz).
+  at 2.4 GHz). A dongle beyond USB reach goes on a second host, set up
+  with this same install as a relay (SETUP.md, "A dongle on another
+  host").
 - With two dongles, each hour of the ring is two files (the second
   radio's carry its label), so budget up to twice the storage below;
   `keep_gb` is shared out between them.

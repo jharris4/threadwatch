@@ -8,7 +8,10 @@
 #
 # Does everything after the OS is installed and this repo is present:
 # Python deps, serial permissions, credentials permissions, systemd units.
-# Safe to re-run after any change.
+# Safe to re-run after any change. A config.toml with a [relay] section
+# makes this host a relay (SETUP.md, "A dongle on another host"): it gets
+# threadwatch-relay.service instead of the recorder's and the web units,
+# and needs no network key.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -136,6 +139,22 @@ if [ ! -f "$REPO/config/config.toml" ]; then
 else
   echo "    config/config.toml present"
 fi
+# The host's role, from the same loader the services use. A config.toml
+# that does not load (the service will say why) keeps the role whose unit
+# is installed, so a typo never swaps a relay for a recorder or back.
+ROLE="$(cd "$REPO" && PYTHONPATH="$REPO" "$PY" -c '
+from threadwatch.config import load
+print("relay" if load("config/config.toml").relay_to else "recorder")' 2>/dev/null || true)"
+if [ -z "$ROLE" ]; then
+  if [ -f /etc/systemd/system/threadwatch-relay.service ]; then ROLE=relay; else ROLE=recorder; fi
+  echo "    WARN: config/config.toml did not load; keeping this host a $ROLE"
+fi
+if [ "$ROLE" = relay ]; then
+  UNITS="threadwatch-relay"; OTHER_UNITS="threadwatch threadwatch-web"
+  echo "    [relay]: this host is a relay, streaming its dongle to the recorder"
+else
+  UNITS="threadwatch threadwatch-web"; OTHER_UNITS="threadwatch-relay"
+fi
 if [ -f "$REPO/config/ha.env" ]; then
   chown "$RUN_USER": "$REPO/config/ha.env"
   chmod 400 "$REPO/config/ha.env"
@@ -145,7 +164,7 @@ if [ -f "$REPO/config/credentials.toml" ]; then
   chown "$RUN_USER": "$REPO/config/credentials.toml"
   chmod 400 "$REPO/config/credentials.toml"
   echo "    credentials.toml locked to 0400"
-else
+elif [ "$ROLE" = recorder ]; then
   echo "    WARNING: no config/credentials.toml: the recorder will not start without the Thread network key (docs/CREDENTIALS.md)"
 fi
 if [ -f "$REPO/config/alerts.env" ]; then
@@ -182,7 +201,11 @@ echo "    $DATA_DIR owned by $RUN_USER"
 
 echo "==> systemd services"
 if ! command -v systemctl >/dev/null; then
-  echo "    no systemd on this host: run '$REPO/bin/threadwatch record' and 'serve' under your own supervisor"
+  if [ "$ROLE" = relay ]; then
+    echo "    no systemd on this host: run '$REPO/bin/threadwatch relay' under your own supervisor"
+  else
+    echo "    no systemd on this host: run '$REPO/bin/threadwatch record' and 'serve' under your own supervisor"
+  fi
 else
   # Rendered beside the target and moved into place, not written through
   # a redirect: the redirect truncated the live unit before anything was
@@ -192,7 +215,7 @@ else
   # | or & in the clone path or the user name is a metacharacter to both,
   # and would corrupt the ExecStart it landed in (the characters systemd
   # itself would misread are refused at the top).
-  for unit in threadwatch threadwatch-web; do
+  for unit in $UNITS; do
     tmp="$(mktemp "/etc/systemd/system/$unit.service.XXXXXX")"
     # Values come through the environment, not -v: awk expands escape
     # sequences in a -v assignment, so a backslash in the path would be
@@ -237,13 +260,23 @@ CONF
   else
     echo "    no systemd-time-wait-sync on this host: capture starts as soon as timesyncd has, synced or not"
   fi
+  # The other role's units, from before this host changed role: a recorder
+  # left enabled on a relay fails for want of a key at every boot, and a
+  # relay left on a recorder would hold the dongle the recorder needs.
+  for unit in $OTHER_UNITS; do
+    if [ -f "/etc/systemd/system/$unit.service" ]; then
+      systemctl disable --now "$unit" 2>/dev/null || true
+      rm -f "/etc/systemd/system/$unit.service"
+      echo "    $unit.service stopped and removed: this host is a $ROLE"
+    fi
+  done
   systemctl daemon-reload
-  systemctl enable threadwatch threadwatch-web
+  systemctl enable $UNITS
   # A unit that hit its start limit on the previous configuration stays
   # failed until told otherwise; this run may be the fix for it.
-  systemctl reset-failed threadwatch threadwatch-web 2>/dev/null || true
+  systemctl reset-failed $UNITS 2>/dev/null || true
   # restart, not enable --now: an already-running unit must pick up the new code
-  systemctl restart threadwatch threadwatch-web
+  systemctl restart $UNITS
   # For Type=simple, restart returns as soon as the process is forked: a
   # recorder refusing its configuration dies a few seconds later. Wait
   # past ExecStartPre (2 s) and start-up, then ask, and say so and exit
@@ -251,16 +284,15 @@ CONF
   # reported as "Done".
   sleep 8
   BROKEN=""
-  for unit in threadwatch threadwatch-web; do
+  for unit in $UNITS; do
     if ! systemctl is-active --quiet "$unit"; then
       BROKEN="$BROKEN $unit"
     fi
+    systemctl --no-pager --lines=5 status "$unit" || true
   done
-  systemctl --no-pager --lines=5 status threadwatch || true
-  systemctl --no-pager --lines=3 status threadwatch-web || true
   if [ -n "$BROKEN" ]; then
     echo >&2
-    if [ ! -f "$REPO/config/credentials.toml" ]; then
+    if [ "$ROLE" = recorder ] && [ ! -f "$REPO/config/credentials.toml" ]; then
       # The ordinary first install: the operator has not reached the
       # credentials step yet, and this exit 1 is what it looks like.
       echo "NOT RUNNING:$BROKEN, because there is no config/credentials.toml yet." >&2
@@ -268,10 +300,23 @@ CONF
       echo "script; it clears the failed state and starts the units." >&2
       exit 1
     fi
-    echo "NOT RUNNING:$BROKEN. See the status above and: journalctl -u threadwatch -n 50" >&2
+    FIRST_BROKEN="${BROKEN# }"
+    echo "NOT RUNNING:$BROKEN. See the status above and: journalctl -u ${FIRST_BROKEN%% *} -n 50" >&2
     echo "After fixing the cause: systemctl reset-failed$BROKEN && systemctl restart$BROKEN" >&2
     exit 1
   fi
+fi
+
+if [ "$ROLE" = relay ]; then
+  cat <<DONE
+
+Done. This host is a relay. Useful commands:
+    $REPO/bin/threadwatch doctor
+$(command -v systemctl >/dev/null && echo "    journalctl -u threadwatch-relay -f")
+
+On the recorder, 'threadwatch status' shows this radio and its clock lock.
+DONE
+  exit 0
 fi
 
 cat <<DONE

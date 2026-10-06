@@ -36,5 +36,18 @@ class ClonePathTest(unittest.TestCase):
         self.assertIn("run with sudo", out.stderr)
 
 
+class RelayUnitTest(unittest.TestCase):
+    def test_the_relay_unit_is_the_recorders_with_relay_in_place_of_record(self):
+        """The ordering and start limits threadwatch.service explains, and
+        the same placeholders setup-host.sh fills in."""
+        def lines(name):
+            text = (REPO_ROOT / "systemd" / name).read_text()
+            return {line for line in text.splitlines() if line and not line.startswith(("#", "Description="))}
+        recorder, relay = lines("threadwatch.service"), lines("threadwatch-relay.service")
+        self.assertEqual(recorder - relay, {"ExecStart=__REPO__/bin/threadwatch record",
+                                            "EnvironmentFile=-__REPO__/config/alerts.env"})
+        self.assertEqual(relay - recorder, {"ExecStart=__REPO__/bin/threadwatch relay"})
+
+
 if __name__ == "__main__":
     unittest.main()

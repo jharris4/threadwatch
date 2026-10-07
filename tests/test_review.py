@@ -804,6 +804,18 @@ class DayViewTest(unittest.TestCase):
             httpd.shutdown()
             httpd.server_close()
 
+    def test_a_router_page_lists_its_children(self):
+        site = web.Site(self.cfg)
+        body = site.device_page("Basement AQ")
+        self.assertIn('<h2>children <span class="muted">1</span></h2>', body)
+        self.assertIn(f'<a href="/device/{PLUG}">Irrigation</a>', body)
+        self.assertNotIn("<h2>children", site.device_page("Irrigation"))   # a child has none
+        # Retired, the address no longer counts as the router's child.
+        seen = json.loads((self.cfg.state_dir / "last-seen.json").read_text())
+        seen[PLUG]["rotated_to"] = "72d035122fdf06f6"
+        (self.cfg.state_dir / "last-seen.json").write_text(json.dumps(seen))
+        self.assertIn('<p class="empty">no children seen</p>', web.Site(self.cfg).device_page("Basement AQ"))
+
     def test_device_history_is_newest_first(self):
         kinds = [e["kind"] for e in device_history(self.cfg.events_dir, AQ)]
         self.assertEqual(kinds, ["retransmissions", "quiet"])

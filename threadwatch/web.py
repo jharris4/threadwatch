@@ -841,6 +841,23 @@ class Site:
             parts.append(f'{esc(label)} {min(100, 100 * by[label] // total)}%{level}')
         return ", ".join(parts)
 
+    def children_html(self, router: dict, every: list[dict], now: float) -> str:
+        """A router's children: every device whose last RLOC16 hangs off
+        the router id this router holds now, as device_rows maps parents.
+        A child that has gone quiet stays under the parent it last used."""
+        kids = [r for r in every if r["role"] == "child" and r["parent_addr"] == router["addr"]
+                and not r.get("rotated_to")]
+        if not kids:
+            return '<h2>children</h2><p class="empty">no children seen</p>'
+        trs = []
+        for r in kids:
+            heard = ago(r["last_seen"], now)
+            trs.append(f'<tr><td><a href="/device/{esc(r["addr"])}">{esc(r["name"] or r["addr"])}</a></td>'
+                       f'<td>{f"<span class=bad>quiet</span>, {heard}" if r["quiet"] else heard}</td>'
+                       f'<td>{self.generation_html(r)}</td></tr>')
+        return (f'<h2>children <span class="muted">{len(kids)}</span></h2><table class="keys"><tr><th>device</th>'
+                f'<th>last heard</th><th>key gen</th></tr>{"".join(trs)}</table>')
+
     def device_page(self, target: str) -> str:
         """One device: every address it has used, what the recorder knows
         about each, and its history across all of them. ``target`` is an
@@ -871,11 +888,10 @@ class Site:
             head.append(esc(entry["model"]))
         if len(addrs) > 1:
             head.append(f'{len(addrs)} addresses (rotates)')
-        live = next((r for r in device_rows(seen, names, self.cfg.quiet_min_rssi_dbm, now,
-                                            leader_router=self.leader_router(),
-                                            mesh_generation=self.mesh_generation(), key_fresh_s=self.cfg.key_fresh_s,
-                                            ha=self.ha_availability())
-                     if r["addr"] == primary), None)
+        every = device_rows(seen, names, self.cfg.quiet_min_rssi_dbm, now, leader_router=self.leader_router(),
+                            mesh_generation=self.mesh_generation(), key_fresh_s=self.cfg.key_fresh_s,
+                            ha=self.ha_availability())
+        live = next((r for r in every if r["addr"] == primary), None)
         if live and live["role"]:
             head.append(self.role_html(live, now))
         if live and live.get("ha_state"):
@@ -914,6 +930,8 @@ class Site:
             cards.append(f'<div class="card"><code>{esc(addr)}</code><br>'
                          f'{" &middot; ".join(facts) if facts else "<span class=muted>never heard</span>"}</div>')
         card = (f'<p class="muted">{" &middot; ".join(head)}</p>' if head else "") + "".join(cards)
+        if live and live["role"] == "router":
+            card += self.children_html(live, every, now)
         eps = devices_history(self.cfg.events_dir, addrs, now)
         trs = []
         for ep in eps:

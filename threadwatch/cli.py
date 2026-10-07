@@ -131,6 +131,8 @@ def main(argv=None) -> int:
     p_relay.add_argument("--label", help="the radio's label in the recorder's [record] radios "
                                          "(default: [relay] label)")
     p_relay.add_argument("--serial-port", metavar="PORT", help="the dongle's port here (default: found by USB id)")
+    p_relay.add_argument("--channel", type=int, help="the Thread channel, 11-26 (default: [network] channel); "
+                                                     "a container relay runs with no config.toml at all")
 
     p_replay = sub.add_parser("replay", help="run detection over existing pcap files, as one run")
     p_replay.add_argument("pcap", type=Path, nargs="*",
@@ -318,6 +320,10 @@ def main(argv=None) -> int:
         if not to or not label:
             parser.exit(2, "threadwatch relay: no recorder to stream to: set [relay] to and label in "
                            "config.toml, or pass --to and --label\n")
+        if args.channel is not None:
+            if not 11 <= args.channel <= 26:
+                parser.exit(2, f"threadwatch relay: --channel must be 11-26, not {args.channel}\n")
+            cfg.channel = args.channel
         return run_relay(cfg, label, to, args.serial_port)
 
     if args.cmd == "replay":

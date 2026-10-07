@@ -1,0 +1,43 @@
+# A relay in a container: this host's dongle streamed to a recorder on
+# another host (SETUP.md, "A dongle on another host"; docs/DOCKER.md,
+# "A relay in a container"). No config/ and no data/: the relay holds no
+# key and keeps nothing, so every setting is an environment variable
+# (exported, in an .env file beside this one, or a Portainer stack's
+# environment):
+#
+#   THREADWATCH_RELAY_TO=192.0.2.10:9154 THREADWATCH_RELAY_LABEL=annex \
+#   THREADWATCH_CHANNEL=25 docker compose -f compose.relay.yaml up -d --build
+services:
+  relay:
+    build:
+      context: .
+      args:
+        REVISION: ${REVISION:-}
+    # Its own tag: the recorder's compose.yaml builds "threadwatch" from
+    # the same Dockerfile, and a host running both keeps them apart.
+    image: threadwatch-relay
+    command:
+      - relay
+      - --to
+      - ${THREADWATCH_RELAY_TO:?set THREADWATCH_RELAY_TO to the recorder's host:port (its [[record.radios]] listen)}
+      - --label
+      - ${THREADWATCH_RELAY_LABEL:?set THREADWATCH_RELAY_LABEL to this radio's label in the recorder's [[record.radios]]}
+      - --channel
+      - ${THREADWATCH_CHANNEL:?set THREADWATCH_CHANNEL to the Thread channel, 11-26}
+    # The relay exits 3 when the dongle's stream ends (unplugged, sniffer
+    # died); this brings it back, as Restart=always does for the native unit.
+    restart: unless-stopped
+    devices:
+      # Left side: the dongle on this host, best named by its
+      # /dev/serial/by-id/usb-Nordic_Semiconductor_* path, which survives
+      # re-enumeration. The relay finds it inside the container by USB id.
+      - ${THREADWATCH_RELAY_DEVICE:-/dev/ttyACM0}:/dev/ttyACM0
+    # The image runs as uid 1000; the dongle is usually root:dialout mode
+    # 660. 20 is dialout on Debian and Raspberry Pi OS; check yours with
+    # `stat -c %g` on the device and set THREADWATCH_DIALOUT_GID if it differs.
+    group_add:
+      - "${THREADWATCH_DIALOUT_GID:-20}"
+    # The sniffer's FIFO goes in data/state. Nothing there outlives a
+    # restart, and the image's data/ is root's, so a tmpfs (mode 1777) it is.
+    tmpfs:
+      - /app/data

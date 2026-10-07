@@ -268,6 +268,36 @@ The `status` command reports numeric epoch timestamps, so use `date` above
 to check the zone. Change the setting and both containers need recreating
 (`docker compose up -d --force-recreate`), not restarting.
 
+## A relay in a container
+
+A dongle on another host, streamed to the recorder (SETUP.md, "A dongle
+on another host"), needs no `config/` and no `data/` there:
+`compose.relay.yaml` runs `threadwatch relay` from the same image with
+its settings in the environment.
+
+```bash
+git clone https://github.com/jharris4/threadwatch.git && cd threadwatch
+cat > .env <<'EOF'
+THREADWATCH_RELAY_TO=192.0.2.10:9154
+THREADWATCH_RELAY_LABEL=annex
+THREADWATCH_CHANNEL=25
+THREADWATCH_RELAY_DEVICE=/dev/serial/by-id/usb-Nordic_Semiconductor_...
+EOF
+REVISION=$(git rev-parse --short HEAD) docker compose -f compose.relay.yaml up -d --build
+docker compose -f compose.relay.yaml logs -f
+```
+
+`THREADWATCH_RELAY_TO` is the recorder's `listen` for this radio's
+`[[record.radios]]` entry, and `THREADWATCH_RELAY_LABEL` that entry's
+label. Those two and the channel are required: without one, compose
+refuses to start and names it. `THREADWATCH_RELAY_DEVICE` defaults to
+`/dev/ttyACM0`, and `THREADWATCH_DIALOUT_GID` (default 20, Debian's
+dialout) is the dongle's group where it differs. No port is published:
+the relay connects out to the recorder.
+
+The same file runs as a Portainer stack built from this repository, with
+the variables set in the stack's environment.
+
 ## Everyday commands
 
 The image's entrypoint is `bin/threadwatch`, so any CLI command works as

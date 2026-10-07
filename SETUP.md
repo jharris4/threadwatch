@@ -167,8 +167,13 @@ folder as the relay's `config/`, and never the workstation's own
 (and removes those if the host had them). `bin/threadwatch doctor` there
 checks the dongle, the connection to the recorder, the clock and the
 relay's unit; `journalctl -u threadwatch-relay -f` follows it. By hand,
-`bin/threadwatch relay` runs it in the foreground, and `--to` and
-`--label` override the config.
+`bin/threadwatch relay` runs it in the foreground, and `--to`,
+`--label` and `--channel` override the config.
+
+A relay also runs with nothing installed on its host: as a container
+(docs/DOCKER.md, "A relay in a container"), or on a Home Assistant OS
+host as a local add-on (`ha-addon/DOCS.md`). Both take the same three
+settings as options instead of a `config.toml`.
 
 On the recorder, the radio is a `[[record.radios]]` entry with
 `source = "tcp"` and the address the relay connects to:

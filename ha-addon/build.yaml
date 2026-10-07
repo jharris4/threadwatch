@@ -1,0 +1,6 @@
+# Plain Python rather than the Home Assistant base images: the relay
+# needs nothing from them, and this is the base the repository's own
+# Dockerfile uses.
+build_from:
+  aarch64: python:3.12-slim
+  amd64: python:3.12-slim

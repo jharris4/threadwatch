@@ -425,8 +425,10 @@ class RelayArgumentsTest(unittest.TestCase):
             (d / "config.toml").write_text(config_text)
             (d / "devices.json").write_text("[]")
             calls = []
+            self.channels = []
             err = io.StringIO()
-            with mock.patch.object(relay, "run_relay", lambda cfg, *a: calls.append(a) or 3), \
+            with mock.patch.object(relay, "run_relay",
+                                   lambda cfg, *a: calls.append(a) or self.channels.append(cfg.channel) or 3), \
                     contextlib.redirect_stderr(err):
                 try:
                     code = main(["--config", str(d / "config.toml"), "relay", *argv])
@@ -445,6 +447,19 @@ class RelayArgumentsTest(unittest.TestCase):
         code, calls, err = self.run_cli("", "--label", "attic")
         self.assertEqual((code, calls), (2, []))
         self.assertIn("set [relay] to and label in config.toml, or pass --to and --label", err)
+
+    def test_the_channel_flag_overrides_the_config_and_is_checked(self):
+        conf = '[network]\nchannel = 25\n[relay]\nto = "192.0.2.10:9154"\nlabel = "attic"\n'
+        self.run_cli(conf)
+        self.assertEqual(self.channels, [25])
+        self.run_cli(conf, "--channel", "15")
+        self.assertEqual(self.channels, [15])
+        # A container relay has no config.toml: the flags are all of it.
+        self.run_cli("", "--to", "h:1", "--label", "a", "--channel", "11")
+        self.assertEqual(self.channels, [11])
+        code, calls, err = self.run_cli(conf, "--channel", "27")
+        self.assertEqual((code, calls), (2, []))
+        self.assertIn("--channel must be 11-26, not 27", err)
 
 
 if __name__ == "__main__":

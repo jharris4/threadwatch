@@ -1,0 +1,30 @@
+# A Home Assistant add-on running `threadwatch relay`: a dongle on the
+# Home Assistant host, streamed to a threadwatch recorder elsewhere on the
+# LAN (DOCS.md). bin/push-ha-addon.sh copies this folder, with the code
+# it runs, into the host's /addons, where it is a local add-on.
+name: threadwatch relay
+# The Supervisor rebuilds a local add-on only while this stays the same
+# (a changed one is offered as an update instead). The code's commit is
+# in the image's REVISION, which the log's first lines show.
+version: "1"
+slug: threadwatch_relay
+description: Stream an nRF52840 sniffer dongle on this host to a threadwatch recorder
+url: https://github.com/jharris4/threadwatch
+arch:
+  - aarch64
+  - amd64
+startup: application
+boot: auto
+# The dongle is a USB serial device (/dev/ttyACM*), and the relay finds
+# it among the host's serial devices by its Nordic USB id.
+uart: true
+# null: no default, so the add-on will not start until each is set.
+options:
+  to: null
+  label: null
+  channel: null
+schema:
+  to: str
+  label: str
+  channel: int(11,26)
+  serial_port: device(subsystem=tty)?

@@ -1,0 +1,18 @@
+configuration:
+  to:
+    name: Recorder address
+    description: >-
+      The recorder's host:port, the listen of this radio's [[record.radios]]
+      entry there. An IP address is safest: a .local name may not resolve
+      inside an add-on.
+  label:
+    name: Radio label
+    description: This radio's label in the recorder's [[record.radios]].
+  channel:
+    name: Thread channel
+    description: The channel the Thread network is on, 11-26.
+  serial_port:
+    name: Dongle
+    description: >-
+      Optional. Left empty, the relay uses the one nRF 802.15.4 sniffer
+      plugged into this host.

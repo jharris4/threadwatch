@@ -64,14 +64,24 @@ def usable_entities(entities: list[dict]) -> list[str]:
     return sorted(e["entity_id"] for e in (primary or live))
 
 
-def build_map(ha, entries: list[dict], log=lambda m: None) -> dict[str, dict]:
+def build_map(ha, entries: list[dict], log=lambda m: None, *, previous: dict[str, dict] | None = None,
+              now: float | None = None, carry_s: float = 0.0) -> dict[str, dict]:
     """The runtime link from HA's devices to the inventory: HA device id ->
     extended address (from the Matter node diagnostics), node id, the HA
     name, the inventory's name for that address when it has one, and the
     entities to watch. Built over the websocket (the one client `import`
-    uses); the once-a-minute poll is REST and needs only this."""
+    uses); the once-a-minute poll is REST and needs only this.
+
+    The diagnostics are a live read of each node, which fails while the
+    node reboots (2026-10-10: a sensor's reboot dropped it from the map for
+    an hour, its reboots unnamed and its availability unpolled). A device
+    whose read failed keeps its entry from ``previous``, marked
+    ``carried_since`` (the first rebuild that could not read it), for
+    ``carry_s`` after that; one still unreadable then is dropped."""
     from .ha import thread_devices
-    devices = thread_devices(ha, log)
+    now = now if now is not None else time.time()
+    failed: list[str] = []
+    devices = thread_devices(ha, log, failed)
     registry = ha.call("config/entity_registry/list") or []
     by_device: dict[str, list[dict]] = {}
     for ent in registry:
@@ -87,6 +97,24 @@ def build_map(ha, entries: list[dict], log=lambda m: None) -> dict[str, dict]:
                           "ha_name": dev.get("name"), "name": inventory or dev.get("name"),
                           "matched": inventory is not None,
                           "entities": usable_entities(by_device.get(device_id, []))}
+    for device_id in failed:
+        before = (previous or {}).get(device_id)
+        if before is None or device_id in out:
+            continue
+        since = before.get("carried_since")
+        since = float(since) if isinstance(since, (int, float)) else now
+        if now - since >= carry_s:
+            log(f"{before.get('name') or device_id} left out: unreadable since "
+                f"{time.strftime('%H:%M', time.localtime(since))}")
+            continue
+        # A copy: ``previous`` is the capture thread's map, entries and all.
+        # The name and entities are today's; only the diagnostics are old.
+        inventory = _inventory_name(before.get("addr"), entries)
+        out[device_id] = {**before, "name": inventory or before.get("name") or before.get("ha_name"),
+                          "matched": inventory is not None,
+                          "entities": usable_entities(by_device.get(device_id, [])) or before.get("entities") or [],
+                          "carried_since": since}
+        log(f"{out[device_id]['name']} kept from the last map")
     return out
 
 
@@ -356,8 +384,8 @@ class Tracker:
         # device id, its entities gone from the states) would stay open for
         # ever: reported still unavailable in every summary, under its bare
         # id once the map lost it. Missing for two map rebuilds is gone: a
-        # device whose diagnostics one rebuild could not fetch is back at
-        # the next.
+        # device whose diagnostics a rebuild could not fetch stays mapped
+        # (build_map's carried_since) and keeps being reported.
         for device_id, ep in list(episodes.items()):
             if device_id in devices:
                 self.absent.pop(device_id, None)
@@ -532,11 +560,12 @@ def availability_by_addr(state_dir: Path) -> dict[str, dict]:
 
 # ------------------------------------------------------------ the worker
 
-def refresh_map(url: str, token: str, entries: list[dict], log=lambda m: None) -> dict[str, dict]:
-    """Rebuild the HA map over the websocket. Raises HAError."""
+def refresh_map(url: str, token: str, entries: list[dict], log=lambda m: None, **carry) -> dict[str, dict]:
+    """Rebuild the HA map over the websocket, ``carry`` being build_map's
+    previous, now and carry_s. Raises HAError."""
     from .ha import HomeAssistant
     with HomeAssistant(url, token) as ha:
-        return build_map(ha, entries, log)
+        return build_map(ha, entries, log, **carry)
 
 
 def poll_once(cfg, mapping: dict[str, dict], entries: list[dict], *, map_age_s: float | None,
@@ -558,7 +587,8 @@ def poll_once(cfg, mapping: dict[str, dict], entries: list[dict], *, map_age_s: 
     refreshed = None
     if not mapping or map_age_s is None or map_age_s >= cfg.ha_availability_registry_refresh_s:
         try:
-            refreshed = refresh_map(url, token, entries, log)
+            refreshed = refresh_map(url, token, entries, log, previous=mapping, now=now,
+                                    carry_s=2 * cfg.ha_availability_registry_refresh_s)
             save_map(cfg.state_dir, refreshed)
             mapping = refreshed
         except HAError as exc:

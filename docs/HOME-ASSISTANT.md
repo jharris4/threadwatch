@@ -111,7 +111,10 @@ a minute, rebuilding the device map over the websocket once an hour.
 `devices.json` stays as it is: the link from HA's device ids to your
 names is made at runtime by extended address, cached in
 `data/state/ha-map.json`, and a device with no inventory entry is
-watched under its HA name (`threadwatch doctor` lists those).
+watched under its HA name (`threadwatch doctor` lists those). A device
+HA cannot read during a rebuild (a node in the middle of a reboot) keeps
+its last entry, marked `carried_since`, for two rebuilds' worth of time
+(`2 × registry_refresh_s`); still unreadable after that, it is left out.
 
 **Per-device hold and mute.** Some devices go unavailable for a while on
 their own: a motion sensor in the afternoon sun, a plug behind a

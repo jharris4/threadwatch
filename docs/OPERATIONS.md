@@ -421,7 +421,9 @@ it up if you care about the history; nothing else holds it.
                              neither logs a reboot twice nor pages the same climb again
         ha-map.json          with [ha_availability]: HA device id -> extended address, HA name, the
                              inventory's name for it, and the entities whose state counts; rebuilt
-                             over the websocket once an hour and cached so a restart polls at once
+                             over the websocket once an hour and cached so a restart polls at once;
+                             an entry HA could not read at the last rebuild is the one before,
+                             with carried_since
         ha-availability.json with [ha_availability]: the open episodes (since, paged, burst), the
                              recent closes (for the flap guard), the live burst and whether HA is
                              reachable, so a restart neither re-pages nor forgets an outage

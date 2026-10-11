@@ -72,6 +72,50 @@ class MapAndPollTest(unittest.TestCase):
             (Path(d) / "ha-map.json").write_text("nope")
             self.assertEqual(haavail.load_map(Path(d)), {})
 
+    def _failing(self, *ids, registry=None):
+        """A fake whose node diagnostics fail for ``ids``, as a rebooting
+        node's do ("Operation aborted")."""
+        from tests.test_ha import FakeHA
+        from threadwatch.ha import HAError
+        return FakeHA({"config/device_registry/list": self.REGISTRY if registry is None else registry,
+                       "matter/node_diagnostics": lambda f: (HAError("matter/node_diagnostics: Operation aborted")
+                                                             if f["device_id"] in ids else self.DIAGS[f["device_id"]]),
+                       "config/entity_registry/list": self.ENTITIES})
+
+    def test_a_device_whose_read_fails_keeps_its_last_entry_marked_until_carry_s(self):
+        t = 1_800_000_000.0
+        previous = haavail.build_map(self._fake(), ENTRIES, now=t)
+        previous[MOTION]["name"] = "Renamed Since"          # the inventory's name today wins
+        logs = []
+        kept = haavail.build_map(self._failing(MOTION), ENTRIES, logs.append, previous=previous, now=t + 3600,
+                                 carry_s=7200)
+        self.assertEqual(kept[MOTION], {**previous[MOTION], "name": "Front Path Motion", "carried_since": t + 3600})
+        self.assertIsNot(kept[MOTION], previous[MOTION])
+        self.assertNotIn("carried_since", previous[MOTION])  # the capture thread's map is not written
+        self.assertIn("Front Path Motion kept from the last map", logs)
+        # Still failing: the first failure is kept as the mark, and once
+        # carry_s has passed since it the device is dropped as before.
+        again = haavail.build_map(self._failing(MOTION), ENTRIES, previous=kept, now=t + 7200, carry_s=7200)
+        self.assertEqual(again[MOTION]["carried_since"], t + 3600)
+        gone = haavail.build_map(self._failing(MOTION), ENTRIES, previous=again, now=t + 3600 + 7200, carry_s=7200)
+        self.assertNotIn(MOTION, gone)
+        # Read again: a fresh entry, no mark.
+        back = haavail.build_map(self._fake(), ENTRIES, previous=kept, now=t + 7200, carry_s=7200)
+        self.assertEqual(back[MOTION], haavail.build_map(self._fake(), ENTRIES)[MOTION])
+
+    def test_only_a_failed_read_of_a_device_the_last_map_had_is_carried(self):
+        t = 1_800_000_000.0
+        previous = haavail.build_map(self._fake(), ENTRIES, now=t)
+        # Removed from HA: not in the registry, so never read and not carried.
+        registry = [r for r in self.REGISTRY if r["id"] != MOTION]
+        self.assertNotIn(MOTION, haavail.build_map(self._failing(registry=registry), ENTRIES, previous=previous,
+                                                   now=t + 3600, carry_s=7200))
+        # A failed read with nothing to carry, and a rebuild with no previous
+        # map (doctor's), leave the device out.
+        self.assertNotIn(GARDEN, haavail.build_map(self._failing(GARDEN), ENTRIES, previous={MOTION: previous[MOTION]},
+                                                   now=t + 3600, carry_s=7200))
+        self.assertNotIn(MOTION, haavail.build_map(self._failing(MOTION), ENTRIES, now=t + 3600))
+
     def test_refresh_map_builds_the_map_over_a_real_websocket_and_closes_it(self):
         import threading
 
@@ -262,6 +306,22 @@ class TrackerTest(unittest.TestCase):
         tr.apply({"ok": True, "devices": devices, "map": new_map}, T0 + 120)       # the same map again: nothing
         self.assertEqual(len(tr.rotations), 1)
         self.assertEqual(self.records, [])                                          # the pipeline says it, not here
+
+    def test_a_rotation_behind_a_carried_entry_is_still_queued(self):
+        # The rebuild that could not read the device carries its old
+        # address; the next one, which reads the new address, compares
+        # against it. Dropped instead, there would be nothing to compare.
+        tr = self._tracker()
+        self._poll(tr, T0)
+        devices = {d: (False, None) for d in self.mapping}
+        carried = json.loads(json.dumps(self.mapping))
+        carried[IDS[0]]["carried_since"] = T0 + 60
+        tr.apply({"ok": True, "devices": devices, "map": carried}, T0 + 60)
+        self.assertEqual(tr.rotations, [])
+        read = json.loads(json.dumps(self.mapping))
+        read[IDS[0]]["addr"] = "E17F3A9B2C4D5E6F"
+        tr.apply({"ok": True, "devices": devices, "map": read}, T0 + 3660)
+        self.assertEqual(tr.rotations, [{"previous": ADDRS[0], "addr": "e17f3a9b2c4d5e6f", "ha_device_id": IDS[0]}])
 
     def test_a_device_back_inside_the_hold_is_nothing_and_past_it_is_one_warning_then_available(self):
         tr = self._tracker()
@@ -544,7 +604,9 @@ class RecorderAvailabilityTest(unittest.TestCase):
                                  "name": "Front Path Motion", "matched": True, "entities": ["binary_sensor.motion"]}}
         self.refreshes = []
         self._real = haavail.refresh_map
-        haavail.refresh_map = lambda url, token, entries, log=None: (self.refreshes.append(url), self.mapping)[1]
+        self.carries = []
+        haavail.refresh_map = lambda url, token, entries, log=None, **carry: (
+            self.refreshes.append(url), self.carries.append(carry), self.mapping)[2]
 
     def tearDown(self):
         haavail.refresh_map = self._real
@@ -598,6 +660,9 @@ class RecorderAvailabilityTest(unittest.TestCase):
         pipe2._haavail_map_ts = 1_800_000_000.0 - 7200                  # older than registry_refresh_s
         self._cycle(pipe2, 1_800_000_000.0)
         self.assertEqual(len(self.refreshes), 2)
+        # The rebuild carries from the map it replaces, for two refreshes.
+        self.assertEqual(self.carries[-1], {"previous": self.mapping, "now": 1_800_000_000.0,
+                                            "carry_s": 2 * self.cfg.ha_availability_registry_refresh_s})
 
     def test_the_inventory_hold_applies_to_the_ha_check_through_the_pipeline(self):
         (self.d / "devices.json").write_text(json.dumps([dict(ENTRIES[0], hold_s=120), ENTRIES[1]]))

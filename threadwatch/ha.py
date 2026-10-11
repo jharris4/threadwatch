@@ -422,10 +422,12 @@ def normalize_ext(mac: str | None) -> str | None:
     return hexes.upper() if len(hexes) == 16 else None
 
 
-def thread_devices(ha: HomeAssistant, log: Callable[[str], None] = lambda m: None) -> list[dict]:
+def thread_devices(ha: HomeAssistant, log: Callable[[str], None] = lambda m: None,
+                   failed: list[str] | None = None) -> list[dict]:
     """Every Matter-over-Thread device HA knows: name (the user's name when
     set), model, extended address, node id. Devices whose diagnostics HA
-    cannot fetch are logged and skipped, not fatal."""
+    cannot fetch are logged and skipped, not fatal, and their registry ids
+    appended to ``failed`` when given."""
     registry = ha.call("config/device_registry/list") or []
     matter = [dev for dev in registry
               if any(isinstance(i, (list, tuple)) and i and i[0] == "matter" for i in (dev.get("identifiers") or []))]
@@ -438,6 +440,8 @@ def thread_devices(ha: HomeAssistant, log: Callable[[str], None] = lambda m: Non
         if isinstance(diag, HAError):
             log(f"skip {name or dev['id']}: {diag}")
             skipped += 1
+            if failed is not None:
+                failed.append(dev["id"])
             continue
         diag = diag or {}
         if str(diag.get("network_type", "")).lower() != "thread":

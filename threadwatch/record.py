@@ -486,10 +486,13 @@ def capture_healthy(last_frame_mono: float | None, now: float,
 
 
 # The recorder this far behind its radios (the oldest frame its readers
-# queued and the main loop has not reached) is recorder_behind, a page,
-# and recorder_caught_up once back under CAUGHT_UP_S. On 2026-10-11 it
-# fell 18 hours behind with frames still flowing: the stall clock and the
+# queued and the main loop has not reached) is recorder_behind, and
+# recorder_caught_up once back under CAUGHT_UP_S. On 2026-10-11 it fell
+# 18 hours behind with frames still flowing: the stall clock and the
 # heartbeat read healthy throughout, and the backlog lived only in memory.
+# The page is the heartbeat, which reads unhealthy meanwhile and does so
+# from a recorder too wedged to write an event; the event is a notice,
+# the record of it with the figures.
 BEHIND_S = 60.0
 CAUGHT_UP_S = 5.0
 
@@ -1099,7 +1102,7 @@ def run_record(cfg: Config) -> None:
             alarm = behind.check(beat["behind_s"], frames_q.qsize(), time.time())
             try:
                 if alarm and alarm[0] == "behind":
-                    events.emit("recorder_behind", "warning", **alarm[1])
+                    events.emit("recorder_behind", "notice", **alarm[1])
                 elif alarm:
                     events.emit("recorder_caught_up", "info", **alarm[1])
             except Exception as exc:  # a full disk must not take the watchdog down

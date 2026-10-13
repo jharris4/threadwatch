@@ -1371,7 +1371,9 @@ class RunRecordTest(unittest.TestCase):
                 if verdict == EXIT_STALLED:
                     self.assertTrue(self.calls[2][1])      # last-seen.json saved before the sniffer was stopped
 
-    def test_the_watchdog_pages_when_the_recorder_falls_behind_and_says_when_it_caught_up(self):
+    def test_the_watchdog_notes_when_the_recorder_falls_behind_and_says_when_it_caught_up(self):
+        """The heartbeat, unhealthy meanwhile, is the page; the event is the
+        record with the figures, a notice, so one condition pages once."""
         import threading
         from unittest import mock
 
@@ -1401,7 +1403,7 @@ class RunRecordTest(unittest.TestCase):
         self.assertEqual(code, 3)
         got = events()
         self.assertEqual([(r["event"], r["severity"]) for r in got],
-                         [("recorder_behind", "warning"), ("recorder_caught_up", "info")])
+                         [("recorder_behind", "notice"), ("recorder_caught_up", "info")])
         self.assertEqual(got[0]["behind_s"], 120.0)
 
     def test_a_signal_in_the_sniffers_child_leaves_at_once_and_in_the_parent_stops_cleanly(self):

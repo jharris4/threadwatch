@@ -189,6 +189,19 @@ class Aligner:
                 "pairs": self.pairs, "locks": self.locks}
 
 
+def _trim_front(entries: deque, at: int, order: float, mono: float, span: float) -> list:
+    """Drop from the front of an arrival-ordered history what is older than
+    ``span``, by order or by arrival (each entry's last field). Order alone
+    is not enough live: a copy an unchecked estimate placed hours ahead sits
+    at the front and keeps everything behind it, and arrival always moves
+    on (offline every arrival is 0 and only order counts). Returns what
+    was dropped."""
+    dropped = []
+    while entries and (entries[0][at] < order - span or entries[0][-1] < mono - max(span, LATE_S)):
+        dropped.append(entries.popleft())
+    return dropped
+
+
 class _Pending:
     __slots__ = ("label", "frame", "order", "mono", "seq")
 
@@ -220,18 +233,18 @@ class Merger:
         self._queues: dict[str | None, deque] = {label: deque() for label in self.labels}
         self._by_psdu: dict[str | None, dict[bytes, list]] = {label: {} for label in self.labels}
         self._last_ts: dict[str | None, float] = {}       # newest stamp pushed, per radio
-        # What each radio released lately, (raw, order, psdu): a copy released
+        # What each radio released lately, (raw, order, psdu, mono): a copy released
         # alone because its twin was ambiguous must keep the twin from
         # pairing with the next radio's copy as if it were alone.
         self._recent: dict[str | None, deque] = {label: deque() for label in self.labels}
         # What each radio delivered over the last 2 * ACQUIRE_S, for
-        # acquisition: (order, psdu, raw) in arrival order, and by psdu.
+        # acquisition: (order, psdu, raw, mono) in arrival order, and by psdu.
         self._seen: dict[str | None, deque] = {label: deque() for label in self.labels}
         self._seen_by_psdu: dict[str | None, dict[bytes, list]] = {label: {} for label in self.labels}
         # psdus acquisition has already given each aligner, so their release
         # does not count the same pair twice (until the next reset).
         self._acquired: dict[str | None, deque] = {label: deque(maxlen=64) for label in self.aligners}
-        # What each radio released over the last LATE_S, (order, psdu), to
+        # What each radio released over the last LATE_S, (order, psdu, mono), to
         # recognise a copy whose twin went out alone before it arrived.
         self._released_recent: dict[str | None, deque] = {label: deque() for label in self.labels}
         self.unjudged: dict[str, int] = {"late_copy": 0, "unlocked": 0}
@@ -260,17 +273,16 @@ class Merger:
         self._by_psdu[label].setdefault(frame.psdu, []).append(p)
         self._ended.discard(label)
         if not self.offline and len(frame.psdu) >= ACQUIRE_MIN_LEN:
-            self._acquire(label, frame.psdu, p.order, frame.ts)
+            self._acquire(label, frame.psdu, p.order, frame.ts, mono)
 
-    def _acquire(self, label: str | None, psdu: bytes, order: float, raw: float) -> None:
+    def _acquire(self, label: str | None, psdu: bytes, order: float, raw: float, mono: float = 0.0) -> None:
         """Note this copy, and pair it for an unlocked aligner with the one
         copy of its psdu the other side delivered within ACQUIRE_S."""
         seen, by_psdu = self._seen[label], self._seen_by_psdu[label]
-        entry = (order, psdu, raw)
+        entry = (order, psdu, raw, mono)
         seen.append(entry)
         by_psdu.setdefault(psdu, []).append(entry)
-        while seen and seen[0][0] < order - 2 * ACQUIRE_S:
-            old = seen.popleft()
+        for old in _trim_front(seen, 0, order, mono, 2 * ACQUIRE_S):
             lst = by_psdu[old[1]]
             lst.remove(old)
             if not lst:
@@ -333,8 +345,8 @@ class Merger:
         """Queued and recent copies must use the same current estimate."""
         for p in self._queues[label]:
             p.order = self._order(label, p.frame.ts)
-        self._recent[label] = deque((raw, self._order(label, raw), psdu)
-                                    for raw, _order, psdu in self._recent[label])
+        self._recent[label] = deque((raw, self._order(label, raw), psdu, mono)
+                                    for raw, _order, psdu, mono in self._recent[label])
 
     def _expire(self, label: str | None, raw: float) -> bool:
         if self.offline:
@@ -428,9 +440,8 @@ class Merger:
         if not self.offline:
             for c in copies.values():
                 released = self._released_recent[c.label]
-                released.append((c.order, c.frame.psdu))
-                while released and released[0][0] < c.order - LATE_S:
-                    released.popleft()
+                released.append((c.order, c.frame.psdu, c.mono))
+                _trim_front(released, 0, c.order, c.mono, LATE_S)
             reason = "late_copy" if late else None
             if reason is None and self.primary not in copies:
                 al = self.aligners.get(next(iter(copies)))
@@ -453,7 +464,7 @@ class Merger:
             al = self._aligner_between(p.label, label)
             if al is None or not al.locked:
                 continue
-            if any(psdu == p.frame.psdu and abs(order - p.order) <= W_MAX for order, psdu in released):
+            if any(psdu == p.frame.psdu and abs(order - p.order) <= W_MAX for order, psdu, _mono in released):
                 return True
         return False
 
@@ -464,16 +475,15 @@ class Merger:
         if not lst:
             del self._by_psdu[p.label][p.frame.psdu]
         recent = self._recent[p.label]
-        recent.append((p.frame.ts, p.order, p.frame.psdu))
-        while recent and recent[0][1] < p.order - 2 * SEARCH_S:
-            recent.popleft()
+        recent.append((p.frame.ts, p.order, p.frame.psdu, p.mono))
+        _trim_front(recent, 1, p.order, p.mono, 2 * SEARCH_S)
 
     def _alike_nearby(self, label: str | None, p: _Pending, exclude=None) -> int:
         """How many copies of p's psdu radio ``label`` has pending or lately
         released within the search span of p, other than ``exclude``."""
         pending = self._by_psdu[label].get(p.frame.psdu, [])
         n = sum(1 for c in pending if c is not exclude and abs(c.order - p.order) <= SEARCH_S)
-        n += sum(1 for _raw, order, psdu in self._recent[label]
+        n += sum(1 for _raw, order, psdu, _mono in self._recent[label]
                  if psdu == p.frame.psdu and abs(order - p.order) <= SEARCH_S)
         return n
 

@@ -394,6 +394,29 @@ class TwoRadiosTest(unittest.TestCase):
         self.assertEqual(sorted(judged), sorted(secured(2000 + i) for i in range(200)))
         self.assertEqual(sum(len(f.heard) for f in out), 400)       # every copy recorded somewhere
 
+    def test_a_copy_placed_far_ahead_does_not_keep_the_recent_history_forever(self):
+        """2026-10-12: copies the merger placed hours ahead sat at the front
+        of the recent-release history; trimming from the front by order
+        stopped there, the history grew for a day, and the scan of it for
+        late twins slowed the recorder until it fell 18 hours behind."""
+        offsets = {"hub": 0.0, "annex": 3600.0}      # an unchecked estimate an hour out
+        m = Merger("hub", ["hub", "annex"], epoch=lambda label, raw: raw + offsets[label])
+        m.push("annex", frame(T0, secured(900)), mono=0.0)          # unlocked, alone: placed an hour ahead
+        m.push("annex", frame(T0 + 0.5, secured(901)), mono=0.5)
+        self.assertEqual(len(m.release(flush=True)), 2)
+        offsets["annex"] = 0.0
+        self._lock(m, mono=1.0)
+        for i in range(400):                         # 40 s of copies both radios hear, after the lock
+            t = T0 + 10 + i * 0.1
+            m.push("hub", frame(t, secured(3000 + i)), mono=10 + i * 0.1)
+            m.push("annex", frame(t + self.OFFSET, secured(3000 + i)), mono=10 + i * 0.1)
+            m.release(mono=10 + i * 0.1)
+        span = int(merge.LATE_S / 0.1) + 5
+        for label in ("hub", "annex"):
+            self.assertLess(len(m._released_recent[label]), span)
+            self.assertLess(len(m._recent[label]), span)
+            self.assertLess(len(m._seen[label]), int(2 * merge.ACQUIRE_S / 0.1) + 5)
+
     def test_acquisition_takes_only_long_psdus_heard_once_on_each_side(self):
         offsets = {"hub": 0.0, "annex": -0.25}
         m = Merger("hub", ["hub", "annex"], epoch=lambda label, raw: raw + offsets[label])

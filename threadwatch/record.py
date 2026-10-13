@@ -1086,6 +1086,29 @@ def run_record(cfg: Config) -> None:
                 else:
                     r.state_mono = mono                      # look again in REATTACH_S
 
+    # Defined before the watchdog starts: its exit ladder names them, and a
+    # closure run_record has not reached yet is a NameError that would end
+    # the watchdog thread outside the ladder's try (a tick in the first
+    # milliseconds of a run, as the tests drive it). _set_aside itself is
+    # defined with the capture loop below; a frame is only ever held once
+    # that loop is running.
+    def _end_aside_run(r: Radio) -> None:
+        """A frame fed, or the run over, ends a run of set-asides: the first
+        was logged in full, the rest are one line here. A relay that starts
+        on a quiet mesh sets aside most of what its dongle buffered, one
+        line each said cable fault twenty times over."""
+        if r.aside_run > 1:
+            _log(f"{r.describe()}: {r.aside_run - 1} more frame(s) in a row set aside after that one, "
+                 "recorded unjudged")
+        r.aside_run = 0
+
+    def _set_aside_all() -> None:
+        """The run is ending: every held frame is set aside, never confirmed."""
+        for r in radios:
+            if r.held is not None:
+                _set_aside(r)
+            _end_aside_run(r)
+
     def _watchdog():
         # The main loop blocks reading the queue, so a stalled stream (host
         # sleep/wake, dongle unplug, sniffer process death) looks alive
@@ -1207,16 +1230,6 @@ def run_record(cfg: Config) -> None:
     exit_code = 0
     streams = {}                         # attachment tokens, owned by the capture loop
 
-    def _end_aside_run(r: Radio) -> None:
-        """A frame fed, or the run over, ends a run of set-asides: the first
-        was logged in full, the rest are one line here. A relay that starts
-        on a quiet mesh sets aside most of what its dongle buffered, one
-        line each said cable fault twenty times over."""
-        if r.aside_run > 1:
-            _log(f"{r.describe()}: {r.aside_run - 1} more frame(s) in a row set aside after that one, "
-                 "recorded unjudged")
-        r.aside_run = 0
-
     def _feed(r: Radio, frame, mono: float) -> None:
         _end_aside_run(r)
         r.min_delay = next_min_delay(r.min_delay, r.last_mono, frame.ts, mono)
@@ -1244,13 +1257,6 @@ def run_record(cfg: Config) -> None:
                  "recorded unjudged (a garbled serial line, or a relay start replaying what its dongle buffered)")
         copy = replace(frame, ts=ring_ts, radio=r.label, heard=None, unjudged="bad_stamp")
         _take(replace(copy, heard={r.label: copy}))
-
-    def _set_aside_all() -> None:
-        """The run is ending: every held frame is set aside, never confirmed."""
-        for r in radios:
-            if r.held is not None:
-                _set_aside(r)
-            _end_aside_run(r)
 
     def _push(r: Radio, frame, mono: float, token) -> None:
         """One radio's copy of a frame into the merger, and whatever the

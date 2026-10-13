@@ -305,7 +305,12 @@ never moves the radio's clock, and is counted in the radio's
 `bad_stamps`. On 2026-10-11 one such relay frame re-anchored its radio's
 clock by 4.6 days and left the recorder 18 hours behind. A dongle's
 clock drifts against the host's, so a stamp ahead is caught at a second
-plus 500 ppm of the gap before it: 2.8 s after an hour of silence.
+plus 500 ppm of the gap before it: 2.8 s after an hour of silence. That
+is measured against the fastest delivery the radio has shown, so on a
+link whose delay varies (a relay over USB and TCP) a stamp ahead by less
+than that plus this frame's delay above the minimum passes; it is
+slew-bounded and harmless to the clock, but it lowers the baseline by
+its size until the allowance creeps back, half an hour for a second.
 
 Three things `bad_stamps` can count that are not garbles. A relay that
 starts replays what its dongle buffered: frames heard seconds apart

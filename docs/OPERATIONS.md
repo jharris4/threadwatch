@@ -309,8 +309,14 @@ plus 500 ppm of the gap before it: 2.8 s after an hour of silence.
 
 Three things `bad_stamps` can count that are not garbles. A relay that
 starts replays what its dongle buffered: frames heard seconds apart
-arrive together, and some of them can be set aside, a handful at relay
-start. A link that got faster than the fastest it had been by over a
+arrive together, so each one stamped over a second after the one before
+it reads as early, and is set aside unless the frame after it is within
+a second of it. On a busy mesh they confirm each other and all go on; on
+a quiet one most of the buffer is set aside (a dongle has held over a
+hundred frames), until the first two live frames. Those frames were
+unjudged in any case, since a fresh attachment is unlocked; the cost is
+their ring stamps. The log says it once per run of set-asides, the first
+in full and the rest as a count. A link that got faster than the fastest it had been by over a
 second costs one hold, confirmed by the next frame. And a held frame
 waits for its radio's next frame however long that takes; on a quiet
 radio it reaches the detectors late. For a relay radio, the serial

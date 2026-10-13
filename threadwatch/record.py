@@ -602,6 +602,7 @@ class Radio:
         self.min_delay: float | None = None   # smallest arrival minus stamp seen (DELAY_RISE)
         self.held: tuple | None = None
         self.bad_stamps = 0
+        self.aside_run = 0                    # set aside in a row, since the last frame fed (one log line)
 
     @property
     def key(self) -> str:
@@ -1136,12 +1137,7 @@ def run_record(cfg: Config) -> None:
                     for r in radios:
                         r.stop_sniffer()
 
-                def set_aside_held():
-                    for r in radios:
-                        if r.held is not None:
-                            _set_aside(r)
-
-                for what, step in (("held frames", set_aside_held),
+                for what, step in (("held frames", _set_aside_all),
                                    ("ring flush", flush_rings),
                                    ("last-seen save", pipe.seen.save),
                                    ("key journal save", lambda: pipe.journal.save(force=True)),
@@ -1208,7 +1204,18 @@ def run_record(cfg: Config) -> None:
     exit_code = 0
     streams = {}                         # attachment tokens, owned by the capture loop
 
+    def _end_aside_run(r: Radio) -> None:
+        """A frame fed, or the run over, ends a run of set-asides: the first
+        was logged in full, the rest are one line here. A relay that starts
+        on a quiet mesh sets aside most of what its dongle buffered, one
+        line each said cable fault twenty times over."""
+        if r.aside_run > 1:
+            _log(f"{r.describe()}: {r.aside_run - 1} more frame(s) in a row set aside after that one, "
+                 "recorded unjudged")
+        r.aside_run = 0
+
     def _feed(r: Radio, frame, mono: float) -> None:
+        _end_aside_run(r)
         r.min_delay = next_min_delay(r.min_delay, r.last_mono, frame.ts, mono)
         r.last_raw, r.last_mono = frame.ts, mono
         merger.push(r.label, frame, mono)
@@ -1222,16 +1229,25 @@ def run_record(cfg: Config) -> None:
         frame, held_mono, arrived = r.held
         r.held = None
         r.bad_stamps += 1
+        r.aside_run += 1
         # The series' last stamp now, not when it was held: copies the
         # merger still had then are written by now, and a stamp before
         # them would put the series out of order (an hour boundary in
         # between rotated back to the last hour's file for one frame).
         ring_ts = r.last_frame_ts if r.last_frame_ts is not None else arrived
-        _log(f"{r.describe()}: one frame stamped {frame.ts - r.last_raw:+.3f} s from its radio's last stamp "
-             f"{held_mono - r.last_mono:.3f} s after it, and the next frame back on the old timebase; "
-             "recorded unjudged (a garbled serial line?)")
+        if r.aside_run == 1:
+            _log(f"{r.describe()}: one frame stamped {frame.ts - r.last_raw:+.3f} s from its radio's last stamp "
+                 f"{held_mono - r.last_mono:.3f} s after it, and the next frame back on the old timebase; "
+                 "recorded unjudged (a garbled serial line, or a relay start replaying what its dongle buffered)")
         copy = replace(frame, ts=ring_ts, radio=r.label, heard=None, unjudged="bad_stamp")
         _take(replace(copy, heard={r.label: copy}))
+
+    def _set_aside_all() -> None:
+        """The run is ending: every held frame is set aside, never confirmed."""
+        for r in radios:
+            if r.held is not None:
+                _set_aside(r)
+            _end_aside_run(r)
 
     def _push(r: Radio, frame, mono: float, token) -> None:
         """One radio's copy of a frame into the merger, and whatever the
@@ -1411,7 +1427,7 @@ def run_record(cfg: Config) -> None:
             # What the queue and then the merger still hold goes into the
             # rings and the pipeline before the rings close.
             cleanup("queued frames", drain_queue)
-            cleanup("held frames", lambda: [_set_aside(r) for r in radios if r.held is not None])
+            cleanup("held frames", _set_aside_all)
             cleanup("merger flush", lambda: [_take(out) for out in merger.release(flush=True)])
             lost = cleanup("sniffer stop", stop_sniffers)
             lost |= cleanup("last-seen save", pipe.seen.save)

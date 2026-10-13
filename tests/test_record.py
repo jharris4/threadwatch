@@ -1799,7 +1799,12 @@ class TwoRadiosRunTest(unittest.TestCase):
         out, ring = self._hub_alone(self._frames(3) + [(5.0, first, -60.0), (300.0, second, -60.0)]
                                     + self._frames(2, start=3))
         self.assertIn("stopped after 5 frames", out)
+        # The first in full, the rest of the run as one count when a frame is
+        # fed again: a relay start on a quiet mesh sets aside most of what
+        # its dongle buffered, and twenty lines each said "garbled".
         self.assertEqual(out.count("recorded unjudged"), 2)
+        self.assertEqual(out.count("one frame stamped"), 1)
+        self.assertIn("1 more frame(s) in a row set aside after that one, recorded unjudged", out)
         self.assertEqual(len(ring), 7)
 
     def test_a_radio_whose_clock_really_restarts_goes_on_on_the_new_timebase(self):

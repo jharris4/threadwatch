@@ -338,7 +338,10 @@ journaled. A frame with `time: 0` is the radio driver's "no timestamp"
 is, stamped at the dongle's boot, for the hold rule above to record
 unjudged; as a run's first frame it is dropped. Once per run the
 reader journals how many of its first 1000 frames end in their own
-802.15.4 FCS, which says whether the firmware passes the real one.
+802.15.4 FCS. On the firmware in `firmware/` it is 0 of 1000 (checked
+2026-10-13 on two dongles): the two bytes the reader drops as the FCS
+are not one, so a garble inside the hex that keeps it an even length,
+with every field in range, passes the reader.
 
 A radio with `source = "tcp"` is a `threadwatch relay` on another host
 (SETUP.md, "A dongle on another host"): the recorder listens on its

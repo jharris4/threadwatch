@@ -934,6 +934,26 @@ class RadioClockTest(unittest.TestCase):
         self.assertEqual(clock.steps, 1)
         self.assertEqual(clock.last_step_s, 0.0)      # only the frame that stepped reports one
 
+    def test_a_stamp_under_a_second_back_is_a_garble_not_a_restart(self):
+        """The recorder holds a stamp over BACKSTEP_S back and confirms a
+        real restart; a smaller step back is a garbled stamp it let through.
+        Re-anchoring on it moved every later stamp by the garble plus the
+        queue delay, and the slew took minutes to undo that."""
+        from threadwatch.record import BACKSTEP_S
+        wall = [1_700_000_000.0]
+        clock = self._clock(wall)
+        clock.stamp(500.0)
+        wall[0] += 1.0
+        self.assertEqual(clock.stamp(501.0), wall[0])
+        self.assertAlmostEqual(clock.stamp(500.2), wall[0] - 0.8, delta=2 * clock.MAX_SLEW)   # where it says
+        self.assertEqual(clock.steps, 0)
+        wall[0] += 0.5
+        self.assertAlmostEqual(clock.stamp(501.5), wall[0], delta=2 * clock.MAX_SLEW)       # nothing moved
+        self.assertEqual(clock.steps, 0)
+        wall[0] += 0.5
+        clock.stamp(501.5 - BACKSTEP_S - 0.01)                                                # over it: a restart
+        self.assertEqual(clock.steps, 1)
+
     def test_every_step_is_kept_for_the_log_however_many_frames_one_release_stamps(self):
         """2026-10-11: a garbled stamp stepped the clock forward, the next
         frame stepped it back, both inside one release; only the last

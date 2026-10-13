@@ -393,9 +393,14 @@ class RadioClock:
     cadence are all read off those intervals.
 
     Queue latency cannot distinguish drift from a clock jump. Only a host
-    wall/monotonic discontinuity, a backwards radio timestamp or a stamp
-    in the future can step the offset; ordinary disagreement is slewed at
-    a bounded rate.
+    wall/monotonic discontinuity, a radio timestamp more than BACKSTEP_S
+    back or a stamp in the future can step the offset; ordinary
+    disagreement is slewed at a bounded rate. A stamp under BACKSTEP_S
+    back is not a restart (the recorder holds and confirms real ones) but
+    a garbled stamp it let through: stepping on it moved the offset by the
+    garble plus the queue delay, up to a second, that the slew then took
+    a quarter of an hour to work off. It is stamped where it says and
+    moves nothing, one record out of order in the ring.
 
     A stamp in the future: a frame cannot reach the recorder before it was
     heard, so a stamp more than STEP_S past the frame's arrival means the
@@ -445,7 +450,7 @@ class RadioClock:
             return raw_ts + self.offset
         error = now - (raw_ts + self.offset)
         host_step = (now - previous_host[0]) - (mono - previous_host[1])
-        if raw_ts < self._last_raw:
+        if raw_ts < self._last_raw - BACKSTEP_S:
             self.offset += error           # the radio restarted its timebase
             self.steps += 1
             self.last_step_s = error

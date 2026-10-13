@@ -345,8 +345,14 @@ A radio with `source = "tcp"` is a `threadwatch relay` on another host
 `listen` address, checks each connection's handshake (the radio's
 label, the channel, the dongle's serial when configured) and refuses
 one that does not match, with the reason in the journal; a relay
-connecting is `radio_attached` or `radio_returned`, one disconnecting
-`radio_lost`, and the relay reconnects by itself. The relay exits 3
+connecting is `radio_attached` or `radio_returned`, and the relay
+reconnects by itself. One disconnecting is `radio_lost` only if it is
+not back within 60 s: a relay restart is back in about 4 s, a crashed
+relay's systemd restart in about 14 s, and a relay that cannot reach
+the recorder retries at most 30 s apart. Back in time, it is
+`radio_returned` and not paged; its third disconnect in 10 minutes
+(a dongle resetting on its USB port) is `radio_lost` at once. A
+recorder stopped inside the 60 s does not report it. The relay exits 3
 when its own dongle's stream ends, for its supervisor
 (`threadwatch-relay.service`) to restart.
 

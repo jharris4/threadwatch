@@ -539,6 +539,18 @@ class BehindAlarm:
 # port; its serial finds it.
 REATTACH_S = 60.0
 
+# A relay that closes its stream is reported lost only if it has not
+# reconnected within RELAY_GRACE_S: a relay restart is back in about 4 s,
+# a crashed relay's systemd restart in about 14 s, and a relay that
+# cannot reach the recorder retries at most 30 s apart. Back in time, it
+# is radio_returned (info) and never paged. A relay that drops for the
+# RELAY_FLAPS-th time within RELAY_FLAP_WINDOW_S is reported at once: a
+# dongle resetting on its USB port drops the relay over and over, and
+# each drop would otherwise be back within the grace.
+RELAY_GRACE_S = 60.0
+RELAY_FLAPS = 3
+RELAY_FLAP_WINDOW_S = 600.0
+
 
 def release_consumer(sniffer, timeout: float = 1.0) -> None:
     """_stop() kills the serial process but does not wake the vendor's
@@ -606,6 +618,11 @@ class Radio:
         self.held: tuple | None = None
         self.bad_stamps = 0
         self.aside_run = 0                    # set aside in a row, since the last frame fed (one log line)
+        # A relay's closed streams: when the last one closed with its
+        # radio_lost held back (RELAY_GRACE_S), and when each closed within
+        # RELAY_FLAP_WINDOW_S.
+        self.away_since: float | None = None
+        self.drops: list[float] = []
 
     @property
     def key(self) -> str:
@@ -1037,8 +1054,12 @@ def run_record(cfg: Config) -> None:
     for r in radios:
         pipe.radio_changed(r.label, r.state, time.time())
 
-    def _radio_event(r: Radio, event: str, severity: str, note: str) -> None:
-        pipe.radio_changed(r.label, r.state, time.time())
+    def _radio_event(r: Radio, event: str, severity: str, note: str, changed: bool = True) -> None:
+        """``changed`` False: the pipeline was told when the state changed
+        (a relay's radio_lost held back), and a second "down" would re-base
+        its references again."""
+        if changed:
+            pipe.radio_changed(r.label, r.state, time.time())
         try:
             events.emit(event, severity, radio=r.label, serial=r.serial, port=r.port, placement=r.placement,
                         note=note)
@@ -1293,13 +1314,36 @@ def run_record(cfg: Config) -> None:
             return
         _feed(r, frame, mono)
 
+    def _report_away(now: float) -> float | None:
+        """A relay's held-back radio_lost, once RELAY_GRACE_S has passed
+        without it reconnecting. Returns how long until the next one is
+        due, None with none held."""
+        wait = None
+        for r in radios:
+            if r.away_since is None:
+                continue
+            left = r.away_since + RELAY_GRACE_S - now
+            if left > 0:
+                wait = left if wait is None else min(wait, left)
+                continue
+            away, r.away_since = now - r.away_since, None
+            _radio_event(r, "radio_lost", "warning",
+                         f"{r.describe()}: its relay disconnected {away:.0f} s ago and has not reconnected "
+                         "(it retries by itself); the recorder carries on with the rest", changed=False)
+        return wait
+
     try:
         while True:
             # Copies waiting for another radio's are released on the next
             # arrival, or by their age: on a quiet channel that is this
-            # timeout, not the next frame.
+            # timeout, not the next frame. A relay's held-back radio_lost
+            # is due on time on a quiet channel too.
+            timeout = HOLD_S if merger.pending() else TICK_S
+            wait = _report_away(time.monotonic())
+            if wait is not None:
+                timeout = min(timeout, wait)
             try:
-                label, frame, mono, sniffer = frames_q.get(timeout=HOLD_S if merger.pending() else TICK_S)
+                label, frame, mono, sniffer = frames_q.get(timeout=timeout)
             except queue.Empty:
                 for out in merger.release(time.monotonic()):
                     _take(out)
@@ -1308,11 +1352,15 @@ def run_record(cfg: Config) -> None:
             if isinstance(frame, str) and frame == "connect":
                 # A relay connected: this radio's stream, from now.
                 conn, peer, hs = sniffer
-                was = r.state
+                was, since = r.state, r.away_since
+                r.away_since = None
                 r.adopt(conn, peer, hs, frames_q, mono)
-                _radio_event(r, "radio_returned" if was == "down" else "radio_attached", "info",
-                             f"{r.describe()}: relay connected from {peer}" + (
-                                 f" (dongle serial {hs['serial']})" if hs.get("serial") else ""))
+                note = f"{r.describe()}: relay connected from {peer}" + (
+                    f" (dongle serial {hs['serial']})" if hs.get("serial") else "")
+                if since is not None:
+                    note += (f", {mono - since:.0f} s after it disconnected: within the {RELAY_GRACE_S:.0f} s "
+                             "grace, so it was not reported lost")
+                _radio_event(r, "radio_returned" if was == "down" else "radio_attached", "info", note)
                 continue
             if r.token() is not sniffer:
                 continue                      # an end marker of a sniffer already detached
@@ -1331,9 +1379,21 @@ def run_record(cfg: Config) -> None:
                 # supervisor restarts it, listener and all, and the relay
                 # reconnects with its own backoff.
                 if any(x.state == "up" for x in radios):
+                    if r.source == "tcp":
+                        r.drops = [t for t in r.drops if mono - t < RELAY_FLAP_WINDOW_S] + [mono]
+                        if len(r.drops) < RELAY_FLAPS:
+                            # A relay restart is back within seconds: its
+                            # radio_lost waits for _report_away. The pipeline
+                            # hears of the radio's loss now.
+                            r.away_since = mono
+                            pipe.radio_changed(r.label, r.state, time.time())
+                            _log(f"{r.describe()}: relay disconnected; reported lost if it is not back "
+                                 f"within {RELAY_GRACE_S:.0f} s")
+                            continue
                     _radio_event(r, "radio_lost", "warning",
                                  f"{r.describe()} closed its capture stream ("
-                                 + ("relay disconnected; it reconnects by itself" if r.source == "tcp" else
+                                 + (f"relay disconnected {len(r.drops)} times in {RELAY_FLAP_WINDOW_S / 60:.0f} "
+                                    "minutes; it reconnects by itself)" if r.source == "tcp" else
                                     f"dongle unplugged? sniffer died?); the recorder carries on with the rest "
                                     f"and looks for it every {REATTACH_S:.0f} s"))
                     continue
@@ -1359,6 +1419,12 @@ def run_record(cfg: Config) -> None:
         signal.signal(signal.SIGINT, signal.SIG_IGN)
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         try:
+            # A run ending inside a relay's grace (a deploy restarting both)
+            # does not report it lost; the next run starts it as missing.
+            for r in radios:
+                if r.away_since is not None:
+                    _log(f"{r.describe()}: its relay was still away at exit, "
+                         f"{time.monotonic() - r.away_since:.0f} s after it disconnected; not reported lost")
             # Each step may fail without taking the rest with it, as the
             # stalled exit above does it. A full disk out of ring.close()
             # used to propagate from here: no alerts drained or spooled,

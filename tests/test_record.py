@@ -1976,21 +1976,130 @@ class RelayRadioRunTest(TwoRadiosRunTest):
 
         def later():
             time.sleep(1.0)
-            relay_hold.set()              # the relay disconnects: annex lost, the run goes on
+            relay_hold.set()              # the relay disconnects: the annex is down, the run goes on
             time.sleep(0.4)
-            hub_hold.set()                # the hub ends: the run ends
+            hub_hold.set()                # the hub ends inside the grace: the run ends, nothing paged
         threading.Thread(target=later, daemon=True).start()
         code, out = self._run()
         self.assertEqual(code, 3)
         self.assertIn(f"radio annex: listening on 127.0.0.1:{self.port} for its relay", out)
         self.assertIn("radio annex: relay connected from 127.0.0.1:", out)
-        self.assertEqual(self._events(), [("radio_missing", "annex"), ("radio_attached", "annex"),
-                                          ("radio_lost", "annex")])
+        self.assertIn("radio annex: relay disconnected; reported lost if it is not back within 60 s", out)
+        self.assertIn("radio annex: its relay was still away at exit", out)
+        self.assertEqual(self._events(), [("radio_missing", "annex"), ("radio_attached", "annex")])
         ring = sorted(p.name for p in self.cfg.ring_dir.glob("*.pcap"))
         self.assertEqual(len(ring), 2, out)
         with open(self.cfg.ring_dir / ring[0], "rb") as fh:           # the annex's series
             self.assertEqual([f.rssi for f in PcapStreamReader(fh)], [-70.0, -70.0])
         self.assertIn("stopped after 3 frames", out)                    # the two shared frames once each
+
+    def _grace(self, grace_s):
+        from unittest import mock
+        patcher = mock.patch("threadwatch.record.RELAY_GRACE_S", grace_s)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _radio_records(self):
+        from threadwatch.events import read_all
+        return [r for r in read_all(self.cfg.events_dir) if r["event"].startswith("radio")]
+
+    def _relay_sessions(self, gaps, then_s):
+        """The hub hears two frames and then nothing; the relay connects,
+        holds for 0.3 s and disconnects, then reconnects after each gap in
+        ``gaps``; ``then_s`` after the last reconnect the hub goes (a
+        radio_lost of its own, with the relay up), and the relay's going
+        then ends the run."""
+        self.scripts["/dev/fake-hub"] = self._frames(2)
+        hub_hold = self.holds.setdefault("/dev/fake-hub", threading.Event())
+        holds = [threading.Event() for _ in range(len(gaps) + 1)]
+
+        def sessions():
+            for i, hold in enumerate(holds):
+                threading.Thread(target=self._client, args=([], hold), daemon=True).start()
+                if i == len(gaps):
+                    break
+                time.sleep(0.3)
+                hold.set()                          # this session disconnects
+                time.sleep(gaps[i])
+            time.sleep(then_s)
+            hub_hold.set()
+            time.sleep(0.3)
+            for hold in holds:
+                hold.set()
+        threading.Thread(target=sessions, daemon=True).start()
+        return self._run()
+
+    def test_a_relay_still_away_after_the_grace_is_lost_on_time_on_a_quiet_channel(self):
+        # The hub's frames are long written when the grace runs out: the
+        # main loop is waiting on an empty queue (TICK_S), and the held
+        # radio_lost must not wait for the next frame or tick.
+        from unittest import mock
+
+        from threadwatch import record
+        self._grace(0.3)
+        told = []
+        changed = record.Pipeline.radio_changed
+
+        def spy(pipe, label, state, now):
+            told.append((label, state))
+            return changed(pipe, label, state, now)
+        with mock.patch.object(record.Pipeline, "radio_changed", spy):
+            code, out = self._relay_away(1.5)
+        self.assertEqual(code, 3)
+        self.assertEqual(self._events(), [("radio_missing", "annex"), ("radio_attached", "annex"),
+                                          ("radio_lost", "annex")])
+        attached, lost = self._radio_records()[-2:]
+        self.assertEqual(lost["severity"], "warning")
+        # Due 0.6 s after the relay connected (0.3 s up, 0.3 s grace); the
+        # hub, whose end would wake the loop anyway, ends at 1.8 s.
+        self.assertLess(lost["ts"] - attached["ts"], 1.2)
+        self.assertRegex(lost["note"], r"its relay disconnected \d+ s ago and has not reconnected")
+        # Told once that the annex went down, at the disconnect: the held
+        # radio_lost does not tell it again (each "down" re-bases the
+        # devices' RSSI references).
+        annex = [s for label, s in told if label == "annex"]
+        self.assertEqual((annex[-2:], annex.count("down")), (["up", "down"], 1))
+        self.assertNotIn("still away at exit", out)
+
+    def _relay_away(self, away_s):
+        """The relay connects, disconnects after 0.3 s and stays away; the
+        hub ends the run ``away_s`` later."""
+        self.scripts["/dev/fake-hub"] = self._frames(2)
+        hub_hold = self.holds.setdefault("/dev/fake-hub", threading.Event())
+        hold = threading.Event()
+        threading.Thread(target=self._client, args=([], hold), daemon=True).start()
+
+        def later():
+            time.sleep(0.3)
+            hold.set()
+            time.sleep(away_s)
+            hub_hold.set()
+        threading.Thread(target=later, daemon=True).start()
+        return self._run()
+
+    def test_a_relay_back_within_the_grace_is_returned_and_never_lost(self):
+        code, out = self._relay_sessions([0.2], then_s=0.3)
+        self.assertEqual(code, 3)
+        self.assertEqual(self._events(), [("radio_missing", "annex"), ("radio_attached", "annex"),
+                                          ("radio_returned", "annex"), ("radio_lost", "hub")])
+        back = self._radio_records()[2]
+        self.assertEqual(back["severity"], "info")
+        self.assertIn("s after it disconnected: within the 60 s grace, so it was not reported lost", back["note"])
+        self.assertNotIn("still away at exit", out)
+
+    def test_a_relay_dropping_for_the_third_time_in_ten_minutes_is_lost_at_once(self):
+        # Two drops come back within the grace; the third is reported as
+        # it happens, not 60 s on, and the run ends a moment later.
+        code, out = self._relay_sessions([0.2, 0.2, 0.2], then_s=0.3)
+        self.assertEqual(code, 3)
+        self.assertEqual(self._events(), [("radio_missing", "annex"), ("radio_attached", "annex"),
+                                          ("radio_returned", "annex"), ("radio_returned", "annex"),
+                                          ("radio_lost", "annex"), ("radio_returned", "annex"),
+                                          ("radio_lost", "hub")])
+        lost = self._radio_records()[4]
+        self.assertIn("relay disconnected 3 times in 10 minutes; it reconnects by itself)", lost["note"])
+        # The return after a reported loss is the plain one.
+        self.assertNotIn("grace", self._radio_records()[5]["note"])
 
     def test_a_relay_for_another_radio_or_channel_is_refused(self):
         frames = self._frames(2)

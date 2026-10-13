@@ -323,8 +323,9 @@ whitespace after the time, a signed time or one over 31 years, a PSDU
 shorter than an ACK or longer than 127 bytes, an RSSI above +20 dBm, an
 LQI above 255. Each is counted in `dropped_lines` and its raw bytes
 journaled. A frame with `time: 0` is the radio driver's "no timestamp"
-(a documented race), not a garble: it is stamped from when it was read
-and journaled; as a run's first frame it is dropped. Once per run the
+(a documented race), not a garble: it is journaled and passed on as it
+is, stamped at the dongle's boot, for the hold rule above to record
+unjudged; as a run's first frame it is dropped. Once per run the
 reader journals how many of its first 1000 frames end in their own
 802.15.4 FCS, which says whether the firmware passes the real one.
 

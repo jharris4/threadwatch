@@ -298,7 +298,8 @@ frame whose dongle time went backwards go to the journal (at most one of
 each a minute), so a bad stamp can be traced to its line, the packet
 pattern refuses a line the firmware could not have printed (the time
 must end it; time, PSDU length, RSSI and LQI in range), a frame with
-the driver's "no timestamp" (time 0) is stamped from its arrival, a
+the driver's "no timestamp" (time 0) goes on as it is for the recorder
+to set aside (dropped only as a run's first frame), a
 stamp the pcap record cannot hold costs one frame rather than the
 capture, and the first 1000 frames of a run are checked against their
 FCS once. `VendoredSnifferTest` in `tests/test_record.py` covers each. On a vendor refresh, take the upstream file, `grep -n

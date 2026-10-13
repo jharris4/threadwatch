@@ -456,10 +456,14 @@ class VendoredSnifferTest(unittest.TestCase):
             with self.assertRaises(Exception, msg=line):      # noqa: B017 - the vendor raises a bare Exception
                 Nrf802154Sniffer.parse_packet(line)
 
-    def test_a_frame_without_a_timestamp_is_stamped_from_its_arrival_not_from_boot(self):
+    def test_a_frame_without_a_timestamp_is_passed_on_as_it_is_and_dropped_only_as_the_first(self):
         """The radio driver's NRF_802154_NO_TIMESTAMP: a race leaves a real
-        frame with time 0, which the firmware prints as is. The run's first
-        frame has nothing to go by and is dropped."""
+        frame with time 0, which the firmware prints as is. It goes on
+        unchanged, for the recorder's hold rule to set aside like any other
+        stamp far back (a stamp guessed from the read time landed past the
+        frames read with it under a USB batch, and those then read as the
+        dongle's time going back). The run's first frame has nothing to go
+        by and is dropped."""
         import contextlib
         import io
 
@@ -471,11 +475,10 @@ class VendoredSnifferTest(unittest.TestCase):
         kinds = [type(i).__name__ for i in items]
         self.assertEqual(kinds, ["ParseFailure", "SnifferPacket", "SnifferPacket", "SnifferPacket", "ExitEvent"])
         stamps = [i.timestamp for i in items if type(i).__name__ == "SnifferPacket"]
-        self.assertEqual(stamps[0], 5000)
-        self.assertTrue(5000 <= stamps[1] < 5000 + 1_000_000, stamps)   # read just after the frame before it
-        self.assertEqual(stamps[2], 9000)
+        self.assertEqual(stamps, [5000, 0, 9000])
         self.assertIn("the run's first frame carries no timestamp; dropped", err.getvalue())
-        self.assertNotIn("went back", err.getvalue())
+        self.assertIn("passed on for the recorder to set aside", err.getvalue())
+        self.assertNotIn("went back", err.getvalue())     # the frame after it is judged against 5000, not 0
 
     def test_a_time_too_large_to_be_real_is_refused_and_one_the_record_cannot_hold_costs_one_frame(self):
         import contextlib

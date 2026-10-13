@@ -197,9 +197,9 @@ class Nrf802154Sniffer:
         # of each kind a minute, and never an exception: one raised here
         # would read as a disconnected dongle below.
         last_ts, last_line, failures, said = None, b"", 0, {}
-        # threadwatch local change: when the last frame was read, for a
-        # frame without a timestamp; and the FCS sample (see FCS_SAMPLE).
-        last_mono, no_time, fcs_seen, fcs_ok = None, 0, 0, 0
+        # threadwatch local change: frames without a timestamp, and the
+        # FCS sample (see FCS_SAMPLE).
+        no_time, fcs_seen, fcs_ok = 0, 0, 0
 
         def say(kind, msg):
             try:
@@ -224,31 +224,32 @@ class Nrf802154Sniffer:
                     say("garbled", f"serial line {failures} this run the packet pattern does not match: "
                                    f"{value[:300]!r}")
                     continue
-                now = time.monotonic()
                 if packet.timestamp == cls.NO_TIMESTAMP:
-                    # threadwatch local change: see NO_TIMESTAMP. Stamped
-                    # from when it was read, after the last frame, less a
-                    # second: a USB batch can read it later than it was
-                    # heard, and a stamp past the next frame's would read
-                    # as the dongle's time going back. Early is harmless
-                    # (late is never suspect). The first frame of a run
-                    # has nothing to go by and is dropped, as an anchor at
-                    # boot would skew every stamp.
+                    # threadwatch local change: see NO_TIMESTAMP. Passed on
+                    # as it is: correct_time places it at the dongle's
+                    # boot, and the recorder holds a frame stamped that far
+                    # back and records it unjudged once the next frame is
+                    # back on the old timebase (record.py BACKSTEP_S), as it
+                    # does every other bad stamp. A stamp guessed from the
+                    # read time was tried and withdrawn: under a USB batch
+                    # over a second long it landed past the frames read with
+                    # it, which then read as the dongle's time going back.
+                    # The first frame of a run is dropped: the anchor would
+                    # be at boot and every stamp after it skewed.
                     no_time += 1
                     if last_ts is None:
                         queue.put(ParseFailure())
-                        say("no_time", f"the run's first frame carries no timestamp; dropped: {value[:300]!r}")
+                        say("no_time_first", f"the run's first frame carries no timestamp; dropped: {value[:300]!r}")
                         continue
-                    since = max(1, int((now - last_mono) * 1e6) - 1_000_000)
-                    packet = SnifferPacket(content=packet.content, timestamp=last_ts + since,
-                                           lqi=packet.lqi, rssi=packet.rssi)
+                    queue.put(packet)
                     say("no_time", f"frame {no_time} this run without a timestamp (the radio driver's race); "
-                                   f"stamped from its arrival: {value[:300]!r}")
+                                   f"passed on for the recorder to set aside: {value[:300]!r}")
+                    continue
                 queue.put(packet)
                 if last_ts is not None and packet.timestamp < last_ts:
                     say("backwards", f"dongle time went back {last_ts - packet.timestamp} us: {value[:300]!r} "
                                      f"after {last_line[:300]!r}")
-                last_ts, last_line, last_mono = packet.timestamp, value, now
+                last_ts, last_line = packet.timestamp, value
                 if fcs_seen < cls.FCS_SAMPLE:
                     fcs_seen += 1
                     fcs_ok += cls.fcs_matches(value)

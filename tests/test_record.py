@@ -349,9 +349,11 @@ class ExitNoteTest(unittest.TestCase):
 
 
 class VendoredSnifferTest(unittest.TestCase):
-    """vendor/nrf802154_sniffer.py carries two threadwatch changes: a
-    garbled serial line is counted rather than swallowed, and a
-    disconnected dongle ends the reader instead of spinning."""
+    """vendor/nrf802154_sniffer.py carries four threadwatch changes: a
+    garbled serial line is counted rather than swallowed, a disconnected
+    dongle ends the reader instead of spinning, the raw bytes of a garbled
+    line or of a stamp that goes back reach the journal, and the packet
+    pattern refuses a line the firmware could not have printed."""
 
     def _reader(self, lines, disconnect_after):
         import sys
@@ -395,6 +397,125 @@ class VendoredSnifferTest(unittest.TestCase):
         # It used to fall through and spin here, filling the queue with
         # ExitEvents at whatever rate the failing read returned.
         self.assertEqual(kinds.count("ExitEvent"), 1)
+
+    def test_a_garbled_line_and_a_stamp_that_goes_back_leave_their_bytes_in_the_journal(self):
+        """2026-10-11: one frame stamped at its dongle's boot time, likely a
+        line that lost bytes on the way; nothing kept the line itself."""
+        import contextlib
+        import io
+
+        def line(ts):
+            return f"received: 0102030405060708 power: -42 lqi: 128 time: {ts}\r\n".encode()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            items, *_ = self._reader([line(5000), line(6000), line(17), line(7000), b"\xff garbage\r\n",
+                                      b"more garbage\r\n", line(8000), line(9)], disconnect_after=8)
+        kinds = [type(i).__name__ for i in items]
+        self.assertEqual(kinds, ["SnifferPacket"] * 4 + ["ParseFailure"] * 2 + ["SnifferPacket"] * 2 + ["ExitEvent"])
+        said = err.getvalue().splitlines()
+        # One of each kind a minute: the second garbled line and the second step back are not repeated.
+        self.assertEqual(len(said), 2, said)
+        self.assertIn("/dev/x: dongle time went back 5983 us: b'received: 0102030405060708 power: -42 lqi: 128 "
+                      "time: 17\\r\\n' after b'received", said[0])
+        self.assertIn("/dev/x: serial line 1 this run the packet pattern does not match: b'\\xff garbage", said[1])
+
+    def test_the_parser_takes_the_firmwares_lines_and_refuses_garbled_ones(self):
+        """The firmware prints `received: %s power: %d lqi: %u time: %llu\\n`
+        (firmware/*.hex): the time is unsigned and ends the line."""
+        import sys
+        vendor = str(Path(__file__).resolve().parent.parent / "vendor")
+        sys.path.insert(0, vendor)
+        self.addCleanup(sys.path.remove, vendor)
+        from nrf802154_sniffer import Nrf802154Sniffer
+        good = b"received: 41d8e08473ffff4a5b power: -67 lqi: 104 time: 395536123456\r\n"
+        p = Nrf802154Sniffer.parse_packet(good)
+        self.assertEqual((p.content, p.rssi, p.lqi, p.timestamp),
+                         (bytes.fromhex("41d8e08473ffff"), -67, 104, 395536123456))
+        for ok in (good.rstrip(), b"uart:~$ " + good, good.replace(b"\r\n", b"\n")):
+            self.assertEqual(Nrf802154Sniffer.parse_packet(ok).timestamp, 395536123456, ok)
+        garbled = [
+            # Bytes lost: the time runs into the next line's payload.
+            b"received: 41d8e08473ffff4a5b power: -67 lqi: 104 time: 3955b7c1d2 power: -60 lqi: 99 time: 4\r\n",
+            b"received: 41d8e08473ffff4a5b power: -67 lqi: 104 time: 39 1790 power: -61\r\n",
+            b"received: 41d8e08473ffff4a5b power: -67 lqi: 104 time: -17\r\n",           # the time is unsigned
+            b"received: 41d8e08473ffff4a5b power: 67 lqi: 104 time: 17\r\n",             # +67 dBm
+            b"received: 41d8e08473ffff4a5b power: -67 lqi: 1040 time: 17\r\n",           # LQI is a uint8
+            b"received: 41d8e084 power: -67 lqi: 104 time: 17\r\n",                      # under an ACK
+            b"received: " + b"ab" * 128 + b" power: -67 lqi: 104 time: 17\r\n",         # over 127 bytes
+            b"received: 41d8e08473ffff4a5 power: -67 lqi: 104 time: 17\r\n",             # odd hex
+        ]
+        for line in garbled:
+            with self.assertRaises(Exception, msg=line):      # noqa: B017 - the vendor raises a bare Exception
+                Nrf802154Sniffer.parse_packet(line)
+
+    def test_a_frame_without_a_timestamp_is_stamped_from_its_arrival_not_from_boot(self):
+        """The radio driver's NRF_802154_NO_TIMESTAMP: a race leaves a real
+        frame with time 0, which the firmware prints as is. The run's first
+        frame has nothing to go by and is dropped."""
+        import contextlib
+        import io
+
+        def line(ts):
+            return f"received: 41d8e08473ffff4a5b power: -42 lqi: 128 time: {ts}\r\n".encode()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            items, *_ = self._reader([line(0), line(5000), line(0), line(9000)], disconnect_after=4)
+        kinds = [type(i).__name__ for i in items]
+        self.assertEqual(kinds, ["ParseFailure", "SnifferPacket", "SnifferPacket", "SnifferPacket", "ExitEvent"])
+        stamps = [i.timestamp for i in items if type(i).__name__ == "SnifferPacket"]
+        self.assertEqual(stamps[0], 5000)
+        self.assertTrue(5000 <= stamps[1] < 5000 + 1_000_000, stamps)   # read just after the frame before it
+        self.assertEqual(stamps[2], 9000)
+        self.assertIn("the run's first frame carries no timestamp; dropped", err.getvalue())
+        self.assertNotIn("went back", err.getvalue())
+
+    def test_a_time_too_large_to_be_real_is_refused_and_one_the_record_cannot_hold_costs_one_frame(self):
+        import contextlib
+        import io
+        import sys
+        vendor = str(Path(__file__).resolve().parent.parent / "vendor")
+        sys.path.insert(0, vendor)
+        self.addCleanup(sys.path.remove, vendor)
+        from nrf802154_sniffer import Nrf802154Sniffer
+        spliced = b"received: 41d8e08473ffff4a5b power: -42 lqi: 128 time: 3955395536123456\r\n"
+        with self.assertRaises(Exception):      # noqa: B017 - the vendor raises a bare Exception
+            Nrf802154Sniffer.parse_packet(spliced)
+        sniffer = Nrf802154Sniffer()
+        sniffer.channel = 25
+        self.assertIsNotNone(sniffer.pcap_or_none(b"\x02\x00\x01", 5000, 128, -42))   # anchors here
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertIsNone(sniffer.pcap_or_none(b"\x02\x00\x01", -10**17, 128, -42))
+        self.assertEqual(sniffer.parse_failures, 1)
+        self.assertIn("cannot be recorded; dropped", err.getvalue())
+
+    def test_the_fcs_check_reads_a_real_802154_crc(self):
+        import sys
+        vendor = str(Path(__file__).resolve().parent.parent / "vendor")
+        sys.path.insert(0, vendor)
+        self.addCleanup(sys.path.remove, vendor)
+        from nrf802154_sniffer import Nrf802154Sniffer
+        # An ACK for seq 0x56: 02 00 56, FCS (CRC-16/KERMIT, check value 0x2189
+        # for "123456789") 0x820b, low byte first.
+        self.assertTrue(Nrf802154Sniffer.fcs_matches(b"received: 0200560b82 power: -42 lqi: 128 time: 17\r\n"))
+        self.assertFalse(Nrf802154Sniffer.fcs_matches(b"received: 0200560b83 power: -42 lqi: 128 time: 17\r\n"))
+        self.assertFalse(Nrf802154Sniffer.fcs_matches(b"garbage"))
+
+    def test_a_journal_that_cannot_be_written_drops_no_frame_and_ends_no_reader(self):
+        import sys
+        from unittest import mock
+
+        class Broken:
+            def write(self, _s):
+                raise OSError("stderr gone")
+
+            def flush(self):
+                raise OSError("stderr gone")
+        line = b"received: 0102030405060708 power: -42 lqi: 128 time: %d\r\n"
+        with mock.patch.object(sys, "stderr", Broken()):
+            items, *_ = self._reader([line % 5000, line % 17, b"garbage\r\n", line % 6000], disconnect_after=4)
+        self.assertEqual([type(i).__name__ for i in items],
+                         ["SnifferPacket", "SnifferPacket", "ParseFailure", "SnifferPacket", "ExitEvent"])
 
 
 class StatusConsumersTest(unittest.TestCase):

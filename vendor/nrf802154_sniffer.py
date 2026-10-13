@@ -105,7 +105,31 @@ class Nrf802154Sniffer:
     CTRL_ARG_LOGGER = 6
 
     # Pattern for packets being printed over serial.
-    RCV_REGEX = r"received:\s+([0-9a-fA-F]+)\s+power:\s+(-?\d+)\s+lqi:\s+(\d+)\s+time:\s+(-?\d+)"
+    # threadwatch local change: was searched in the bytes' repr with
+    # nothing after the time required, so a line that lost bytes and ran
+    # into the next one still parsed, its time cut short or made of the
+    # next line's digits (2026-10-11, a stamp 4.6 days off). The firmware
+    # prints `received: %s power: %d lqi: %u time: %llu\n`: the time is
+    # unsigned and ends the line, so only whitespace may follow it.
+    RCV_REGEX = r"received:\s+([0-9a-fA-F]+)\s+power:\s+(-?\d+)\s+lqi:\s+(\d+)\s+time:\s+(\d+)\s*$"
+    # threadwatch local change: a PSDU with its FCS is 5 (an ACK) to 127
+    # bytes; RSSI is an int8 in dBm, nothing a dongle hears is above
+    # +20; LQI is a uint8. A value outside these is a garbled line.
+    PSDU_HEX_MIN, PSDU_HEX_MAX = 10, 254
+    RSSI_MIN, RSSI_MAX = -128, 20
+    LQI_MAX = 255
+    # threadwatch local change: microseconds since the dongle booted; 10**15
+    # is 31 years. A time with more digits is a garbled line, and one that
+    # reached pcap_packet raised there and ended the capture.
+    TIME_MAX = 10**15
+    # threadwatch local change: the radio driver's NRF_802154_NO_TIMESTAMP.
+    # "Due to a race condition, the timestamp may be invalid", and the
+    # firmware prints it as is: a real frame reading as heard at boot.
+    NO_TIMESTAMP = 0
+    # threadwatch local change: frames whose last two bytes are checked
+    # against the CRC once per run, to learn whether this firmware passes
+    # the real FCS (the driver says it "may be modified by the hardware").
+    FCS_SAMPLE = 1000
 
     TIMER_MAX = 2**32
 
@@ -127,6 +151,23 @@ class Nrf802154Sniffer:
         # match, counted for status.json. Written by the consumer thread
         # in this process, read by the watchdog.
         self.parse_failures = 0
+        # threadwatch local change: frames pcap_or_none could not record.
+        self.unrecordable = 0
+
+    def pcap_or_none(self, content, timestamp, lqi, rssi):
+        """threadwatch local change: the pcap record, or None (counted as a
+        parse failure) for a stamp the record cannot hold, which raised
+        out of the consumer loop and ended the capture for one frame."""
+        try:
+            return self.pcap_packet(content, self.dlt, self.channel, rssi, lqi, self.correct_time(timestamp))
+        except (struct.error, OverflowError, ValueError):
+            self.parse_failures += 1
+            self.unrecordable += 1
+            n = self.unrecordable
+            if n & (n - 1) == 0:                     # the 1st, 2nd, 4th, 8th...: never a flood
+                sys.stderr.write(f"[nrf802154_sniffer] frame {n} this run stamped {timestamp} us cannot be "
+                                 "recorded; dropped\n")
+            return None
 
     def correct_time(self, sniffer_timestamp):
         """
@@ -149,16 +190,71 @@ class Nrf802154Sniffer:
         queue: Queue,
     ) -> None:
         serial = Serial(serial_port, exclusive=True)
+        # threadwatch local change: the raw serial line of a frame whose
+        # dongle time went backwards (with the line before it), and of a
+        # line the packet pattern does not match, go to stderr, so a
+        # garbled stamp leaves its bytes in the journal. At most one line
+        # of each kind a minute, and never an exception: one raised here
+        # would read as a disconnected dongle below.
+        last_ts, last_line, failures, said = None, b"", 0, {}
+        # threadwatch local change: when the last frame was read, for a
+        # frame without a timestamp; and the FCS sample (see FCS_SAMPLE).
+        last_mono, no_time, fcs_seen, fcs_ok = None, 0, 0, 0
+
+        def say(kind, msg):
+            try:
+                now = time.monotonic()
+                if now - said.get(kind, -60.0) >= 60.0:
+                    said[kind] = now
+                    sys.stderr.write(f"[nrf802154_sniffer] {serial_port}: {msg}\n")
+                    sys.stderr.flush()
+            except Exception:
+                pass
+
         while True:
             try:
                 value = serial.readline()
                 try:
                     packet = cls.parse_packet(value)
-                    queue.put(packet)
                 except:
                     # threadwatch local change: was `...`, so a garbled
                     # line was a dropped frame nothing recorded.
                     queue.put(ParseFailure())
+                    failures += 1
+                    say("garbled", f"serial line {failures} this run the packet pattern does not match: "
+                                   f"{value[:300]!r}")
+                    continue
+                now = time.monotonic()
+                if packet.timestamp == cls.NO_TIMESTAMP:
+                    # threadwatch local change: see NO_TIMESTAMP. Stamped
+                    # from when it was read, after the last frame, less a
+                    # second: a USB batch can read it later than it was
+                    # heard, and a stamp past the next frame's would read
+                    # as the dongle's time going back. Early is harmless
+                    # (late is never suspect). The first frame of a run
+                    # has nothing to go by and is dropped, as an anchor at
+                    # boot would skew every stamp.
+                    no_time += 1
+                    if last_ts is None:
+                        queue.put(ParseFailure())
+                        say("no_time", f"the run's first frame carries no timestamp; dropped: {value[:300]!r}")
+                        continue
+                    since = max(1, int((now - last_mono) * 1e6) - 1_000_000)
+                    packet = SnifferPacket(content=packet.content, timestamp=last_ts + since,
+                                           lqi=packet.lqi, rssi=packet.rssi)
+                    say("no_time", f"frame {no_time} this run without a timestamp (the radio driver's race); "
+                                   f"stamped from its arrival: {value[:300]!r}")
+                queue.put(packet)
+                if last_ts is not None and packet.timestamp < last_ts:
+                    say("backwards", f"dongle time went back {last_ts - packet.timestamp} us: {value[:300]!r} "
+                                     f"after {last_line[:300]!r}")
+                last_ts, last_line, last_mono = packet.timestamp, value, now
+                if fcs_seen < cls.FCS_SAMPLE:
+                    fcs_seen += 1
+                    fcs_ok += cls.fcs_matches(value)
+                    if fcs_seen == cls.FCS_SAMPLE:
+                        say("fcs", f"the last two bytes match the CRC in {fcs_ok} of {fcs_seen} frames"
+                                   + (": the firmware passes the real FCS" if fcs_ok == fcs_seen else ""))
             except:
                 queue.put(ExitEvent(f"Sniffer device {serial_port} was disconnected."))
                 # threadwatch local change: was a fall-through, so a
@@ -167,13 +263,34 @@ class Nrf802154Sniffer:
                 return
 
     @classmethod
+    def fcs_matches(cls, value: bytes) -> bool:
+        """threadwatch local change: does the line's PSDU end in its own
+        802.15.4 FCS (CRC-16/KERMIT, low byte first)? Never raises."""
+        try:
+            m = re.search(cls.RCV_REGEX, value.decode("ascii", "replace"))
+            data = bytes.fromhex(m.group(1))
+            crc = 0
+            for b in data[:-2]:
+                crc ^= b
+                for _ in range(8):
+                    crc = (crc >> 1) ^ 0x8408 if crc & 1 else crc >> 1
+            return crc == int.from_bytes(data[-2:], "little")
+        except Exception:
+            return False
+
+    @classmethod
     def parse_packet(cls, value: bytes) -> SnifferPacket:
-        m = re.search(cls.RCV_REGEX, str(value))
+        text = value.decode("ascii", "replace") if isinstance(value, (bytes, bytearray)) else str(value)
+        m = re.search(cls.RCV_REGEX, text)
         if m:
-            packet = a2b_hex(m.group(1)[:-4])
+            hexdata = m.group(1)
             rssi = int(m.group(2))
             lqi = int(m.group(3))
             timestamp = int(m.group(4))
+            if not (cls.PSDU_HEX_MIN <= len(hexdata) <= cls.PSDU_HEX_MAX and cls.RSSI_MIN <= rssi <= cls.RSSI_MAX
+                    and lqi <= cls.LQI_MAX and timestamp <= cls.TIME_MAX):
+                raise Exception()
+            packet = a2b_hex(hexdata[:-4])
             return SnifferPacket(
                 content=packet, timestamp=timestamp, lqi=lqi, rssi=rssi
             )
@@ -434,10 +551,9 @@ class Nrf802154Sniffer:
                 while packet := self.queue.get():
                     match packet:
                         case SnifferPacket(content, timestamp, lqi, rssi):
-                            pcap = self.pcap_packet(
-                                content, self.dlt, self.channel, rssi, lqi, self.correct_time(timestamp)
-                            )
-                            fifo.write(pcap)
+                            pcap = self.pcap_or_none(content, timestamp, lqi, rssi)
+                            if pcap is not None:
+                                fifo.write(pcap)
                         case ParseFailure():
                             # threadwatch local change: see ParseFailure.
                             self.parse_failures += 1

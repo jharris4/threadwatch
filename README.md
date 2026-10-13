@@ -292,10 +292,16 @@ is marked `# threadwatch local change` in the file; today they are the
 serial reader's, and they exist because a flight recorder that drops
 frames without counting them cannot tell you it did: a garbled serial
 line becomes a counted `ParseFailure` instead of being swallowed by a
-bare `except`, and a disconnected dongle ends the reader instead of
-spinning on the failing read. `VendoredSnifferTest` in
-`tests/test_record.py` drives `serial_reader` over a fake serial port and
-asserts both. On a vendor refresh, take the upstream file, `grep -n
+bare `except`, a disconnected dongle ends the reader instead of
+spinning on the failing read, the raw bytes of a garbled line or of a
+frame whose dongle time went backwards go to the journal (at most one of
+each a minute), so a bad stamp can be traced to its line, the packet
+pattern refuses a line the firmware could not have printed (the time
+must end it; time, PSDU length, RSSI and LQI in range), a frame with
+the driver's "no timestamp" (time 0) is stamped from its arrival, a
+stamp the pcap record cannot hold costs one frame rather than the
+capture, and the first 1000 frames of a run are checked against their
+FCS once. `VendoredSnifferTest` in `tests/test_record.py` covers each. On a vendor refresh, take the upstream file, `grep -n
 "threadwatch local change"` the old one, reapply each, and run that test
 -- it fails if a reapplied change was missed.
 

@@ -1316,6 +1316,15 @@ class EveryEventKindTest(unittest.TestCase):
         from threadwatch.web import LEGEND_BY_KIND
         self.assertIn("radio", LEGEND_BY_KIND)
 
+    def test_falling_behind_and_catching_up_are_recorder_rows(self):
+        recs = [rec("recorder_behind", "warning", T0, behind_s=75.0, queued=4000, note="75 s behind"),
+                rec("recorder_caught_up", "info", T0 + 900, behind_s=0.2, worst_s=300.0, since=T0,
+                    behind_for_s=900.0, note="caught up")]
+        eps = group_episodes(recs)
+        self.assertEqual([(e["kind"], e["severity"], e["title"]) for e in eps],
+                         [("recorder", "warning", "recorder fell 75s behind its radios"),
+                          ("recorder", "info", "recorder caught up after 15m")])
+
     def test_join_scan_bursts_within_half_an_hour_are_one_row(self):
         recs = [rec("join_scan_activity", "notice", T0, count_60s=5, src="1234"),
                 rec("join_scan_activity", "notice", T0 + 600, count_60s=7, src="1234"),

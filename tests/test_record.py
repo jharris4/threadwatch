@@ -1,6 +1,7 @@
 """status.json as the recorder writes it, and what a later run reads back."""
 
 import json
+import re
 import struct
 import sys
 import tempfile
@@ -18,6 +19,8 @@ from threadwatch.crypto import Decryptor
 from threadwatch.events import NullEventLog
 from threadwatch.pipeline import Pipeline
 from threadwatch.record import (
+    BEHIND_S,
+    CAUGHT_UP_S,
     EXIT_CLEANUP_FAILED,
     EXIT_FILE,
     EXIT_SNIFFER_DIED,
@@ -25,13 +28,18 @@ from threadwatch.record import (
     PERIODIC_S,
     STALL_TIMEOUT_S,
     TICK_S,
+    BehindAlarm,
     Housekeeping,
     _write_status,
     capture_healthy,
     capture_stalled,
     last_frame_on_record,
+    next_min_delay,
     periodic_due,
+    queue_delay,
     record_exit,
+    stamp_confirms,
+    stamp_off,
     status_tick,
     watchdog_verdict,
 )
@@ -549,7 +557,7 @@ class StatusConsumersTest(unittest.TestCase):
         _write_status(self.cfg, "/dev/tty.usbmodem1", 4210, now - 3600, self.pipe,
                       self.ring, self.pipe.decryptor, last_frame_age=170.0, last_frame_ts=now - 170)
         st = json.loads((self.cfg.state_dir / "status.json").read_text())
-        self.assertEqual(sorted(st), ["alerts", "channel", "commit", "crypto", "current_file", "detector",
+        self.assertEqual(sorted(st), ["alerts", "behind_s", "channel", "commit", "crypto", "current_file", "detector",
                                       "devices_tracked", "dominant_pan", "dropped_lines", "frames_total",
                                       "ha_availability", "ha_logs_archive", "keys", "last_frame_age_s",
                                       "last_frame_ts", "merge", "otbr_inventory", "partition", "port", "radios",
@@ -625,6 +633,77 @@ class HeartbeatHealthTest(unittest.TestCase):
         self.assertFalse(capture_healthy(1000.0, 1180.0))
         self.assertFalse(capture_healthy(1000.0, 1181.0))
         self.assertTrue(capture_healthy(1000.0, 1181.0, 1800.0))   # the timeout is the whole decision
+
+    def test_a_recorder_far_behind_its_radios_is_not_healthy_however_fresh_its_frames(self):
+        """2026-10-11: 18 hours behind, a frame taken every few milliseconds,
+        and the heartbeat read healthy for a day."""
+        self.assertTrue(capture_healthy(1000.0, 1001.0, behind_s=BEHIND_S))
+        self.assertFalse(capture_healthy(1000.0, 1001.0, behind_s=BEHIND_S + 1))
+        self.assertIsNone(capture_healthy(None, 1001.0, behind_s=BEHIND_S + 1))
+
+
+class StampJudgementTest(unittest.TestCase):
+    """record.stamp_off / stamp_confirms / next_min_delay: whether a frame
+    is off its radio's timebase, over gaps the run harness cannot wait out.
+    A radio's frames arrive 0.05 s after their stamps (the delay)."""
+
+    def test_a_quiet_gap_is_not_off_however_long_with_or_without_drift(self):
+        for gap in (2500.0, 1700.0, 2.3 * 3600, 24 * 3600):
+            for ppm in (0.0, 119.0, -119.0):              # a fast dongle shrinks the delay, a slow one grows it
+                ts = 1000.0 + gap * (1 + ppm * 1e-6)
+                with self.subTest(gap=gap, ppm=ppm):
+                    self.assertFalse(stamp_off(ts, 1000.05 + gap, 1000.0, 1000.05, 0.05))
+
+    def test_a_stamp_ahead_is_off_at_one_second_plus_the_drift_allowance(self):
+        self.assertTrue(stamp_off(1010.0 + 1.1, 1010.05, 1000.0, 1000.05, 0.05))      # 1.1 s early after 10 s
+        self.assertFalse(stamp_off(1010.0 + 0.9, 1010.05, 1000.0, 1000.05, 0.05))
+        # After an hour the allowance is 1 s + 500 ppm x 3600 s = 2.8 s.
+        self.assertTrue(stamp_off(4600.0 + 2.9, 4600.05, 1000.0, 1000.05, 0.05))
+        self.assertFalse(stamp_off(4600.0 + 2.7, 4600.05, 1000.0, 1000.05, 0.05))
+
+    def test_late_is_never_off_and_back_is_off_beyond_a_second(self):
+        self.assertFalse(stamp_off(1001.0, 1061.05, 1000.0, 1000.05, 0.05))          # a minute late: a stall
+        self.assertTrue(stamp_off(998.9, 1001.05, 1000.0, 1000.05, 0.05))
+        self.assertFalse(stamp_off(999.1, 1001.05, 1000.0, 1000.05, 0.05))
+        self.assertFalse(stamp_off(5.0, 1.0, None, None, None))                        # nothing to judge by yet
+
+    def test_a_new_timebase_is_confirmed_by_the_next_frame_even_hours_later_on_a_drifting_clock(self):
+        # Held: stamped 600 s ahead. The next frame on the same new timebase.
+        self.assertTrue(stamp_confirms(1600.0, 1000.05, 1601.0, 1001.05))
+        gap = 2.3 * 3600
+        self.assertTrue(stamp_confirms(1600.0, 1000.05, 1600.0 + gap * (1 + 119e-6), 1000.05 + gap))
+        # Back on the old timebase: refuted (the stamp went back), and
+        # arriving sooner after its stamp than the held one: refuted.
+        self.assertFalse(stamp_confirms(1600.0, 1000.05, 1001.0, 1001.05))
+        self.assertFalse(stamp_confirms(1600.0, 1000.05, 1603.0, 1001.05))
+
+    def test_the_smallest_delay_follows_a_fast_clock_down_and_creeps_up_for_a_slow_one(self):
+        self.assertAlmostEqual(next_min_delay(None, None, 1000.0, 1000.05), 0.05)
+        self.assertAlmostEqual(next_min_delay(0.05, 1000.05, 1010.0, 1010.04), 0.04)       # a smaller delay
+        self.assertAlmostEqual(next_min_delay(0.05, 1000.05, 1010.0, 1010.5), 0.05 + 500e-6 * 10.45)   # creeps
+
+
+class BehindTest(unittest.TestCase):
+    def test_the_delay_is_the_age_of_the_oldest_queued_item_and_nothing_queued_is_none(self):
+        import queue
+        q = queue.Queue()
+        self.assertEqual(queue_delay(q, 500.0), 0.0)              # a quiet channel is never behind
+        q.put(("hub", object(), 100.0, None))
+        q.put(("hub", object(), 105.0, None))
+        self.assertEqual(queue_delay(q, 130.0), 30.0)
+
+    def test_behind_once_past_the_threshold_and_caught_up_once_back_under_the_floor(self):
+        alarm = BehindAlarm()
+        self.assertIsNone(alarm.check(BEHIND_S, 10, 1000.0))
+        kind, fields = alarm.check(75.0, 4000, 1030.0)
+        self.assertEqual((kind, fields["behind_s"], fields["queued"]), ("behind", 75.0, 4000))
+        self.assertIsNone(alarm.check(300.0, 9000, 1060.0))       # once per episode
+        self.assertIsNone(alarm.check(CAUGHT_UP_S, 50, 1090.0))   # not under the floor yet
+        kind, fields = alarm.check(0.2, 0, 1120.0)
+        self.assertEqual((kind, fields["worst_s"], fields["behind_for_s"], fields["since"]),
+                         ("caught_up", 300.0, 90.0, 1030.0))
+        self.assertIsNone(alarm.check(0.0, 0, 1150.0))
+        self.assertEqual(alarm.check(61.0, 1, 1180.0)[0], "behind")   # the next episode pages again
 
 
 class WatchdogVerdictTest(unittest.TestCase):
@@ -852,6 +931,19 @@ class RadioClockTest(unittest.TestCase):
         self.assertEqual(clock.steps, 1)
         self.assertEqual(clock.last_step_s, 0.0)      # only the frame that stepped reports one
 
+    def test_every_step_is_kept_for_the_log_however_many_frames_one_release_stamps(self):
+        """2026-10-11: a garbled stamp stepped the clock forward, the next
+        frame stepped it back, both inside one release; only the last
+        stamp's last_step_s was looked at, so the second step went unlogged."""
+        wall = [1_700_000_000.0]
+        clock = self._clock(wall)
+        clock.stamp(500.0)
+        clock.stamp(9.0)                              # garbled: far back
+        clock.stamp(500.1)                            # back on the old timebase: now far in the future
+        clock.stamp(500.2)
+        self.assertEqual([round(s) for s in clock.step_log], [491, -491])
+        self.assertEqual(clock.last_step_s, 0.0)
+
     def test_a_burst_of_frames_does_not_buy_a_bigger_correction(self):
         """The correction is bounded by captured time, not by frame count: a
         thousand frames in one radio second must not slew a thousand times."""
@@ -900,6 +992,7 @@ class RunRecordTest(unittest.TestCase):
         self.finished = threading.Event()
         self.run_over = threading.Event()      # set when run_record has returned
         self.fail_stop = False
+        self.stamps = [1.0, 2.0, 3.0]          # the fake sniffer's frames, by stamp; (stamp, pause_s) waits first
         test = self
 
         class FakeSniffer:
@@ -915,9 +1008,13 @@ class RunRecordTest(unittest.TestCase):
                     with open(fifo, "wb") as fh:
                         test.reader_open.set()
                         w = PcapWriter(fh, DLT_NOFCS)
-                        for i in range(3):
+                        for i, ts in enumerate(test.stamps):
+                            if isinstance(ts, tuple):
+                                ts, pause = ts
+                                fh.flush()
+                                time.sleep(pause)
                             psdu = psdu_for(test.DEV, seq=i, key=bytes.fromhex("00112233445566778899aabbccddeeff"))
-                            w.write(Frame(ts=1.0 + i, raw=psdu, psdu=psdu, rssi=None, channel=None, lqi=None))
+                            w.write(Frame(ts=ts, raw=psdu, psdu=psdu, rssi=None, channel=None, lqi=None))
                         fh.flush()
                         test.hold.wait(10)
                 self.thread = threading.Thread(target=run, daemon=True, name="fake-sniffer")
@@ -1060,6 +1157,48 @@ class RunRecordTest(unittest.TestCase):
             time.sleep(0.02)
         self.assertEqual(self._watchdogs() - before, set())
         self.assertFalse((self.cfg.state_dir / "status.json").exists())   # written by ticks only, and none ran
+
+    def test_every_clock_step_is_logged(self):
+        # Twice a pair of frames ten minutes ahead, each confirmed by the
+        # frame after it (a stale anchor, not a garbled stamp): two steps.
+        self.stamps = [1.0, 600.0, 600.5, 1200.0, 1200.5]
+        self.hold.set()
+        code, out = self._run()
+        self.assertEqual(code, 3)
+        self.assertEqual(len(re.findall(r"capture clock re-anchored by -59\d\.\d{3} s", out)), 2, out)
+        self.assertNotIn("recorded unjudged", out)
+        self.assertIn("stopped after 5 frames", out)
+
+    def test_a_quiet_gap_that_really_passed_is_not_a_garble(self):
+        # 1.5 s on, after 1.5 s of silence: past the threshold by stamp
+        # alone, on time by arrival.
+        self.stamps = [1.0, 2.0, (3.5, 1.5)]
+        self.hold.set()
+        code, out = self._run()
+        self.assertEqual(code, 3)
+        self.assertNotIn("recorded unjudged", out)
+        self.assertIn("stopped after 3 frames", out)
+
+    def test_a_burst_after_a_stall_is_late_not_garbled(self):
+        # Two frames on time, then a stall of 1.6 s that delivers three at
+        # once, two of them 1.3 s apart on air: late, never early. Judged
+        # by stamp against arrival delta, the middle one used to be held
+        # and then set aside.
+        self.stamps = [1.0, 2.0, (2.2, 1.6), 3.5, 3.6]
+        self.hold.set()
+        code, out = self._run()
+        self.assertEqual(code, 3)
+        self.assertNotIn("recorded unjudged", out)
+        self.assertIn("stopped after 5 frames", out)
+
+    def test_one_frame_stamped_far_ahead_is_recorded_unjudged_and_moves_no_clock(self):
+        self.stamps = [1.0, 2.0, 900000.0, 3.0]              # a garble made the number larger
+        self.hold.set()
+        code, out = self._run()
+        self.assertEqual(code, 3)
+        self.assertIn("the dongle: one frame stamped +899998.000 s from its radio's last stamp", out)
+        self.assertNotIn("re-anchored", out)
+        self.assertIn("stopped after 3 frames", out)
 
     def test_a_sniffer_that_will_not_stop_does_not_keep_the_note_or_the_log_from_closing(self):
         self.fail_stop = True
@@ -1208,6 +1347,39 @@ class RunRecordTest(unittest.TestCase):
                 self.assertEqual(after_start[:len(ladder)], ladder)
                 if verdict == EXIT_STALLED:
                     self.assertTrue(self.calls[2][1])      # last-seen.json saved before the sniffer was stopped
+
+    def test_the_watchdog_pages_when_the_recorder_falls_behind_and_says_when_it_caught_up(self):
+        import threading
+        from unittest import mock
+
+        from threadwatch import record
+        from threadwatch.events import read_all
+        delay = [120.0]
+
+        def events():
+            return [r for r in read_all(self.cfg.events_dir) if r["event"].startswith("recorder_")
+                    and r["event"] != "recorder_started"]
+
+        def tick_until(n):
+            self.tick.set()
+            deadline = time.monotonic() + 10
+            while len(events()) < n and time.monotonic() < deadline:
+                time.sleep(0.01)
+
+        def drive():
+            self.reader_open.wait(5)
+            tick_until(1)
+            delay[0] = 0.5
+            tick_until(2)
+            self.hold.set()
+        with mock.patch.object(record, "queue_delay", lambda q, mono: delay[0]):
+            threading.Thread(target=drive, daemon=True).start()
+            code, _out = self._run()
+        self.assertEqual(code, 3)
+        got = events()
+        self.assertEqual([(r["event"], r["severity"]) for r in got],
+                         [("recorder_behind", "warning"), ("recorder_caught_up", "info")])
+        self.assertEqual(got[0]["behind_s"], 120.0)
 
     def test_a_signal_in_the_sniffers_child_leaves_at_once_and_in_the_parent_stops_cleanly(self):
         import os
@@ -1406,6 +1578,7 @@ class TwoRadiosRunTest(unittest.TestCase):
             frame. The vendor's stamps are on the epoch already, so live
             radios never differ by more than their queue delay."""
             last_step_s = 0.0
+            step_log = ()
 
             def __init__(self):
                 self.offset = offset
@@ -1566,6 +1739,60 @@ class TwoRadiosRunTest(unittest.TestCase):
         (annex_file,) = self.cfg.ring_dir.glob("*-annex.pcap")
         with open(annex_file, "rb") as fh:
             self.assertEqual(len(list(PcapStreamReader(fh))), 2)
+
+    def _hub_alone(self, script):
+        """The hub alone (the annex never plugged in), playing ``script``,
+        then its stream ends, which ends the run."""
+        self.ports["BB"] = None
+        self.scripts["/dev/fake-hub"] = script
+        hub_hold = self.holds.setdefault("/dev/fake-hub", threading.Event())
+        threading.Timer(0.6, hub_hold.set).start()
+        code, out = self._run()
+        self.assertEqual(code, 3)
+        from threadwatch.pcap import PcapStreamReader
+        ring = []
+        for path in sorted(self.cfg.ring_dir.glob("*.pcap")):
+            if not path.name.endswith("-annex.pcap"):     # the test clock does not re-anchor: hours apart
+                with open(path, "rb") as fh:
+                    ring.extend(PcapStreamReader(fh))
+        return out, ring
+
+    def test_one_frame_stamped_back_in_time_is_recorded_unjudged_and_moves_no_clock(self):
+        """2026-10-11: one relay frame stamped at its dongle's boot time, the
+        next back on the old timebase. It reset the merger and re-anchored
+        the radio's clock by 4.6 days; now it goes to the ring alone."""
+        key = bytes.fromhex(self.KEY)
+        garbled = psdu_for(self.DEV, seq=50, key=key)
+        out, ring = self._hub_alone(self._frames(3) + [(5.0, garbled, -60.0)] + self._frames(2, start=3))
+        self.assertIn("stopped after 5 frames", out)
+        self.assertRegex(out, r"radio hub( \(by the router\))?: one frame stamped -997\.000 s from its radio")
+        self.assertEqual(len(ring), 6)
+        (bad,) = [f for f in ring if f.psdu == garbled]
+        self.assertLess(max(abs(bad.ts - f.ts) for f in ring), 10.0)    # not its stamp, ~1000 s back
+
+    def test_two_garbled_stamps_in_a_row_are_each_set_aside(self):
+        key = bytes.fromhex(self.KEY)
+        first, second = psdu_for(self.DEV, seq=50, key=key), psdu_for(self.DEV, seq=51, key=key)
+        out, ring = self._hub_alone(self._frames(3) + [(5.0, first, -60.0), (300.0, second, -60.0)]
+                                    + self._frames(2, start=3))
+        self.assertIn("stopped after 5 frames", out)
+        self.assertEqual(out.count("recorded unjudged"), 2)
+        self.assertEqual(len(ring), 7)
+
+    def test_a_radio_whose_clock_really_restarts_goes_on_on_the_new_timebase(self):
+        key = bytes.fromhex(self.KEY)
+        restarted = [(10.0 + 0.5 * i, psdu_for(self.DEV, seq=60 + i, key=key), -60.0) for i in range(3)]
+        out, ring = self._hub_alone(self._frames(3) + restarted)
+        self.assertIn("stopped after 6 frames", out)
+        self.assertNotIn("recorded unjudged", out)
+        self.assertEqual(len(ring), 6)
+
+    def test_a_frame_held_when_its_stream_ends_is_recorded_unjudged(self):
+        garbled = psdu_for(self.DEV, seq=50, key=bytes.fromhex(self.KEY))
+        out, ring = self._hub_alone(self._frames(3) + [(5.0, garbled, -60.0)])
+        self.assertIn("stopped after 3 frames", out)
+        self.assertIn("recorded unjudged", out)
+        self.assertEqual(sorted(f.psdu == garbled for f in ring), [False, False, False, True])
 
     def test_a_watchdog_tick_during_the_shutdown_attaches_nothing(self):
         # The stop flag used to be set after the sniffers were stopped: a

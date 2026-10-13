@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 import traceback
+from dataclasses import replace
 from pathlib import Path
 
 from . import __version__
@@ -298,6 +299,54 @@ PERIODIC_S = 30
 # How long a stop may spend on the frames the readers had queued and the
 # main loop had not reached: a backlog only a storm on a slow host builds.
 DRAIN_S = 2.0
+# A frame stamped more than this before its radio's last, or arriving more
+# than this sooner after its stamp than the radio's frames ever do, is held
+# until the next frame from that radio: stamped on the same new timebase,
+# the radio's clock restarted (or its anchor was stale) and both go on;
+# back on the old one, the held stamp was garbled and the frame is
+# recorded but not judged (the merger resets on the same backwards step).
+# On 2026-10-11 one relay frame stamped at its dongle's boot time
+# re-anchored that radio's clock by 4.6 days; a garble can as easily make
+# the number larger. Late is not suspect: a relay stall or a USB batch
+# delivers frames late, never early, and a quiet radio's next frame is
+# minutes on and arrived minutes on.
+BACKSTEP_S = 1.0
+# How fast the smallest delivery delay seen may creep up, so a dongle
+# clock running slow (the delay growing) keeps the baseline honest: well
+# over the 119 ppm a relay dongle was measured at, well under a second a
+# day of lost sensitivity.
+DELAY_RISE = 500e-6
+
+
+def next_min_delay(min_delay: float | None, last_mono: float | None, ts: float, mono: float) -> float:
+    """The radio's smallest delivery delay (arrival minus stamp) once a
+    frame stamped ``ts`` arrived at ``mono``, the old one allowed to creep
+    up DELAY_RISE over the time since the last frame (a slow dongle clock
+    makes every delay grow)."""
+    delay = mono - ts
+    return delay if min_delay is None else min(min_delay + DELAY_RISE * (mono - last_mono), delay)
+
+
+def stamp_off(ts: float, mono: float, last_raw: float | None, last_mono: float | None,
+              min_delay: float | None) -> bool:
+    """Is a frame stamped ``ts``, arriving at ``mono``, off its radio's
+    timebase? Stamped more than BACKSTEP_S before the last frame (stamps
+    never go back), or arriving more than BACKSTEP_S sooner after its
+    stamp than the radio's frames ever do. A fast dongle clock shrinks
+    the delay over a gap, so the allowance widens with it: the sensitivity
+    is BACKSTEP_S plus DELAY_RISE times the gap, 2.8 s after an hour."""
+    if last_raw is None:
+        return False
+    return ts < last_raw - BACKSTEP_S or mono - ts < min_delay - DELAY_RISE * (mono - last_mono) - BACKSTEP_S
+
+
+def stamp_confirms(held_ts: float, held_mono: float, ts: float, mono: float) -> bool:
+    """Does a frame stamped ``ts`` at ``mono``, itself off the old
+    timebase, put the held frame on a new timebase with it? Its stamp goes
+    on from the held one's and it came no sooner after its stamp, within
+    BACKSTEP_S widened for drift over the time between them."""
+    slack = BACKSTEP_S + DELAY_RISE * (mono - held_mono)
+    return ts - held_ts >= -BACKSTEP_S and (mono - ts) - (held_mono - held_ts) >= -slack
 
 
 def periodic_due(last_tick: float, now: float) -> bool:
@@ -369,6 +418,10 @@ class RadioClock:
         self._last_raw: float | None = None
         self.steps = 0                       # re-anchorings this run
         self.last_step_s = 0.0               # how far the last one moved
+        # Every step not yet logged, in order: one release can stamp many
+        # frames, and the last stamp's last_step_s hid the steps before it
+        # (the -4.6 day step of 2026-10-11 was never logged).
+        self.step_log: list[float] = []
 
     def stamp(self, raw_ts: float, arrived_mono: float | None = None) -> float:
         """The epoch timestamp to record for a frame the sniffer stamped
@@ -396,14 +449,17 @@ class RadioClock:
             self.offset += error           # the radio restarted its timebase
             self.steps += 1
             self.last_step_s = error
+            self.step_log.append(error)
         elif abs(host_step) > self.step_s:
             self.offset += host_step       # preserve any outstanding queue delay
             self.steps += 1
             self.last_step_s = host_step
+            self.step_log.append(host_step)
         elif error < -self.step_s:
             self.offset += error           # stamped in the future: the anchor was a stale packet
             self.steps += 1
             self.last_step_s = error
+            self.step_log.append(error)
         else:
             # Bounded by captured time, not by how many frames arrived: a
             # burst must not buy the correction a bigger budget.
@@ -414,13 +470,60 @@ class RadioClock:
 
 
 def capture_healthy(last_frame_mono: float | None, now: float,
-                    timeout: float = STALL_TIMEOUT_S) -> bool | None:
+                    timeout: float = STALL_TIMEOUT_S, behind_s: float = 0.0) -> bool | None:
     """The heartbeat's answer: unknown (None) until this run has heard a
     frame, then healthy while the last one is fresher than the stall
-    timeout, so the beat stops before the watchdog exits."""
+    timeout, so the beat stops before the watchdog exits, and while the
+    recorder is no more than BEHIND_S behind its radios (queue_delay)."""
     if last_frame_mono is None:
         return None
-    return now - last_frame_mono < timeout
+    return now - last_frame_mono < timeout and behind_s <= BEHIND_S
+
+
+# The recorder this far behind its radios (the oldest frame its readers
+# queued and the main loop has not reached) is recorder_behind, a page,
+# and recorder_caught_up once back under CAUGHT_UP_S. On 2026-10-11 it
+# fell 18 hours behind with frames still flowing: the stall clock and the
+# heartbeat read healthy throughout, and the backlog lived only in memory.
+BEHIND_S = 60.0
+CAUGHT_UP_S = 5.0
+
+
+def queue_delay(q: queue.Queue, mono: float) -> float:
+    """How long the oldest item in the readers' queue has waited: how far
+    behind its radios the main loop is. 0 with nothing queued, so a quiet
+    channel never reads as behind."""
+    with q.mutex:
+        oldest = q.queue[0][2] if q.queue else None
+    return 0.0 if oldest is None else max(0.0, mono - oldest)
+
+
+class BehindAlarm:
+    """The watchdog's view of queue_delay across ticks: "behind" once it
+    passes behind_s, "caught_up" once it is back under caught_up_s, each
+    with its event fields; None in between."""
+
+    def __init__(self, behind_s: float = BEHIND_S, caught_up_s: float = CAUGHT_UP_S):
+        self.behind_s, self.caught_up_s = behind_s, caught_up_s
+        self.since: float | None = None       # wall clock when it fell behind
+        self.worst = 0.0
+
+    def check(self, delay: float, queued: int, now: float) -> tuple[str, dict] | None:
+        if self.since is None:
+            if delay <= self.behind_s:
+                return None
+            self.since, self.worst = now, delay
+            return "behind", {"behind_s": round(delay, 1), "queued": queued,
+                              "note": f"{delay:.0f} s behind its radios with {queued} frames queued; "
+                                      "a restart now drops most of them"}
+        self.worst = max(self.worst, delay)
+        if delay >= self.caught_up_s:
+            return None
+        fields = {"behind_s": round(delay, 1), "worst_s": round(self.worst, 1),
+                  "since": self.since, "behind_for_s": round(now - self.since, 1),
+                  "note": f"caught up after {now - self.since:.0f} s, at worst {self.worst:.0f} s behind"}
+        self.since, self.worst = None, 0.0
+        return "caught_up", fields
 
 
 # How long a configured radio that is missing or down waits before the
@@ -486,6 +589,14 @@ class Radio:
         self.last_frame_mono: float | None = None
         self.last_frame_ts: float | None = None
         self.stopped_ok = True
+        # The newest stamp this attachment gave the merger, the frame held
+        # while its backwards stamp waits for the next (BACKSTEP_S), and how
+        # many held stamps the next frame did not confirm.
+        self.last_raw: float | None = None
+        self.last_mono: float | None = None
+        self.min_delay: float | None = None   # smallest arrival minus stamp seen (DELAY_RISE)
+        self.held: tuple | None = None
+        self.bad_stamps = 0
 
     @property
     def key(self) -> str:
@@ -769,7 +880,7 @@ class Radio:
                 "source": self.source, "peer": self.peer if self.state == "up" else None,
                 "state": self.state, "since_s": round(mono - self.state_mono, 1) if self.state_mono else None,
                 "frames_total": self.frames, "last_frame_age_s": age, "last_frame_ts": self.last_frame_ts,
-                "dropped_lines": self.dropped_lines(),
+                "dropped_lines": self.dropped_lines(), "bad_stamps": self.bad_stamps,
                 "current_file": str(self.writer.current_path) if self.writer and self.writer.current_path else None,
                 "lock": aligner_status}
 
@@ -899,7 +1010,8 @@ def run_record(cfg: Config) -> None:
     # record; the stall clock and the heartbeat's health run on the
     # monotonic stamp beside it, which NTP stepping the host clock forward
     # after boot cannot turn into a three-hour "stall".
-    beat = {"last_frame": None, "last_frame_mono": None, "total": 0, "ring": None}
+    beat = {"last_frame": None, "last_frame_mono": None, "total": 0, "ring": None, "behind_s": 0.0}
+    behind = BehindAlarm()
     # When any run last heard a frame, carried through runs that hear
     # nothing: the next start credits the gap since then as its own
     # blindness, not the devices' silence (Pipeline._last_frame_heard).
@@ -975,8 +1087,17 @@ def run_record(cfg: Config) -> None:
             if watchdog_stop.is_set():
                 return          # shutting down: the main thread owns the state now
             mono = time.monotonic()
+            beat["behind_s"] = queue_delay(frames_q, mono)
             age = status_tick(cfg, primary.port, beat, started, started_mono, pipe, decryptor, prior_frame, _log,
                               radios=radios, merger=merger)
+            alarm = behind.check(beat["behind_s"], frames_q.qsize(), time.time())
+            try:
+                if alarm and alarm[0] == "behind":
+                    events.emit("recorder_behind", "warning", **alarm[1])
+                elif alarm:
+                    events.emit("recorder_caught_up", "info", **alarm[1])
+            except Exception as exc:  # a full disk must not take the watchdog down
+                _log(f"{'recorder_behind' if alarm[0] == 'behind' else 'recorder_caught_up'} not logged: {exc}")
             try:
                 _supervise(mono)
             except Exception as exc:  # supervision must not take the watchdog down
@@ -1010,7 +1131,13 @@ def run_record(cfg: Config) -> None:
                     for r in radios:
                         r.stop_sniffer()
 
-                for what, step in (("ring flush", flush_rings),
+                def set_aside_held():
+                    for r in radios:
+                        if r.held is not None:
+                            _set_aside(r)
+
+                for what, step in (("held frames", set_aside_held),
+                                   ("ring flush", flush_rings),
                                    ("last-seen save", pipe.seen.save),
                                    ("key journal save", lambda: pipe.journal.save(force=True)),
                                    ("exit note", lambda: record_exit(cfg.state_dir, EXIT_STALLED,
@@ -1030,7 +1157,8 @@ def run_record(cfg: Config) -> None:
     # restart loop that never hears one cannot keep a monitor reassured.
     # Once the stall timeout passes the watchdog exits anyway.
     HeartbeatRunner(heartbeats,
-                    healthy=lambda: capture_healthy(beat["last_frame_mono"], time.monotonic()),
+                    healthy=lambda: capture_healthy(beat["last_frame_mono"], time.monotonic(),
+                                                    behind_s=queue_delay(frames_q, time.monotonic())),
                     log=_log)
 
     def _take(out: Frame) -> None:
@@ -1052,10 +1180,11 @@ def run_record(cfg: Config) -> None:
             pipe._journal_files[label] = r.writer.current_path
             r.last_frame_ts = copy.ts
         for r in radios:
-            if r.clock.last_step_s:
-                _log(f"capture clock re-anchored by {r.clock.last_step_s:+.3f} s "
+            steps = r.clock.step_log
+            while steps:
+                who = f"{r.describe()}: " if r.label is not None else ""
+                _log(f"{who}capture clock re-anchored by {steps.pop(0):+.3f} s "
                      "(sniffer restarted, it anchored on stale buffered packets, or the host clock stepped)")
-                r.clock.last_step_s = 0.0
         # Unjudged frames still show the capture is alive (the watchdog
         # and the heartbeat read this), they just do not reach the pipeline.
         beat["last_frame_mono"] = time.monotonic()
@@ -1074,10 +1203,37 @@ def run_record(cfg: Config) -> None:
     exit_code = 0
     streams = {}                         # attachment tokens, owned by the capture loop
 
+    def _feed(r: Radio, frame, mono: float) -> None:
+        r.min_delay = next_min_delay(r.min_delay, r.last_mono, frame.ts, mono)
+        r.last_raw, r.last_mono = frame.ts, mono
+        merger.push(r.label, frame, mono)
+        for out in merger.release(mono):
+            _take(out)
+
+    def _set_aside(r: Radio) -> None:
+        """The held frame, its stamp not confirmed by the next: into its
+        radio's ring at that radio's last ring stamp, unjudged, and never
+        to the merger, the clock or the detectors."""
+        frame, held_mono, arrived = r.held
+        r.held = None
+        r.bad_stamps += 1
+        # The series' last stamp now, not when it was held: copies the
+        # merger still had then are written by now, and a stamp before
+        # them would put the series out of order (an hour boundary in
+        # between rotated back to the last hour's file for one frame).
+        ring_ts = r.last_frame_ts if r.last_frame_ts is not None else arrived
+        _log(f"{r.describe()}: one frame stamped {frame.ts - r.last_raw:+.3f} s from its radio's last stamp "
+             f"{held_mono - r.last_mono:.3f} s after it, and the next frame back on the old timebase; "
+             "recorded unjudged (a garbled serial line?)")
+        copy = replace(frame, ts=ring_ts, radio=r.label, heard=None, unjudged="bad_stamp")
+        _take(replace(copy, heard={r.label: copy}))
+
     def _push(r: Radio, frame, mono: float, token) -> None:
         """One radio's copy of a frame into the merger, and whatever the
         merger releases on through _take."""
         if streams.get(r.label) is not token:
+            if r.held is not None:
+                _set_aside(r)                # the old attachment's, never confirmed
             # Drain with the old clocks before replacing them. USB
             # reattachment runs on the watchdog; domain changes belong
             # here, in queue order, just like a relay's first frame.
@@ -1086,14 +1242,26 @@ def run_record(cfg: Config) -> None:
                 for out in merger.release(mono):
                     _take(out)
             r.clock = RadioClock()
+            r.last_raw = r.last_mono = r.min_delay = None
             streams[r.label] = token
         r.frames += 1
         r.last_frame_mono = mono
         if r.writer is None and r.dlt is None:
             r.dlt = DLT_TAP
-        merger.push(r.label, frame, mono)
-        for out in merger.release(mono):
-            _take(out)
+        off = stamp_off(frame.ts, mono, r.last_raw, r.last_mono, r.min_delay)
+        if r.held is not None:
+            held, held_mono, _arrived = r.held
+            if off and stamp_confirms(held.ts, held_mono, frame.ts, mono):
+                r.held = None
+                r.min_delay = None                   # a new timebase: its own baseline
+                _feed(r, held, held_mono)
+                _feed(r, frame, mono)
+                return
+            _set_aside(r)
+        if off:
+            r.held = (frame, mono, time.time() - (time.monotonic() - mono))
+            return
+        _feed(r, frame, mono)
 
     try:
         while True:
@@ -1122,6 +1290,8 @@ def run_record(cfg: Config) -> None:
                 # The sniffer closed its end of the FIFO: dongle unplugged or
                 # the sniffer process died. With another radio still up, that
                 # radio goes on; alone, not a clean stop.
+                if r.held is not None:
+                    _set_aside(r)
                 r.detach(attach_lock, mono, "capture stream ended")
                 merger.end(label)
                 for out in merger.release(mono):
@@ -1236,6 +1406,7 @@ def run_record(cfg: Config) -> None:
             # What the queue and then the merger still hold goes into the
             # rings and the pipeline before the rings close.
             cleanup("queued frames", drain_queue)
+            cleanup("held frames", lambda: [_set_aside(r) for r in radios if r.held is not None])
             cleanup("merger flush", lambda: [_take(out) for out in merger.release(flush=True)])
             lost = cleanup("sniffer stop", stop_sniffers)
             lost |= cleanup("last-seen save", pipe.seen.save)
@@ -1287,7 +1458,8 @@ def status_tick(cfg, port, beat: dict, started: float, started_mono: float, pipe
         try:
             _write_status(cfg, port, beat["total"], started, pipe, beat["ring"], decryptor,
                           last_frame_age=age, last_frame_ts=beat["last_frame"] or prior_frame,
-                          dropped_lines=dropped, radios=radios_status, merge=merge_status)
+                          dropped_lines=dropped, radios=radios_status, merge=merge_status,
+                          behind_s=beat.get("behind_s", 0.0))
         except Exception as exc:   # a full disk must not take the stall check with it
             log(f"status.json not written: {exc}")
     return age
@@ -1307,7 +1479,8 @@ def last_frame_on_record(state_dir: Path) -> float | None:
 
 def _write_status(cfg, port, total, started, pipe: Pipeline, ring, decryptor,
                   last_frame_age: float = 0.0, last_frame_ts: float | None = None,
-                  dropped_lines: int = 0, radios: dict | None = None, merge: dict | None = None) -> None:
+                  dropped_lines: int = 0, radios: dict | None = None, merge: dict | None = None,
+                  behind_s: float = 0.0) -> None:
     # last_frame_age_s is this run's view (the watchdog's stall clock);
     # last_frame_ts is the wall-clock time of the last frame any run heard,
     # which does not move while nothing is heard.
@@ -1322,6 +1495,9 @@ def _write_status(cfg, port, total, started, pipe: Pipeline, ring, decryptor,
         "commit": running_commit(),
         "last_frame_age_s": round(last_frame_age, 1),
         "last_frame_ts": last_frame_ts,
+        # How long the oldest queued frame has waited (queue_delay): how far
+        # behind its radios the recorder is. Past BEHIND_S it pages.
+        "behind_s": round(behind_s, 1),
         "port": port,
         "channel": cfg.channel,
         "frames_total": total,

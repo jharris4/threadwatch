@@ -87,7 +87,7 @@ KNOWN_EVENTS = frozenset((
     "snapshot_requested", "snapshot_saved", "snapshot_failed", "snapshot_skipped", "snapshots_pruned",
     "snapshot_logs_saved", "snapshot_logs_failed", "ha_logs_archive_stalled", "ha_logs_archive_resumed",
     "ha_unavailable", "ha_unavailable_burst", "ha_available", "ha_unreachable", "ha_reachable",
-    "daily_summary", "alert_test", "recorder_started",
+    "daily_summary", "alert_test", "recorder_started", "recorder_behind", "recorder_caught_up",
     "radio_missing", "radio_lost", "radio_returned", "radio_attached",
     "address_flood", "address_forgotten",
 ))

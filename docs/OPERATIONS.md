@@ -293,6 +293,41 @@ recorded in that radio's series but kept from the detectors (`merge`
 the second would read as a MAC retry. A radio that never locks still
 records, and judges nothing of its own.
 
+A frame stamped more than a second before its radio's last, or arriving
+more than a second sooner after its stamp than that radio's frames ever
+do, is held for that radio's next frame. Late is never suspect: a relay
+stall or a USB batch delivers frames late, and a quiet radio's next
+frame is minutes on and arrived minutes on. Stamped on the same new timebase, the radio's
+clock restarted (or its anchor was stale) and both go on. Back on the
+old one, the held stamp was garbled: the frame is recorded in its
+radio's series at that series' last stamp, kept from the detectors,
+never moves the radio's clock, and is counted in the radio's
+`bad_stamps`. On 2026-10-11 one such relay frame re-anchored its radio's
+clock by 4.6 days and left the recorder 18 hours behind. A dongle's
+clock drifts against the host's, so a stamp ahead is caught at a second
+plus 500 ppm of the gap before it: 2.8 s after an hour of silence.
+
+Three things `bad_stamps` can count that are not garbles. A relay that
+starts replays what its dongle buffered: frames heard seconds apart
+arrive together, and some of them can be set aside, a handful at relay
+start. A link that got faster than the fastest it had been by over a
+second costs one hold, confirmed by the next frame. And a held frame
+waits for its radio's next frame however long that takes; on a quiet
+radio it reaches the detectors late. For a relay radio, the serial
+reader's own counts (refused lines, frames without a timestamp, the FCS
+check) are in the relay host's journal, not in this host's status.
+
+Before that, the serial reader refuses a line the firmware could not
+have printed (`received: %s power: %d lqi: %u time: %llu`): anything but
+whitespace after the time, a signed time or one over 31 years, a PSDU
+shorter than an ACK or longer than 127 bytes, an RSSI above +20 dBm, an
+LQI above 255. Each is counted in `dropped_lines` and its raw bytes
+journaled. A frame with `time: 0` is the radio driver's "no timestamp"
+(a documented race), not a garble: it is stamped from when it was read
+and journaled; as a run's first frame it is dropped. Once per run the
+reader journals how many of its first 1000 frames end in their own
+802.15.4 FCS, which says whether the firmware passes the real one.
+
 A radio with `source = "tcp"` is a `threadwatch relay` on another host
 (SETUP.md, "A dongle on another host"): the recorder listens on its
 `listen` address, checks each connection's handshake (the radio's
@@ -328,10 +363,11 @@ file.) The fields:
 | `updated` | when the file was written (unix seconds) |
 | `version`, `commit` | the threadwatch version and git commit that is recording. This is how you tell a deploy that landed from one that did not; `bin/threadwatch --version` prints the same pair for the checkout you are standing in, and `doctor`'s `version` line for the host |
 | `last_frame_age_s` | seconds since this run last heard a frame, on the daemon's own clock; the watchdog exits at 180 |
+| `behind_s` | how long the oldest frame waiting in the recorder's queue has waited: how far behind its radios it is, 0 when it keeps up. Over 60 it is `recorder_behind` and the heartbeat reads unhealthy |
 | `last_frame_ts` | when any run last heard a frame (unix seconds); unlike the age it spans restarts, and stays put while nothing is heard |
 | `port`, `channel` | the dongle's serial port (the primary's, with several) and the channel being captured |
 | `merge` | with `[record] radios`: `merged`, frames recorded this run; `duplicates`, copies folded into another radio's frame (what both heard); `unjudged`, frames recorded but kept from the detectors, by reason: `late_copy` (another radio's copy of it went out first, alone) and `unlocked` (heard only by a radio whose clock is not yet locked); `pending`, copies waiting for the other radio. `merged` sits between the busier radio's `frames_total` and the radios' totals added together |
-| `radios` | with `[record] radios`: one entry per radio by label with its `port`, `serial`, `placement`, `state` (`up`, `down`, `missing`), `since_s`, `frames_total`, `last_frame_age_s`, `dropped_lines`, its own `current_file`, and `lock`: `null` for the primary, else the merger's alignment of its clock to the primary's (`locked`, `offset_ms`, `ppm`, `sigma_us`, `pairs`, `locks`). A single unnamed dongle shows one entry, `radio` |
+| `radios` | with `[record] radios`: one entry per radio by label with its `port`, `serial`, `placement`, `state` (`up`, `down`, `missing`), `since_s`, `frames_total`, `last_frame_age_s`, `dropped_lines`, `bad_stamps` (frames whose stamp jumped back alone, recorded unjudged), its own `current_file`, and `lock`: `null` for the primary, else the merger's alignment of its clock to the primary's (`locked`, `offset_ms`, `ppm`, `sigma_us`, `pairs`, `locks`). A single unnamed dongle shows one entry, `radio` |
 | `frames_total` | frames this run; it should climb between two runs of `status` |
 | `dropped_lines` | serial lines from the dongle the sniffer could not parse this run: frames nobody recorded. A steady climb is a cable or firmware problem, not a quiet mesh |
 | `uptime_s` | this run's age |

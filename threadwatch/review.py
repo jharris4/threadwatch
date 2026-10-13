@@ -484,6 +484,12 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
                 bump(recorder, rec)
                 recorder["title"] = f"recorder restarted {recorder['count']} times"
                 recorder["detail"] = rec.get("note", "")      # the latest: the longest gap
+        elif ev == "recorder_behind":
+            new("recorder", rec, f"recorder fell {fmt_duration(rec.get('behind_s') or 0)} behind its radios",
+                rec.get("note", ""))
+        elif ev == "recorder_caught_up":
+            new("recorder", rec, f"recorder caught up after {fmt_duration(rec.get('behind_for_s') or 0)}",
+                rec.get("note", ""))
         elif ev == "clock_step":
             step = rec.get("step_s") or 0
             new("clock", rec, f"host clock jumped {'forward' if step > 0 else 'back'} {fmt_duration(abs(step))}",

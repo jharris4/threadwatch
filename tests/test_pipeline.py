@@ -5234,11 +5234,13 @@ def pending_ack(ts, seq):
     return Frame(ts=ts, raw=b"", psdu=b"", rssi=-40.0, channel=None, lqi=None, ftype=2, seq=seq, pending=True)
 
 
-def mle_frame(ts, src_ext, sequence, body, mle_counter=None, mac_counter=None):
+def mle_frame(ts, src_ext, sequence, body, mle_counter=None, mac_counter=None, dst=None):
     """A MAC-secured frame from ``src_ext`` carrying a secured MLE message
     with the given body (command byte plus TLVs) under one key generation.
     The counters default to the next for the source; a test that wants the
-    message to advertise something other than the truth sets them."""
+    message to advertise something other than the truth sets them. ``dst``,
+    an extended address, sends it unicast to that device's link-local
+    address instead of to all nodes."""
     import struct
 
     from cryptography.hazmat.primitives.ciphers.aead import AESCCM
@@ -5254,9 +5256,16 @@ def mle_frame(ts, src_ext, sequence, body, mle_counter=None, mac_counter=None):
         + bytes([(sequence & 0x7f) + 1])
     mle_key, _mac = derive_keys(KEY, sequence)
     nonce = bytes.fromhex(src_ext) + struct.pack(">L", mle_counter) + bytes([5])
-    msg = bytes([0]) + aux + AESCCM(mle_key, tag_length=4).encrypt(nonce, body, src_ip + ALL_NODES + aux)
-    psdu = secured_psdu(src_ext, mac_counter, dst="ffff", seq=int(ts) & 0xFF,
-                        payload=lowpan_udp(19788, 19788, msg), sequence=sequence)
+    dst_ip = LINK_LOCAL + Decryptor._iid_from_ext(dst) if dst else ALL_NODES
+    msg = bytes([0]) + aux + AESCCM(mle_key, tag_length=4).encrypt(nonce, body, src_ip + dst_ip + aux)
+    if dst:
+        # IPHC with both addresses elided: derived from the MAC header.
+        iphc = (0b011 << 13) | (3 << 11) | (1 << 10) | (2 << 8) | (3 << 4) | 3
+        payload = struct.pack(">H", iphc) + b"\xf0" + struct.pack(">HH", 19788, 19788) + b"\x00\x00" + msg
+    else:
+        payload = lowpan_udp(19788, 19788, msg)
+    psdu = secured_psdu(src_ext, mac_counter, dst=dst or "ffff", seq=int(ts) & 0xFF,
+                        payload=payload, sequence=sequence)
     return parse_frame(ts, psdu, 230)
 
 
@@ -5581,6 +5590,11 @@ def leader_data(partition_id, router_id):
     """An MLE Leader Data TLV."""
     import struct
     return bytes([11, 8]) + struct.pack(">L", partition_id) + b"\x00\x00\x00" + bytes([router_id])
+
+
+def source_address(rloc16):
+    """An MLE Source Address TLV: the sender's RLOC16."""
+    return bytes([0, 2]) + rloc16.to_bytes(2, "big")
 
 
 def route64(id_sequence):
@@ -5935,6 +5949,86 @@ def dns_update(dns_id, rcode=None):
     if rcode is not None:
         flags |= 0x8000 | rcode
     return struct.pack(">HHHHHH", dns_id, flags, 0, 0, 0, 0)
+
+
+class ParentCheckTest(unittest.TestCase):
+    """parent_check: a Parent Request addressed to one router is a device
+    with a working parent looking for a better one, not a rejoin
+    (docs/ALERTING.md). Porch Sensor is a child of Hall Router (RLOC16
+    0xf000); Den Router is the other router it asks."""
+
+    R2 = "a2a2a2a2a2a2a2a2"
+    PART = 0x5eed1234
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        (d / "devices.json").write_text(json.dumps([{"name": "Porch Sensor", "extendedAddress": SENSOR},
+                                                    {"name": "Hall Router", "extendedAddress": ROUTER},
+                                                    {"name": "Den Router", "extendedAddress": self.R2}]))
+        self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json")
+        self.pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        self.t0 = 1_700_000_000.0
+        src = source_address
+        self.pipe.ingest(mle_frame(self.t0, ROUTER, 0, b"\x04" + src(0xf000) + leader_data(self.PART, 60)))
+        self.pipe.ingest(mle_frame(self.t0 + 1, self.R2, 0, b"\x04" + src(0x8000) + leader_data(self.PART, 60)))
+        # Child Update Requests carrying the sensor's RLOC16 under Hall Router
+        # (the first creates its row, the second is noted on it).
+        for i in (2, 3):
+            self.pipe.ingest(mle_frame(self.t0 + i, SENSOR, 0, b"\x0d" + src(0xf005), dst=ROUTER))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _events(self, name):
+        return [r for r in self.pipe.events.records if r["event"] == name]
+
+    def _check(self, ts, router):
+        self.pipe.ingest(mle_frame(ts, SENSOR, 0, b"\x09", dst=router))
+
+    def _response(self, ts, router, rloc, margin):
+        body = b"\x0a" + source_address(rloc) + leader_data(self.PART, 60) + bytes([16, 1, margin])
+        self.pipe.ingest(mle_frame(ts, router, 0, body, dst=SENSOR))
+
+    def test_a_check_that_stays_is_one_info_record_with_the_margins(self):
+        t = self.t0 + 100
+        self._check(t, ROUTER)
+        self._check(t + 0.01, self.R2)
+        self._check(t + 0.02, self.R2)                 # asked again: still one router
+        self._response(t + 0.3, self.R2, 0x8000, 41)
+        self._response(t + 0.5, ROUTER, 0xf000, 21)
+        self.pipe.periodic(t + 5)
+        self.assertEqual(self._events("parent_check"), [])           # held
+        self.pipe.periodic(t + 11)
+        [ev] = self._events("parent_check")
+        self.assertEqual((ev["ts"], ev["severity"], ev["name"], ev["parent"], ev["asked"], ev["moved_to"]),
+                         (t, "info", "Porch Sensor", "Hall Router", ["Hall Router", "Den Router"], None))
+        self.assertEqual(ev["margins"], {"Den Router": 41, "Hall Router": 21})
+        self.assertEqual(ev["note"], "Porch Sensor looked for a better parent and stayed with Hall Router "
+                                     "(no Child ID Request followed). Link margin each router measured on "
+                                     "its request: Den Router 41 dB, Hall Router 21 dB.")
+        self.assertEqual(self._events("mle_rejoin_attempt"), [])
+        self.assertNotIn("rejoin_ts", self.pipe.seen.table[SENSOR])
+
+    def test_a_check_that_moves_folds_the_child_id_request_in(self):
+        t = self.t0 + 100
+        self._check(t, self.R2)
+        self._response(t + 0.3, self.R2, 0x8000, 41)
+        self.pipe.ingest(mle_frame(t + 1, SENSOR, 0, b"\x0b", dst=self.R2))   # Child ID Request
+        self.pipe.periodic(t + 11)
+        [ev] = self._events("parent_check")
+        self.assertEqual(ev["moved_to"], "Den Router")
+        self.assertIn("looked for a better parent and moved to Den Router.", ev["note"])
+        self.assertEqual(self._events("mle_rejoin_attempt"), [])
+        # A Child ID Request is still an attach: the key-lag check reads it.
+        self.assertEqual(self.pipe.seen.table[SENSOR]["rejoin_ts"], t + 1)
+
+    def test_a_broadcast_parent_request_is_still_a_rejoin(self):
+        t = self.t0 + 100
+        self.pipe.ingest(mle_frame(t, SENSOR, 0, b"\x09"))
+        self.pipe.periodic(t + 100)
+        self.assertEqual(self._events("parent_check"), [])
+        self.assertEqual(len(self._events("mle_rejoin_attempt")), 1)
 
 
 class SrpRefusedTest(unittest.TestCase):

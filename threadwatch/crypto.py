@@ -83,6 +83,11 @@ class MleInfo:
     # (frame_counter_mismatch).
     link_frame_counter: int | None = None
     mle_frame_counter: int | None = None
+    # A Parent Response's Link Margin TLV: how far above the noise floor
+    # the responding router heard the Parent Request, in dB. The one
+    # measure of the link between a device and a router the sniffer
+    # cannot take from where it sits.
+    link_margin: int | None = None
 
 
 @dataclass
@@ -516,6 +521,8 @@ class Decryptor:
                 info.link_frame_counter = struct.unpack(">L", val[0:4])[0]
             elif t == 8 and l >= 4:  # MLE Frame Counter
                 info.mle_frame_counter = struct.unpack(">L", val[0:4])[0]
+            elif t == 16 and l >= 1:  # Link Margin
+                info.link_margin = val[0]
             off += 2 + l
         # Learn the short->extended mapping from the sender itself, which
         # unlocks MAC decryption of its short-source data frames.

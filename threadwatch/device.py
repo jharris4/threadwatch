@@ -17,7 +17,7 @@ from .config import Config
 from .events import NullEventLog
 from .merge import merge_readers
 from .pcap import PcapStreamReader, is_poll
-from .pipeline import Pipeline, load_decryptor
+from .pipeline import Pipeline, is_parent_check, load_decryptor
 from .review import coverage, devices_history, episode_blind_s, fmt_duration, fmt_episode
 from .ring import HOUR_FORMAT, group_files, parse_ring_name
 from .snapshot import saved_at
@@ -194,7 +194,8 @@ def run_device(cfg: Config, target: str, pcap_file: Path | None = None,
             return
         info, fresh = got
         h["mle"][info.command_name] = h["mle"].get(info.command_name, 0) + 1
-        if fresh and info.command_name in ("Parent Request", "Child ID Request", "Announce"):
+        if fresh and info.command_name in ("Parent Request", "Child ID Request", "Announce") \
+                and not is_parent_check(f, info.command_name):
             mle_events.append((f.ts, info.command_name))
 
     # An MLE payload the pipeline could not parse: its own count, since

@@ -540,7 +540,9 @@ class MleThroughThePipelineTest(unittest.TestCase):
     def _mle_frame(ts, body, counter, sequence=0):
         src_ip = LINK_LOCAL + Decryptor._iid_from_ext(SED)
         msg = mle_message(SED, sequence, counter, src_ip, ALL_NODES, body)
-        return parse_frame(ts, secured_ext_frame(SED, counter, lowpan_udp(19788, 19788, msg), sequence), 195)
+        # To ff02::1, so to the MAC broadcast address as on air.
+        return parse_frame(ts, secured_ext_frame(SED, counter, lowpan_udp(19788, 19788, msg), sequence,
+                                                 dst_short="ffff"), 195)
 
     @staticmethod
     def _leader_data(partition_id, router_id):

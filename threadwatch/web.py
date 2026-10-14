@@ -221,6 +221,11 @@ LEGEND = [
      "A device sent MLE Parent Request, Child ID Request or Announce: it lost its parent or its "
      "network and is trying to get back (credentials needed). Expected after a device or router "
      "restarts; a device doing this repeatedly has a bad link to every parent it can hear."),
+    ("parent_check", "Parent check",
+     "A device whose parent still answers it asked one or more routers directly whether a better "
+     "parent is in reach (a Parent Request addressed to them, not broadcast), then stayed or moved. "
+     "The row gives the link margin each router measured on the request: how well that router hears "
+     "the device, which the sniffer's own signal figures cannot tell. Information only."),
     ("first_seen", "Device first seen",
      "An address the recorder has never tracked before. Happens once per device, ever. Bursts "
      "of these mark the recorder's first start or a new way of identifying devices; a single "

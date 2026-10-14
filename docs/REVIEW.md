@@ -140,6 +140,7 @@ The raw log is the wrong unit for people, so the pages group it:
 | `retransmission_elevation` x N, same sender and target | one row with the count and the worst rate |
 | `possible_foreign_pan` x N, same PAN and source | one row with the count |
 | `mle_rejoin_attempt` x N, same device | one row listing the MLE commands seen |
+| `parent_check` | one row each: *X checked for a better parent*, with the routers' link margins and whether it stayed or moved |
 | `device_first_seen` burst (daemon start) | one row: *24 devices first seen* |
 | `poll_starvation` ... `poll_answered` | one row: *X polls unanswered for 12m* (or *still unanswered*) |
 | `poll_unserved` ... `poll_served` | one row: *X polls acknowledged, nothing delivered for 12m* (or *still undelivered*) |

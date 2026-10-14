@@ -61,6 +61,9 @@ from .pcap import BROADCAST_PAN, Frame, is_poll
 from .srp import Reassembler, fragment, matter_instances_in, parse_update
 
 MLE_REJOIN_COMMANDS = {"Parent Request", "Child ID Request", "Announce"}
+# How long a parent check (is_parent_check) gathers the Parent Responses
+# and any Child ID Request that follow it before it is logged.
+PARENT_CHECK_HOLD_S = 10.0
 # The MLE commands only a router (or a router-eligible device keeping up
 # with one) sends, whose Leader Data is the sender's own current view of
 # the partition. A child's Child Update Request repeats what its parent
@@ -85,6 +88,14 @@ def _whole(value) -> int | None:
     """A whole number from a state file, or None for anything else (a bool,
     a string, a missing key). Rows are JSON somebody can edit."""
     return None if isinstance(value, bool) or not isinstance(value, int) else value
+
+
+def is_parent_check(f: Frame, command: str) -> bool:
+    """A Parent Request addressed to one router rather than broadcast. A
+    device that has lost its parent broadcasts; one whose parent still
+    answers it addresses the routers it knows, asking whether a better
+    parent is in reach, and stays put unless one is."""
+    return command == "Parent Request" and f.dst not in (None, "ffff")
 
 
 def fmt_span(seconds: float) -> str:
@@ -259,6 +270,9 @@ class Pipeline:
         # the last batch that went out as a wave (for the attributions).
         self._rejoin_wave: dict | None = None
         self._last_rejoin_wave: dict | None = None
+        # Parent checks held for PARENT_CHECK_HOLD_S, by the checking
+        # device's address.
+        self._parent_checks: dict[str, dict] = {}
         # The newest OTBR inventory sample whose router table has been
         # compared (its started_at): each new sample is judged against the
         # one before it, once. Seeded at start so a restart announces
@@ -3123,7 +3137,11 @@ class Pipeline:
         if info.command_name == "Child Update Response" and f.dst not in (None, "ffff"):
             # Only ever a reply: the child asked within the last second.
             self._vouch(f.dst, f.ts, "parent")
-        if info.command_name in MLE_REJOIN_COMMANDS:
+        if src_for_mle and is_parent_check(f, info.command_name):
+            self._note_parent_check(f.ts, src_for_mle, f.dst)
+        elif info.command_name == "Parent Response":
+            self._note_parent_response(f, src_for_mle, info.link_margin)
+        elif info.command_name in MLE_REJOIN_COMMANDS:
             # addr is the extended address (the review pages key on it);
             # src is whatever the frame carried, often a short address.
             name = self.names.name(src_for_mle) if src_for_mle else None
@@ -3134,7 +3152,12 @@ class Pipeline:
                 # and the HA availability check reads it the same way.
                 row["rejoin_ts"] = f.ts
                 self.seen._dirty = True
-            self._note_rejoin(f.ts, info.command_name, f.src, src_for_mle, name)
+            check = self._parent_checks.get(src_for_mle) if src_for_mle else None
+            if check is not None and info.command_name == "Child ID Request":
+                # The check found a better parent and is moving to it.
+                check["moved_to"] = self._ext_of(f.dst)
+            else:
+                self._note_rejoin(f.ts, info.command_name, f.src, src_for_mle, name)
         if info.partition_id is not None and self._leader_data_is_current(info, src_for_mle):
             self._note_partition((info.partition_id, info.leader_router_id), f.ts,
                                  src_for_mle, info.route_id_sequence, info.source_addr16)
@@ -3486,6 +3509,54 @@ class Pipeline:
         dev["commands"][command] = dev["commands"].get(command, 0) + 1
         wave["records"].append((ts, fields))
 
+    def _ext_of(self, short_or_ext: str | None) -> str | None:
+        """A MAC address as the extended address, when it is one or the
+        short address is known."""
+        if not short_or_ext or len(short_or_ext) == 16:
+            return short_or_ext
+        return self.decryptor.short_to_ext.get(short_or_ext, short_or_ext)
+
+    def _note_parent_check(self, ts: float, addr: str, dst: str) -> None:
+        """A Parent Request to one router (is_parent_check): not a rejoin.
+        Held for PARENT_CHECK_HOLD_S so that the routers' replies, and a
+        Child ID Request if the device moves, land in the one record."""
+        check = self._parent_checks.get(addr)
+        if check is None:
+            parent = None
+            row = self.seen.table.get(addr)
+            rloc = row.get("rloc16") if row else None
+            if rloc and int(rloc, 16) & 0x1ff:
+                parent, _addr, _whom = self._parent_of(f"{int(rloc, 16) & 0xfc00:04x}")
+            check = self._parent_checks[addr] = {"ts": ts, "parent": parent, "asked": [],
+                                                 "margins": {}, "moved_to": None}
+        router = self._ext_of(dst)
+        if router not in check["asked"]:
+            check["asked"].append(router)
+
+    def _note_parent_response(self, f: Frame, router: str | None, margin: int | None) -> None:
+        """A router's reply to a held parent check, with the link margin
+        it measured on the device's request."""
+        check = self._parent_checks.get(self._ext_of(f.dst))
+        if check is not None and margin is not None:
+            check["margins"][router or f.src] = margin
+
+    def _settle_parent_checks(self, now: float, final: bool) -> None:
+        for addr, check in list(self._parent_checks.items()):
+            if not final and now - check["ts"] < PARENT_CHECK_HOLD_S:
+                continue
+            del self._parent_checks[addr]
+            name = self.names.name(addr)
+            margins = {(self.names.name(r) or r): m for r, m in check["margins"].items()}
+            moved = check["moved_to"] and (self.names.name(check["moved_to"]) or check["moved_to"])
+            heard = ", ".join(f"{r} {m} dB" for r, m in margins.items()) or "no reply heard"
+            outcome = (f"moved to {moved}" if moved
+                       else f"stayed with {check['parent'] or 'its parent'} (no Child ID Request followed)")
+            self._emit("parent_check", "info", check["ts"], addr=addr, name=name, parent=check["parent"],
+                       asked=[self.names.name(r) or r for r in check["asked"]], margins=margins,
+                       moved_to=moved or None,
+                       note=f"{name or addr} looked for a better parent and {outcome}. "
+                            f"Link margin each router measured on its request: {heard}.")
+
     def _rejoin_trigger(self, first_ts: float) -> str | None:
         """What a batch of rejoins that started at first_ts follows: a
         partition change or storm inside five minutes either side, or
@@ -3592,6 +3663,8 @@ class Pipeline:
         wave = self._rejoin_wave
         if wave is not None and (final or now - wave["last_ts"] >= self.cfg.rejoin_wave_s):
             self._settle_rejoins(now)
+        if self._parent_checks:
+            self._settle_parent_checks(now, final)
         self.seen.maybe_save()
         self.journal.save(now)
         self._check_credentials(now)

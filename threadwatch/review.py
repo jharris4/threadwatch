@@ -401,6 +401,11 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
                 bump(ep, rec)
                 cmds = {e.get("command") for e in ep["events"]}
                 ep["detail"] = ", ".join(sorted(c for c in cmds if c))
+        elif ev == "parent_check":
+            margins = ", ".join(f"{r} {m} dB" for r, m in (rec.get("margins") or {}).items())
+            outcome = f"moved to {rec['moved_to']}" if rec.get("moved_to") else "stayed"
+            new("parent_check", rec, f"{_label(rec)} checked for a better parent",
+                f"{outcome}; {margins}" if margins else outcome)
         elif ev == "device_first_seen":
             if first_seen is None or rec["ts"] - first_seen["end"] > 600:
                 first_seen = new("first_seen", rec, "1 device first seen", _label(rec))

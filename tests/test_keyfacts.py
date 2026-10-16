@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import tests  # noqa: F401  (the mDNS guard, installed on a direct run too: tests/no_lan)
-from threadwatch.keyfacts import HISTORY_LIMIT, facts, latest_generation, observe, summary
+from threadwatch.keyfacts import HISTORY_LIMIT, REJECTED_TS_LIMIT, facts, latest_generation, observe, summary
 
 
 class KeyFactsTest(unittest.TestCase):
@@ -35,6 +35,20 @@ class KeyFactsTest(unittest.TestCase):
         self.assertEqual(state["mle"]["rejected"][0]["count"], 1)
         self.assertEqual(state["recent_rejected"], 1)
         self.assertEqual(summary(row, 110 + 1801)["recent_rejected"], 0)
+
+    def test_the_recent_rejected_count_is_the_last_half_hour_not_the_span(self):
+        row = {}
+        for ts in (100, 2000, 3000):
+            observe(row, "mac", 90, ts, accepted=False, reason="counter_not_advancing")
+        observe(row, "mle", 90, 3100, accepted=False, reason="counter_not_advancing")
+        self.assertEqual(facts(row)["mac"]["rejected"][0]["count"], 3)
+        state = summary(row, 3200)
+        self.assertEqual((state["recent_rejected"], state["recent_rejected_capped"]), (3, False))
+        for i in range(REJECTED_TS_LIMIT + 5):
+            observe(row, "mac", 90, 4000 + i, accepted=False, reason="counter_not_advancing")
+        self.assertEqual(len(facts(row)["mac"]["rejected_ts"]), REJECTED_TS_LIMIT)
+        state = summary(row, 4200)
+        self.assertEqual((state["recent_rejected"], state["recent_rejected_capped"]), (REJECTED_TS_LIMIT + 1, True))
 
     def test_same_frame_mac_wins_tie_and_retries_have_separate_counts(self):
         row = {}

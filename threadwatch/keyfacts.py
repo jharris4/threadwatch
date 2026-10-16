@@ -1,7 +1,9 @@
 """Bounded sequence observations, separate from replay-protection counters.
 
 Counts cover each retained sequence's first/last observation span, not a
-rolling time bucket. Rejected MIC-valid traffic is forensic evidence only.
+rolling time bucket; the last REJECTED_TS_LIMIT rejection stamps per layer
+are what a recent count is taken from. Rejected MIC-valid traffic is
+forensic evidence only.
 """
 
 from __future__ import annotations
@@ -9,6 +11,7 @@ from __future__ import annotations
 import math
 
 HISTORY_LIMIT = 8                    # per layer, per acceptance decision
+REJECTED_TS_LIMIT = 100              # rejection stamps kept per layer
 LAYERS = (("mac", "counter"), ("mle", "mle_counter"))
 
 
@@ -76,6 +79,8 @@ def facts(row: dict) -> dict:
                         "counter_not_advancing", "older_than_retained", "authentication_history_full") else "unknown"
                 clean.append(item)
             entry[decision] = sorted(clean, key=lambda s: s["last_ts"])[-HISTORY_LIMIT:]
+        stamps = data.get("rejected_ts")
+        entry["rejected_ts"] = [t for t in stamps if _time(t)][-REJECTED_TS_LIMIT:] if isinstance(stamps, list) else []
         out[layer] = entry
     point = _point(raw.get("highest_authenticated"))
     if point:
@@ -113,6 +118,8 @@ def observe(row: dict, layer: str, sequence: int, ts: float, *, accepted: bool,
     span["retries" if accepted and retry else "count"] += 1
     if not accepted:
         span["reason"] = reason or "unknown"
+        entry["rejected_ts"].append(ts)
+        del entry["rejected_ts"][:-REJECTED_TS_LIMIT]
     spans.sort(key=lambda s: s["last_ts"])
     del spans[:-HISTORY_LIMIT]
     row["key_facts"] = state
@@ -143,7 +150,9 @@ def summary(row: dict, now: float, fresh_s: float = 1800) -> dict:
                 recent.add(span["sequence"])
     state["mixed"] = len(recent) > 1
     state["recent_sequences"] = sorted(recent)
-    state["recent_rejected"] = sum(span["count"] for layer, _ in LAYERS for span in state[layer]["rejected"]
-                                   if 0 <= now - span["last_ts"] <= fresh_s)
+    stamps = [[t for t in state[layer]["rejected_ts"] if 0 <= now - t <= fresh_s] for layer, _ in LAYERS]
+    state["recent_rejected"] = sum(map(len, stamps))
+    # Every stamp a layer keeps is recent: there may be more than counted.
+    state["recent_rejected_capped"] = any(len(s) == REJECTED_TS_LIMIT for s in stamps)
     state["fresh_s"] = fresh_s
     return state

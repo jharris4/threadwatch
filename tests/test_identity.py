@@ -32,14 +32,14 @@ PAN = 0x4e21
 
 def secured_frame(src_ext: str, src_short: str, counter: int, ftype: int = 1,
                   payload: bytes = b"\x7f\x33\xf0\x11\x22", sequence: int = 0,
-                  pan: int = PAN, key: bytes = KEY) -> bytes:
+                  pan: int = PAN, key: bytes = KEY, dst_short: str = "00cc") -> bytes:
     """An 802.15.4 frame with short source addressing, secured as Thread does
     (ENC-MIC-32, key index mode) under a key sequence, plus a trailing FCS.
     ftype 3 builds a data request: the command id (0x04) is authenticated
     but not encrypted, and the encrypted payload is empty. Another PAN and
     network key make a neighbour's frame."""
     fcf = ftype | 0x0008 | 0x0040 | (2 << 10) | (1 << 12) | (2 << 14)
-    header = struct.pack("<HBH", fcf, counter & 0xFF, pan) + bytes.fromhex("00cc")[::-1] \
+    header = struct.pack("<HBH", fcf, counter & 0xFF, pan) + bytes.fromhex(dst_short)[::-1] \
         + bytes.fromhex(src_short)[::-1]
     aux = bytes([0x0D]) + struct.pack("<L", counter) + bytes([(sequence & 0x7f) + 1])   # level 5, key mode 1
     open_part = header + aux + (b"\x04" if ftype == 3 else b"")
@@ -819,6 +819,79 @@ class SightingAuthenticityTest(unittest.TestCase):
                 again.ingest(parse_frame(t0 + 200, secured_ext_frame(SED, 999, b"\x7f\x33", sequence=0), 195))
             self.assertEqual((again.seen.table[SED]["last_seen"], again.replayed), (t0 + 100, 1))
             self.assertIn("under key generation 0", out.getvalue())
+
+    def _parent(self, tmp):
+        """SED as a router at 5c00, whose children are 5cxx."""
+        pipe, cfg = self._pipe(tmp)
+        pipe.decryptor.short_to_ext["5c00"] = SED
+        return pipe, cfg
+
+    @staticmethod
+    def _send(pipe, ts, counter, dst):
+        return pipe.ingest(parse_frame(ts, secured_frame(SED, "5c00", counter, dst_short=dst), 195))
+
+    def test_a_parents_resend_to_its_sleepy_child_is_heard_and_an_old_replay_is_not(self):
+        # A parent queues a frame for its child's next poll and sends a
+        # failed delivery again at the poll after, with its original
+        # counter, once newer frames have gone to others. Refused, every
+        # busy parent showed hundreds of "rejected MIC-valid" a day.
+        import contextlib
+        import io
+
+        from threadwatch.keyfacts import facts
+        with tempfile.TemporaryDirectory() as tmp:
+            pipe, cfg = self._parent(tmp)
+            t0 = 1_700_000_000.0
+            self._send(pipe, t0, 98, "5c04")
+            self._send(pipe, t0 + 0.5, 100, "5c03")
+            self._send(pipe, t0 + 1, 101, "9000")
+            self.assertEqual(self._send(pipe, t0 + 15, 100, "5c03"), SED)    # the next poll: sent again
+            self._send(pipe, t0 + 15.2, 99, "5c03")                          # its first copy went unheard
+            row = pipe.seen.table[SED]
+            self.assertEqual((row["frames"], row["counter"], row["last_seen"], pipe.replayed),
+                             (5, 101, t0 + 15.2, 0))
+            spans = {s["sequence"]: s for s in facts(row)["mac"]["accepted"]}
+            self.assertEqual((spans[0]["count"], spans[0]["retries"]), (4, 1))
+            out = io.StringIO()
+            with contextlib.redirect_stderr(out):
+                self._send(pipe, t0 + 10, 101, "9000")      # to a router: not a resend, a replay
+                self._send(pipe, t0 + 200, 100, "5c03")     # past the window: a replay
+                self._send(pipe, t0 + 200, 99, "5c03")
+                self._send(pipe, t0 + 200.1, 97, "5c03")    # below anything in the window
+            self.assertEqual((row["frames"], row["last_seen"], pipe.replayed), (5, t0 + 15.2, 4))
+            # A counter accepted before the window does not get back in on
+            # the strength of an older resend accepted inside it.
+            self._send(pipe, t0 + 300, 198, "5c04")
+            self._send(pipe, t0 + 301, 200, "5c03")
+            self._send(pipe, t0 + 302, 199, "5c03")         # unheard first copy: 198 is below it
+            self._send(pipe, t0 + 340, 200, "5c03")         # resent, 39 s on
+            self.assertEqual(pipe.replayed, 4)
+            with contextlib.redirect_stderr(out):
+                self._send(pipe, t0 + 361.5, 200, "5c03")   # 200 has left the window, 199 has not
+            self.assertEqual(pipe.replayed, 5)
+            # The window is not saved: after a restart the highest alone judges.
+            pipe.seen.save()
+            again = Pipeline(cfg, NullEventLog(), Decryptor(network_key=KEY))
+            again.decryptor.short_to_ext["5c00"] = SED
+            with contextlib.redirect_stderr(out):
+                self._send(again, t0 + 362, 199, "5c03")
+            self.assertEqual(again.replayed, 1)
+
+    def test_a_resend_below_an_advertised_counter_is_not_a_counter_mismatch(self):
+        # A resend carries a counter handed out before whatever the parent
+        # advertised since; only a device's newest counters are judged.
+        with tempfile.TemporaryDirectory() as tmp:
+            pipe, _cfg = self._parent(tmp)
+            t0 = 1_700_000_000.0
+            for i, counter in enumerate((90, 92, 94, 96)):
+                self._send(pipe, t0 + i, counter, "5c04")
+            pipe._advertised[SED] = {"mac": {"value": 97, "sequence": 0, "ts": t0 + 4, "command": "Link Accept",
+                                             "below": 0, "lowest": None, "said_ts": None}}
+            for i, counter in enumerate((97, 91, 93, 95, 96)):
+                self._send(pipe, t0 + 5 + i, counter, "5c03")
+            self.assertEqual((pipe.replayed, pipe.seen.table[SED]["frames"]), (0, 9))
+            self.assertEqual(pipe._advertised[SED]["mac"]["below"], 0)
+            self.assertNotIn("frame_counter_mismatch", [r["event"] for r in pipe.events.records])
 
     def test_a_rotation_restarts_the_mle_counter_too(self):
         # The MLE counter resets with the same rotation, and a router's

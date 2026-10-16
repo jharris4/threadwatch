@@ -470,6 +470,13 @@ class Pipeline:
         # after the restart is judged against and which then gives way.
         self._mac_counter: dict[str, dict[int | None, tuple[int, float]]] = {}
         self._mle_counter: dict[str, dict[int | None, tuple[int, float]]] = {}
+        # The MAC counters accepted from each device in the last
+        # RESEND_WINDOW_S, per key generation, in arrival order, each with
+        # whether it raised the highest: what tells
+        # a parent's resend to a sleepy child from a replay (see
+        # _counter_advances). Memory only: after a restart the guard judges
+        # by the highest counter alone until this refills.
+        self._mac_recent: dict[str, dict[int | None, deque]] = {}
         for addr, row in self.seen.table.items():
             for key, table in (("counter", self._mac_counter), ("mle_counter", self._mle_counter)):
                 gens = {}
@@ -505,6 +512,7 @@ class Pipeline:
         self.replayed = 0                            # frames refused as replays this run
         self._replay_said: dict[str, float] = {}     # addr -> when its replays were last mentioned
         self._counter_was_retry = False              # last counter decision was a retry (see _counter_advances)
+        self._counter_below_max = False              # ...or accepted a counter below the highest
         self._counter_rejection_reason: str | None = None
         self._key_observations: list[tuple] = []
         self._resolve_after: dict[str, float] = {}   # short addr -> next attempt ts
@@ -1207,6 +1215,9 @@ class Pipeline:
                 for seq, (counter, t) in list(gens.items()):
                     if before(t):
                         gens[seq] = (counter, t - back)
+        # A minute of resend memory is not worth sorting out across the
+        # step: the guard judges by the highest counter until it refills.
+        self._mac_recent.clear()
         for layers in self._advertised.values():
             for adv in layers.values():
                 for key in ("ts", "said_ts"):
@@ -1286,6 +1297,11 @@ class Pipeline:
             first, last = span.get("first_ts"), span.get("last_ts")
             if isinstance(first, (int, float)) and isinstance(last, (int, float)) and first > last:
                 span["first_ts"] = last
+        for layer in ("mac", "mle"):
+            entry = state.get(layer)
+            stamps = entry.get("rejected_ts") if isinstance(entry, dict) else None
+            if isinstance(stamps, list):
+                entry["rejected_ts"] = [t - back if before(t) else t for t in stamps]
 
     # ------------------------------------------------------------ radios
 
@@ -1470,6 +1486,7 @@ class Pipeline:
         self.devices.pop(addr, None)
         self.quiet_reported.discard(addr)
         self._pending_routers.pop(addr, None)
+        self._mac_recent.pop(addr, None)
         # The names harvested for it go too: kept, they would outlive the
         # row in observed-names.json and be suggested for an address the
         # recorder no longer tracks.
@@ -1484,13 +1501,21 @@ class Pipeline:
     # milliseconds of the first copy; the same counter this long after the
     # first accepted copy is a replay.
     RETRY_WINDOW_S = 2.0
+    # A parent's frame to a sleepy child waits for the child's next poll,
+    # and a failed delivery is sent again at the poll after, with its
+    # original counter, after the parent has sent newer frames to others.
+    # On 2026-10-16 the longest gap was 15 s (the longest poll interval)
+    # and no resend whose first copy went unheard sat more than 7 s behind
+    # an older accepted counter.
+    RESEND_WINDOW_S = 60.0
 
     def _verify(self, f: Frame, who: str | None) -> tuple[bytes | None, bool]:
         """Does this frame vouch for its sender? An extended address is
         64 bits the sender asserts, so a frame counts as a sighting of
         the device only when the MIC says the sender holds the network
         key and used that address as its nonce, and the frame counter is
-        above the last accepted, so a recording of the device played back
+        above the last accepted (or a resend, see _counter_advances), so a
+        recording of the device played back
         after it died does not keep it "heard". Returns the MAC payload
         (decrypted, or the plaintext of an unsecured frame) for the
         credentialed layer, and whether the MAC layer vouched. An
@@ -1504,10 +1529,14 @@ class Pipeline:
         plain, counter, sequence = self.decryptor.decrypt_frame_counter(f.psdu, who, None)
         if counter is None:
             return plain, False
-        self._last_mac_counter = counter
-        live = self._counter_advances(self._mac_counter, who, counter, f.ts, "frame", sequence)
+        live = self._counter_advances(self._mac_counter, who, counter, f.ts, "frame", sequence,
+                                      recent=self._mac_recent, resend=self._to_own_child(f))
         self._key_observations.append(("mac", sequence, f.ts, live,
                                        self._counter_was_retry, self._counter_rejection_reason))
+        # _check_advertised judges only a device's newest counter: a resend
+        # carries one handed out before whatever the device advertised since.
+        if not self._counter_below_max:
+            self._last_mac_counter = counter
         if live:
             self._last_mac_sequence = sequence
         return plain, live
@@ -1527,9 +1556,19 @@ class Pipeline:
     AUTH_MAX = 16_384
 
     def _counter_advances(self, table: dict, who: str, counter: int, ts: float, what: str,
-                          sequence: int | None) -> bool:
+                          sequence: int | None, recent: dict | None = None, resend: bool = False) -> bool:
+        """Is this counter fresh for the device under its key generation?
+        Above the highest accepted, yes. ``recent`` (the MAC layer) keeps
+        what was accepted in the last RESEND_WINDOW_S, and for a ``resend``
+        candidate (a parent's frame to its own child, _to_own_child) a
+        counter at or below the highest is a retry when it was accepted
+        there, or fresh when it was not but an older one was (a resend
+        whose first copy went unheard). Every other frame, and MLE, stays
+        strict: an accepted MLE message is acted on, and an older one out
+        of order is not worth the risk."""
         # Set for the caller that has just asked, and read straight after.
         self._counter_was_retry = False
+        self._counter_below_max = False
         self._counter_rejection_reason = None
         if who not in self._auth_addresses:
             if len(self._auth_addresses) >= self.AUTH_MAX:
@@ -1564,9 +1603,26 @@ class Pipeline:
                                           f"this device has been heard under ({min(gens)}), is not counted as "
                                           "a sighting: a recording from before the network rotated its key")
                 return False
-            return self._accept_counter(gens, sequence, counter, ts)
+            return self._accept_counter(gens, sequence, counter, ts, recent, who)
         if counter > last[0]:
-            return self._accept_counter(gens, sequence, counter, ts)
+            return self._accept_counter(gens, sequence, counter, ts, recent, who)
+        window = (recent.get(who) or {}).get(sequence) if recent is not None and resend else None
+        if window:
+            self._trim_recent(window, ts)
+            if any(c == counter and 0.0 <= ts - t for c, t, _raised in window):
+                # Sent again: the same sighting, not a second message.
+                self._counter_was_retry = True
+                self._counter_below_max = counter < last[0]
+                return True
+            if any(raised and c < counter for c, _t, raised in window):
+                # Its first copy went unheard. Only a counter that raised
+                # the highest inside the window vouches for one above it:
+                # every such counter came after anything accepted before
+                # the window, so nothing accepted then gets back in. A
+                # replay would need a frame the recorder never heard.
+                window.append((counter, ts, False))
+                self._counter_below_max = True
+                return True
         if counter == last[0] and 0.0 <= ts - last[1] < self.RETRY_WINDOW_S:
             # A MAC retry of the copy just accepted. It is the same sighting
             # of a live device, so it still counts as one -- but it is not a
@@ -1580,13 +1636,39 @@ class Pipeline:
                                   "a replay of an earlier frame, or the device's counter went backwards")
         return False
 
-    def _accept_counter(self, gens: dict, sequence: int | None, counter: int, ts: float) -> bool:
+    def _accept_counter(self, gens: dict, sequence: int | None, counter: int, ts: float,
+                        recent: dict | None = None, who: str | None = None) -> bool:
         """Record the counter as the highest accepted in its generation, and
         forget every generation but the newest KEEP_GENERATIONS."""
         gens[sequence] = (counter, ts)
         for old in sorted(g for g in gens if g is not None)[:-self.KEEP_GENERATIONS]:
             del gens[old]
+        if recent is not None:
+            windows = recent.setdefault(who, {})
+            for old in [g for g in windows if g not in gens]:
+                del windows[old]
+            window = windows.setdefault(sequence, deque())
+            window.append((counter, ts, True))
+            self._trim_recent(window, ts)
         return True
+
+    @staticmethod
+    def _to_own_child(f: Frame) -> bool:
+        """A data frame from a router's short address to one of its
+        children's: the only frame a parent queues for a poll and sends
+        again with its original counter. A child's short address is its
+        parent's with a child id in the low ten bits."""
+        if f.ftype != 1 or not f.src or not f.dst or len(f.src) != 4 or len(f.dst) != 4:
+            return False
+        try:
+            src, dst = int(f.src, 16), int(f.dst, 16)
+        except ValueError:
+            return False
+        return src & 0x3ff == 0 and dst != 0xffff and dst & 0x3ff != 0 and src >> 10 == dst >> 10
+
+    def _trim_recent(self, window: deque, ts: float) -> None:
+        while window and ts - window[0][1] > self.RESEND_WINDOW_S:
+            window.popleft()
 
     def _say_replay(self, who: str, ts: float, note: str) -> None:
         """Count a refused frame and say why, once an hour per device."""

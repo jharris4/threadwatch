@@ -1380,6 +1380,12 @@ class QuietPolicyTest(unittest.TestCase):
         row["adv_mle"] = [9, 0, T, "Child ID Request"]
         pipe._advertised[SENSOR] = {"mle": {"value": 9, "sequence": 0, "ts": T, "command": "Child ID Request",
                                             "below": 3, "lowest": 4, "said_ts": T}}
+        from threadwatch.keyfacts import observe
+        for layer, sequence in (("mac", 1), ("mle", 2)):
+            # Each span opened inside the band the step leaves alone and
+            # last seen ahead of it: closed up, not left inverted.
+            observe(row, layer, sequence, T - 1790, accepted=False)
+            observe(row, layer, sequence, T, accepted=False)
         pipe._rewind(T + 20 - 1800, 1800, 20.0)
         self.assertEqual(row["counter_ts"], T - 1800)
         self.assertEqual([row["srp"][k] for k in ("since", "last_ts", "accepted_ts", "pending_ts")],
@@ -1394,6 +1400,10 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual(facts["highest_authenticated"]["ts"], T - 1800)
         self.assertEqual([(s["first_ts"], s["last_ts"]) for s in facts["mac"]["accepted"]],
                          [(T - 1800, T - 1800)])
+        for layer in ("mac", "mle"):
+            self.assertEqual([(s["first_ts"], s["last_ts"]) for s in facts[layer]["rejected"]],
+                             [(T - 1800, T - 1800)])
+            self.assertEqual(facts[layer]["rejected_ts"], [T - 1790, T - 1800])
 
     def test_a_silence_of_exactly_quiet_s_at_start_up_is_not_yet_quiet(self):
         # The start-up reconciliation decides a device has returned with

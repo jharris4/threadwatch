@@ -397,7 +397,8 @@ class Site:
         if facts.get("mixed"):
             text += ' <span class="warn">mixed: ' + esc(", ".join(map(str, facts["recent_sequences"]))) + '</span>'
         if facts.get("recent_rejected"):
-            text += f' <span class="muted">{facts["recent_rejected"]} rejected MIC-valid</span>'
+            more = "+" if facts.get("recent_rejected_capped") else ""
+            text += f' <span class="muted">{facts["recent_rejected"]}{more} rejected MIC-valid</span>'
         return text
 
     def keys_html(self, now: float, newest: str) -> str:

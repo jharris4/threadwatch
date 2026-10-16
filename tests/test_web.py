@@ -382,8 +382,11 @@ class PageBranchTest(unittest.TestCase):
                      "latest": {"sequence": 84, "ts": self.now - 60},
                      "accepted": [{"sequence": 84, "first_ts": self.now - 7200, "last_ts": self.now - 60,
                                    "count": 900, "retries": 0}],
-                     "rejected": [{"sequence": 84, "first_ts": self.now - 700, "last_ts": self.now - 100,
-                                   "count": 3, "reason": "counter_not_advancing"}]}}},
+                     "rejected": [{"sequence": 84, "first_ts": self.now - 7000, "last_ts": self.now - 100,
+                                   "count": 5, "reason": "counter_not_advancing"}],
+                     # The list counts the last 30 minutes, not the span.
+                     "rejected_ts": [self.now - 7000, self.now - 3600, self.now - 700, self.now - 400,
+                                     self.now - 100]}}},
         })
         _st, body = self.get("/devices")
         self.assertIn('href="/devices?sort=gen">key gen</a></th>', body)
@@ -394,7 +397,7 @@ class PageBranchTest(unittest.TestCase):
         _st, page = self.get(f"/device/{AQ}")
         self.assertIn('key generation 84 <span class="warn">2 behind 86</span>', page)
         self.assertIn("sequence observations: <span class=\"muted\">MAC 84 at ", page)
-        self.assertIn("MAC 84 rejected 3 (counter_not_advancing), ", page)
+        self.assertIn("MAC 84 rejected 5 (counter_not_advancing), ", page)
         _st, raw = self.get(f"/api/device/{AQ}")
         live = json.loads(raw)["live"]
         self.assertEqual((live["generation"], live["parent_generation"], live["mesh_generation"], live["lag"],

@@ -261,7 +261,15 @@ class Pipeline:
         self._pan_window: dict[int, int] = {}     # frames per source PAN since the window opened
         self._pan_window_start: float | None = None
         self._pan_silent_evt = 0.0
-        self._foreign_reported: set[int] = set()
+        # Foreign PANs already reported, with when each was last heard, kept
+        # across restarts (foreign-pans.json): the same neighbours were
+        # reported again within minutes of every start. A reported PAN is
+        # armed again once it has been unheard for FOREIGN_REARM_S, so a
+        # neighbour that goes away and comes back is news again.
+        self._foreign_path = cfg.state_dir / "foreign-pans.json"
+        self._foreign_reported: dict[int, dict] = {} if ephemeral else self._load_foreign()
+        self._foreign_dirty = False
+        self._pan_sightings: dict[int, int] = {}       # frames per re-armed PAN since it was re-armed
         self._last_src_by_pan: dict[int, str | None] = {}
         # All three are fed straight from mDNS answers, which anyone on the
         # LAN can forge in any number, so each is bounded (PENDING_MAX,
@@ -955,6 +963,42 @@ class Pipeline:
         tmp = self.visits_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(self._visits, indent=1))
         tmp.replace(self.visits_path)
+
+    FOREIGN_REARM_S = 7 * 86400
+
+    def _load_foreign(self) -> dict[int, dict]:
+        """foreign-pans.json: {"0x58bc": {reported, last_heard}} for every
+        foreign PAN reported so far. Unreadable or shapeless: start afresh,
+        which costs one repeated possible_foreign_pan per neighbour."""
+        try:
+            data = json.loads(self._foreign_path.read_text())
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError) as exc:
+            print(f"[threadwatch] {self._foreign_path.name} is unreadable ({exc}): the foreign PANs already "
+                  "reported are forgotten, so each is reported once more", file=sys.stderr, flush=True)
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        out: dict[int, dict] = {}
+        for key, v in data.items():
+            try:
+                pan = int(str(key), 16)
+            except ValueError:
+                continue
+            if isinstance(v, dict) and all(isinstance(v.get(k), (int, float)) for k in ("reported", "last_heard")):
+                out[pan] = {"reported": float(v["reported"]), "last_heard": float(v["last_heard"])}
+        return out
+
+    def _save_foreign(self) -> None:
+        if self.ephemeral or not self._foreign_dirty:
+            return
+        self._foreign_dirty = False
+        self._foreign_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self._foreign_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({f"0x{pan:04x}": v for pan, v in sorted(self._foreign_reported.items())},
+                                  indent=1))
+        tmp.replace(self._foreign_path)
 
     def _load_keys(self) -> dict:
         """key-generations.json: {highest, previous, highest_first_ts,
@@ -2120,16 +2164,28 @@ class Pipeline:
         # Foreign PAN: a source PAN that is not the dominant one, sighted
         # repeatedly (single hits are usually dissection edge cases - verify
         # candidates in Wireshark with: wpan.src_pan != <dominant>). Once
-        # per PAN, and only against a dominant that strictly leads it: a
-        # tie (a neighbour's three frames before ours at start-up) flags
-        # nobody, so our own PAN is never the one reported, and the
-        # neighbour's is reported as soon as ours pulls ahead.
+        # per PAN, across restarts (foreign-pans.json), until it has been
+        # unheard for FOREIGN_REARM_S and then takes three sightings again;
+        # and only against a dominant that strictly leads it: a tie (a
+        # neighbour's three frames before ours at start-up) flags nobody,
+        # so our own PAN is never the one reported, and the neighbour's is
+        # reported as soon as ours pulls ahead.
         if pan is not None:
             self.own_pans[pan] = self.own_pans.get(pan, 0) + 1
             self._last_src_by_pan[pan] = f.src
             self._pan_window[pan] = self._pan_window.get(pan, 0) + 1
             if self._pan_window_start is None:
                 self._pan_window_start = ts
+            reported = self._foreign_reported.get(pan)
+            if reported is not None:
+                if ts - reported["last_heard"] > self.FOREIGN_REARM_S:
+                    del self._foreign_reported[pan]
+                    self._pan_sightings[pan] = 0
+                else:
+                    reported["last_heard"] = max(reported["last_heard"], ts)
+                self._foreign_dirty = True
+            if pan in self._pan_sightings:
+                self._pan_sightings[pan] += 1
             self._update_dominant(ts)
             dominant = self.dominant_pan()
             if dominant is not None and len(self.own_pans) > 1:
@@ -2137,8 +2193,14 @@ class Pipeline:
                 # guessed one must strictly lead before anything is foreign.
                 lead = float("inf") if self.cfg.pan_id is not None else self.own_pans.get(dominant, 0)
                 for other, n in self.own_pans.items():       # not `pan`: the frame's own PAN is read below
-                    if other != dominant and 3 <= n < lead and other not in self._foreign_reported:
-                        self._foreign_reported.add(other)
+                    # n is the PAN's whole history, so a restart does not
+                    # start the count again; a re-armed PAN counts afresh.
+                    if (other != dominant and 3 <= n < lead and other not in self._foreign_reported
+                            and (other not in self._pan_sightings or self._pan_sightings[other] >= 3)):
+                        self._foreign_reported[other] = {"reported": ts, "last_heard": ts}
+                        self._pan_sightings.pop(other, None)
+                        self._foreign_dirty = True
+                        self._save_foreign()
                         self._emit("possible_foreign_pan", "notice", ts,
                                    pan=f"0x{other:04x}", src=self._last_src_by_pan.get(other),
                                    dominant_pan=f"0x{dominant:04x}",
@@ -3829,6 +3891,7 @@ class Pipeline:
             self._maybe_prune_events(now)
             if self._frames_by_hour:
                 self._save_frames_by_hour()
+            self._save_foreign()
         if self.observed_names and not self.ephemeral:
             tmp = self.mle_names_path.with_suffix(".tmp")
             tmp.write_text(json.dumps(self.observed_names, indent=1))

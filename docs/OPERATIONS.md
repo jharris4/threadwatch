@@ -469,6 +469,9 @@ it up if you care about the history; nothing else holds it.
                              first heard and from whom, and when the census for it is due: a
                              restart never announces a rotation twice (docs/ALERTING.md,
                              key_sequence_advanced)
+        foreign-pans.json    the foreign PANs already reported, with when each was last heard, so a
+                             restart does not report the same neighbours again (a PAN unheard for
+                             a week is reported again when it comes back)
         ha-logs-archive.json with [ha_logs] archive: per add-on the last hour archived, the hours
                              still pending (attempts, last error) and the hours lost (back to
                              [record] keep_hours), plus the outage in progress, so a restart
@@ -514,6 +517,8 @@ accurate frame count. `storm.json` costs the next start about five minutes of
 blindness to a storm already running, and one repeat page for it.
 `key-generations.json` costs one repeated `key_sequence_advanced` (info) for
 the generation the mesh is on, and the census that follows it.
+`foreign-pans.json` costs one repeated `possible_foreign_pan` (notice) per
+neighbouring PAN.
 `ha-logs-archive.json` costs the memory of which hours were lost and how
 often a pending one was tried; the next pass starts the catch-up at the
 edge of `[ha_logs] max_hours`, and every hour the archive already holds is

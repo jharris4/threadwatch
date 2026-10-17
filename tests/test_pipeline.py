@@ -1110,6 +1110,48 @@ class QuietPolicyTest(unittest.TestCase):
             pipe2.ingest(frame(t0 + 40 + i * 0.05, ROUTER))
         self.assertEqual(len(self._foreign(pipe2)), 1)         # ours never flagged, theirs not repeated
 
+    def test_a_reported_foreign_pan_stays_reported_across_a_restart_until_a_week_unheard(self):
+        # The same neighbours were reported again within minutes of every
+        # recorder start: the reported set lived in memory. Now it is in
+        # foreign-pans.json, and a PAN is news again only after a week
+        # unheard, and then after three fresh sightings, not its first frame.
+        pipe = self._pipe()
+        t0 = time.time() - 9 * 86400
+        for i in range(100):
+            pipe.ingest(frame(t0 + i * 0.1, ROUTER))
+        for i in range(5):
+            pipe.ingest(frame(t0 + 20 + i, STRANGER, pan=OTHER_PAN))
+        self.assertEqual(len(self._foreign(pipe)), 1)
+        saved = json.loads((self.cfg.state_dir / "foreign-pans.json").read_text())
+        self.assertEqual(list(saved), [f"0x{OTHER_PAN:04x}"])
+        pipe.seen.save()
+        pipe2 = self._pipe()                                   # a restart
+        for i in range(5):
+            pipe2.ingest(frame(t0 + 60 + i, STRANGER, pan=OTHER_PAN))
+        for i in range(5):
+            pipe2.ingest(frame(t0 + 70 + i, ROUTER))
+        self.assertEqual(self._foreign(pipe2), [])
+        pipe2.periodic(t0 + 80)
+        saved = json.loads((self.cfg.state_dir / "foreign-pans.json").read_text())
+        self.assertEqual(saved[f"0x{OTHER_PAN:04x}"]["last_heard"], t0 + 64)
+        later = t0 + 64 + Pipeline.FOREIGN_REARM_S + 1
+        for i in range(3):
+            pipe2.ingest(frame(later + i, STRANGER, pan=OTHER_PAN))
+            if i < 2:
+                self.assertEqual(self._foreign(pipe2), [])
+        self.assertEqual(self._foreign(pipe2), [(f"0x{OTHER_PAN:04x}", f"0x{OWN_PAN:04x}", STRANGER)])
+
+    def test_a_damaged_foreign_pans_file_costs_one_repeat_per_neighbour(self):
+        (self.cfg.state_dir).mkdir(parents=True, exist_ok=True)
+        (self.cfg.state_dir / "foreign-pans.json").write_text("{not json")
+        pipe = self._pipe()
+        self.assertEqual(pipe._foreign_reported, {})
+        (self.cfg.state_dir / "foreign-pans.json").write_text(json.dumps(
+            {"0x58bc": {"reported": 1.0, "last_heard": 2.0}, "zz": {"reported": 1.0, "last_heard": 2.0},
+             "0x1234": {"reported": "x"}}))
+        pipe = self._pipe()
+        self.assertEqual(pipe._foreign_reported, {0x58bc: {"reported": 1.0, "last_heard": 2.0}})
+
     @staticmethod
     def _adopted(pipe):
         return [(r["severity"], r["previous"], r["pan"]) for r in pipe.events.records

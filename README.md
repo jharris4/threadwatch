@@ -233,7 +233,10 @@ not a list, or not valid JSON, is ignored whole, with a journal line and
 a `FAIL` from `threadwatch doctor`, and every device is unknown until it
 is fixed. One address may belong to one entry: `name` refuses to move an
 address already listed under another name, which is an edit for you to
-make. The daemon reads the file at start, so restart it after editing.
+make. The recorder reads the file again within a minute of any change
+(`name`, `hold`, `mute`, `import --write`, a hand edit), with no restart,
+and logs `inventory_reloaded` when it does; a save that reads as no
+entries at all is not taken over the inventory it has.
 
 `config/devices.json.lock` appears beside it. It is an empty file
 `name` and `import` hold with flock so two edits queue instead of one
@@ -255,7 +258,8 @@ Never in devices.json: an inventory entry makes an address a device
 whose silence pages a warning, and a phone leaving is not a failure. The
 label only changes what the pages, the daily summary and the visit
 records call the address. `[visitors] file` in config.toml moves the
-file; both the recorder and the web pages read it at start.
+file; the web pages read it on every request, and the recorder within
+a minute of a change.
 
 ## Developing
 

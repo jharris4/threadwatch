@@ -648,7 +648,7 @@ def main(argv=None) -> int:
         except ValueError as exc:
             parser.exit(1, f"threadwatch {args.cmd}: {exc}\n")
         print(f"{done} -> {path}")
-        print("(the recorder reads the inventory at start: restart it to apply)")
+        print("(the recorder picks this up within a minute)")
         return 0
 
     if args.cmd == "name":
@@ -658,7 +658,7 @@ def main(argv=None) -> int:
             print(f"{adopt(path, args.addr, args.name)} -> {path}")
         except ValueError as exc:
             parser.exit(1, f"threadwatch name: {exc}\n")
-        print("(the recorder reads the inventory at start: restart it to use the name)")
+        print("(the recorder picks this up within a minute)")
         return 0
 
     if args.cmd == "name-visitor":
@@ -668,7 +668,7 @@ def main(argv=None) -> int:
             print(f"{adopt(path, args.addr, args.name)} -> {path}")
         except ValueError as exc:
             parser.exit(1, f"threadwatch name-visitor: {exc}\n")
-        print("(the recorder and the web pages read visitors.json at start: restart them to use the label)")
+        print("(the recorder picks this up within a minute)")
         return 0
 
     return 1

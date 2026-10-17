@@ -114,6 +114,7 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `border_router_address_changed` | notice | `addr`, `name`, `previous`, `hostname`, `evidence` (what corroborated the rotation), `note` |
 | `device_address_changed` | notice | `addr` (the new address), `name`, `previous`, `evidence` (the SRP registration that carried the same Matter service name, Home Assistant's node diagnostics, or a new Home Assistant node carrying the entry's name), `reason` (`rotation`, or `readded` for a factory reset and re-add), `attempts` (on `readded`: the addresses that may have been the reset's earlier tries, each `addr`, `first_seen`, `command`), `note`; once per rotation |
 | `ha_device_unlisted` | notice | `addr`, `ha_name`, `node_id`, `ha_device_id`, `note` (with the `threadwatch name` line); a Matter node Home Assistant reports at an address no entry lists, under a name no entry has; once per address per run |
+| `inventory_reloaded` | info | `file` (`devices.json` or `visitors.json`), `entries`, `addresses` (the ones the file lists that the recorder uses), `gained` and `lost` (entry name -> the addresses it gained or lost), `note`; the recorder read the file again after it changed (`name`, `hold`, `mute`, `import --write`, a hand edit), within a minute and without a restart. A file that now reads as no entries while the loaded one has some is not taken: a journal line, and no event |
 | `border_router_unlisted` | notice | `addr`, `hostname`, `note` |
 | `border_router_address_conflict` | warning | `addr`, `name` (the entry devices.json gives the address to), `hostname`, `claimed_by` (the entry the hostname belongs to), `note` |
 | `border_router_rotation_unverified` | notice | `addr`, `name`, `previous`, `hostname`, `evidence` (what held, when anything did), `missing` (what did not), `note` |
@@ -746,9 +747,10 @@ that finds the contradiction reports it then: the old address talking on
 after the new one started is exactly the sign no first look can see.
 
 To settle it by hand, confirm the rotation into the inventory with
-`threadwatch name <new-address> "<name>"` and restart the recorder: a
-rotation the operator has vouched for is covered across the entry's
-addresses without any retirement. `[border_routers] rotation = "trusted"`
+`threadwatch name <new-address> "<name>"`, which the recorder picks up
+within a minute: a rotation the operator has vouched for is covered
+across the entry's addresses without any retirement.
+`[border_routers] rotation = "trusted"`
 restores the old behaviour, where the advertisement alone retires the old
 address.
 

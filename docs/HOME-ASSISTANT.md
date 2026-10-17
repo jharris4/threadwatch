@@ -133,7 +133,7 @@ bin/threadwatch mute "Garden Sensor"               # log it, never page it
 bin/threadwatch mute "Garden Sensor" --off
 ```
 
-The recorder reads the inventory at start, so restart it after. A
+The recorder picks the change up within a minute, with no restart. A
 `hold_s` or `mute` it cannot read is ignored with a journal line and
 named by `threadwatch doctor`, and the entry keeps the defaults.
 

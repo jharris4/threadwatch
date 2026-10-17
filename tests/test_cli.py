@@ -521,7 +521,7 @@ class DispatchTest(CliCase):
         code, out, _ = self.run_cli("hold", "Front Path Motion", "2h")
         self.assertEqual(code, 0)
         self.assertIn("'Front Path Motion': hold 2h", out)
-        self.assertIn("restart it to apply", out)
+        self.assertIn("the recorder picks this up within a minute", out)
         code, out, _ = self.run_cli("mute", "1669674dd15cf0fa")                          # by address
         self.assertEqual(code, 0)
         self.assertIn("'Garden Sensor': muted", out)
@@ -667,7 +667,7 @@ class DispatchTest(CliCase):
         code, out, err = self.run_cli("name", "26976e7f7d20964a", "Office AQ")
         self.assertEqual(code, 0, err)
         self.assertIn("Office AQ", out)
-        self.assertIn("restart it to use the name", out)
+        self.assertIn("the recorder picks this up within a minute", out)
         self.assertIn("26976e7f7d20964a", inv.read_text().lower())
 
     def test_import_reports_a_home_assistant_failure_as_exit_1(self):

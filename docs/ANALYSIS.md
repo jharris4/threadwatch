@@ -348,7 +348,10 @@ scanner, works room by room.
 New recorder runs save `capture-provenance.json`: the redacted configuration
 loaded at startup, loaded inventory, channel/PAN, start time, and cached running
 revision. Automatic and separately requested snapshots use this record, so edits
-awaiting a restart do not replace the capture settings. The manifest identifies
+awaiting a restart do not replace the capture settings. devices.json is the
+exception, because the recorder reads it again when it changes
+(`inventory_reloaded`): the record then carries the new inventory and a
+`reloaded_at` stamp, and `started_at` stays the run's start. The manifest identifies
 this as `recorder_start`. It describes that run; a ring spanning several recorder
 runs may contain packets captured with earlier settings. For legacy captures
 without this record, the manifest labels the inputs as belonging to the snapshot

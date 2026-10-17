@@ -164,6 +164,11 @@ LEGEND = [
      "entry has. Often a device re-added after a factory reset that kept the vendor's default name in "
      "Home Assistant: rename it there, or run the threadwatch name command the row carries. A notice, "
      "once per address per run."),
+    ("inventory_reloaded", "Inventory read again",
+     "devices.json or visitors.json changed (a threadwatch name, hold or mute, an import --write, a hand "
+     "edit) and the recorder read it again, without a restart: from here on names, holds and mutes are "
+     "the new file's. The row lists the entries that gained or lost addresses; an address an entry gained "
+     "retires the older ones it lists within the same pass. Info, logged only."),
     ("ha_link", "Home Assistant unreachable / reachable",
      "The availability poll has failed for five minutes (Home Assistant down or restarting), or "
      "succeeds again. No device episode opens or closes meanwhile, and the first poll after is a "

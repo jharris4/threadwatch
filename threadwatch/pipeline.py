@@ -115,6 +115,26 @@ def _seconds(value) -> float:
     return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
 
 
+def _file_stamp(path: Path | None) -> tuple[int, int] | None:
+    """(st_mtime_ns, st_size), as events.read_day caches by; None for a
+    file that is not there."""
+    try:
+        st = path.stat() if path is not None else None
+    except OSError:
+        return None
+    return None if st is None else (st.st_mtime_ns, st.st_size)
+
+
+def _listed(names) -> dict[str, set[str]]:
+    """Entry name -> the addresses its inventory lists and the recorder
+    uses (validated, first claim wins), without the learned ones."""
+    out: dict[str, set[str]] = {}
+    for a, entry in names.by_addr.items():
+        if a not in getattr(names, "learned", ()):
+            out.setdefault(str(entry.get("name") or "(unnamed)"), set()).add(a)
+    return out
+
+
 class DeviceStats:
     """Rolling per-device health from cleartext headers only."""
 
@@ -179,6 +199,10 @@ class Pipeline:
         self.cfg = cfg
         self.events = events
         self.ephemeral = ephemeral
+        # Stamped before they are read: a save that lands during the read
+        # is a change the next _check_inventory picks up.
+        self._inventory_stamps = {"devices": _file_stamp(cfg.devices_path),
+                                  "visitors": _file_stamp(getattr(cfg, "visitors_path", None))}
         # The learned identities are read even offline, and from the
         # snapshot's own copy when --snapshot redirected the state dir:
         # a hub that rotated its address is named by border-routers.json
@@ -3767,6 +3791,7 @@ class Pipeline:
         self.seen.maybe_save()
         self.journal.save(now)
         self._check_credentials(now)
+        self._check_inventory(now)
         self._check_configured_pan(now)
         if not self.ephemeral and self.cfg.border_router_browse_s > 0:
             self._poll_border_routers(now)
@@ -5284,8 +5309,8 @@ class Pipeline:
                                note=(f"{who} advertises {ext}, was {prev}, but the radio does not "
                                      f"corroborate it: {'; '.join(missing)}. mDNS is unauthenticated, so "
                                      f"{prev} keeps its name and stays judged: expect it to report quiet. "
-                                     f"If the hub really did rotate, confirm it with: {fix} (then restart "
-                                     "the recorder)."))
+                                     f"If the hub really did rotate, confirm it with: {fix} (the recorder "
+                                     "picks it up within a minute)."))
             if expired:
                 for key in ("unverified_previous", "unverified_since", "unverified_reported"):
                     new.pop(key, None)
@@ -5528,6 +5553,60 @@ class Pipeline:
                          "(re-commissioned?). Capture continues and the ring keeps every frame, but "
                          "rejoin, starvation, partition and sleepy-device tracking have stopped until "
                          "the file is updated and the recorder restarted."))
+
+    def _check_inventory(self, now: float) -> None:
+        """devices.json and visitors.json read again when either changed:
+        (st_mtime_ns, st_size) against the stamp taken when it was last
+        read. `name`, `hold`, `mute`, `import --write` and a hand edit take
+        effect within a pass, with no restart. The same objects reload
+        (DeviceNames.reload), so the HA tracker, the candidate list and the
+        re-add matcher read the new inventory at once, and the retire pass
+        that follows in periodic() retires the older addresses an entry has
+        just gained. hold_s and mute are read live. The HA map's `matched`
+        and `name` were computed against the entries when the map was built
+        and stay so until the next rebuild (hourly): the tracker takes hold
+        and mute from the inventory by address, and _label_for_tracker has
+        already labelled a re-added device, so no rebuild is forced.
+
+        A file that now reads as no entries while the loaded one has some
+        (a save caught mid-write, an edit that broke the JSON) is not taken:
+        its stamp is kept, so that is said once, and the next change is
+        read again. Not in a replay, which judges by the inventory it
+        started with."""
+        if self.ephemeral:
+            return
+        for kind, names, path in (("devices", self.names, self.names.inventory_path),
+                                  ("visitors", self.visitor_names, self.visitor_names.path)):
+            stamp = _file_stamp(path)
+            if stamp == self._inventory_stamps.get(kind):
+                continue
+            self._inventory_stamps[kind] = stamp
+            before = _listed(names)
+            try:
+                loaded = names.reload()
+            except OSError as exc:
+                print(f"[threadwatch] {path.name} changed but could not be read ({exc}): the loaded "
+                      "one stands until it changes again", file=sys.stderr, flush=True)
+                continue
+            if not loaded:
+                print(f"[threadwatch] {path.name} changed and now reads as no entries: the "
+                      f"{len(names.entries)} loaded stand until it changes again", file=sys.stderr, flush=True)
+                continue
+            after = _listed(names)
+            gained = {n: sorted(after[n] - before.get(n, set())) for n in sorted(after)
+                      if after[n] - before.get(n, set())}
+            lost = {n: sorted(before[n] - after.get(n, set())) for n in sorted(before)
+                    if before[n] - after.get(n, set())}
+            addresses = sum(len(a) for a in after.values())
+            if kind == "devices":
+                from .snapshot import remember_capture
+                remember_capture(self.cfg, names.entries, reloaded_at=now)
+            moved = "; ".join([f"{n} gained {', '.join(a)}" for n, a in gained.items()]
+                              + [f"{n} lost {', '.join(a)}" for n, a in lost.items()])
+            self._emit("inventory_reloaded", "info", now, file=path.name, entries=len(names.entries),
+                       addresses=addresses, gained=gained, lost=lost,
+                       note=(f"{path.name} changed and was read again: {len(names.entries)} entries, "
+                             f"{addresses} addresses; " + (moved or "no address added or removed")))
 
     # An address not in the inventory heard for less than this before its
     # silence is a visit, not a failure. Phones and tablets with a Thread

@@ -290,7 +290,7 @@ def _import(cfg, inventory_path: Path, *, write: bool, url: str | None, env_file
     # wait on an unrelated repair.
     existing = read_inventory(inventory_path) if devices else []
     planned, changes = existing, []
-    wrote = False
+    wrote_key = wrote_devices = False
 
     if use_mdns and devices:
         from .mdns import browse
@@ -336,7 +336,7 @@ def _import(cfg, inventory_path: Path, *, write: bool, url: str | None, env_file
                                         f"Thread dataset {ds.get('network_name')!r}. Mode 0600; never commit.\n"
                                         f'network_key = "{ds["network_key"]}"\n')
                     out(f"  network key: wrote {cred} (mode 0600)")
-                    wrote = True
+                    wrote_key = True
                 else:
                     out(f"  network key: {'differs from' if cred.exists() else 'not in'} "
                         f"{cred.name}; --write stores it")
@@ -357,12 +357,15 @@ def _import(cfg, inventory_path: Path, *, write: bool, url: str | None, env_file
                 tmp.write_text(json.dumps(planned, indent=2) + "\n")
                 tmp.replace(inventory_path)
                 out(f"  wrote {inventory_path} ({len(planned)} entries)")
-                wrote = True
+                wrote_devices = True
         elif changes:
             out("  (nothing to write: no entry changes)")
 
     if not write:
         out("(nothing written: add --write to apply)")
-    elif wrote:
-        out("(the recorder reads both files at start: restart it to use them)")
+    else:
+        if wrote_devices:
+            out(f"(the recorder picks up {inventory_path.name} within a minute)")
+        if wrote_key:
+            out("(the recorder reads the network key at start: restart it to use the new one)")
     return 0

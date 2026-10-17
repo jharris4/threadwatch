@@ -161,10 +161,10 @@ non-`ok` line means and what to do about it:
 | --- | --- | --- |
 | `config` no config.toml was read | the built-in defaults are running, channel 25 included | `cp config/config.example.toml config/config.toml` and set your channel |
 | `inventory` no devices.json | every address will be reported as unknown; the recorder runs fine | name devices: README "Naming devices" |
-| `inventory` is not valid JSON / must be a JSON list | the recorder ignores the file, so every device is unknown until it is fixed | `python3 -m json.tool config/devices.json` names the line; fix it, restart |
+| `inventory` is not valid JSON / must be a JSON list | the recorder ignores the file, so every device is unknown until it is fixed | `python3 -m json.tool config/devices.json` names the line; fix it (the recorder reads it again within a minute) |
 | `inventory` ignored (not 16 hex digits) | that address is dropped and its device unnamed | fix the address (16 hex digits, no `0x`, no colons) |
 | `inventory` with a blank name | those addresses still count as unknown | fill the names in |
-| `inventory` default hold and not muted, the field cannot be read | that entry's `hold_s` is not a number more than 0, or its `mute` not true/false; the recorder applies the defaults to it | fix the field (`threadwatch hold` and `mute` write it correctly), restart |
+| `inventory` default hold and not muted, the field cannot be read | that entry's `hold_s` is not a number more than 0, or its `mute` not true/false; the recorder applies the defaults to it | fix the field (`threadwatch hold` and `mute` write it correctly); the recorder reads it again within a minute |
 | `credentials` the 'cryptography' package is missing | the interpreter doctor ran under cannot decrypt, and neither can the recorder | `sudo bin/setup-host.sh`, or `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt` (`bin/threadwatch` prefers `.venv`) |
 | `credentials` missing | no Thread network key: the recorder does not start | docs/CREDENTIALS.md, or `bin/threadwatch import --write` with Home Assistant |
 | `credentials` is mode NNNN: readable by others | the key is world- or group-readable | `chmod 600 config/credentials.toml` |

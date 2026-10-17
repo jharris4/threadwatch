@@ -858,7 +858,8 @@ class RunImportTest(unittest.TestCase):
         self.assertEqual([e["name"] for e in entries], ["AppleTV Living Room", "Living Room Motion"])
         self.assertEqual(entries[0]["borderRouter"], "appletv-living-room.local")
         self.assertIn("00112233445566778899aabbccddeeff", (self.d / "credentials.toml").read_text())
-        self.assertIn("restart it", "\n".join(lines))
+        self.assertIn("the recorder picks up devices.json within a minute", "\n".join(lines))
+        self.assertIn("reads the network key at start: restart it", "\n".join(lines))
         lines.clear()
         run_import(self.cfg, self.d / "devices.json", out=lines.append)      # now a no-op
         text = "\n".join(lines)
@@ -895,6 +896,7 @@ class RunImportTest(unittest.TestCase):
         self.assertIn("nothing to write: no entry changes", text)
         self.assertNotIn("wrote", text)
         self.assertNotIn("restart it", text)
+        self.assertNotIn("picks up", text)
         self.assertEqual(path.read_text(), before)
         self.assertEqual(path.stat().st_mtime_ns, before_mtime)
 

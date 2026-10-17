@@ -6510,5 +6510,142 @@ class RouterSetChangedTest(unittest.TestCase):
                       rec["note"])
 
 
+class InventoryReloadTest(unittest.TestCase):
+    """The recorder reads devices.json and visitors.json again when they
+    change (_check_inventory), where it used to need a restart: on
+    2026-10-08 an address import --write added to an entry was named by
+    the pages and not by the recorder, which kept the old row live and the
+    new address on the default hold."""
+
+    OLD, NEW, GUEST = "1111111111111111", "2222222222222222", "3333333333333333"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.d = Path(self.tmp.name)
+        self.inv, self.visitors = self.d / "devices.json", self.d / "visitors.json"
+        self._mtime_ns = 1_700_000_000 * 10**9
+        self._edit(self.inv, [{"name": "Hall Sensor", "extendedAddress": self.OLD}])
+        self.cfg = Config(data_dir=self.d / "data", devices_path=self.inv, visitors_path=self.visitors,
+                          quiet_s=1800)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _edit(self, path, doc):
+        """Write and move the mtime on: a stamp is (mtime_ns, size), and
+        two writes inside one clock tick at the same size would look alike."""
+        import os
+        path.write_text(doc if isinstance(doc, str) else json.dumps(doc))
+        self._mtime_ns += 10**9
+        os.utime(path, ns=(self._mtime_ns, self._mtime_ns))
+
+    def _pipe(self):
+        return Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+
+    @staticmethod
+    def _reloads(pipe):
+        return [r for r in pipe.events.records if r["event"] == "inventory_reloaded"]
+
+    def test_an_address_added_to_an_entry_retires_the_older_one_in_the_same_pass(self):
+        pipe = self._pipe()
+        t = 1_700_000_000.0
+        pipe.ingest(frame(t, self.OLD))
+        pipe.ingest(frame(t + 1000, self.NEW))
+        pipe.periodic(t + 1000)
+        self.assertIsNone(pipe.seen.table[self.OLD].get("rotated_to"))
+        self.assertEqual(self._reloads(pipe), [])                       # nothing changed, nothing read
+        self._edit(self.inv, [{"name": "Hall Sensor", "extendedAddresses": [self.OLD, self.NEW]}])
+        pipe.periodic(t + 1030)
+        self.assertEqual(pipe.seen.table[self.OLD].get("rotated_to"), self.NEW)
+        self.assertEqual(pipe.names.name(self.NEW), "Hall Sensor")
+        self.assertNotIn(self.NEW, pipe.names.learned)
+        rel = self._reloads(pipe)
+        self.assertEqual([(r["file"], r["entries"], r["addresses"], r["gained"], r["lost"], r["severity"])
+                          for r in rel],
+                         [("devices.json", 1, 2, {"Hall Sensor": [self.NEW]}, {}, "info")])
+        self.assertIn(f"Hall Sensor gained {self.NEW}", rel[0]["note"])
+        # An unchanged file is not read again: no event per pass.
+        pipe.periodic(t + 1060)
+        pipe.periodic(t + 1090)
+        self.assertEqual(len(self._reloads(pipe)), 1)
+        self._edit(self.inv, [{"name": "Hall Sensor", "extendedAddress": self.NEW}])
+        pipe.periodic(t + 1120)
+        self.assertEqual(self._reloads(pipe)[-1]["lost"], {"Hall Sensor": [self.OLD]})
+
+    def test_a_changed_hold_applies_without_a_new_pipeline(self):
+        pipe = self._pipe()
+        t = 1_700_000_000.0
+        pipe.ingest(frame(t, self.OLD))
+        self._edit(self.inv, [{"name": "Hall Sensor", "extendedAddress": self.OLD, "hold_s": 7200}])
+        pipe.periodic(t + 1)
+        self.assertEqual(pipe.quiet_threshold_s(self.OLD), 7200.0)
+        pipe.periodic(t + 2000)                                         # past [quiet] silence_s, inside the hold
+        self.assertEqual([r for r in pipe.events.records if r["event"] == "device_quiet"], [])
+        self.assertEqual(self._reloads(pipe)[0]["note"],
+                         "devices.json changed and was read again: 1 entries, 1 addresses; "
+                         "no address added or removed")
+
+    def test_a_save_caught_mid_write_keeps_the_names_and_is_said_once(self):
+        import contextlib
+        import io
+        pipe = self._pipe()
+        t = 1_700_000_000.0
+        self._edit(self.inv, '[{"name": "Hall Sensor", "extendedAddress": "1111')
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            pipe.periodic(t)
+        self.assertEqual(pipe.names.name(self.OLD), "Hall Sensor")
+        self.assertIn("not valid JSON", err.getvalue())
+        self.assertIn("devices.json changed and now reads as no entries: the 1 loaded stand", err.getvalue())
+        self.assertEqual(self._reloads(pipe), [])
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            pipe.periodic(t + 30)
+        self.assertEqual(err.getvalue(), "")                            # the same stamp: not read again
+        self._edit(self.inv, [{"name": "Hall Sensor", "extendedAddresses": [self.OLD, self.NEW]}])
+        pipe.periodic(t + 60)
+        self.assertEqual(pipe.names.name(self.NEW), "Hall Sensor")
+        self.assertEqual(len(self._reloads(pipe)), 1)
+
+    def test_a_rotation_the_recorder_learned_keeps_its_name_across_a_reload(self):
+        pipe = self._pipe()
+        t = 1_700_000_000.0
+        pipe._device_rotated(self.OLD, self.NEW, t, "a test's evidence")
+        self._edit(self.inv, [{"name": "Hall Sensor", "extendedAddress": self.OLD, "mute": True}])
+        pipe.periodic(t + 30)
+        self.assertEqual((pipe.names.name(self.NEW), pipe.names.muted(self.NEW)), ("Hall Sensor", True))
+        self.assertIn(self.NEW, pipe.names.learned)                     # still the name, not membership
+        self.assertEqual(self._reloads(pipe)[0]["gained"], {})
+
+    def test_visitor_labels_reload(self):
+        self._edit(self.visitors, [{"name": "Guest Phone", "extendedAddress": self.GUEST}])
+        pipe = self._pipe()
+        self.assertEqual(pipe.visitor_names.name(self.GUEST), "Guest Phone")
+        self._edit(self.visitors, [{"name": "Guest Tablet", "extendedAddress": self.GUEST}])
+        pipe.periodic(1_700_000_000.0)
+        self.assertEqual(pipe.visitor_names.name(self.GUEST), "Guest Tablet")
+        self.assertEqual([(r["file"], r["entries"], r["addresses"]) for r in self._reloads(pipe)],
+                         [("visitors.json", 1, 1)])
+        self.assertNotIn("reloaded_at", self.cfg.capture_provenance)    # the inventory did not change
+
+    def test_capture_provenance_carries_the_reloaded_inventory(self):
+        from threadwatch.snapshot import PROVENANCE_FILE
+        pipe = self._pipe()
+        path = self.cfg.state_dir / PROVENANCE_FILE
+        started = json.loads(path.read_text())["started_at"]
+        entries = [{"name": "Hall Sensor", "extendedAddresses": [self.OLD, self.NEW]}]
+        self._edit(self.inv, entries)
+        pipe.periodic(1_700_000_000.0)
+        prov = json.loads(path.read_text())
+        self.assertEqual((prov["inventory"], prov["reloaded_at"], prov["started_at"]),
+                         (entries, 1_700_000_000.0, started))
+        self.assertEqual(self.cfg.capture_provenance["inventory"], entries)
+
+    def test_a_replay_does_not_reload(self):
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor(), ephemeral=True)
+        self._edit(self.inv, [{"name": "Shed Sensor", "extendedAddress": self.OLD}])
+        pipe.periodic(1_700_000_000.0)
+        self.assertEqual(pipe.names.name(self.OLD), "Hall Sensor")
+        self.assertEqual(self._reloads(pipe), [])
+
+
 if __name__ == "__main__":
     unittest.main()

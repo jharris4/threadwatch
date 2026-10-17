@@ -151,14 +151,22 @@ _commit = repo_commit
 PROVENANCE_FILE = "capture-provenance.json"
 
 
-def remember_capture(cfg, entries: list[dict]) -> None:
-    """Publish the recorder's loaded inputs atomically for other snapshot processes."""
+def remember_capture(cfg, entries: list[dict], reloaded_at: float | None = None) -> None:
+    """Publish the recorder's loaded inputs atomically for other snapshot
+    processes. Again with ``reloaded_at`` when the recorder read
+    devices.json again: the new inventory, and started_at still the
+    recorder's start."""
     import copy
+    started_at = time.time()
+    if reloaded_at is not None and cfg.capture_provenance is not None:
+        started_at = cfg.capture_provenance.get("started_at", started_at)
     cfg.capture_provenance = {
-        "source": "recorder_start", "started_at": time.time(),
+        "source": "recorder_start", "started_at": started_at,
         "commit": running_commit(), "channel": cfg.channel, "pan_id": cfg.pan_id,
         "config": cfg.loaded_config, "inventory": copy.deepcopy(entries),
     }
+    if reloaded_at is not None:
+        cfg.capture_provenance["reloaded_at"] = reloaded_at
     cfg.state_dir.mkdir(parents=True, exist_ok=True)
     tmp = (cfg.state_dir / PROVENANCE_FILE).with_suffix(".tmp")
     tmp.write_text(json.dumps(cfg.capture_provenance))

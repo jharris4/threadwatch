@@ -810,6 +810,75 @@ class RecorderAvailabilityTest(unittest.TestCase):
         self.assertEqual(len(self._changed(pipe)), 1)
         self.assertEqual([r for r in pipe.events.records if r["event"] == "ha_device_unlisted"], [])
 
+    def _edit_inventory(self, entries):
+        import os
+        path = self.d / "devices.json"
+        stamp = path.stat().st_mtime_ns + 10**9                         # a stamp that differs, however fast
+        path.write_text(json.dumps(entries))
+        os.utime(path, ns=(stamp, stamp))
+
+    def test_the_tracker_reads_a_reloaded_inventory(self):
+        pipe = self._pipe()
+        now = 1_800_000_000.0
+        self._cycle(pipe, now)
+        self.assertIs(pipe._haavail.names, pipe.names)
+        self.assertEqual(pipe._haavail._hold(MOTION), 0)
+        self._edit_inventory([dict(ENTRIES[0], hold_s=120, mute=True), ENTRIES[1]])
+        pipe._check_inventory(now + 30)
+        self.assertEqual((pipe._haavail._hold(MOTION), pipe._haavail._muted(MOTION)), (120.0, True))
+
+    def test_a_reload_leaves_the_entries_the_ha_worker_holds_alone(self):
+        import copy
+        import threading
+        started, gate, held = threading.Event(), threading.Event(), {}
+        real = haavail.poll_once
+
+        def poll_once(cfg, mapping, entries, **kw):
+            held.update(entries=entries, copy=copy.deepcopy(entries))
+            started.set()
+            gate.wait(10)
+            return real(cfg, mapping, entries, **kw)
+
+        haavail.poll_once = poll_once
+        self.addCleanup(setattr, haavail, "poll_once", real)
+        pipe = self._pipe()
+        now = 1_800_000_000.0
+        pipe._poll_ha_availability(now)
+        self.assertTrue(started.wait(10))
+        self._edit_inventory([dict(ENTRIES[0], hold_s=120, extendedAddresses=[self.NEW]),
+                              ENTRIES[1]])
+        pipe._check_inventory(now + 1)
+        gate.set()
+        pipe._haavail_thread.join(10)
+        pipe._poll_ha_availability(now + 2)
+        self.assertEqual(held["entries"], held["copy"])                 # not one dict changed under the worker
+        self.assertEqual(pipe.names.hold_s(self.OLD), 120.0)
+        self.assertIsNot(pipe.names.entries[0], held["entries"][0])
+
+    def test_confirming_a_re_add_into_the_inventory_makes_it_listed_and_says_nothing_more(self):
+        """`threadwatch name <new> <name>` after a re-add: the reload lists
+        the address the re-add had only learned, and the old row is already
+        retired to it, so the retire pass has nothing to do."""
+        import io
+        from contextlib import redirect_stderr
+
+        from threadwatch.names import adopt
+        pipe = self._pipe()
+        now = 1_800_000_000.0
+        self._cycle(pipe, now)
+        self._heard(pipe, now - 3600, now + 100)
+        with redirect_stderr(io.StringIO()):
+            self._readd(pipe, now + 200)
+        self.assertIn(self.NEW, pipe.names.learned)
+        before = len(pipe.events.records)
+        adopt(self.d / "devices.json", self.NEW, "Front Path Motion")
+        pipe.periodic(now + 230)
+        self.assertNotIn(self.NEW, pipe.names.learned)
+        self.assertEqual(pipe.names.entry_addresses_of(self.NEW), [self.NEW, self.OLD])
+        self.assertEqual(pipe.seen.table[self.OLD]["rotated_to"], self.NEW)
+        self.assertEqual([(r["event"], r.get("gained")) for r in pipe.events.records[before:]],
+                         [("inventory_reloaded", {"Front Path Motion": [self.NEW]})])
+
     def test_a_re_add_lists_the_unnamed_addresses_that_joined_before_it_as_attempts_and_binds_none(self):
         """2026-10-08: two abandoned attempts joined, fell silent and were
         filed as visits, the first before the device was re-added."""

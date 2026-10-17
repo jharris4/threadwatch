@@ -168,7 +168,8 @@ LEGEND = [
      "devices.json or visitors.json changed (a threadwatch name, hold or mute, an import --write, a hand "
      "edit) and the recorder read it again, without a restart: from here on names, holds and mutes are "
      "the new file's. The row lists the entries that gained or lost addresses; an address an entry gained "
-     "retires the older ones it lists within the same pass. Info, logged only."),
+     "retires the older ones it lists within the same pass, and a row retired to an address the entry lost "
+     "is judged again. Info, logged only."),
     ("inventory_rejected", "Inventory change not taken",
      "devices.json or visitors.json changed but could not replace the inventory the recorder has: it could "
      "not be read, or it reads as no entries (a save caught mid-write, an edit that broke the JSON, or the "

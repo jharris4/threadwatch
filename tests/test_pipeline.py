@@ -6572,6 +6572,35 @@ class InventoryReloadTest(unittest.TestCase):
         pipe.periodic(t + 1120)
         self.assertEqual(self._reloads(pipe)[-1]["lost"], {"Hall Sensor": [self.OLD]})
 
+    def test_taking_an_address_out_of_an_entry_gives_the_row_retired_to_it_back(self):
+        """`name <wrong> "Hall Sensor"` retired the sensor's own address to a
+        stranger's; removing the stranger un-retires it, and it is judged
+        again from the same pass."""
+        pipe = self._pipe()
+        t = 1_700_000_000.0
+        pipe.ingest(frame(t, self.OLD))
+        pipe.ingest(frame(t + 1000, self.NEW))
+        self._edit(self.inv, [{"name": "Hall Sensor", "extendedAddresses": [self.OLD, self.NEW]}])
+        pipe.periodic(t + 1030)
+        self.assertEqual(pipe.seen.table[self.OLD]["rotated_to"], self.NEW)
+        self._edit(self.inv, [{"name": "Hall Sensor", "extendedAddress": self.OLD}])
+        pipe.periodic(t + 1060)
+        self.assertNotIn("rotated_to", pipe.seen.table[self.OLD])
+        rel = self._reloads(pipe)[-1]
+        self.assertEqual((rel["lost"], rel["unretired"]), ({"Hall Sensor": [self.NEW]}, {"Hall Sensor": [self.OLD]}))
+        self.assertIn(f"Hall Sensor judges {self.OLD} again", rel["note"])
+        pipe.periodic(t + 3000)                                         # past [quiet] silence_s: judged again
+        self.assertEqual([r["addr"] for r in pipe.events.records if r["event"] == "device_quiet"], [self.OLD])
+        # A row retired to an address the entry still lists stays retired.
+        pipe.ingest(frame(t + 3100, self.NEW))
+        self._edit(self.inv, [{"name": "Hall Sensor", "extendedAddresses": [self.OLD, self.NEW, self.GUEST]}])
+        pipe.periodic(t + 3130)
+        self.assertEqual(pipe.seen.table[self.OLD]["rotated_to"], self.NEW)
+        self._edit(self.inv, [{"name": "Hall Sensor", "extendedAddresses": [self.OLD, self.NEW]}])
+        pipe.periodic(t + 3160)
+        self.assertEqual(pipe.seen.table[self.OLD]["rotated_to"], self.NEW)
+        self.assertEqual(self._reloads(pipe)[-1]["unretired"], {})
+
     def test_a_changed_hold_applies_without_a_new_pipeline(self):
         pipe = self._pipe()
         t = 1_700_000_000.0

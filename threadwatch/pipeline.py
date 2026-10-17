@@ -5596,15 +5596,41 @@ class Pipeline:
             lost = {n: sorted(before[n] - after.get(n, set())) for n in sorted(before)
                     if before[n] - after.get(n, set())}
             addresses = sum(len(a) for a in after.values())
+            unretired: dict[str, list[str]] = {}
             if kind == "devices":
                 from .snapshot import remember_capture
                 remember_capture(self.cfg, names.entries, reloaded_at=now)
+                unretired = self._unretire_lost(lost, after)
             moved = "; ".join([f"{n} gained {', '.join(a)}" for n, a in gained.items()]
-                              + [f"{n} lost {', '.join(a)}" for n, a in lost.items()])
+                              + [f"{n} lost {', '.join(a)}" for n, a in lost.items()]
+                              + [f"{n} judges {', '.join(a)} again" for n, a in unretired.items()])
             self._emit("inventory_reloaded", "info", now, file=path.name, entries=len(names.entries),
-                       addresses=addresses, gained=gained, lost=lost,
+                       addresses=addresses, gained=gained, lost=lost, unretired=unretired,
                        note=(f"{path.name} changed and was read again: {len(names.entries)} entries, "
                              f"{addresses} addresses; " + (moved or "no address added or removed")))
+
+    def _unretire_lost(self, lost: dict[str, set[str]], after: dict[str, set[str]]) -> dict[str, list[str]]:
+        """An entry's row retired to an address the entry has just lost is
+        judged again: entry name -> the addresses given back.
+
+        `name <wrong-address> "<name>"` retired the entry's older address
+        to it within a pass, and taking the wrong address out again undid
+        the name and nothing else: the row kept its rotated_to, out of the
+        quiet, link and starvation checks for good, and nothing said so.
+        The operator's edit is the word on it: the address that left the
+        entry is not where that device went. Only the entry's own listed
+        rows, and only the address that left; a row retired to an address
+        the entry still lists, or by a rotation the recorder saw to an
+        address the entry never listed, stays retired."""
+        out: dict[str, list[str]] = {}
+        for n, gone in lost.items():
+            back = sorted(a for a in after.get(n, ()) if self.seen.table.get(a, {}).get("rotated_to") in gone)
+            for a in back:
+                del self.seen.table[a]["rotated_to"]
+                self.seen._dirty = True
+            if back:
+                out[n] = back
+        return out
 
     def _reject_inventory(self, path: Path, names, why: str, now: float) -> None:
         """The loaded inventory stands over a file that cannot replace it.

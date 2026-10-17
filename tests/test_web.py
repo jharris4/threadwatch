@@ -623,5 +623,73 @@ class DevicesByModelTest(unittest.TestCase):
                           '<td class="n"></td></tr>', body)
 
 
+class VisitorsPageTest(unittest.TestCase):
+    """The visitors page lists every address that has visited, labelled or
+    not, with the one here now first; the devices page shows only that
+    one, since a visit over drops its row."""
+
+    def test_the_page_lists_past_visitors_the_one_here_now_first(self):
+        import tempfile
+
+        from threadwatch.web import Site
+        sam, kim, guest, never = "4f2a9c3e7b1d6085", "7c41e09a2d5b38f6", "5f6e7d8c9b0a1f2e", "11223344aabbccdd"
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "devices.json").write_text("[]")
+            (d / "visitors.json").write_text(json.dumps([
+                {"name": "Sam's iPhone", "extendedAddress": sam.upper()},
+                {"name": "Kim's iPhone", "extendedAddress": kim},
+                {"name": "Old Tablet", "extendedAddress": never},
+            ]))
+            cfg = Config(data_dir=d / "data", devices_path=d / "devices.json", visitors_path=d / "visitors.json",
+                         pan_id=0x4e21)
+            cfg.state_dir.mkdir(parents=True, exist_ok=True)
+            now = time.time()
+            (cfg.state_dir / "visits.json").write_text(json.dumps({
+                sam: {"visits": 3, "first_visit": now - 10 * 86400, "last_visit": now - 86400, "last_heard_for_s": 18},
+                kim: {"visits": 1, "first_visit": now - 3600, "last_visit": now - 3600, "last_heard_for_s": 95},
+                guest: {"visits": 2, "first_visit": now - 5 * 86400, "last_visit": now - 2 * 86400,
+                        "last_heard_for_s": 40},
+            }))
+            (cfg.state_dir / "last-seen.json").write_text(json.dumps({
+                sam: {"first_seen": now - 120, "heard_since": now - 100, "last_seen": now - 5, "frames": 30,
+                      "rssi": -60.0, "pan": 0x4e21, "types": {}},
+            }))
+            (cfg.state_dir / "status.json").write_text(json.dumps({"updated": now, "last_frame_age_s": 3}))
+            site = Site(cfg)
+            body = site.visitors_page()
+            self.assertIn('<a href="/visitors">visitors</a>', body)
+            self.assertIn("3 addresses have visited, 1 here now.", body)
+            order = [body.index(f'<code>{a}</code>') for a in (sam, kim, guest, never)]
+            self.assertEqual(order, sorted(order))        # here now, then newest visit first, then never
+            self.assertIn(f'<a href="/device/{sam}">Sam&#x27;s iPhone</a></td><td><span class="ok">here</span>', body)
+            self.assertIn('<td class="n">3</td>', body)
+            self.assertIn(f'<a href="/device/{guest}"><span class="muted">unlabelled</span></a></td>'
+                          '<td><span class="muted">away</span></td><td class="n">2</td>', body)
+            self.assertIn('Old Tablet</a></td><td><span class="muted">away</span></td>'
+                          '<td class="n"><span class="muted">none recorded</span></td>', body)
+            self.assertIn("<td>18s</td>", body)
+            status, ctype, raw = site.respond("/api/visitors")
+            self.assertEqual((status, ctype), (200, "application/json"))
+            rows = json.loads(raw)["visitors"]
+            self.assertEqual([r["addr"] for r in rows], [sam, kim, guest, never])
+            self.assertEqual(rows[0]["name"], "Sam's iPhone")
+            self.assertAlmostEqual(rows[0]["here_since"], now - 100)
+            self.assertEqual((rows[3]["visits"], rows[3]["last_visit"], rows[3]["here_since"]), (0, None, None))
+
+    def test_an_empty_or_damaged_visits_file_is_an_empty_page(self):
+        import tempfile
+
+        from threadwatch.web import Site
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "devices.json").write_text("[]")
+            cfg = Config(data_dir=d / "data", devices_path=d / "devices.json", visitors_path=d / "visitors.json")
+            cfg.state_dir.mkdir(parents=True, exist_ok=True)
+            self.assertIn('<p class="empty">no visitors yet</p>', Site(cfg).visitors_page())
+            (cfg.state_dir / "visits.json").write_text("[1, 2")
+            self.assertIn('<p class="empty">no visitors yet</p>', Site(cfg).visitors_page())
+
+
 if __name__ == "__main__":
     unittest.main()

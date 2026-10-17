@@ -966,6 +966,38 @@ DEVICE_FILTERS = {
 }
 
 
+def visitor_rows(visits: dict, labels, seen_table: dict) -> list[dict]:
+    """The visitors page: one row per address that has visited
+    (data/state/visits.json) or is labelled in config/visitors.json, the
+    ones here now first, then newest visit first, then labels that have
+    never visited. A visit over is not in the device table, so ``here_since``
+    (the row's current stretch) and ``last_seen`` are set only for an
+    address back on the air."""
+    def num(x):
+        return x if isinstance(x, (int, float)) and not isinstance(x, bool) else None
+
+    rows: dict[str, dict] = {}
+    for addr, v in visits.items():
+        if not isinstance(addr, str) or not isinstance(v, dict):
+            continue
+        rows[addr.lower()] = {"addr": addr.lower(), "visits": int(num(v.get("visits")) or 0),
+                              "first_visit": num(v.get("first_visit")), "last_visit": num(v.get("last_visit")),
+                              "last_heard_for_s": num(v.get("last_heard_for_s"))}
+    for addr in labels.by_addr:
+        rows.setdefault(addr, {"addr": addr, "visits": 0, "first_visit": None, "last_visit": None,
+                               "last_heard_for_s": None})
+    for r in rows.values():
+        r["name"] = labels.name(r["addr"])
+        live = seen_table.get(r["addr"])
+        if isinstance(live, dict) and not live.get("rotated_to"):
+            r["here_since"] = num(live.get("heard_since")) or num(live.get("first_seen"))
+            r["last_seen"] = num(live.get("last_seen"))
+        else:
+            r["here_since"] = r["last_seen"] = None
+    return sorted(rows.values(), key=lambda r: (r["here_since"] is None, -(r["here_since"] or 0),
+                                                r["last_visit"] is None, -(r["last_visit"] or 0), r["addr"]))
+
+
 def _name_order(r: dict) -> tuple:
     """Named devices A to Z, then unnamed addresses: the page's default
     order and every other column's tie-break."""

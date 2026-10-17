@@ -43,6 +43,7 @@ from .review import (
     status_state,
     storage,
     today,
+    visitor_rows,
 )
 
 REFRESH_S = 60   # today's page reloads itself this often
@@ -368,6 +369,17 @@ class Site:
     def visitors(self) -> VisitorNames:
         return load_visitor_names(self.cfg)
 
+    def visits(self) -> dict:
+        """data/state/visits.json: the recorder's visit counts per address."""
+        try:
+            data = json.loads((self.cfg.state_dir / "visits.json").read_text())
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def visitor_table(self) -> list[dict]:
+        return visitor_rows(self.visits(), self.visitors(), self.seen().table)
+
     def leader_router(self) -> int | None:
         part = self.status().get("partition") or {}
         return part.get("leader_router")
@@ -533,8 +545,8 @@ class Site:
         crypto = f'{(st.get("crypto") or {}).get("mac_decrypted", 0):,} decrypted'
         return (f'<header><a class="brand" href="/">threadwatch</a>'
                 f'<nav><a href="/">today</a> &nbsp; <a href="/devices">devices</a> &nbsp; '
-                f'<a href="/snapshots">snapshots</a> &nbsp; <a href="/status">status</a> &nbsp; '
-                f'<a href="/help">what these mean</a></nav>'
+                f'<a href="/visitors">visitors</a> &nbsp; <a href="/snapshots">snapshots</a> &nbsp; '
+                f'<a href="/status">status</a> &nbsp; <a href="/help">what these mean</a></nav>'
                 f'<span class="status">{live}{storm} &middot; ch {esc(st.get("channel"))} &middot; '
                 f'<b>{st.get("frames_total", 0):,}</b> frames &middot; {st.get("devices_tracked", 0)} devices '
                 f'&middot; {crypto} &middot; up {fmt_duration(st.get("uptime_s", 0))}</span></header>')
@@ -1166,6 +1178,45 @@ class Site:
                  f'<code>threadwatch device --pcap</code> / <code>replay</code>.</p>')
         return self.page("snapshots", f'<h1>snapshots</h1>{intro}{table}')
 
+    def visitors_page(self) -> str:
+        now = time.time()
+        rows = self.visitor_table()
+        here = sum(1 for r in rows if r["here_since"] is not None)
+        visited = sum(1 for r in rows if r["visits"])
+
+        def stamp(ts) -> str:
+            if ts is None:
+                return '<span class="muted">-</span>'
+            return (f'<a href="/day/{day_of(ts)}">{time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))}</a> '
+                    f'<span class="muted">{ago(ts, now)}</span>')
+
+        trs = []
+        for r in rows:
+            nm = esc(r["name"]) if r["name"] else '<span class="muted">unlabelled</span>'
+            if r["here_since"] is not None:
+                now_html = (f'<span class="ok">here</span> <span class="muted">since {hm(r["here_since"])}, '
+                            f'heard {ago(r["last_seen"], now)}</span>')
+            else:
+                now_html = '<span class="muted">away</span>'
+            visits = f'{r["visits"]}' if r["visits"] else '<span class="muted">none recorded</span>'
+            stayed = fmt_duration(r["last_heard_for_s"]) if r["last_heard_for_s"] is not None else ""
+            trs.append(f'<tr><td><a href="/device/{esc(r["addr"])}">{nm}</a></td><td>{now_html}</td>'
+                       f'<td class="n">{visits}</td><td>{stamp(r["last_visit"])}</td><td>{esc(stayed)}</td>'
+                       f'<td>{stamp(r["first_visit"])}</td>'
+                       f'<td class="muted"><code>{esc(r["addr"])}</code></td></tr>')
+        table = ('<table><tr><th>visitor</th><th>now</th><th>visits</th><th>last visit</th><th>stayed</th>'
+                 f'<th>first visit</th><th>addr</th></tr>{"".join(trs)}</table>'
+                 if trs else '<p class="empty">no visitors yet</p>')
+        note = (f'<p class="muted">{visited} addresses have visited'
+                + (f', {here} here now' if here else "")
+                + '. A visitor is an address not in devices.json heard briefly as a child, then silent: a '
+                  'phone or tablet reaching a HomeKit accessory. Each visit is a <i>visit</i> row on its day '
+                  'page; the recorder keeps the count and the last visit per address (the 256 most recent). '
+                  'Label one with <code>threadwatch name-visitor &lt;addr&gt; "Name"</code> '
+                  '(config/visitors.json), never with <code>name</code>: a named device pages when it goes '
+                  'quiet, and a phone leaving is not a failure.</p>')
+        return self.page("visitors", f'<h1>visitors</h1>{note}{table}')
+
     def help_page(self) -> str:
         sev = ('<div class="card"><b>Severities.</b> '
                '<span class="sev info">info</span> bookkeeping &middot; '
@@ -1203,6 +1254,8 @@ class Site:
             return {"day": day, "episodes": eps, "records": read_day(self.cfg.events_dir, day),
                     "recording": recording_for_day(self.cfg.ring_dir, self.cfg.snapshots_dir, day),
                     "coverage": coverage(self.cfg.events_dir, day, status=self.status())}
+        if path == "/api/visitors":
+            return {"visitors": self.visitor_table()}
         if path == "/api/devices":
             seen = self.seen()
             rows = device_rows(seen, self.names(), self.cfg.quiet_min_rssi_dbm, leader_router=self.leader_router(),
@@ -1274,6 +1327,8 @@ class Site:
             return 200, "text/html; charset=utf-8", self.status_page().encode()
         if path == "/snapshots":
             return 200, "text/html; charset=utf-8", self.snapshots_page().encode()
+        if path == "/visitors":
+            return 200, "text/html; charset=utf-8", self.visitors_page().encode()
         if path.startswith("/device/"):
             target = unquote(path[len("/device/"):]).strip()
             if not target or len(target) > 100:

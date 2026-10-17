@@ -81,6 +81,16 @@ proxy that authenticates.
   Retention is a year, so anything older is still on its day page; the
   page says where it stopped and `/api/device/` reports the window as
   `episode_days`.
+- **/visitors**: every address that has visited (a phone or tablet
+  reaching a HomeKit accessory: not in `devices.json`, heard briefly as a
+  child, then gone; docs/ALERTING.md, `visitor_left`), with its label
+  from `config/visitors.json`, whether it is here now, how many times it
+  has visited, when it last and first visited and how long it stayed,
+  plus labelled visitors that have never visited; the ones here now
+  first, then newest visit first. The devices page's *visitors* filter
+  shows only the ones here now, since a visit over drops the address
+  from the device table. Each row links to the address's device page,
+  where its visits are the history.
 - **/status**: the daemon's status file in prose (alive, last frame,
   channel and port, a row per radio when there are several, this run's
   frames, the threadwatch version and commit
@@ -99,7 +109,7 @@ proxy that authenticates.
   it carries (each file with its line count, `partial` when a fetch was
   cut short). Day pages link to it.
 - **/api/status** (with a `storage` block), **/api/snapshots**,
-  **/api/days**, **/api/day/YYYY-MM-DD**, **/api/devices**,
+  **/api/days**, **/api/day/YYYY-MM-DD**, **/api/devices**, **/api/visitors**,
   **/api/device/<addr or name>**:
   the same data as JSON, for Home Assistant or anything else. The day
   response carries `coverage`: the segments of the day the recorder was

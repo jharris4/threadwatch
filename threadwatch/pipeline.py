@@ -2998,13 +2998,15 @@ class Pipeline:
         return old_row.get("last_seen", 0.0) > started
 
     def _device_rotated(self, previous: str, addr: str, now: float, evidence: str,
-                        reason: str = "rotation") -> str | None:
+                        reason: str = "rotation", attempts: list[dict] | None = None) -> str | None:
         """``addr`` is the device that was ``previous``. The new address
         takes the name (names.rotate: learned, and remembered in
         device-rotations.json), the old row is retired so it is not
         reported quiet, and the rotation is said once. Returns the name.
         ``reason``: "rotation" (the device took a new address) or
         "readded" (factory reset and re-added in Home Assistant).
+        ``attempts``: a re-add's earlier tries (_reset_attempts), carried
+        in the record and listed in its note.
 
         Retiring an address on a claim is what the mDNS path refuses to
         do without the radio's corroboration, because mDNS is anyone on
@@ -3029,13 +3031,21 @@ class Pipeline:
             fix = f'threadwatch name {addr} "{name}"' if name else f'threadwatch name {addr} "<name>"'
             why = ("a factory reset gives it one" if reason == "readded"
                    else "a reboot after a firmware update can do this")
+            extra = {} if attempts is None else {"attempts": attempts}
+            tried = ""
+            if attempts:
+                tried = (f" Joined unnamed in the {round(self.RESET_LOOKBACK_S / 60)} min before it, so "
+                         f"perhaps its earlier attempts (not named here: a guest's phone looks the same): "
+                         + "; ".join(f"{a['addr']}, first heard "
+                                     f"{time.strftime('%H:%M:%S', time.localtime(a['first_seen']))}: "
+                                     f"{a['command']}" for a in attempts))
             self._emit("device_address_changed", "notice", now, addr=addr, name=name, previous=previous,
-                       evidence=evidence, reason=reason,
+                       evidence=evidence, reason=reason, **extra,
                        note=(f"{label} now answers to {addr}, was {previous}: {evidence}, so it is the same "
                              f"device under a new extended address ({why}). {previous} is retired, not "
                              f"reported quiet. "
                              + (f"Named from its entry; confirm with: {fix}" if name
-                                else f"Not in devices.json: {fix}")))
+                                else f"Not in devices.json: {fix}") + tried))
         return name
 
     def _retire_rotated(self, previous: str, addr: str, name: str | None, now: float) -> None:
@@ -4318,8 +4328,41 @@ class Pipeline:
             name = self._device_rotated(
                 previous, addr, now,
                 f"Home Assistant reports a new Matter node (node {node}) named {ha_name!r} at this address "
-                f"while {label}'s listed addresses are silent: a factory reset and re-add", reason="readded")
+                f"while {label}'s listed addresses are silent: a factory reset and re-add", reason="readded",
+                attempts=self._reset_attempts(addr, label))
             self._label_for_tracker(info, name)
+
+    # How far before a re-added device's address was first heard the
+    # unnamed addresses that joined are listed as its earlier attempts. A
+    # reset often takes several tries, each under a fresh address, and the
+    # ones abandoned look exactly like visits.
+    RESET_LOOKBACK_S = 60 * 60
+
+    def _reset_attempts(self, addr: str, name: str) -> list[dict]:
+        """The addresses that may have been a re-added device's earlier
+        tries: first heard in the RESET_LOOKBACK_S before ``addr``, named
+        in neither devices.json nor visitors.json, visited at most once,
+        and never a router, from the device table and from visits.json
+        (a filed visit's row is gone). Each with the `threadwatch name`
+        line that would bind it; nothing is bound here, since a guest's
+        phone joining in the same hour would be misnamed, and a name on a
+        phone makes its next visit a silence."""
+        row = self.seen.table.get(addr)
+        start = row.get("first_seen") if row else None
+        if not isinstance(start, (int, float)):
+            return []
+        found: dict[str, float] = {}
+        candidates = [(a, r.get("first_seen")) for a, r in self.seen.table.items()
+                      if (rloc16_role(r.get("rloc16")) or {}).get("role") != "router"]
+        candidates += [(a, v.get("first_visit")) for a, v in self._visits.items()]
+        for a, first in candidates:
+            if (a == addr or not isinstance(first, (int, float)) or not start - self.RESET_LOOKBACK_S <= first < start
+                    or self.names.name(a) or self.visitor_names.name(a)
+                    or int((self._visits.get(a) or {}).get("visits") or 0) > 1):
+                continue
+            found[a] = min(first, found.get(a, first))
+        return [{"addr": a, "first_seen": first, "command": f'threadwatch name {a} "{name}"'}
+                for a, first in sorted(found.items(), key=lambda kv: kv[1])]
 
     def _identified(self, new_map: dict) -> None:
         """Addresses the rebuilt map carries are known to Home Assistant:

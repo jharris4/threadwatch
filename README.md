@@ -195,7 +195,10 @@ A device factory reset and re-added comes back as a new Matter node at a
 new address. With `[ha_availability]` on, the recorder matches it to its
 entry by its Home Assistant name, names the new address and retires the
 old one (`device_address_changed`, reason `readded`), with the `name`
-line that confirms it in devices.json. Give it its entry's name in Home
+line that confirms it in devices.json. The unnamed addresses that joined
+in the hour before it are listed in the same event as possible earlier
+attempts, each with its `name` line; naming one relabels its past rows,
+visits included. Give it its entry's name in Home
 Assistant as you add it: a device left under the vendor's default name
 matches no entry, and is reported as `ha_device_unlisted` instead.
 

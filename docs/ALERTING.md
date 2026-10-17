@@ -112,7 +112,7 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `radio_returned` | info | `radio`, `serial`, `port`, `placement`, `note`; a radio that was `radio_lost` is capturing again, or a relay back within the 60 s grace, never reported lost (the note says how long it was away) |
 | `radio_attached` | info | `radio`, `serial`, `port`, `placement`, `note`; a radio that was `radio_missing` was found and is capturing |
 | `border_router_address_changed` | notice | `addr`, `name`, `previous`, `hostname`, `evidence` (what corroborated the rotation), `note` |
-| `device_address_changed` | notice | `addr` (the new address), `name`, `previous`, `evidence` (the SRP registration that carried the same Matter service name, Home Assistant's node diagnostics, or a new Home Assistant node carrying the entry's name), `reason` (`rotation`, or `readded` for a factory reset and re-add), `note`; once per rotation |
+| `device_address_changed` | notice | `addr` (the new address), `name`, `previous`, `evidence` (the SRP registration that carried the same Matter service name, Home Assistant's node diagnostics, or a new Home Assistant node carrying the entry's name), `reason` (`rotation`, or `readded` for a factory reset and re-add), `attempts` (on `readded`: the addresses that may have been the reset's earlier tries, each `addr`, `first_seen`, `command`), `note`; once per rotation |
 | `ha_device_unlisted` | notice | `addr`, `ha_name`, `node_id`, `ha_device_id`, `note` (with the `threadwatch name` line); a Matter node Home Assistant reports at an address no entry lists, under a name no entry has; once per address per run |
 | `border_router_unlisted` | notice | `addr`, `hostname`, `note` |
 | `border_router_address_conflict` | warning | `addr`, `name` (the entry devices.json gives the address to), `hostname`, `claimed_by` (the entry the hostname belongs to), `note` |
@@ -581,7 +581,14 @@ name, with the guards `import --write` uses: the name is unique in Home
 Assistant, no other node there holds an address the entry lists, and
 none of those addresses was heard after the new one began. The new
 address is then named and the entry's last-heard address retired, as for
-a rotation, with `reason` `readded` and evidence saying so. A node whose
+a rotation, with `reason` `readded` and evidence saying so. A reset
+often takes several tries, each under a fresh address, and an abandoned
+one looks exactly like a visit; the record lists as `attempts` every
+address first heard in the hour before the new one that neither
+devices.json nor visitors.json names, that visited at most once and was
+never a router, each with its `threadwatch name` line. None is bound: a
+guest's phone in the same hour would be misnamed. Naming one relabels
+its history on the day pages, which resolve names when they read. A node whose
 name no entry has (Home Assistant may keep the vendor's default name
 through the re-add) is `ha_device_unlisted`, said once per address per
 run, with the `name` line that lists it.

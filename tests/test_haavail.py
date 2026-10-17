@@ -810,6 +810,38 @@ class RecorderAvailabilityTest(unittest.TestCase):
         self.assertEqual(len(self._changed(pipe)), 1)
         self.assertEqual([r for r in pipe.events.records if r["event"] == "ha_device_unlisted"], [])
 
+    def test_a_re_add_lists_the_unnamed_addresses_that_joined_before_it_as_attempts_and_binds_none(self):
+        """2026-10-08: two abandoned attempts joined, fell silent and were
+        filed as visits, the first before the device was re-added."""
+        import io
+        from contextlib import redirect_stderr
+        (self.d / "visitors.json").write_text(json.dumps([{"name": "Guest Phone",
+                                                           "extendedAddress": "4444444444444444"}]))
+        self.cfg.visitors_path = self.d / "visitors.json"
+        pipe = self._pipe()
+        now = 1_800_000_000.0
+        self._cycle(pipe, now)
+        start = now + 100                                               # the kept address joins
+        self._heard(pipe, now - 7200, start)
+        pipe.seen.touch("1111111111111111", start - 1200, 1)            # an attempt, still in the table
+        pipe._visits["2222222222222222"] = {"visits": 1, "first_visit": start - 2400, "last_visit": start - 2250}
+        pipe.seen.touch("3333333333333333", start - 600, 1)             # a router is a device, not an attempt
+        pipe.seen.table["3333333333333333"]["rloc16"] = "c400"
+        pipe.seen.touch("4444444444444444", start - 500, 1)             # a labelled phone
+        pipe._visits["5555555555555555"] = {"visits": 3, "first_visit": start - 900, "last_visit": start - 800}
+        pipe.seen.touch("6666666666666666", start - 4000, 1)            # before the hour
+        pipe.seen.touch("e6c279e8f0c70298", start - 300, 1)             # a named device
+        with redirect_stderr(io.StringIO()):
+            self._readd(pipe, now + 200)
+        rot = self._changed(pipe)
+        self.assertEqual([(a["addr"], a["first_seen"]) for a in rot[0]["attempts"]],
+                         [("2222222222222222", start - 2400), ("1111111111111111", start - 1200)])
+        self.assertEqual(rot[0]["attempts"][1]["command"], 'threadwatch name 1111111111111111 "Front Path Motion"')
+        self.assertIn('2222222222222222, first heard', rot[0]["note"])
+        self.assertIn('threadwatch name 1111111111111111 "Front Path Motion"', rot[0]["note"])
+        self.assertIsNone(pipe.names.name("1111111111111111"))         # a hint, never a binding
+        self.assertIsNone(pipe.names.name("2222222222222222"))
+
     def test_a_re_added_device_is_not_matched_past_the_import_guards(self):
         import io
         from contextlib import redirect_stderr

@@ -581,6 +581,10 @@ class RecorderAvailabilityTest(unittest.TestCase):
         self.cfg = Config(data_dir=self.d / "data", config_dir=self.d, devices_path=self.d / "devices.json")
         self.cfg.ha_availability_enabled = True
         self.cfg.ha_availability_hold_s = 0
+        # The fixed clock below is 08:00 UTC: on a runner in UTC that is
+        # the summary hour, and a daily_summary joined the records these
+        # tests assert on exactly. The digest is not under test here.
+        self.cfg.summary_hour = -1
         self.states = [{"entity_id": "binary_sensor.motion", "state": "on",
                         "last_changed": "2026-09-13T20:00:00+00:00"}]
         outer = self

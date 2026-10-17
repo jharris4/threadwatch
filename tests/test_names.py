@@ -14,6 +14,7 @@ import tests  # noqa: F401  (the mDNS guard, installed on a direct run too: test
 from threadwatch.names import (
     DeviceNames,
     LastSeen,
+    VisitorNames,
     adopt,
     fmt_hold,
     load_observed_names,
@@ -661,6 +662,96 @@ class MalformedInventoryTest(unittest.TestCase):
         self.assertEqual(names.name("00112233445566aa"), "5")
         with self.assertRaises(ValueError):
             names.resolve("nothing-matches-this")
+
+
+class ReloadTest(unittest.TestCase):
+    """reload(): the recorder reads devices.json and visitors.json again
+    when they change, in the same object and into fresh dicts."""
+
+    A, B, C, D = "1111111111111111", "2222222222222222", "3333333333333333", "4444444444444444"
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.d = Path(tmp.name)
+        self.inv = self.d / "devices.json"
+
+    def _write(self, entries):
+        self.inv.write_text(json.dumps(entries))
+
+    def test_a_reload_takes_the_new_inventory_into_fresh_dicts(self):
+        self._write([{"name": "Porch Sensor", "extendedAddress": self.A}])
+        names = DeviceNames(self.inv)
+        held = list(names.entries)                      # what the HA worker thread copies
+        held_entry, held_by_addr = held[0], names.by_addr
+        self._write([{"name": "Porch Sensor", "extendedAddresses": [self.A, self.B], "hold_s": 7200},
+                     {"name": "Shed Sensor", "extendedAddress": "0x" + self.C}])
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertTrue(names.reload())
+        self.assertEqual((names.name(self.B), names.hold_s(self.A)), ("Porch Sensor", 7200.0))
+        self.assertEqual(names.entry_addresses_of(self.B), [self.B, self.A])
+        self.assertIsNone(names.name(self.C))           # the same validation as at start
+        self.assertIn("not 16 hex digits", err.getvalue())
+        # The old tables are left as they were, for whoever still holds them.
+        self.assertEqual(held_entry, {"name": "Porch Sensor", "extendedAddress": self.A})
+        self.assertEqual(list(held_by_addr), [self.A])
+        self.assertIsNot(names.by_addr, held_by_addr)
+        self.assertIsNot(names.entry_named("Porch Sensor"), held_entry)
+
+    def test_a_reload_keeps_the_learned_bindings(self):
+        self._write([{"name": "Porch Sensor", "extendedAddress": self.A},
+                     {"name": "Hub", "borderRouter": "hub.local"}])
+        learned = self.d / "border-routers.json"
+        learned.write_text(json.dumps({"hub.local": {"addr": self.D, "name": "Hub"}}))
+        rot = self.d / "device-rotations.json"
+        names = DeviceNames(self.inv, learned, rot)
+        names.rotate(self.B, self.A, "srp", 10.0)
+        self._write([{"name": "Porch Sensor", "extendedAddress": self.A, "mute": True},
+                     {"name": "Hub", "borderRouter": "hub.local"}])
+        self.assertTrue(names.reload())
+        self.assertEqual((names.name(self.B), names.muted(self.B)), ("Porch Sensor", True))
+        self.assertEqual(names.name(self.D), "Hub")
+        self.assertEqual(names.learned, {self.B, self.D})
+        self.assertEqual(names.border_routers[self.D]["hostname"], "hub.local")
+        self.assertEqual(list(names.rotations), [self.B])
+        # Confirmed into the inventory: listed now, no longer learned.
+        self._write([{"name": "Porch Sensor", "extendedAddresses": [self.A, self.B]},
+                     {"name": "Hub", "borderRouter": "hub.local"}])
+        names.reload()
+        self.assertEqual(names.learned, {self.D})
+        self.assertEqual(names.entry_addresses_of(self.B), [self.B, self.A])
+
+    def test_an_inventory_that_reads_empty_does_not_replace_a_loaded_one(self):
+        self._write([{"name": "Porch Sensor", "extendedAddress": self.A}])
+        names = DeviceNames(self.inv)
+        for doc in ('[{"name": "Porch Sensor", "extendedAddress": "%s"' % self.A, "[]", "{}"):
+            self.inv.write_text(doc)                    # mid-write, emptied, not a list
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertFalse(names.reload())
+            self.assertEqual(names.name(self.A), "Porch Sensor")
+        self.inv.unlink()
+        self.assertFalse(names.reload())
+        self._write([{"name": "Shed Sensor", "extendedAddress": self.B}])
+        self.assertTrue(names.reload())
+        self.assertEqual((names.name(self.A), names.name(self.B)), (None, "Shed Sensor"))
+        # Nothing loaded yet: an empty file is simply empty.
+        self._write([])
+        self.assertTrue(DeviceNames(self.inv).reload())
+
+    def test_visitor_labels_reload(self):
+        path = self.d / "visitors.json"
+        path.write_text(json.dumps([{"name": "Guest Phone", "extendedAddress": self.A}]))
+        visitors = VisitorNames(path)
+        held = visitors.by_addr
+        path.write_text(json.dumps([{"name": "Guest Tablet", "extendedAddress": self.B}]))
+        self.assertTrue(visitors.reload())
+        self.assertEqual((visitors.name(self.A), visitors.name(self.B)), (None, "Guest Tablet"))
+        self.assertEqual(held[self.A]["name"], "Guest Phone")
+        path.write_text("[")
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertFalse(visitors.reload())
+        self.assertEqual(visitors.name(self.B), "Guest Tablet")
+        self.assertTrue(VisitorNames(None).reload())
 
 
 class SaveIntervalTest(unittest.TestCase):

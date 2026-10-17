@@ -157,6 +157,16 @@ def address_field_error(entry: dict) -> str | None:
     return None
 
 
+def _entry_named(entries: list[dict], name: str) -> dict | None:
+    want = name.strip().lower()
+    return next((e for e in entries if (e.get("name") or "").strip().lower() == want), None)
+
+
+def _entry_for_border_router(entries: list[dict], hostname: str) -> dict | None:
+    want = hostname.rstrip(".").lower()
+    return next((e for e in entries if str(e.get("borderRouter") or "").rstrip(".").lower() == want), None)
+
+
 class AmbiguousName(ValueError):
     """A name fragment that matches several inventory names; `candidates`
     holds them, sorted, for whoever asks the user to pick."""
@@ -174,12 +184,13 @@ class DeviceNames:
         address after the inventory (which lists only old ones).
         ``rotations_path``: its device-rotations.json, the same for any
         device the recorder saw take a new address (rotate)."""
-        self.by_addr: dict[str, dict] = {}
         self.inventory_path = inventory_path
-        self.entries: list[dict] = []
+        self.learned_path = learned_path
         self.rotations_path = rotations_path
-        self.rotations: dict[str, dict] = load_rotations(rotations_path)   # addr -> {previous, name, evidence, ts}
         self.persist_rotations = True          # a replay reads the file and never writes it back
+        self.by_addr: dict[str, dict] = {}
+        self.entries: list[dict] = []
+        self.rotations: dict[str, dict] = {}         # addr -> {previous, name, evidence, ts}
         self.border_routers: dict[str, dict] = {}    # addr -> {hostname, instance, vendor, model, name, retired}
         # Addresses an mDNS advertisement put under an entry, rather than the
         # inventory. They carry the entry's name, because that is what the
@@ -187,6 +198,29 @@ class DeviceNames:
         # that this address is that device, and entry_addresses_of decides
         # whose silence one address's traffic answers for.
         self.learned: set[str] = set()
+        self._load()
+
+    def reload(self) -> bool:
+        """Read the three files again, as at construction: the recorder,
+        when devices.json changed under it. The same object, so whoever
+        holds it (the HA tracker) sees the new inventory. False, and
+        nothing changed, when the file now reads as no entries while the
+        loaded inventory has some (_load)."""
+        return self._load()
+
+    def _load(self) -> bool:
+        """Build every table from the files into fresh dicts, then assign
+        them. Never the loaded ones changed in place: the HA worker thread
+        holds a shallow copy of ``entries`` while the capture thread
+        reloads. An inventory that reads as empty is not traded for a
+        loaded one that is not: a save caught mid-write, or an edit that
+        broke the JSON, would otherwise make every device unknown."""
+        inventory_path = self.inventory_path
+        by_addr: dict[str, dict] = {}
+        entries: list[dict] = []
+        rotations = load_rotations(self.rotations_path)
+        border_routers: dict[str, dict] = {}
+        learned: set[str] = set()
         if inventory_path and inventory_path.exists():
             # The file is hand-edited (README): a trailing comma or a
             # truncated save is the likeliest damage, and it must not stop
@@ -206,8 +240,8 @@ class DeviceNames:
                 raw = []
             # A hand-edit can leave a bare string or a stray null behind. One bad
             # entry must not stop the recorder or 500 every review page.
-            self.entries = [e for e in raw if isinstance(e, dict)]
-            for entry in self.entries:
+            entries = [e for e in raw if isinstance(e, dict)]
+            for entry in entries:
                 bad = tolerance_field_error(entry)
                 if bad:
                     # The tolerance is ignored, the entry is kept: a typo
@@ -232,7 +266,7 @@ class DeviceNames:
                         print(f"[threadwatch] {inventory_path.name}: ignoring address {a!r} of "
                               f"{entry.get('name')!r}: not 16 hex digits", file=sys.stderr, flush=True)
                         continue
-                    owner = self.by_addr.get(n)
+                    owner = by_addr.get(n)
                     if owner is not None and owner is not entry:
                         # One address, one entry (README): a second claim
                         # used to win silently, its name, hold and mute
@@ -241,12 +275,15 @@ class DeviceNames:
                               f"{owner.get('name')!r} and {entry.get('name')!r}: the first is used "
                               "until it is fixed (threadwatch doctor checks it)", file=sys.stderr, flush=True)
                         continue
-                    self.by_addr[n] = entry
-        for host, rec in load_border_routers(learned_path).items():
+                    by_addr[n] = entry
+        if not entries and self.entries:
+            return False
+        for host, rec in load_border_routers(self.learned_path).items():
             addr = _norm(str(rec.get("addr") or ""))
             if not _EXT_ADDR.match(addr):
                 continue
-            entry = self.entry_for_border_router(host) or (self.entry_named(rec["name"]) if rec.get("name") else None)
+            entry = (_entry_for_border_router(entries, host)
+                     or (_entry_named(entries, rec["name"]) if rec.get("name") else None))
             # The current address, then every address the hub retired
             # (the recorder writes each rotation to `previous`): a retired
             # address keeps the name, so the device page and `device` still
@@ -254,22 +291,25 @@ class DeviceNames:
             # and not only the one that saw the rotation happen.
             retired = [_norm(str(p.get("addr") or "")) for p in (rec.get("previous") or []) if isinstance(p, dict)]
             for a, is_current in [(addr, True)] + [(a, False) for a in reversed(retired)]:
-                if not _EXT_ADDR.match(a) or a in self.border_routers:
+                if not _EXT_ADDR.match(a) or a in border_routers:
                     continue
-                self.border_routers[a] = {"hostname": host, "instance": rec.get("instance"),
-                                          "vendor": rec.get("vendor"), "model": rec.get("model"),
-                                          "name": rec.get("name"), "retired": not is_current}
-                if entry is not None and a not in self.by_addr:
-                    self.by_addr[a] = entry     # the same binding learn() makes, restored
-                    self.learned.add(a)
+                border_routers[a] = {"hostname": host, "instance": rec.get("instance"),
+                                     "vendor": rec.get("vendor"), "model": rec.get("model"),
+                                     "name": rec.get("name"), "retired": not is_current}
+                if entry is not None and a not in by_addr:
+                    by_addr[a] = entry          # the same binding learn() makes, restored
+                    learned.add(a)
         # Rotations the recorder saw, oldest first, so A -> B -> C names C
         # through B. The same binding rotate() made, restored; an address
         # the inventory has since been given keeps the inventory's word.
-        for a, rec in sorted(self.rotations.items(), key=lambda kv: kv[1].get("ts") or 0):
-            entry = self.by_addr.get(_norm(str(rec.get("previous") or "")))
-            if entry is not None and a not in self.by_addr:
-                self.by_addr[a] = entry
-                self.learned.add(a)
+        for a, rec in sorted(rotations.items(), key=lambda kv: kv[1].get("ts") or 0):
+            entry = by_addr.get(_norm(str(rec.get("previous") or "")))
+            if entry is not None and a not in by_addr:
+                by_addr[a] = entry
+                learned.add(a)
+        self.by_addr, self.entries, self.rotations = by_addr, entries, rotations
+        self.border_routers, self.learned = border_routers, learned
+        return True
 
     def rotate(self, addr: str, previous: str, evidence: str, ts: float) -> tuple[str | None, bool]:
         """The device at ``previous`` now answers to ``addr``: name the new
@@ -307,14 +347,11 @@ class DeviceNames:
                   "in this process only", file=sys.stderr, flush=True)
 
     def entry_named(self, name: str) -> dict | None:
-        want = name.strip().lower()
-        return next((e for e in self.entries if (e.get("name") or "").strip().lower() == want), None)
+        return _entry_named(self.entries, name)
 
     def entry_for_border_router(self, hostname: str) -> dict | None:
         """The entry that names this border router explicitly."""
-        want = hostname.rstrip(".").lower()
-        return next((e for e in self.entries
-                     if str(e.get("borderRouter") or "").rstrip(".").lower() == want), None)
+        return _entry_for_border_router(self.entries, hostname)
 
     def learn(self, addr: str, entry: dict) -> None:
         """Name an address from an inventory entry (a border router's new
@@ -704,31 +741,51 @@ class VisitorNames:
         self.path = path
         self.by_addr: dict[str, dict] = {}
         self.entries: list[dict] = []
+        self._load()
+
+    def reload(self) -> bool:
+        """Read the file again (DeviceNames.reload): False, and nothing
+        changed, when it now reads as no entries while the loaded labels
+        have some."""
+        return self._load()
+
+    def _load(self) -> bool:
+        """Fresh dicts, then assigned, as DeviceNames._load, and an empty
+        read is not traded for loaded labels in the same way."""
+        entries = self._read()
+        by_addr: dict[str, dict] = {}
+        for entry in entries:
+            if address_field_error(entry):
+                print(f"[threadwatch] {self.path.name}: {address_field_error(entry)} in the entry for "
+                      f"{entry.get('name')!r}: ignored", file=sys.stderr, flush=True)
+            for a in entry_addresses(entry):
+                n = _norm(str(a))
+                if _EXT_ADDR.match(n):
+                    by_addr[n] = entry
+        if not entries and self.entries:
+            return False
+        self.by_addr, self.entries = by_addr, entries
+        return True
+
+    def _read(self) -> list[dict]:
+        path = self.path
         if not path or not path.exists():
-            return
+            return []
         try:
             raw = json.loads(path.read_text())
         except ValueError as exc:
             print(f"[threadwatch] {path.name} is not valid JSON ({exc}): ignoring the file, so visitors "
                   "show by address until it is fixed", file=sys.stderr, flush=True)
-            return
+            return []
         except OSError as exc:
             print(f"[threadwatch] {path.name} is unreadable ({exc}): visitors show by address",
                   file=sys.stderr, flush=True)
-            return
+            return []
         if not isinstance(raw, list):
             print(f"[threadwatch] {path.name}: expected a list of visitors, got {type(raw).__name__}; "
                   "ignoring the file", file=sys.stderr, flush=True)
-            return
-        self.entries = [e for e in raw if isinstance(e, dict)]
-        for entry in self.entries:
-            if address_field_error(entry):
-                print(f"[threadwatch] {path.name}: {address_field_error(entry)} in the entry for "
-                      f"{entry.get('name')!r}: ignored", file=sys.stderr, flush=True)
-            for a in entry_addresses(entry):
-                n = _norm(str(a))
-                if _EXT_ADDR.match(n):
-                    self.by_addr[n] = entry
+            return []
+        return [e for e in raw if isinstance(e, dict)]
 
     def name(self, addr: str | None) -> str | None:
         entry = self.by_addr.get(_norm(addr)) if addr else None

@@ -751,6 +751,29 @@ class ReloadTest(unittest.TestCase):
         self.assertEqual((names.name(self.D), names.name(self.B)), ("Shed Sensor", "Shed Sensor"))
         self.assertEqual(names.learned, {self.B})
 
+    def test_a_start_restores_a_binding_by_a_listed_address_or_the_recorded_name(self):
+        """The same two edits as above, seen at the next start (web, replay,
+        a restarted recorder): the hub's record is matched by the retired
+        address its entry still lists, the rotation by the name it wrote."""
+        self._write([{"name": "Living Room Hub", "extendedAddress": self.A},
+                     {"name": "Porch Sensor", "extendedAddress": self.C}])
+        learned = self.d / "border-routers.json"
+        learned.write_text(json.dumps({"hub.local": {"addr": self.D, "name": "Living Room Hub",
+                                                    "previous": [{"addr": self.A, "until": 1.0}]}}))
+        rot = self.d / "device-rotations.json"
+        DeviceNames(self.inv, learned, rot).rotate(self.B, self.C, "srp", 10.0)
+        self._write([{"name": "Lounge Hub", "extendedAddress": self.A},
+                     {"name": "Porch Sensor"}])
+        names = DeviceNames(self.inv, learned, rot)
+        self.assertEqual((names.name(self.D), names.name(self.A)), ("Lounge Hub", "Lounge Hub"))
+        self.assertEqual(names.name(self.B), "Porch Sensor")
+        self.assertEqual(names.learned, {self.D, self.B})
+        self.assertEqual(names.border_routers[self.D]["hostname"], "hub.local")
+        # A hostname the inventory names explicitly still comes first.
+        self._write([{"name": "Lounge Hub", "extendedAddress": self.A},
+                     {"name": "Office Hub", "borderRouter": "hub.local"}])
+        self.assertEqual(DeviceNames(self.inv, learned, rot).name(self.D), "Office Hub")
+
     def test_an_inventory_that_reads_empty_does_not_replace_a_loaded_one(self):
         self._write([{"name": "Porch Sensor", "extendedAddress": self.A}])
         names = DeviceNames(self.inv)

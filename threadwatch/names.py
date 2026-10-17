@@ -288,14 +288,19 @@ class DeviceNames:
             addr = _norm(str(rec.get("addr") or ""))
             if not _EXT_ADDR.match(addr):
                 continue
-            entry = (_entry_for_border_router(entries, host)
-                     or (_entry_named(entries, rec["name"]) if rec.get("name") else None))
             # The current address, then every address the hub retired
             # (the recorder writes each rotation to `previous`): a retired
             # address keeps the name, so the device page and `device` still
             # tell the device's story across its reboots, in every process
             # and not only the one that saw the rotation happen.
             retired = [_norm(str(p.get("addr") or "")) for p in (rec.get("previous") or []) if isinstance(p, dict)]
+            # The entry, as the browse finds it: by hostname, by an address
+            # the entry lists (the one the hub had when it was listed, now
+            # retired, survives the entry being renamed), then by the name
+            # the record carries.
+            entry = (_entry_for_border_router(entries, host)
+                     or _entry_listing(entries, [addr] + retired)
+                     or (_entry_named(entries, rec["name"]) if rec.get("name") else None))
             for a, is_current in [(addr, True)] + [(a, False) for a in reversed(retired)]:
                 if not _EXT_ADDR.match(a) or a in border_routers:
                     continue
@@ -308,8 +313,13 @@ class DeviceNames:
         # Rotations the recorder saw, oldest first, so A -> B -> C names C
         # through B. The same binding rotate() made, restored; an address
         # the inventory has since been given keeps the inventory's word.
+        # A previous address the inventory no longer lists (taken out
+        # before the new one was confirmed) falls back to the name the
+        # record wrote down: the name, as ever, not membership.
         for a, rec in sorted(rotations.items(), key=lambda kv: kv[1].get("ts") or 0):
             entry = by_addr.get(_norm(str(rec.get("previous") or "")))
+            if entry is None and rec.get("name"):
+                entry = _entry_named(entries, str(rec["name"]))
             if entry is not None and a not in by_addr:
                 by_addr[a] = entry
                 learned.add(a)

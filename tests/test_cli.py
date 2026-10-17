@@ -338,6 +338,27 @@ class EventsFilterTest(CliCase):
         self.assertEqual(code, 0, err)
         self.assertIn("Office AQ quiet for 16h00m", out)       # the day's most serious event, not dropped
 
+    def test_records_written_unnamed_print_under_the_name_the_inventory_gives_now(self):
+        import json
+
+        from threadwatch.config import load
+        from threadwatch.events import EventLog, day_of
+        t = 1_756_800_000.0
+        EventLog(load(Path(self.cfg)).events_dir).emit(
+            "visitor_left", "info", t + 2000, addr="26976e7f7d20964a", name=None, visit=1, first_seen=t + 300,
+            last_seen=t + 345, heard_for_s=45, note="a visitor")
+        hint = "Office AQ joined for 45s (unnamed then; now in devices.json: a reset attempt?)"
+        code, out, err = self.run_cli("events", "--day", day_of(t), "--episodes")
+        self.assertEqual(code, 0, err)
+        self.assertIn(hint, out)
+        code, out, err = self.run_cli("events", "--episodes")
+        self.assertEqual(code, 0, err)
+        self.assertIn(hint, out)
+        code, out, err = self.run_cli("events", "--device", "Office")
+        self.assertEqual(code, 0, err)
+        left = json.loads(next(l for l in out.splitlines() if "visitor_left" in l).split("visitor_left  ")[1])
+        self.assertEqual((left["name"], left["named_later"]), ("Office AQ", True))
+
     def test_a_day_lists_a_device_in_a_burst_another_device_opened(self):
         # --day grouped every device's records and then kept an episode
         # by its first record's address: an Office first sighting inside

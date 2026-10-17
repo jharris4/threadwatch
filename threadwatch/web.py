@@ -621,7 +621,7 @@ class Site:
     def day_page(self, day: str, min_severity: str = "") -> str:
         now = time.time()
         floor = SEVERITY_RANK.get(min_severity)
-        eps = day_episodes(self.cfg.events_dir, day, now)
+        eps = day_episodes(self.cfg.events_dir, day, now, resolve=self.names().name, visitor=self.visitors().name)
         segs = coverage(self.cfg.events_dir, day, now, self.status())
         total = len(eps)
         if floor:
@@ -1177,7 +1177,7 @@ class Site:
             day = path[len("/api/day/"):]
             if not valid_day(day):
                 return None
-            eps = day_episodes(self.cfg.events_dir, day)
+            eps = day_episodes(self.cfg.events_dir, day, resolve=self.names().name, visitor=self.visitors().name)
             for ep in eps:
                 ep.pop("events", None)
             from .events import read_day

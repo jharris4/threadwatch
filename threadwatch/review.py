@@ -64,14 +64,38 @@ def fmt_duration(seconds: float) -> str:
     return f"{days}d{hours}h"
 
 
-def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
+def named_later(records: list[dict], resolve, visitor=None) -> list[dict]:
+    """Records written before their address had a name, named now. A record
+    keeps the name it was emitted with, so an address named afterwards (a
+    factory reset's attempts, a device added late) read as a bare address
+    in every row before it. ``resolve`` is the inventory's ``addr -> name
+    | None`` and marks the copy ``named_later``; ``visitor`` is
+    visitors.json's, which only relabels. Copies, never the records
+    themselves: read_day's records are shared through its cache."""
+    out = []
+    for rec in records:
+        addr = _addr(rec) if rec.get("name") is None else None
+        if addr:
+            name = resolve(addr) if resolve else None
+            if name:
+                rec = {**rec, "name": name, "named_later": True}
+            elif visitor and (label := visitor(addr)):
+                rec = {**rec, "name": label}
+        out.append(rec)
+    return out
+
+
+def group_episodes(records: list[dict], now: float | None = None, resolve=None, visitor=None) -> list[dict]:
     """Collapse records into episodes.
 
     Each episode: {kind, start, end, severity, count, title, detail, addr,
     name, events: [records]}. ``end`` is None while a quiet spell is still
-    open. Sorted by start.
+    open. Sorted by start. ``resolve`` and ``visitor`` name the records
+    written unnamed (named_later).
     """
     now = now or time.time()
+    if resolve or visitor:
+        records = named_later(records, resolve, visitor)
     records = sorted(records, key=lambda r: r["ts"])
     episodes: list[dict] = []
     open_quiet: dict[str, dict] = {}
@@ -151,8 +175,9 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
             # Back for another visit: the row opens now and closes when the
             # visit is filed, half an hour after it leaves.
             addr = _addr(rec) or ""
-            open_visit[addr] = new("visit", rec, f"{_label(rec)} visiting{_nth(rec)}", rec.get("note", ""),
-                                   end=None)
+            title = (f"{_label(rec)} joined{_nth(rec)}{_RESET_HINT}" if rec.get("named_later")
+                     else f"{_label(rec)} visiting{_nth(rec)}")
+            open_visit[addr] = new("visit", rec, title, rec.get("note", ""), end=None)
         elif ev == "visitor_left":
             # Filed when its silence crossed the window; the row spans the
             # visit itself. A quiet announced for the address by a run from
@@ -166,7 +191,8 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
             start = float(first) if isinstance(first, (int, float)) else rec["ts"]
             end = float(last) if isinstance(last, (int, float)) else rec["ts"]
             heard = rec.get("heard_for_s") if isinstance(rec.get("heard_for_s"), (int, float)) else end - start
-            title = f"{_label(rec)} visited for {fmt_duration(heard)}{_nth(rec)}"
+            title = (f"{_label(rec)} joined for {fmt_duration(heard)}{_nth(rec)}{_RESET_HINT}"
+                     if rec.get("named_later") else f"{_label(rec)} visited for {fmt_duration(heard)}{_nth(rec)}")
             ep = open_visit.pop(addr, None)
             if ep is not None:
                 ep.update(start=min(ep["start"], start), end=end, title=title, detail=rec.get("note", ""))
@@ -525,6 +551,11 @@ def group_episodes(records: list[dict], now: float | None = None) -> list[dict]:
     return sorted(episodes, key=lambda e: e["start"])
 
 
+# A visit filed for an address the inventory names now: it was a device
+# all along, most likely one attempt of a factory reset's re-add.
+_RESET_HINT = " (unnamed then; now in devices.json: a reset attempt?)"
+
+
 def _nth(rec: dict) -> str:
     n = rec.get("visit")
     return f" (visit {n})" if isinstance(n, int) and not isinstance(n, bool) and n > 1 else ""
@@ -560,21 +591,22 @@ def episode_onset(ep: dict) -> float:
 
 
 def day_episodes(events_dir: Path, day: str, now: float | None = None,
-                 addrs: set[str] | None = None) -> list[dict]:
+                 addrs: set[str] | None = None, resolve=None, visitor=None) -> list[dict]:
     """Episodes that touch a day. Grouping runs over the days around it
     (EPISODE_WINDOW_DAYS either side), so a silence that began days ago
     and is still open appears on every day it covers with its real
     duration, and closes everywhere once the device returns. The day
     files are small and cached (events.read_day). With ``addrs`` only
     those addresses' records are grouped, so a burst another device
-    opened (first_seen, join-scan) still lists theirs."""
+    opened (first_seen, join-scan) still lists theirs. ``resolve`` and
+    ``visitor``: group_episodes."""
     start, end = day_bounds(day)
     first = day_of(start - EPISODE_WINDOW_DAYS * 86400)
     last = day_of(end + EPISODE_WINDOW_DAYS * 86400)
     records = [r for _day, recs in iter_days(events_dir, first, last) for r in recs
                if addrs is None or (_addr(r) or "").lower() in addrs]
     out = []
-    for ep in group_episodes(records, now):
+    for ep in group_episodes(records, now, resolve, visitor):
         ep_end = ep["end"] if ep["end"] is not None else (now or time.time())
         # By the interval's onset, not by the alert that announced it. A
         # device last heard at 23:50 whose device_quiet was logged at 00:20

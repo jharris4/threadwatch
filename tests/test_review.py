@@ -157,6 +157,49 @@ class EpisodeTest(unittest.TestCase):
                           ("starved", T0 + 100, T0 + 150, f"{AQ} polls unanswered for 55s, then it left")])
         self.assertEqual(len(eps[0]["events"]), 2)
 
+    def test_a_visit_by_an_address_named_since_reads_as_a_reset_attempt_without_touching_the_records(self):
+        attempt = "0a1b2c3d4e5f6071"
+        names = {attempt: "Porch Motion"}
+        back = rec("visitor_returned", "info", T0, addr=attempt, name=None, visit=2, note="back")
+        left = rec("visitor_left", "info", T0 + 1900, addr=attempt, name=None, visit=2, first_seen=T0,
+                   last_seen=T0 + 120, heard_for_s=120, note="a visitor")
+        first = rec("device_first_seen", "info", T0 - 3600, addr=attempt, name=None)
+        records = [first, back, left]
+        before = json.dumps(records)
+        eps = group_episodes(records, now=T0 + 7200, resolve=names.get)
+        self.assertEqual([(e["kind"], e["name"], e["title"], e["detail"]) for e in eps],
+                         [("first_seen", "Porch Motion", "1 device first seen", "Porch Motion"),
+                          ("visit", "Porch Motion", "Porch Motion joined for 2m (visit 2) (unnamed then; "
+                                                    "now in devices.json: a reset attempt?)", "a visitor")])
+        self.assertEqual(json.dumps(records), before)                 # copies, never the shared records
+        self.assertTrue(all(r["named_later"] for r in eps[1]["events"]))
+        # Still here: the open row says so the same way.
+        eps = group_episodes([back], now=T0 + 60, resolve=names.get)
+        self.assertEqual([e["title"] for e in eps],
+                         ["Porch Motion joined (visit 2) (unnamed then; now in devices.json: a reset attempt?) "
+                          "(not yet over)"])
+        # A phone labelled in visitors.json since is relabelled, and is
+        # still a visit, not a reset attempt.
+        eps = group_episodes([left], now=T0 + 7200, resolve=names.get, visitor={attempt: "Sam's iPhone"}.get)
+        self.assertEqual(eps[0]["title"], "Porch Motion joined for 2m (visit 2) (unnamed then; "
+                                          "now in devices.json: a reset attempt?)")   # the inventory wins
+        eps = group_episodes([left], now=T0 + 7200, resolve={}.get, visitor={attempt: "Sam's iPhone"}.get)
+        self.assertEqual(eps[0]["title"], "Sam's iPhone visited for 2m (visit 2)")
+        self.assertNotIn("named_later", eps[0]["events"][0])
+        # A record written with a name keeps it, whatever the inventory says now.
+        eps = group_episodes([{**left, "name": "Kitchen iPad"}], now=T0 + 7200, resolve=names.get)
+        self.assertEqual(eps[0]["title"], "Kitchen iPad visited for 2m (visit 2)")
+
+    def test_a_quiet_spell_written_unnamed_takes_the_name_given_since(self):
+        records = [rec("device_quiet", "warning", T0, addr=AQ, name=None, reception="good", silent_for_s=1800),
+                   rec("device_returned", "notice", T0 + 12 * 60, addr=AQ, name=None)]
+        eps = group_episodes(records, now=T0 + 3600, resolve={AQ: "Basement AQ"}.get)
+        self.assertEqual([(e["name"], e["title"]) for e in eps], [("Basement AQ", "Basement AQ quiet for 42m")])
+        eps = group_episodes(records[:1], now=T0 + 3600, resolve={AQ: "Basement AQ"}.get)
+        self.assertEqual(eps[0]["title"], "Basement AQ quiet for 90m (still quiet)")
+        self.assertIsNone(records[0]["name"])
+        self.assertEqual(group_episodes(records, now=T0 + 3600)[0]["title"], f"{AQ} quiet for 42m")
+
     def test_a_forgotten_address_is_its_own_row_and_ends_its_quiet(self):
         gone = rec("address_forgotten", "info", T0 + 3 * 86400, addr=AQ, silent_for_s=3 * 86400,
                    last_seen=T0, note="dropped")
@@ -476,6 +519,17 @@ class DayViewTest(unittest.TestCase):
         finally:
             httpd.shutdown()
             httpd.server_close()
+
+    def test_the_day_page_names_a_visit_by_the_inventory_it_reads_now(self):
+        # Filed as a visit while unnamed; the address is in devices.json now.
+        EventLog(self.cfg.events_dir).emit("visitor_left", "info", T0 + 1800, addr=PLUG, name=None, visit=1,
+                                           first_seen=T0, last_seen=T0 + 45, heard_for_s=45, note="a visitor")
+        hint = "Irrigation joined for 45s (unnamed then; now in devices.json: a reset attempt?)"
+        self.assertIn(hint, web.Site(self.cfg).day_page(day_of(T0)))
+        eps = web.Site(self.cfg).api(f"/api/day/{day_of(T0)}", {})["episodes"]
+        self.assertIn(hint, [e["title"] for e in eps])
+        self.assertIsNone(next(r for r in read_day(self.cfg.events_dir, day_of(T0))
+                               if r["event"] == "visitor_left")["name"])
 
     def test_now_card_lists_quiet_degraded_and_unknown_on_our_pan(self):
         from threadwatch.names import DeviceNames, LastSeen

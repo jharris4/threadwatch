@@ -396,11 +396,13 @@ def main(argv=None) -> int:
         if not days:
             print("no events yet")
             return 0
+        from .names import load_names, load_visitor_names
+        from .review import named_later
+        names, visitors = load_names(cfg), load_visitor_names(cfg)
         addrs = None
         if args.device:
             try:
-                from .names import load_names
-                addrs = set(load_names(cfg).resolve(args.device)[0])
+                addrs = set(names.resolve(args.device)[0])
             except ValueError as exc:
                 parser.error(str(exc))
         floor = SEVERITY_RANK.get(args.severity or "info", 0)
@@ -445,7 +447,8 @@ def main(argv=None) -> int:
                 # device page does: a multi-device burst another device
                 # opened is keyed by that device's address.
                 from .review import day_episodes
-                episodes = day_episodes(cfg.events_dir, args.day, addrs=addrs)
+                episodes = day_episodes(cfg.events_dir, args.day, addrs=addrs, resolve=names.name,
+                                        visitor=visitors.name)
                 return _print_episodes(episodes, floor, SEVERITY_RANK, f"{what} on {args.day}")
             records = [r for r in read_day(cfg.events_dir, args.day) if wanted(r)]
             if not records:
@@ -466,7 +469,7 @@ def main(argv=None) -> int:
                 episodes, records, enough_at = [], [], None
                 for i, day in enumerate(reversed(days)):
                     records = [r for r in read_day(cfg.events_dir, day) if wanted(r)] + records
-                    episodes = [ep for ep in group_episodes(records)
+                    episodes = [ep for ep in group_episodes(records, resolve=names.name, visitor=visitors.name)
                                 if mine(ep) and SEVERITY_RANK.get(ep["severity"], 0) >= floor]
                     if enough_at is None and len(episodes) >= args.n:
                         enough_at = i
@@ -482,7 +485,7 @@ def main(argv=None) -> int:
             if not records:
                 print(f"no events {what}")
                 return 0
-        for e in records:
+        for e in named_later(records, names.name, visitors.name):
             e = dict(e)
             stamp = time.strftime("%m-%d %H:%M:%S", time.localtime(e.pop("ts")))
             sev = e.pop("severity")

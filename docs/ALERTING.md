@@ -112,7 +112,8 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `radio_returned` | info | `radio`, `serial`, `port`, `placement`, `note`; a radio that was `radio_lost` is capturing again, or a relay back within the 60 s grace, never reported lost (the note says how long it was away) |
 | `radio_attached` | info | `radio`, `serial`, `port`, `placement`, `note`; a radio that was `radio_missing` was found and is capturing |
 | `border_router_address_changed` | notice | `addr`, `name`, `previous`, `hostname`, `evidence` (what corroborated the rotation), `note` |
-| `device_address_changed` | notice | `addr` (the new address), `name`, `previous`, `evidence` (the SRP registration that carried the same Matter service name, or Home Assistant's node diagnostics), `note`; once per rotation |
+| `device_address_changed` | notice | `addr` (the new address), `name`, `previous`, `evidence` (the SRP registration that carried the same Matter service name, Home Assistant's node diagnostics, or a new Home Assistant node carrying the entry's name), `reason` (`rotation`, or `readded` for a factory reset and re-add), `note`; once per rotation |
+| `ha_device_unlisted` | notice | `addr`, `ha_name`, `node_id`, `ha_device_id`, `note` (with the `threadwatch name` line); a Matter node Home Assistant reports at an address no entry lists, under a name no entry has; once per address per run |
 | `border_router_unlisted` | notice | `addr`, `hostname`, `note` |
 | `border_router_address_conflict` | warning | `addr`, `name` (the entry devices.json gives the address to), `hostname`, `claimed_by` (the entry the hostname belongs to), `note` |
 | `border_router_rotation_unverified` | notice | `addr`, `name`, `previous`, `hostname`, `evidence` (what held, when anything did), `missing` (what did not), `note` |
@@ -571,6 +572,19 @@ key from a frame with a fresh counter, and the Matter Server read the
 address over its own session, so the retirement needs no further
 corroboration. If devices.json names both addresses, differently, the
 inventory stands and nothing is renamed or retired.
+
+A factory reset is neither: the device is re-added as a new Matter node,
+so its service names and its Home Assistant device id are both new. A
+map refresh that finds a node no entry lists, at an address the recorder
+has no name for, matches it to the entry carrying its Home Assistant
+name, with the guards `import --write` uses: the name is unique in Home
+Assistant, no other node there holds an address the entry lists, and
+none of those addresses was heard after the new one began. The new
+address is then named and the entry's last-heard address retired, as for
+a rotation, with `reason` `readded` and evidence saying so. A node whose
+name no entry has (Home Assistant may keep the vendor's default name
+through the re-add) is `ha_device_unlisted`, said once per address per
+run, with the `name` line that lists it.
 
 A registration is credited to the device its host name names (a Matter
 device's SRP host name is its own extended address), not to the frame's

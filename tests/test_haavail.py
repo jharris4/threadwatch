@@ -755,6 +755,111 @@ class RecorderAvailabilityTest(unittest.TestCase):
         self._register(pipe, NEW, now + 4000, dns_id=8)                  # an hour on: not asked about again
         self.assertEqual(pipe._identify, {})
 
+    OLD, NEW, READDED = "c233a4a5bf8391c9", "5a5b5c5d5e5f6061", "e0e1e2e3e4e5e6e7e8e9eaebecedeeef"
+
+    def _readd(self, pipe, now, ha_name="Front Path Motion", rebuild=True, **more):
+        """A rebuilt map carrying a new node for the reset device; with
+        ``more``, other devices beside it."""
+        self.mapping = {self.READDED: {"addr": self.NEW.upper(), "node_id": 132, "ha_name": ha_name,
+                                       "name": ha_name, "matched": False, "entities": ["binary_sensor.motion"]},
+                        **more}
+        if rebuild:
+            pipe._haavail_map_ts = now - 7200
+        pipe._next_haavail = 0.0
+        self._cycle(pipe, now)
+
+    def _changed(self, pipe):
+        return [r for r in pipe.events.records if r["event"] == "device_address_changed"]
+
+    def _heard(self, pipe, old_last, new_first):
+        pipe.seen.touch(self.OLD, old_last - 600, 1)
+        pipe.seen.touch(self.OLD, old_last, 1)
+        pipe.seen.touch(self.NEW, new_first, 1)
+
+    def test_a_device_reset_and_re_added_under_its_name_is_named_from_its_entry(self):
+        """2026-10-08: a motion sensor factory reset and re-added came back
+        as a new Matter node at a new address; it was unknown, on the
+        default hold, until import --write matched it by its HA name."""
+        import io
+        from contextlib import redirect_stderr
+
+        from threadwatch.names import DeviceNames
+        (self.d / "devices.json").write_text(json.dumps([dict(ENTRIES[0], hold_s=7200), ENTRIES[1]]))
+        pipe = self._pipe()
+        now = 1_800_000_000.0
+        self._cycle(pipe, now)
+        self._heard(pipe, now - 3600, now + 100)
+        with redirect_stderr(io.StringIO()):
+            self._readd(pipe, now + 200)
+        rot = self._changed(pipe)
+        self.assertEqual([(r["addr"], r["previous"], r["name"], r["reason"]) for r in rot],
+                         [(self.NEW, self.OLD, "Front Path Motion", "readded")])
+        self.assertIn("a new Matter node (node 132) named 'Front Path Motion'", rot[0]["evidence"])
+        self.assertIn("a factory reset gives it one", rot[0]["note"])
+        self.assertIn(f'confirm with: threadwatch name {self.NEW} "Front Path Motion"', rot[0]["note"])
+        self.assertEqual((pipe.names.name(self.NEW), pipe.names.hold_s(self.NEW)), ("Front Path Motion", 7200.0))
+        self.assertIn(self.NEW, pipe.names.learned)                    # named, not confirmed
+        self.assertEqual(pipe.seen.table[self.OLD]["rotated_to"], self.NEW)
+        self.assertIsNone(pipe._brief_visit(self.NEW, pipe.seen.table[self.NEW]))   # never filed as a visit
+        self.assertEqual(pipe._haavail.mapping[self.READDED]["name"], "Front Path Motion")   # the tracker's label
+        again = DeviceNames(self.cfg.devices_path, None, self.cfg.state_dir / "device-rotations.json")
+        self.assertEqual(again.name(self.NEW), "Front Path Motion")    # every later process too
+        # The next rebuild finds the address named, and says nothing more.
+        self._readd(pipe, now + 4000)
+        self.assertEqual(len(self.refreshes), 3)
+        self.assertEqual(len(self._changed(pipe)), 1)
+        self.assertEqual([r for r in pipe.events.records if r["event"] == "ha_device_unlisted"], [])
+
+    def test_a_re_added_device_is_not_matched_past_the_import_guards(self):
+        import io
+        from contextlib import redirect_stderr
+        now = 1_800_000_000.0
+        twin = {"f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff": {"addr": "7A7B7C7D7E7F8081", "node_id": 133,
+                                                   "ha_name": "front path motion", "name": "front path motion",
+                                                   "matched": False, "entities": []}}
+        old_node = {MOTION: dict(self.mapping[MOTION], ha_name="Old Motion")}
+        cases = [
+            ("the name is shared in HA", dict(more=twin), "'Front Path Motion' names 2 devices"),
+            ("HA still has the old node", dict(more=old_node),
+             f"Home Assistant still reports another device at {self.OLD}"),
+            ("the old address is still on air", dict(old_last=now + 150), f"{self.OLD}, which the entry lists, "
+                                                                          f"was heard after {self.NEW} began"),
+        ]
+        first = self.mapping
+        for what, case, why in cases:
+            with self.subTest(what):
+                for p in self.cfg.state_dir.glob("*.json"):
+                    p.unlink()
+                self.mapping = first
+                pipe = self._pipe()
+                self._cycle(pipe, now)
+                self._heard(pipe, case.get("old_last", now - 3600), now + 100)
+                err = io.StringIO()
+                with redirect_stderr(err):
+                    self._readd(pipe, now + 200, **case.get("more", {}))
+                self.assertEqual(self._changed(pipe), [])
+                self.assertIsNone(pipe.names.name(self.NEW))
+                self.assertNotIn("rotated_to", pipe.seen.table[self.OLD])
+                self.assertIn(f"{self.NEW} (HA node 132) is not taken for 'Front Path Motion' re-added: {why}",
+                              err.getvalue())
+
+    def test_a_re_added_device_under_a_name_no_entry_has_is_said_once_with_the_command(self):
+        import io
+        from contextlib import redirect_stderr
+        pipe = self._pipe()
+        now = 1_800_000_000.0
+        self._cycle(pipe, now)
+        self._heard(pipe, now - 3600, now + 100)
+        with redirect_stderr(io.StringIO()):
+            self._readd(pipe, now + 200, ha_name="Motion Sensor")
+            self._readd(pipe, now + 4000, ha_name="Motion Sensor")
+        unlisted = [r for r in pipe.events.records if r["event"] == "ha_device_unlisted"]
+        self.assertEqual([(r["addr"], r["ha_name"], r["node_id"], r["severity"]) for r in unlisted],
+                         [(self.NEW, "Motion Sensor", 132, "notice")])
+        self.assertIn(f'threadwatch name {self.NEW} "Motion Sensor"', unlisted[0]["note"])
+        self.assertEqual(self._changed(pipe), [])
+        self.assertIsNone(pipe.names.name(self.NEW))
+
     def test_off_or_replay_runs_nothing(self):
         from threadwatch.crypto import Decryptor
         from threadwatch.events import NullEventLog

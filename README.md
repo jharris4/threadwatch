@@ -191,6 +191,14 @@ Home Assistant is your Thread controller, `threadwatch import` fills
 devices.json from it and from the LAN's border routers, and
 credentials.toml too (docs/HOME-ASSISTANT.md).
 
+A device factory reset and re-added comes back as a new Matter node at a
+new address. With `[ha_availability]` on, the recorder matches it to its
+entry by its Home Assistant name, names the new address and retires the
+old one (`device_address_changed`, reason `readded`), with the `name`
+line that confirms it in devices.json. Give it its entry's name in Home
+Assistant as you add it: a device left under the vendor's default name
+matches no entry, and is reported as `ha_device_unlisted` instead.
+
 ### devices.json
 
 `config/devices.json` is a JSON list of entries, one per device

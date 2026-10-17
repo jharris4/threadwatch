@@ -440,6 +440,8 @@ class Pipeline:
         # early map refresh to say which device they are (_want_identity).
         self._identify: dict[str, dict] = {}
         self._identify_done: set[str] = set()
+        # Addresses ha_device_unlisted has been said for in this run.
+        self._unlisted_done: set[str] = set()
         if not ephemeral and cfg.ha_availability_enabled:
             self._init_ha_availability()
         self._last_auto_snapshot = 0.0 if ephemeral else self._last_auto_snapshot_on_disk()
@@ -2995,11 +2997,14 @@ class Pipeline:
         started = max(new_row.get("first_seen", 0.0), new_row.get("resumed_ts", 0.0))
         return old_row.get("last_seen", 0.0) > started
 
-    def _device_rotated(self, previous: str, addr: str, now: float, evidence: str) -> str | None:
+    def _device_rotated(self, previous: str, addr: str, now: float, evidence: str,
+                        reason: str = "rotation") -> str | None:
         """``addr`` is the device that was ``previous``. The new address
         takes the name (names.rotate: learned, and remembered in
         device-rotations.json), the old row is retired so it is not
         reported quiet, and the rotation is said once. Returns the name.
+        ``reason``: "rotation" (the device took a new address) or
+        "readded" (factory reset and re-added in Home Assistant).
 
         Retiring an address on a claim is what the mDNS path refuses to
         do without the radio's corroboration, because mDNS is anyone on
@@ -3022,11 +3027,13 @@ class Pipeline:
         if fresh:
             label = name or addr
             fix = f'threadwatch name {addr} "{name}"' if name else f'threadwatch name {addr} "<name>"'
+            why = ("a factory reset gives it one" if reason == "readded"
+                   else "a reboot after a firmware update can do this")
             self._emit("device_address_changed", "notice", now, addr=addr, name=name, previous=previous,
-                       evidence=evidence,
+                       evidence=evidence, reason=reason,
                        note=(f"{label} now answers to {addr}, was {previous}: {evidence}, so it is the same "
-                             f"device under a new extended address (a reboot after a firmware update can do "
-                             f"this). {previous} is retired, not reported quiet. "
+                             f"device under a new extended address ({why}). {previous} is retired, not "
+                             f"reported quiet. "
                              + (f"Named from its entry; confirm with: {fix}" if name
                                 else f"Not in devices.json: {fix}")))
         return name
@@ -4184,13 +4191,12 @@ class Pipeline:
                 if isinstance(result.get("map"), dict):
                     self._haavail_map_ts = now
                     self._identified(result["map"])
+                    self._reset_rejoins(result["map"], now)
                 self._haavail.apply(result, now)
                 for rot in self._haavail.rotations:
                     name = self._device_rotated(rot["previous"], rot["addr"], now,
                                                 "Home Assistant's Matter node diagnostics report the new address")
-                    info = self._haavail.mapping.get(rot["ha_device_id"])
-                    if info is not None and name and not info.get("matched"):
-                        info["name"] = name     # the tracker's label, without waiting for devices.json
+                    self._label_for_tracker(self._haavail.mapping.get(rot["ha_device_id"]), name)
                 self._haavail.rotations.clear()
             return
         early = self._identify_due(now)
@@ -4247,6 +4253,73 @@ class Pipeline:
             else:
                 w["due"] = now + self.IDENTIFY_RETRY_S
         return bool(due)
+
+    @staticmethod
+    def _label_for_tracker(info: dict | None, name: str | None) -> None:
+        """A name the recorder gave an address the map did not match: the
+        tracker's label, without waiting for devices.json."""
+        if info is not None and name and not info.get("matched"):
+            info["name"] = name
+
+    def _reset_rejoins(self, new_map: dict, now: float) -> None:
+        """A device factory reset and re-added in Home Assistant is a new
+        Matter node: a new HA device id at a new address, which the map
+        files as an unmatched add. Neither rotation path sees it: the SRP
+        service names carry the new node id, and the HA map's rotation
+        check follows one device id. It is matched here by its HA name to
+        the inventory entry of that name, as `import --write` matches it,
+        with that fallback's guards; each refusal is a line on stderr. A
+        match is a rotation from the entry's last-heard listed address
+        (_device_rotated: a learned binding, the old row retired, said
+        once). A device no entry is named like is said once per address
+        in this run, with the command that names it: HA may have kept the
+        vendor's default name through the re-add."""
+        items = {device_id: info for device_id, info in new_map.items() if isinstance(info, dict)}
+        sharing: dict[str, int] = {}
+        for info in items.values():
+            key = (info.get("ha_name") or "").strip().lower()
+            sharing[key] = sharing.get(key, 0) + 1
+        for device_id, info in items.items():
+            addr = (info.get("addr") or "").lower()
+            ha_name = (info.get("ha_name") or "").strip()
+            if info.get("matched") or not addr or not ha_name or addr in self.names.by_addr:
+                continue
+            node = info.get("node_id")
+            entry = self.names.entry_named(ha_name)
+            if entry is None:
+                if addr not in self._unlisted_done:
+                    self._unlisted_done.add(addr)
+                    fix = f'threadwatch name {addr} "{ha_name}"'
+                    self._emit("ha_device_unlisted", "notice", now, addr=addr, name=None, ha_name=ha_name,
+                               node_id=node, ha_device_id=device_id,
+                               note=(f"Home Assistant has a Matter node (node {node}) named {ha_name!r} at {addr}, "
+                                     f"and devices.json has no entry by that name or address: {fix} lists it "
+                                     f"under that name. A device re-added after a factory reset may have kept "
+                                     f"the vendor's name in Home Assistant: name it after its entry instead"))
+                continue
+            label = entry.get("name") or ha_name
+            listed = [a for a, e in self.names.by_addr.items() if e is entry and a not in self.names.learned]
+            refusal = None
+            if sharing[ha_name.lower()] > 1:
+                refusal = f"{ha_name!r} names {sharing[ha_name.lower()]} devices in Home Assistant"
+            elif held := [a for a in listed for other_id, other in items.items()
+                          if other_id != device_id and (other.get("addr") or "").lower() == a]:
+                refusal = f"Home Assistant still reports another device at {held[0]}, which the entry lists"
+            elif heard := [a for a in listed if self._heard_since_start(a, addr)]:
+                refusal = f"{heard[0]}, which the entry lists, was heard after {addr} began"
+            elif not listed:
+                refusal = "the entry lists no address to carry the name from"
+            if refusal:
+                print(f"[threadwatch] {addr} (HA node {node}) is not taken for {label!r} re-added: {refusal}",
+                      file=sys.stderr, flush=True)
+                continue
+            # The one heard last, else the first listed (max keeps the first of a tie).
+            previous = max(listed, key=lambda a: (self.seen.table.get(a) or {}).get("last_seen") or 0.0)
+            name = self._device_rotated(
+                previous, addr, now,
+                f"Home Assistant reports a new Matter node (node {node}) named {ha_name!r} at this address "
+                f"while {label}'s listed addresses are silent: a factory reset and re-add", reason="readded")
+            self._label_for_tracker(info, name)
 
     def _identified(self, new_map: dict) -> None:
         """Addresses the rebuilt map carries are known to Home Assistant:

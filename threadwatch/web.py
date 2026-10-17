@@ -153,9 +153,15 @@ LEGEND = [
     ("device_rotation", "Device took a new address",
      "A device came back under a new extended address (a reboot after a firmware update can do this) and "
      "registered the same Matter service names the old address held, or Home Assistant's node diagnostics "
-     "report the new address for it. The new address takes the device's name, the old one is retired "
-     "rather than reported quiet, and the row carries the threadwatch name command that confirms it in "
-     "devices.json. A notice, once per rotation."),
+     "report the new address for it. A device factory reset and re-added in Home Assistant under its "
+     "entry's name is the same (reason: readded). The new address takes the device's name, the old one "
+     "is retired rather than reported quiet, and the row carries the threadwatch name command that "
+     "confirms it in devices.json. A notice, once per rotation."),
+    ("ha_device_unlisted", "Home Assistant device not in devices.json",
+     "Home Assistant reports a Matter node at an address devices.json does not list, under a name no "
+     "entry has. Often a device re-added after a factory reset that kept the vendor's default name in "
+     "Home Assistant: rename it there, or run the threadwatch name command the row carries. A notice, "
+     "once per address per run."),
     ("ha_link", "Home Assistant unreachable / reachable",
      "The availability poll has failed for five minutes (Home Assistant down or restarting), or "
      "succeeds again. No device episode opens or closes meanwhile, and the first poll after is a "

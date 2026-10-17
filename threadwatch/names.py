@@ -167,6 +167,12 @@ def _entry_for_border_router(entries: list[dict], hostname: str) -> dict | None:
     return next((e for e in entries if str(e.get("borderRouter") or "").rstrip(".").lower() == want), None)
 
 
+def _entry_listing(entries: list[dict], addrs) -> dict | None:
+    """The first entry that lists any of ``addrs``."""
+    want = {_norm(str(a)) for a in addrs}
+    return next((e for e in entries if want & {_norm(str(x)) for x in entry_addresses(e)}), None)
+
+
 class AmbiguousName(ValueError):
     """A name fragment that matches several inventory names; `candidates`
     holds them, sorted, for whoever asks the user to pick."""
@@ -305,6 +311,24 @@ class DeviceNames:
         for a, rec in sorted(rotations.items(), key=lambda kv: kv[1].get("ts") or 0):
             entry = by_addr.get(_norm(str(rec.get("previous") or "")))
             if entry is not None and a not in by_addr:
+                by_addr[a] = entry
+                learned.add(a)
+        # Bindings this process holds that the files no longer anchor: a
+        # browse record carries the entry's name and a rotation its
+        # previous address, so renaming the entry, or taking the old
+        # address out of it before the new one was confirmed, left the
+        # device's live address unnamed on every load. Carried to the new
+        # entry of the same device, by a listed address it shares with the
+        # old one, else by the old one's name; an address the inventory
+        # has since been given keeps the inventory's word, as above.
+        for a in self.learned:
+            old = self.by_addr.get(a)
+            if a in by_addr or old is None:
+                continue
+            entry = _entry_listing(entries, entry_addresses(old))
+            if entry is None and old.get("name"):
+                entry = _entry_named(entries, str(old["name"]))
+            if entry is not None:
                 by_addr[a] = entry
                 learned.add(a)
         self.by_addr, self.entries, self.rotations = by_addr, entries, rotations

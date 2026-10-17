@@ -721,6 +721,36 @@ class ReloadTest(unittest.TestCase):
         self.assertEqual(names.learned, {self.D})
         self.assertEqual(names.entry_addresses_of(self.B), [self.B, self.A])
 
+    def test_a_reload_carries_a_learned_binding_the_files_no_longer_anchor(self):
+        """A browse record anchors the hub's new address by the entry's
+        name, a rotation record by the previous address. The edit that
+        triggers the reload can remove either: the binding is carried to
+        the entry of the same device, by a shared listed address first."""
+        self._write([{"name": "Living Room Hub", "extendedAddress": self.A},
+                     {"name": "Porch Sensor", "extendedAddress": self.C}])
+        learned = self.d / "border-routers.json"
+        learned.write_text(json.dumps({"hub.local": {"addr": self.D, "name": "Living Room Hub",
+                                                    "previous": [{"addr": self.A, "until": 1.0}]}}))
+        names = DeviceNames(self.inv, learned, self.d / "device-rotations.json")
+        names.rotate(self.B, self.C, "srp", 10.0)
+        self.assertEqual((names.name(self.D), names.name(self.B)), ("Living Room Hub", "Porch Sensor"))
+        # The hub renamed, the sensor's old address taken out before `name` confirmed the new one.
+        self._write([{"name": "Lounge Hub", "extendedAddress": self.A},
+                     {"name": "Porch Sensor"}])
+        self.assertTrue(names.reload())
+        self.assertEqual((names.name(self.D), names.name(self.B)), ("Lounge Hub", "Porch Sensor"))
+        self.assertEqual(names.learned, {self.D, self.B})
+        self.assertEqual(names.entry_addresses_of(self.B), [self.B])     # still the name, not membership
+        # The inventory's word wins: an address the file now gives to another
+        # entry carries its learned successor with it, and a learned address
+        # the file now lists is listed.
+        self._write([{"name": "Lounge Hub", "extendedAddress": self.A},
+                     {"name": "Porch Sensor"},
+                     {"name": "Shed Sensor", "extendedAddresses": [self.C, self.D]}])
+        self.assertTrue(names.reload())
+        self.assertEqual((names.name(self.D), names.name(self.B)), ("Shed Sensor", "Shed Sensor"))
+        self.assertEqual(names.learned, {self.B})
+
     def test_an_inventory_that_reads_empty_does_not_replace_a_loaded_one(self):
         self._write([{"name": "Porch Sensor", "extendedAddress": self.A}])
         names = DeviceNames(self.inv)

@@ -842,6 +842,65 @@ class RecorderAvailabilityTest(unittest.TestCase):
         self.assertIsNone(pipe.names.name("1111111111111111"))         # a hint, never a binding
         self.assertIsNone(pipe.names.name("2222222222222222"))
 
+    def test_a_new_address_for_the_same_ha_device_is_a_rotation_not_a_re_add(self):
+        import io
+        from contextlib import redirect_stderr
+        pipe = self._pipe()
+        now = 1_800_000_000.0
+        self._cycle(pipe, now)
+        self._heard(pipe, now - 3600, now + 100)
+        self.mapping = {MOTION: {"addr": self.NEW.upper(), "node_id": 7, "ha_name": "Front Path Motion",
+                                 "name": "Front Path Motion", "matched": False, "entities": ["binary_sensor.motion"]}}
+        pipe._haavail_map_ts = now - 7200
+        pipe._next_haavail = 0.0
+        with redirect_stderr(io.StringIO()):
+            self._cycle(pipe, now + 200)
+        self.assertEqual([(r["addr"], r["previous"], r["reason"]) for r in self._changed(pipe)],
+                         [(self.NEW, self.OLD, "rotation")])
+        self.assertEqual(pipe._haavail.mapping[MOTION]["name"], "Front Path Motion")
+
+    def test_a_learned_address_still_on_air_blocks_a_re_add(self):
+        """The device's current address is a learned rotation, never
+        confirmed in devices.json, and it talks on after the new node's
+        address began: two devices, and the learned one keeps its row."""
+        import io
+        from contextlib import redirect_stderr
+        learned, new = "0b0b0b0b0b0b0b0b", "0c0c0c0c0c0c0c0c"
+        pipe = self._pipe()
+        now = 1_800_000_000.0
+        self._cycle(pipe, now)
+        pipe.seen.touch(self.OLD, now - 7200, 1)
+        pipe.seen.touch(learned, now - 3600, 1)
+        pipe.names.rotate(learned, self.OLD, "a test", now - 3600)
+        pipe._retire_rotated(self.OLD, learned, "Front Path Motion", now - 3600)
+        pipe.seen.touch(new, now + 100, 1)
+        pipe.seen.touch(learned, now + 150, 1)
+        self.mapping = {self.READDED: {"addr": new.upper(), "node_id": 132, "ha_name": "Front Path Motion",
+                                       "name": "Front Path Motion", "matched": False, "entities": []}}
+        pipe._haavail_map_ts = now - 7200
+        pipe._next_haavail = 0.0
+        err = io.StringIO()
+        with redirect_stderr(err):
+            self._cycle(pipe, now + 200)
+        self.assertEqual(self._changed(pipe), [])
+        self.assertIsNone(pipe.names.name(new))
+        self.assertNotIn("rotated_to", pipe.seen.table[learned])
+        self.assertEqual(pipe.seen.table[self.OLD]["rotated_to"], learned)     # as the earlier rotation left it
+        self.assertIn(f"{learned}, which is the entry's, was heard after {new} began", err.getvalue())
+
+    def test_a_dead_old_node_the_map_carries_does_not_block_a_re_add(self):
+        import io
+        from contextlib import redirect_stderr
+        pipe = self._pipe()
+        now = 1_800_000_000.0
+        self._cycle(pipe, now)
+        self._heard(pipe, now - 3600, now + 100)
+        carried = {MOTION: dict(self.mapping[MOTION], ha_name="Front Path Motion", carried_since=now + 150)}
+        with redirect_stderr(io.StringIO()):
+            self._readd(pipe, now + 200, **carried)
+        self.assertEqual([(r["addr"], r["previous"], r["reason"]) for r in self._changed(pipe)],
+                         [(self.NEW, self.OLD, "readded")])
+
     def test_a_re_added_device_is_not_matched_past_the_import_guards(self):
         import io
         from contextlib import redirect_stderr
@@ -854,7 +913,7 @@ class RecorderAvailabilityTest(unittest.TestCase):
             ("the name is shared in HA", dict(more=twin), "'Front Path Motion' names 2 devices"),
             ("HA still has the old node", dict(more=old_node),
              f"Home Assistant still reports another device at {self.OLD}"),
-            ("the old address is still on air", dict(old_last=now + 150), f"{self.OLD}, which the entry lists, "
+            ("the old address is still on air", dict(old_last=now + 150), f"{self.OLD}, which is the entry's, "
                                                                           f"was heard after {self.NEW} began"),
         ]
         first = self.mapping

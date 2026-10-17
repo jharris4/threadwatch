@@ -4201,13 +4201,16 @@ class Pipeline:
                 if isinstance(result.get("map"), dict):
                     self._haavail_map_ts = now
                     self._identified(result["map"])
-                    self._reset_rejoins(result["map"], now)
                 self._haavail.apply(result, now)
                 for rot in self._haavail.rotations:
                     name = self._device_rotated(rot["previous"], rot["addr"], now,
                                                 "Home Assistant's Matter node diagnostics report the new address")
                     self._label_for_tracker(self._haavail.mapping.get(rot["ha_device_id"]), name)
                 self._haavail.rotations.clear()
+                if isinstance(result.get("map"), dict):
+                    # After the rotations: a device id whose address moved
+                    # has its new address named by now, and is left alone.
+                    self._reset_rejoins(result["map"], now)
             return
         early = self._identify_due(now)
         if now < self._next_haavail and not early:
@@ -4278,15 +4281,24 @@ class Pipeline:
         service names carry the new node id, and the HA map's rotation
         check follows one device id. It is matched here by its HA name to
         the inventory entry of that name, as `import --write` matches it,
-        with that fallback's guards; each refusal is a line on stderr. A
-        match is a rotation from the entry's last-heard listed address
-        (_device_rotated: a learned binding, the old row retired, said
-        once). A device no entry is named like is said once per address
-        in this run, with the command that names it: HA may have kept the
-        vendor's default name through the re-add."""
+        with that fallback's guards; each refusal is a line on stderr. The
+        entry's addresses are every one it answers to, learned ones too (an
+        unconfirmed rotation, an earlier re-add): one of them on air is the
+        device still there. A node the map carries unread (carried_since:
+        a dead node HA still lists) neither shares the name nor holds an
+        address; one that is unreadable but on air is still caught by the
+        silence test. A match is a rotation from the entry's last-heard
+        address (_device_rotated: a learned binding, the old row retired,
+        said once). Runs after the map's own rotations are applied, so a
+        device id whose address moved is a rotation, not a re-add. A device
+        no entry is named like is said once per address in this run, with
+        the command that names it: HA may have kept the vendor's default
+        name through the re-add. The name reaches the tracker's map, which
+        is new_map once apply took it."""
         items = {device_id: info for device_id, info in new_map.items() if isinstance(info, dict)}
+        read = {device_id: info for device_id, info in items.items() if info.get("carried_since") is None}
         sharing: dict[str, int] = {}
-        for info in items.values():
+        for info in read.values():
             key = (info.get("ha_name") or "").strip().lower()
             sharing[key] = sharing.get(key, 0) + 1
         for device_id, info in items.items():
@@ -4308,29 +4320,29 @@ class Pipeline:
                                      f"the vendor's name in Home Assistant: name it after its entry instead"))
                 continue
             label = entry.get("name") or ha_name
-            listed = [a for a, e in self.names.by_addr.items() if e is entry and a not in self.names.learned]
+            known = [a for a, e in self.names.by_addr.items() if e is entry]
             refusal = None
-            if sharing[ha_name.lower()] > 1:
+            if sharing.get(ha_name.lower(), 0) > 1:
                 refusal = f"{ha_name!r} names {sharing[ha_name.lower()]} devices in Home Assistant"
-            elif held := [a for a in listed for other_id, other in items.items()
+            elif held := [a for a in known for other_id, other in read.items()
                           if other_id != device_id and (other.get("addr") or "").lower() == a]:
-                refusal = f"Home Assistant still reports another device at {held[0]}, which the entry lists"
-            elif heard := [a for a in listed if self._heard_since_start(a, addr)]:
-                refusal = f"{heard[0]}, which the entry lists, was heard after {addr} began"
-            elif not listed:
-                refusal = "the entry lists no address to carry the name from"
+                refusal = f"Home Assistant still reports another device at {held[0]}, which is the entry's"
+            elif heard := [a for a in known if self._heard_since_start(a, addr)]:
+                refusal = f"{heard[0]}, which is the entry's, was heard after {addr} began"
+            elif not known:
+                refusal = "the entry has no address to carry the name from"
             if refusal:
                 print(f"[threadwatch] {addr} (HA node {node}) is not taken for {label!r} re-added: {refusal}",
                       file=sys.stderr, flush=True)
                 continue
-            # The one heard last, else the first listed (max keeps the first of a tie).
-            previous = max(listed, key=lambda a: (self.seen.table.get(a) or {}).get("last_seen") or 0.0)
+            # The one heard last, else the first (max keeps the first of a tie).
+            previous = max(known, key=lambda a: (self.seen.table.get(a) or {}).get("last_seen") or 0.0)
             name = self._device_rotated(
                 previous, addr, now,
                 f"Home Assistant reports a new Matter node (node {node}) named {ha_name!r} at this address "
-                f"while {label}'s listed addresses are silent: a factory reset and re-add", reason="readded",
+                f"while {label}'s known addresses are silent: a factory reset and re-add", reason="readded",
                 attempts=self._reset_attempts(addr, label))
-            self._label_for_tracker(info, name)
+            self._label_for_tracker(self._haavail.mapping.get(device_id), name)
 
     # How far before a re-added device's address was first heard the
     # unnamed addresses that joined are listed as its earlier attempts. A

@@ -578,10 +578,18 @@ so its service names and its Home Assistant device id are both new. A
 map refresh that finds a node no entry lists, at an address the recorder
 has no name for, matches it to the entry carrying its Home Assistant
 name, with the guards `import --write` uses: the name is unique in Home
-Assistant, no other node there holds an address the entry lists, and
-none of those addresses was heard after the new one began. The new
-address is then named and the entry's last-heard address retired, as for
-a rotation, with `reason` `readded` and evidence saying so. A reset
+Assistant, no other node there holds one of the entry's addresses, and
+none of those addresses was heard after the new one began. The entry's
+addresses are every one it answers to, the learned ones from an
+unconfirmed rotation or an earlier re-add included, since one of them
+still on air is the device still there. A node the map only carries
+over from an earlier refresh because it cannot be read now (a dead node
+Home Assistant still lists) counts toward neither of the first two; an
+unreadable node still on air is caught by the third. The check runs
+after the map's own rotations, so a device id whose address moved is a
+rotation, never a re-add. The new address is then named and the entry's
+last-heard address retired, as for a rotation, with `reason` `readded`
+and evidence saying so. A reset
 often takes several tries, each under a fresh address, and an abandoned
 one looks exactly like a visit; the record lists as `attempts` every
 address first heard in the hour before the new one that neither

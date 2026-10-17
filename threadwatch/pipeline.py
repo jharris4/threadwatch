@@ -5570,9 +5570,9 @@ class Pipeline:
 
         A file that now reads as no entries while the loaded one has some
         (a save caught mid-write, an edit that broke the JSON) is not taken:
-        its stamp is kept, so that is said once, and the next change is
-        read again. Not in a replay, which judges by the inventory it
-        started with."""
+        inventory_rejected, its stamp kept so that is said once, and the
+        next change is read again. Not in a replay, which judges by the
+        inventory it started with."""
         if self.ephemeral:
             return
         for kind, names, path in (("devices", self.names, self.names.inventory_path),
@@ -5585,12 +5585,10 @@ class Pipeline:
             try:
                 loaded = names.reload()
             except OSError as exc:
-                print(f"[threadwatch] {path.name} changed but could not be read ({exc}): the loaded "
-                      "one stands until it changes again", file=sys.stderr, flush=True)
+                self._reject_inventory(path, names, f"it could not be read ({exc})", now)
                 continue
             if not loaded:
-                print(f"[threadwatch] {path.name} changed and now reads as no entries: the "
-                      f"{len(names.entries)} loaded stand until it changes again", file=sys.stderr, flush=True)
+                self._reject_inventory(path, names, "it reads as no entries", now)
                 continue
             after = _listed(names)
             gained = {n: sorted(after[n] - before.get(n, set())) for n in sorted(after)
@@ -5607,6 +5605,17 @@ class Pipeline:
                        addresses=addresses, gained=gained, lost=lost,
                        note=(f"{path.name} changed and was read again: {len(names.entries)} entries, "
                              f"{addresses} addresses; " + (moved or "no address added or removed")))
+
+    def _reject_inventory(self, path: Path, names, why: str, now: float) -> None:
+        """The loaded inventory stands over a file that cannot replace it.
+        A notice, not a journal line alone: the web pages read the file on
+        every request and show every device unknown while the recorder
+        goes on judging the ones it has, and the day page must say that
+        the two disagree, and since when."""
+        self._emit("inventory_rejected", "notice", now, file=path.name, entries=len(names.entries), reason=why,
+                   note=(f"{path.name} changed but {why}: the {len(names.entries)} entries loaded stand until "
+                         f"it changes again. The web pages read the file as it is, so they disagree with the "
+                         f"recorder until it is fixed (threadwatch doctor checks it)."))
 
     # An address not in the inventory heard for less than this before its
     # silence is a visit, not a failure. Phones and tablets with a Thread

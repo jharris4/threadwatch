@@ -236,7 +236,8 @@ address already listed under another name, which is an edit for you to
 make. The recorder reads the file again within a minute of any change
 (`name`, `hold`, `mute`, `import --write`, a hand edit), with no restart,
 and logs `inventory_reloaded` when it does; a save that reads as no
-entries at all is not taken over the inventory it has.
+entries at all is not taken over the inventory it has, and
+`inventory_rejected` says so.
 
 `config/devices.json.lock` appears beside it. It is an empty file
 `name` and `import` hold with flock so two edits queue instead of one

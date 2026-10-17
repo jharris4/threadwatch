@@ -6595,11 +6595,15 @@ class InventoryReloadTest(unittest.TestCase):
             pipe.periodic(t)
         self.assertEqual(pipe.names.name(self.OLD), "Hall Sensor")
         self.assertIn("not valid JSON", err.getvalue())
-        self.assertIn("devices.json changed and now reads as no entries: the 1 loaded stand", err.getvalue())
         self.assertEqual(self._reloads(pipe), [])
+        rejected = [r for r in pipe.events.records if r["event"] == "inventory_rejected"]
+        self.assertEqual([(r["file"], r["entries"], r["reason"], r["severity"]) for r in rejected],
+                         [("devices.json", 1, "it reads as no entries", "notice")])
+        self.assertIn("the 1 entries loaded stand until it changes again", rejected[0]["note"])
         with contextlib.redirect_stderr(io.StringIO()) as err:
             pipe.periodic(t + 30)
         self.assertEqual(err.getvalue(), "")                            # the same stamp: not read again
+        self.assertEqual(len([r for r in pipe.events.records if r["event"] == "inventory_rejected"]), 1)
         self._edit(self.inv, [{"name": "Hall Sensor", "extendedAddresses": [self.OLD, self.NEW]}])
         pipe.periodic(t + 60)
         self.assertEqual(pipe.names.name(self.NEW), "Hall Sensor")

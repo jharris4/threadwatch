@@ -169,6 +169,11 @@ LEGEND = [
      "edit) and the recorder read it again, without a restart: from here on names, holds and mutes are "
      "the new file's. The row lists the entries that gained or lost addresses; an address an entry gained "
      "retires the older ones it lists within the same pass. Info, logged only."),
+    ("inventory_rejected", "Inventory change not taken",
+     "devices.json or visitors.json changed but could not replace the inventory the recorder has: it could "
+     "not be read, or it reads as no entries (a save caught mid-write, an edit that broke the JSON, or the "
+     "file emptied). The loaded entries stand until the file changes again, while the web pages show the "
+     "file as it is; fix it (threadwatch doctor names the line) and the recorder reads it again."),
     ("ha_link", "Home Assistant unreachable / reachable",
      "The availability poll has failed for five minutes (Home Assistant down or restarting), or "
      "succeeds again. No device episode opens or closes meanwhile, and the first poll after is a "

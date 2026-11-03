@@ -29,6 +29,25 @@ def journal_line(ts: float, text: str, unit: str = "app_core_openthread_border_r
     return f"{time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(ts))}.{ms:03d} homeassistant {unit}[697]: {text}\n"
 
 
+class JournalStampTest(unittest.TestCase):
+    TS = 1_757_800_800.25       # 2025-09-13 22:00:00.250 UTC
+
+    def stamp(self, prefix: str) -> float | None:
+        return halogs.journal_stamp(f"{prefix} homeassistant app_core_matter_server[680]: text\n")
+
+    def test_a_prefix_without_an_offset_is_utc(self):
+        self.assertEqual(self.stamp("2025-09-13 22:00:00.250"), self.TS)
+
+    def test_a_prefix_with_an_offset_is_converted_either_side_of_utc(self):
+        self.assertEqual(self.stamp("2025-09-13 18:00:00.250-04:00"), self.TS)
+        self.assertEqual(self.stamp("2025-09-13 17:00:00.250-05:00"), self.TS)
+        self.assertEqual(self.stamp("2025-09-14 03:30:00.250+05:30"), self.TS)
+
+    def test_a_line_without_a_prefix_has_no_stamp(self):
+        self.assertIsNone(halogs.journal_stamp("    a continuation line\n"))
+        self.assertIsNone(self.stamp("2025-13-45 18:00:00.250-04:00"))
+
+
 class FakeSupervisor:
     """GET /api/hassio/addons/<slug>/logs?verbose with Range: realtime=a:b
     (or entries=:-N:N). ``lines`` is [(ts, text)] per slug; ``status``

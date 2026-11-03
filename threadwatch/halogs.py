@@ -56,9 +56,11 @@ PART_SUFFIX = ".part"
 # have had the window yet. Each retry asks for the same window; the
 # journal returns whatever it still holds.
 RETRY_AFTER_S = (15 * 60, 60 * 60, 4 * 60 * 60)
-# The journal prefix ?verbose puts before each line, UTC:
+# The journal prefix ?verbose puts before each line, with its UTC offset, or
+# UTC when it has none:
+#   2026-09-13 18:09:43.197-04:00 homeassistant app_core_openthread_border_router[697]: 4d.06:59:10.452 [I] ...
 #   2026-09-13 22:09:43.197 homeassistant app_core_openthread_border_router[697]: 4d.06:59:10.452 [I] ...
-JOURNAL_PREFIX = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3}) (\S+) ([^\[]+)\[(\d+)\]: ")
+JOURNAL_PREFIX = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3})([+-]\d\d:\d\d)? (\S+) ([^\[]+)\[(\d+)\]: ")
 DEFAULT_READ_TIMEOUT_S = 30.0
 DEFAULT_DEADLINE_S = 900.0
 PROGRESS_EVERY_S = 5.0
@@ -70,11 +72,15 @@ def journal_stamp(line: str) -> float | None:
     m = JOURNAL_PREFIX.match(line)
     if not m:
         return None
-    stamp = m.group(1)
+    stamp, offset = m.group(1, 2)
     try:
-        return calendar.timegm(time.strptime(stamp[:19], "%Y-%m-%d %H:%M:%S")) + int(stamp[20:23]) / 1000.0
+        ts = calendar.timegm(time.strptime(stamp[:19], "%Y-%m-%d %H:%M:%S")) + int(stamp[20:23]) / 1000.0
     except ValueError:
         return None
+    if offset:
+        seconds = int(offset[1:3]) * 3600 + int(offset[4:6]) * 60
+        ts += seconds if offset[0] == "-" else -seconds
+    return ts
 
 
 def secret_forms(network_key: bytes | None = None, token: str | None = None, extra=()) -> tuple[str, ...]:

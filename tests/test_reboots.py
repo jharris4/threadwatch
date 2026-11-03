@@ -70,6 +70,17 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(result["first_seen"], {str(SENSOR): T0 + 100, str(BUTTON): T0 + 3700})
         self.assertEqual(result["hours"], [hour_name(T0 + i * 3600) for i in range(3)])
 
+    def test_scan_reads_a_journal_prefix_with_an_offset(self):
+        local = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(T0 - 5 * 3600))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            d = root / reboots.SLUG
+            d.mkdir()
+            with gzip.open(d / f"{hour_name(T0)}.log.gz", "wt") as fh:
+                fh.write(f"{local}.000-05:00 homeassistant {UNIT}[680]: {boot_text(BUTTON, 3)}\n")
+            result = reboots.scan(root)
+        self.assertEqual(result["boots"], [[T0, BUTTON, 3]])
+
     def test_a_repeated_startup_is_one_reboot_and_a_shared_one_is_a_crowd(self):
         boots = reboots.distinct([[T0, BUTTON, 1], [T0 + 0.01, BUTTON, 1], [T0 + 30, BUTTON, 1],
                                   [T0 + 5000, 1, 1], [T0 + 5060, 2, 1], [T0 + 5200, 3, 1]])

@@ -11,6 +11,21 @@ sleepy-device starvation — not one failure mode. It grew out of a real
 incident (see docs/ANALYSIS.md) but is built to answer the general
 question: *why did this device go offline?*
 
+## What it looks like
+
+Sample data, not a real network: the real pages rendered from a made-up
+household by `bin/sample-screenshots.py`.
+
+A day: what is wrong right now, whether the recorder was listening, and
+every episode, newest first.
+
+![The day page: current problems, a coverage bar, and the day's episodes](docs/images/threadwatch-today.png)
+
+Every device: its live role and parent, key generation, Home Assistant
+availability and signal.
+
+![The devices page: one row per address, with a device cut off two key generations behind](docs/images/threadwatch-devices.png)
+
 ## What it does
 
 - **Continuous capture** on your Thread channel into hourly pcap files,
@@ -359,7 +374,8 @@ default in them is checked against `--help` and the source).
                    "threadwatch local change", covered by tests/test_record.py)
     firmware/      sniffer firmware hex + prebuilt DFU package
     bin/           threadwatch CLI shim, flash-dongle.sh, setup-host.sh (host install),
-                   push-to-host.sh (deploy a checkout to the recorder)
+                   push-to-host.sh (deploy a checkout to the recorder),
+                   sample-screenshots.py (the images in this README)
     systemd/       service unit templates (record, web review)
     Dockerfile, compose.yaml   the container alternative (docs/DOCKER.md)
     config/        examples for config.toml, devices.json, alerts.env, ha.env

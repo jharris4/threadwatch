@@ -835,6 +835,16 @@ class KeysPageTest(unittest.TestCase):
         self.assertIn(f'<tr><td>{stamp(hall_boot + 624 * hour)}</td><td><a href="/device/Porch%20Sensor">Porch Sensor'
                       f'</a></td><td class="n">4</td><td>{hall}</td><td class="n">6</td></tr>', body)
 
+    def test_a_sleepy_child_whose_parent_the_forecast_lacks_is_listed(self):
+        now = time.time()
+        records = [self.moved(self.PORCH, now - 31 * 86400, None, 4), self.booted(self.PORCH, now - 30 * 86400),
+                   self.moved(self.GARDEN, now - 31 * 86400, None, 5), self.booted(self.GARDEN, now - 20 * 86400)]
+        with tempfile.TemporaryDirectory() as tmp:
+            body = self.site(Path(tmp), records).respond("/keys")[2].decode()      # nothing on record for its parent
+        self.assertIn('Porch Sensor</a>: a sleepy child of Hall Air Monitor, which has no key on record, so nothing '
+                      'is judged against a parent', body)
+        self.assertNotIn('Garden Plug</a>: a sleepy child', body)
+
     def test_a_boot_range_shows_only_when_its_ends_read_differently(self):
         now = time.time()
         hall_boot, garden_boot = int(now - 10 * 86400) + 0.6, now - 30 * 86400

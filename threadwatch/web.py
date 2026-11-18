@@ -1273,7 +1273,10 @@ class Site:
         and rotation timer, and what it cannot forecast. Parents and who is
         sleepy (a child that polls) come from the recorder's device rows; a
         device they give no role or parent is listed, since keylog takes it
-        for a router. A switch at the start itself is shown as due now."""
+        for a router, and so is a sleepy child whose parent the forecast
+        does not have (not in the inventory, or no key on record): it hears
+        nobody, so it never shows as two behind. A switch at the start
+        itself is shown as due now."""
         from . import keyforecast as kf
         from . import keylog
         from .haavail import load_map
@@ -1295,6 +1298,11 @@ class Site:
                               links, otbr=otbr)
         fc = kf.forecast(devs, now)
         dev = {d.name: d for d in devs}
+        for n, (parent, sleepy) in links.items():      # a sleepy child hears its parent only
+            if sleepy and parent is not None and (parent not in fc.guards or fc.guards[parent].key is None):
+                unplaced[n] = (f'a sleepy child of {esc(parent)}, which '
+                               + ("is not in devices.json" if parent not in fc.guards else "has no key on record")
+                               + ', so nothing is judged against a parent')
 
         def stamp(ts):
             return time.strftime("%m-%d %H:%M:%S", time.localtime(ts)) if ts is not None else "-"

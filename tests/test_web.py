@@ -807,6 +807,9 @@ class KeysPageTest(unittest.TestCase):
         self.assertEqual(order, sorted(order))      # open, then by opening time, then unknown
         self.assertIn(f'closed <span class="muted">until {stamp(now - day + 624 * hour)}</span>', table)
         self.assertIn(f'{stamp(first)} <span class="muted">and {stamp(second)}</span>', table)
+        # Reasons only where confidence is not normal.
+        self.assertEqual(table.count('<td>normal</td></tr>'), 4)
+        self.assertIn('<td>none<br><span class="muted">stack unknown', table)
 
     def test_the_otbr_line_names_a_device_or_the_page_says_so(self):
         with tempfile.TemporaryDirectory() as tmp:

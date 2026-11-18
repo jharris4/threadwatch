@@ -1351,7 +1351,8 @@ class Site:
                        f'<td class="t">{stamp(boot.ts) if boot else "-"}'
                        + (f'<small>range {stamp(boot.lo)} to {stamp(boot.hi)}</small>' if boot and boot.hi > boot.lo
                           else "") + f'</td><td>{guard}</td><td class="t">{rotation}</td>'
-                       f'<td>{esc(g.confidence)}<br><span class="muted">{esc("; ".join(g.reasons))}</span></td></tr>')
+                       f'<td>{esc(g.confidence)}' + ("" if g.confidence == "normal" else
+                       f'<br><span class="muted">{esc("; ".join(g.reasons))}</span>') + '</td></tr>')
         table = ('<table><tr><th>device</th><th>key</th><th>stack</th><th>last boot</th><th>guard</th>'
                  f'<th>own rotation</th><th>confidence</th></tr>{"".join(trs)}</table>')
         unknown = "".join(f'<li>{link(n)} <span class="muted">' + esc(

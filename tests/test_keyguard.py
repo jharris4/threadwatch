@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import tests  # noqa: F401  (the mDNS guard, installed on a direct run too: tests/no_lan)
 from threadwatch import keyguard
-from threadwatch.keyguard import GUARD_S, HOUR, ROTATION_S, Boot, Switch, derive
+from threadwatch.keyguard import GUARD_S, HOUR, ROTATION_S, Boot, Switch, after, derive
 
 CURRENT = ("current", "reported", "Bulb A19 5.1.45")
 OLD = ("old", "reported", "Air Monitor 2000 1.0.26")
@@ -218,6 +218,87 @@ class ConfidenceTest(unittest.TestCase):
         # A lock's range, and two real boots most of an hour apart, stay as they are.
         lock, later = Boot(T, latest=T + 360), Boot(T + 2400)
         self.assertEqual(keyguard.one_per_boot([later, lock]), [lock, later])
+
+
+class AfterTest(unittest.TestCase):
+    """after(): one more event taken exactly, for the forecast's simulated
+    boots and switches. The margin and the slack are for recorded stamps."""
+
+    def test_a_neighbours_key_a_minute_before_the_672_h_mark_is_not_the_units_own_firing(self):
+        start = derive(OLD, [Boot(T)], [first()])
+        s = Switch(T + ROTATION_S - 60, 90, 91)
+        # Recorded, the stamp could be the unit's own firing seen early: next at 673 h.
+        self.assertEqual(derive(OLD, [Boot(T)], [first(), s]).rotation_at, T + ROTATION_S + HOUR)
+        # Simulated, it is known to be a neighbour's: flag set, timer running, so the unit fires at 672 h.
+        g = after(start, s)
+        self.assertEqual((g.key, g.flag, g.flag_set_by, g.timer_start, g.fired), (91, True, s, T, False))
+        self.assertEqual((g.guard, g.guard_open_at, g.rotation_at, g.second_rotation_at),
+                         ("until", T + GUARD_S, T + ROTATION_S, None))
+
+    def test_an_own_firing_with_the_flag_clear_fires_again_an_hour_later_then_restarts(self):
+        start = derive(OLD, [Boot(T)], [first()])
+        self.assertEqual((start.rotation_at, start.second_rotation_at), (T + ROTATION_S, T + ROTATION_S + HOUR))
+        once = after(start, Switch(T + ROTATION_S, 90, 91), own=True)
+        self.assertEqual((once.flag, once.timer_start, once.fired, once.rotation_at, once.second_rotation_at),
+                         (True, T, True, T + ROTATION_S + HOUR, None))
+        self.assertNotIn(keyguard.SECOND, once.reasons)
+        twice = after(once, Switch(once.rotation_at, 91, 92), own=True)
+        self.assertEqual((twice.timer_start, twice.fired, twice.rotation_at, twice.guard_open_at),
+                         (once.rotation_at, False, once.rotation_at + ROTATION_S, once.rotation_at + GUARD_S))
+
+    def test_a_simulated_boot_is_exact(self):
+        s = Switch(T + 5 * DAY - 300, 90, 91)
+        for stack in (CURRENT, OLD):
+            with self.subTest(stack=stack[0]):
+                start = derive(stack, [Boot(T)], [first()])
+                # Recorded, a +1 five minutes before a boot stamp counts as taken at that boot.
+                self.assertTrue(derive(stack, [Boot(T), Boot(T + 5 * DAY)], [first(), s]).flag)
+                # Simulated, it came before the boot, and the boot cleared it.
+                g = after(after(start, s), Boot(T + 5 * DAY))
+                self.assertEqual((g.key, g.flag, g.guard, g.boot), (91, False, "open", Boot(T + 5 * DAY)))
+                self.assertEqual((g.timer_start, g.rotation_at, g.fired),
+                                 (T + 5 * DAY, T + 5 * DAY + ROTATION_S, False))
+                self.assertEqual(g.second_rotation_at, T + 5 * DAY + ROTATION_S + HOUR if stack is OLD else None)
+
+    def test_it_follows_the_same_rules_as_derive(self):
+        events = [Switch(T + DAY, 90, 91), Switch(T + GUARD_S + 2 * DAY, 91, 92), Switch(T + GUARD_S + 3 * DAY, 92, 94),
+                  Boot(T + GUARD_S + 9 * DAY), Switch(T + GUARD_S + 12 * DAY, 94, 95)]
+        fields = ("key", "boot", "flag", "flag_set_by", "timer_start", "timer_set_by", "guard", "guard_open_at",
+                  "rotation_at", "second_rotation_at", "fired")
+        for stack in (CURRENT, OLD):
+            g = derive(stack, [Boot(T)], [first()])
+            for i, e in enumerate(events):
+                with self.subTest(stack=stack[0], event=i):
+                    g = after(g, e)
+                    whole = derive(stack, [Boot(T)] + [x for x in events[:i + 1] if isinstance(x, Boot)],
+                                   [first()] + [x for x in events[:i + 1] if isinstance(x, Switch)])
+                    self.assertEqual([getattr(g, f) for f in fields], [getattr(whole, f) for f in fields])
+
+    def test_the_current_logic_arms_on_a_plus_one_and_restarts_on_any_switch(self):
+        start = derive(CURRENT, [Boot(T)], [first()])
+        one = Switch(T + DAY, 90, 91)
+        g = after(start, one)
+        self.assertEqual((g.guard_open_at, g.rotation_at), (one.ts + GUARD_S, one.ts + ROTATION_S))
+        forced = Switch(T + 2 * DAY, 91, 92)              # past the armed guard: the state after it is still known
+        g = after(g, forced)
+        self.assertEqual((g.flag_set_by, g.guard_open_at, g.rotation_at, g.misses),
+                         (forced, forced.ts + GUARD_S, forced.ts + ROTATION_S, ()))
+        jump = Switch(T + 3 * DAY, 92, 94)
+        g = after(g, jump)
+        self.assertEqual((g.flag_set_by, g.guard_open_at, g.rotation_at),
+                         (forced, forced.ts + GUARD_S, jump.ts + ROTATION_S))
+
+    def test_an_unknown_stack_only_changes_key(self):
+        start = derive(("unknown", None, "not listed"), [], [first()])
+        g = after(after(start, Boot(T)), Switch(T + DAY, 90, 92))
+        self.assertEqual((g.key, g.boot, g.guard, g.rotation_at, g.confidence), (92, None, "unknown", None, "none"))
+
+    def test_confidence_reasons_and_misses_stay_those_of_the_record(self):
+        start = derive(("old", "assumed", "Plug Outdoor 1.4.8"), [Boot(T)], [first(), Switch(T + DAY, 90, 91),
+                                                                           Switch(T + 2 * DAY, 91, 92)])
+        g = after(start, Switch(T + 30 * DAY, 92, 93))
+        self.assertEqual((g.confidence, g.reasons, g.misses), (start.confidence, start.reasons, start.misses))
+        self.assertEqual(len(g.misses), 1)
 
 
 if __name__ == "__main__":

@@ -28,11 +28,13 @@ flag and one timer:
 
 Times are first observations, and a boot stamp can run late, so a switch
 up to BOOT_MARGIN_S before a boot stamp counts as taken at that boot.
+That margin and STAMP_SLACK_S are for recorded stamps only: after() takes
+one more event exactly as given, for the forecast's simulated ones.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .journal import BOOT_MARGIN_S
 
@@ -101,6 +103,7 @@ class Guard:
     confidence: str                    # "normal", "low" or "none"
     reasons: tuple[str, ...]
     misses: tuple[tuple[Switch, str], ...]   # recorded +1 switches the rules had the guard refuse
+    fired: bool = False                # old logic: its 672 h firing was taken with the flag clear, so 673 h is next
 
 
 def one_per_boot(boots) -> list[Boot]:
@@ -162,21 +165,54 @@ def derive(stack: tuple[str, str | None, str], boots, switches) -> Guard:
             if flag is False and (boot.lo < boot.hi and e.ts <= boot.hi
                                   or e.unheard_from is not None and e.unheard_from < boot.hi):
                 doubts.append(f"boot and switch order ambiguous: the switch to {e.new} may have come before the boot")
-        if kind == "current":
-            if e.jump == 1:
-                flag, flag_by = True, e
-            timer, timer_by = at, e
-        elif flag:
-            timer, timer_by, fired = at, e, False
-        else:
-            fired = timer is not None and e.ts >= timer + ROTATION_S - STAMP_SLACK_S
-            flag, flag_by = True, e
+        flag, flag_by, timer, timer_by, fired = _take(kind, e, at, (flag, flag_by, timer, timer_by, fired))
+    reasons = [RULES[kind], f"{KNOWN[known]}: {why}"] + ([NO_BOOT] if boot is None else []) + doubts
+    low = known == "assumed" or boot is None or bool(doubts)
+    return _guard(kind, key, boot, (flag, flag_by, timer, timer_by, fired), "low" if low else "normal",
+                  reasons, tuple(misses))
+
+
+def _take(kind: str, e: Switch, at: float, state: tuple, own: bool | None = None) -> tuple:
+    """The rules for one switch up that the logic acts on (any on the
+    current logic, a +1 on the old), applied to (flag, flag_by, timer,
+    timer_by, fired). ``own`` says whether it is the device's own rotation
+    firing; None for a recorded switch, where a flag-clear +1 from
+    STAMP_SLACK_S before the 672 h mark on is read as one."""
+    flag, flag_by, timer, timer_by, fired = state
+    if kind == "current":
+        return (True, e, at, e, False) if e.jump == 1 else (flag, flag_by, at, e, False)
+    if flag:
+        return flag, flag_by, at, e, False
+    if own is None:
+        own = timer is not None and e.ts >= timer + ROTATION_S - STAMP_SLACK_S
+    return True, e, timer, timer_by, own
+
+
+def _guard(kind: str, key, boot, state: tuple, confidence: str, reasons, misses: tuple) -> Guard:
+    flag, flag_by, timer, timer_by, fired = state
     opens = _opens(kind, flag, flag_by, timer)
     rotation = None if timer is None else timer + ROTATION_S + (HOUR if fired else 0)
     second = rotation + HOUR if kind == "old" and flag is False else None
-    reasons = [RULES[kind], f"{KNOWN[known]}: {why}"] + ([NO_BOOT] if boot is None else []) + doubts
-    low = known == "assumed" or boot is None or bool(doubts)
     return Guard(kind, key, boot, flag, flag_by, timer, timer_by,
                  "until" if opens is not None else "open" if flag is False else "unknown", opens,
-                 rotation, second, "low" if low else "normal",
-                 tuple(reasons + ([SECOND] if second is not None else [])), tuple(misses))
+                 rotation, second, confidence,
+                 tuple(r for r in reasons if r != SECOND) + ((SECOND,) if second is not None else ()), misses, fired)
+
+
+def after(g: Guard, event: Boot | Switch, own: bool = False) -> Guard:
+    """``g`` one event later, the event taken exactly as given. A simulated
+    boot or switch has no late stamp, so neither BOOT_MARGIN_S nor
+    STAMP_SLACK_S applies: a switch a minute before a boot came before it,
+    and ``own`` says outright whether a switch is the device's own rotation
+    firing. An unknown stack only changes key. Confidence, reasons and
+    misses stay those of the recorded history ``g`` was derived from."""
+    if isinstance(event, Boot):
+        if g.stack not in RULES:
+            return g
+        return _guard(g.stack, g.key, event, (False, None, event.ts, event, False), g.confidence, g.reasons, g.misses)
+    if g.stack not in RULES:
+        return replace(g, key=event.new)
+    state = (g.flag, g.flag_set_by, g.timer_start, g.timer_set_by, g.fired)
+    if event.jump >= 1 and (event.jump == 1 or g.stack == "current"):
+        state = _take(g.stack, event, event.ts, state, own)
+    return _guard(g.stack, event.new, g.boot, state, g.confidence, g.reasons, g.misses)

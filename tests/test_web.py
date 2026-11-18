@@ -415,6 +415,35 @@ class PageBranchTest(unittest.TestCase):
         self.assertIn(f'<tr><td><a href="/device/{AQ}">Office AQ</a></td><td><span class="bad">cut off</span></td>'
                       f'<td>84</td><td><a href="/device/{TV2}">Living Room Apple TV</a></td><td>86</td></tr>', status)
 
+    def test_the_device_page_lists_each_key_across_every_address_newest_first(self):
+        t0 = self.now - 90000
+
+        def span(seq, first, last):
+            return {"sequence": seq, "first_ts": t0 + first, "last_ts": t0 + last, "count": 1, "retries": 0}
+
+        def stamp(offset):
+            return time.strftime('%m-%d %H:%M:%S', time.localtime(t0 + offset))
+
+        base = {"first_seen": t0, "frames": 10, "rssi": -55.0, "pan": 0x4e21, "types": {}}
+        self.seen({
+            # The old address: the first key on record, so "by".
+            TV1: dict(base, last_seen=t0 + 1000, key_facts={"version": 1, "mac": {"accepted": [span(90, 0, 1000)]}}),
+            # The live address: 91 heard 50 s after 90's last frame, its MAC and
+            # MLE spans merged; 92 first heard 301 s after 91's last, so "by".
+            TV2: dict(base, last_seen=t0 + 9000, key_facts={"version": 1,
+                      "mac": {"accepted": [span(91, 1100, 5000), span(92, 5501, 9000)]},
+                      "mle": {"accepted": [span(91, 1050, 5200)]}}),
+        })
+        _st, page = self.get(f"/device/{TV2}")
+        self.assertIn(f'keys: 92 by {stamp(5501)} &middot; 91 from {stamp(1050)} to {stamp(5200)} '
+                      f'&middot; 90 by {stamp(0)} to {stamp(1000)}', page)
+        # 300 s is still close enough to call it the switch.
+        from threadwatch.web import Site
+        self.assertEqual(Site.key_history_html([{"key_facts": {"version": 1, "mac": {"accepted": [
+            span(91, 0, 100), span(92, 400, 500)]}}}]),
+            f'92 since {stamp(400)} &middot; 91 by {stamp(0)} to {stamp(100)}')
+        self.assertEqual(Site.key_history_html([{}]), "")
+
     def test_one_child_on_a_newer_key_does_not_put_the_routers_behind(self):
         # 2026-09-28: a child advanced to 89 by itself; with the routers
         # judged against 89, every router on 87 read as cut off.

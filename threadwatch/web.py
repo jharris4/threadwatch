@@ -16,6 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
+from . import keyfacts
 from .events import DAY_RE, day_bounds, day_of, next_day, prev_day
 from .names import AmbiguousName, DeviceNames, LastSeen, VisitorNames, key_standing, load_names, load_visitor_names
 from .review import (
@@ -47,6 +48,10 @@ from .review import (
 )
 
 REFRESH_S = 60   # today's page reloads itself this often
+# A key switch is "since" when the old key's last accepted frame is at most
+# this long before the new key's first; every switch checked on 11-17 was
+# within 130 s. A longer gap may be the recorder not hearing the device.
+SWITCH_GAP_S = 300
 
 CSS = """
 :root{--bg:#fff;--fg:#1c1c1e;--muted:#6b6b70;--line:#e3e3e6;--card:#f6f6f8;
@@ -505,6 +510,36 @@ class Site:
         return esc('; '.join(parts))
 
     @staticmethod
+    def key_history_html(rows: list[dict]) -> str:
+        """Each key the device has been on, newest first, from the accepted
+        MAC and MLE spans of every address it has used, merged per key:
+        '92 since 11-17 01:44:09 · 91 from 11-03 05:45:11 to 11-17 01:43:40'.
+        A switch reads 'since' (or 'from') only when the old key's last frame
+        is at most SWITCH_GAP_S before the new key's first; otherwise 'by',
+        because the recorder may not have heard the device in between. The
+        first key on record is always 'by'. Empty when nothing is on record."""
+        spans = {}
+        for row in rows:
+            state = keyfacts.facts(row)
+            for layer, _ in keyfacts.LAYERS:
+                for s in state[layer]["accepted"]:
+                    first, last = spans.get(s["sequence"], (s["first_ts"], s["last_ts"]))
+                    spans[s["sequence"]] = (min(first, s["first_ts"]), max(last, s["last_ts"]))
+        order = sorted(spans.items(), key=lambda item: item[1][0])
+
+        def stamp(ts):
+            return time.strftime('%m-%d %H:%M:%S', time.localtime(ts))
+
+        parts = []
+        for i, (seq, (first, last)) in enumerate(order):
+            switched = i > 0 and order[i - 1][1][1] >= first - SWITCH_GAP_S
+            if i == len(order) - 1:
+                parts.append(f'{seq} {"since" if switched else "by"} {stamp(first)}')
+            else:
+                parts.append(f'{seq} {"from" if switched else "by"} {stamp(first)} to {stamp(last)}')
+        return " &middot; ".join(reversed(parts))
+
+    @staticmethod
     def role_html(r: dict, now: float) -> str:
         """'leader · router 60', 'router 33', 'child of Mudroom Air Quality',
         each with its RLOC16 and how long ago the recorder last saw it in
@@ -939,6 +974,9 @@ class Site:
             breakdown = self.key_facts_html(live.get("key_sequences") or {})
             if breakdown:
                 head.append(f'sequence observations: <span class="muted">{breakdown}</span>')
+        history = self.key_history_html([seen.table[a] for a in addrs if a in seen.table])
+        if history:
+            head.append(f'keys: {history}')
         if live and live.get("border_router_label"):
             head.append(f'border router {esc(live["border_router_label"])}, '
                         f'hostname <code>{esc(live["border_router"])}</code>'

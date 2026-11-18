@@ -960,12 +960,19 @@ one the forecast has tested as a hypothetical boot:
   unit ahead of its parent at the time is never named: a reboot does not
   take a key back.
 
-The search tries a boot every 6 h from now to the stranding and finds each
-window's edges to the minute, a few hundred forecasts, on a worker thread
-and only when the journal or the parents have changed.
+The search tries a boot every 6 h from now to the stranding and either side
+of every switch in the forecast (where a window starts or ends), and finds
+each window's edges to the minute: a few hundred forecasts, on a worker
+thread, redone when the journal, the parents or the forecast's first
+stranding change, or when its window has passed. Its limits: a window that
+falls between two of those times can be missed, so "cannot help" means none
+of the times tried; only units with a number booked are tried for a power
+cycle, so a stranding started by a unit's ordinary 28-day rotation gets "no
+power cycle tried"; and a child already two behind is left to `key_lag`.
 
 `key_forecast_check` grades each recorded switch 75 min after it (so the
-hourly boot read can land first) against the last forecast made before it:
+hourly boot read can land first) against the last forecast made before it,
+or, once a forecast time has passed, against the one made before that time:
 as forecast within 15 min, late, at a boot on record, or not seen an hour
 after its time. `key_switch_unforecast` names the switches taken early or
 with no forecast on a device whose stack is known. Each means one of the

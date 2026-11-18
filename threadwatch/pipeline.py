@@ -4371,9 +4371,12 @@ class Pipeline:
                 self._keyfc_state, events, self._keyfc_cache = result
                 for event, severity, fields in events:
                     self._emit(event, severity, now, **fields)
-                tmp = self._keyfc_path.with_suffix(".tmp")
-                tmp.write_text(json.dumps(self._keyfc_state))
-                tmp.replace(self._keyfc_path)
+                try:
+                    tmp = self._keyfc_path.with_suffix(".tmp")
+                    tmp.write_text(json.dumps(self._keyfc_state))
+                    tmp.replace(self._keyfc_path)
+                except OSError as exc:      # kept in memory; a restart grades from the last saved state
+                    print(f"[threadwatch] key forecast: state not saved: {exc}", file=sys.stderr, flush=True)
             return
         if now < self._next_keyfc:
             return

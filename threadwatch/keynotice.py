@@ -62,23 +62,29 @@ def _by(delta):
 def _search(devs, now, fc, until, subjects, cycle):
     """For each subject (names booted together), the first stretch of
     [now, until) in which booting it leaves nothing it is watched for two
-    behind: a cycle anything in the forecast, a pull its own child. One
+    behind: a cycle anything in the forecast, a pull its own child (a
+    child already two behind at ``now`` is key_lag's, not counted). One
     forecast tests every subject at once (a pulled child moves nobody
-    else), on a STEP_S grid, then halving to EDGE_S at each edge."""
+    else), every STEP_S and either side of each switch in the forecast
+    (where a stretch starts or ends), then halving to EDGE_S at each edge."""
     parent = {d.name: d.parent for d in devs}
 
     def fit(s, t):          # a cycle never boots a unit ahead of its parent; a pull needs the parent ahead
         k = fc.keys(t)
-        return all((k[n] <= k[parent[n]]) if cycle else (k[parent[n]] > k[n]) for n in s if parent[n] in k)
+        return all((k[n] <= k[parent[n]]) if cycle else (k[parent[n]] > k[n])
+                   for n in s if n in k and parent[n] in k)
 
     def works(at):
         at = {s: t for s, t in at.items() if fit(s, t)}
         if not at:
             return set()
-        stranded = {x.name for x in kf.forecast(devs, now, [(n, t) for s, t in at.items() for n in s]).stranded}
+        stranded = {x.name for x in kf.forecast(devs, now, [(n, t) for s, t in at.items() for n in s]).stranded
+                    if x.ts > now}
         return {s for s in at if not (stranded if cycle else stranded & set(s))}
 
-    grid = [now + i * STEP_S for i in range(int((until - now) // STEP_S) + 1) if now + i * STEP_S < until]
+    grid = sorted({now + i * STEP_S for i in range(int((until - now) // STEP_S) + 1)}
+                  | {t for x in fc.steps for t in (x.ts - 1, x.ts) if now < t})
+    grid = [t for t in grid if t < until]
     good = {s: [] for s in subjects}
     for i, t in enumerate(grid):
         for s in works({s: t for s in subjects}):
@@ -102,25 +108,31 @@ def _search(devs, now, fc, until, subjects, cycle):
 
 
 def notice(devs, now, fc=None) -> dict | None:
-    """The stranding notice's fields for the first stranding in the
-    forecast, with its remedies; None when nothing is left two behind."""
+    """The stranding notice's fields for the first number in the forecast
+    that leaves a sleepy child two behind (every child it strands, when
+    its parent takes it then or later), with its remedies; None when
+    nothing is. A child two behind already is key_lag's, not this."""
     fc = fc or kf.forecast(devs, now)
-    if not fc.stranded:
+    future = [x for x in fc.stranded if x.ts > fc.start]
+    if not future:
         return None
-    first = fc.stranded[0]
-    kids = sorted(x.name for x in fc.stranded if x.ts == first.ts)
+    first = future[0]
+    group = [x for x in future if x.parent_key == first.parent_key]
+    kids = sorted({x.name for x in group})
     starter = next((s.name for s in fc.numbers if s.new == first.parent_key), None)
-    found, grid, fit = _search(devs, now, fc, first.ts, [(c,) for c in kids], cycle=False)
+    found, grid, fit = _search(devs, now, fc, max(x.ts for x in group), [(c,) for c in kids], cycle=False)
     pulls = {c: {"from": found[(c,)][0], "until": found[(c,)][1]} for c in kids if (c,) in found}
     left = {c: max((t for t in grid if fit((c,), t)), default=None) for c in kids if c not in pulls}
     again = {x.name: x for x in reversed(kf.forecast(
-        devs, now, [(c, t) for c, t in left.items() if t is not None]).stranded)} if any(left.values()) else {}
+        devs, now, [(c, t) for c, t in left.items() if t is not None]).stranded) if x.ts > now} \
+        if any(left.values()) else {}
     for c, t in left.items():
         x = again.get(c)
         pulls[c] = ({"parent_behind": True} if t is None or x is None
                     else {"again": x.parent_key, "at": x.ts})
     cycle = None
-    units = tuple(sorted(n for n, g in fc.guards.items() if g.stack == "old" and g.flag is False))
+    units = tuple(sorted(n for n, g in fc.guards.items() if g.stack == "old" and g.flag is False
+                         and g.key is not None))
     if units:
         found, _grid, fit = _search(devs, now, fc, first.ts, [units], cycle=True)
         if units in found:
@@ -129,14 +141,14 @@ def notice(devs, now, fc=None) -> dict | None:
             for u in units:
                 rest = tuple(x for x in need if x != u)
                 if rest and fit(rest, mid) and not {x.name for x in kf.forecast(
-                        devs, now, [(n, mid) for n in rest]).stranded}:
+                        devs, now, [(n, mid) for n in rest]).stranded if x.ts > now}:
                     need = rest
             if need != units:
-                found = _search(devs, now, fc, first.ts, [need], cycle=True)[0]
-            if need in found:
-                cycle = {"units": list(need), "from": found[need][0], "until": found[need][1]}
+                fewer = _search(devs, now, fc, first.ts, [need], cycle=True)[0]
+                need, found = (need, fewer) if need in fewer else (units, found)    # the full set's, tested
+            cycle = {"units": list(need), "from": found[need][0], "until": found[need][1]}
     return {"sequence": first.parent_key, "at": first.ts, "started_by": starter, "two_behind": kids,
-            "later": len({x.name for x in fc.stranded if x.ts > first.ts} - set(kids)), "pulls": pulls,
+            "later": len({x.name for x in future if x.parent_key != first.parent_key} - set(kids)), "pulls": pulls,
             "power_cycle": cycle}
 
 
@@ -162,21 +174,24 @@ def note(n: dict, now: float) -> str:
     if c:
         names = c["units"][0] if len(c["units"]) == 1 else ", ".join(c["units"][:-1]) + " and " + c["units"][-1]
         text += (f"Power-cycling {names} between {_d(c['from'])} and {_d(c['until'])} prevents it in the forecast"
-                 + (" (open now)" if c["from"] <= now else "") + ". ")
+                 + (" (open now)" if c["from"] <= now <= c["until"] else "") + ". ")
     else:
         text += "No power cycle the forecast tried prevents it. "
     return text + WHERE.format("key_stranding_forecast")
 
 
-def same(a: dict, b: dict) -> bool:
-    """Whether two notices say the same thing, times within SAME_S."""
+def same(a: dict, b: dict, now: float) -> bool:
+    """Whether two notices say the same thing, times within SAME_S. A
+    window that has opened is searched from the time of the search, so
+    its start is not compared once both starts are past."""
     ca, cb = a["power_cycle"], b["power_cycle"]
     return (a["sequence"] == b["sequence"] and abs(a["at"] - b["at"]) <= SAME_S
             and a["two_behind"] == b["two_behind"]
             and sorted(c for c, p in a["pulls"].items() if "from" in p)
             == sorted(c for c, p in b["pulls"].items() if "from" in p)
             and (ca is None) == (cb is None)
-            and (ca is None or ca["units"] == cb["units"] and abs(ca["from"] - cb["from"]) <= SAME_S
+            and (ca is None or ca["units"] == cb["units"]
+                 and (abs(ca["from"] - cb["from"]) <= SAME_S or max(ca["from"], cb["from"]) <= now)
                  and abs(ca["until"] - cb["until"]) <= SAME_S))
 
 
@@ -261,20 +276,33 @@ def run(state: dict | None, devs, now: float, cache=None):
     fc = kf.forecast(devs, now)
     events = check_events(grade(state, devs, now))
     # The ledger keeps, for each switch still to come, the last forecast made
-    # before it. A switch the model has as due at the start (overdue) or
-    # that has come and is not graded yet keeps its entry; one the forecast
-    # no longer has at all (a boot changed it) is dropped.
+    # before it. A switch the model has as due at the start, one on a
+    # number whose own rotation is overdue (the forecast fires none, so it
+    # forecasts nobody on it: a missed or late number), and one that has
+    # come and is not graded yet keep their entries; one the forecast no
+    # longer has at all (a boot changed it) is dropped. A forecast time
+    # that has passed is not moved by a later forecast: the switch is
+    # graded against what was forecast before it was due.
     ledger = state["ledger"]
     ahead = {f"{s.name}\t{s.new}": [s.name, s.new, s.ts, now, s.why, s.number, False]
              for s in fc.steps if s.ts > fc.start}
     due = {f"{s.name}\t{s.new}" for s in fc.steps if s.ts == fc.start}
+    late = {fc.guards[n].key + 1 for n, _t in fc.overdue}     # a number whose own rotation is missed or late
     for k, e in list(ledger.items()):
         g = fc.guards.get(e[0])
-        if k not in due and k not in ahead and not (g is not None and g.key is not None and g.key >= e[1]):
+        if k not in due and k not in ahead and e[1] not in late \
+                and not (g is not None and g.key is not None and g.key >= e[1]):
             del ledger[k]
-    ledger.update(ahead)
-    key = hash(tuple(devs))
-    if cache is None or cache[0] != key:
+    ledger.update((k, e) for k, e in ahead.items() if k not in ledger or ledger[k][2] > now)   # a time passed stays
+    # The search is redone when the devices change, when the forecast's
+    # first stranding does (time alone can do that: an own rotation that
+    # did not come is not fired again), and when its time or window has passed.
+    future = [x for x in fc.stranded if x.ts > fc.start]
+    key = (hash(tuple(devs)), tuple(sorted((x.name, x.parent_key, x.ts) for x in future
+                                           if x.parent_key == future[0].parent_key)) if future else ())
+    old = cache[1] if cache is not None else None
+    if cache is None or cache[0] != key or old is not None and (
+            old["at"] <= now or old["power_cycle"] is not None and old["power_cycle"]["until"] < now):
         cache = (key, notice(devs, now, fc))
     cur, prev = cache[1], state["notice"]
     if cur is None and prev is not None:
@@ -283,8 +311,8 @@ def run(state: dict | None, devs, now: float, cache=None):
             "note": f"no sleepy child is forecast two behind any more ({prev['sequence']} on {_d(prev['at'])} was)"}))
         state["notice"] = None
     elif cur is not None:
-        opened = cur["power_cycle"] is not None and cur["power_cycle"]["from"] <= now
-        changed = prev is None or not same(prev, cur)
+        opened = cur["power_cycle"] is not None and cur["power_cycle"]["from"] <= now <= cur["power_cycle"]["until"]
+        changed = prev is None or not same(prev, cur, now)
         if changed or opened and not prev.get("window_sent"):
             why = "first forecast" if prev is None else "changed" if changed else "power-cycle window open"
             events.append(("key_stranding_forecast", "warning", {"name": None, **cur, "why": why,

@@ -3,7 +3,8 @@
 Each Matter node's boots ([matter_boots], matterboots.py) are written here
 as `uptime_reset` reboots, and the key guard forecast reads each device's
 last boot and the switches since it from here, so pruning keeps those
-whatever their age (protected). The recorder is the only writer: it holds
+whatever their age, back to the last boot nobody can take out again
+(protected). The recorder is the only writer: it holds
 the records in memory and rewrites the file from them. Anyone else (the
 `threadwatch rebooted` command, a one-time seed) queues reboots with post()
 in the state directory's INBOX, which the recorder drains each pass; so
@@ -125,7 +126,13 @@ def protected(records) -> set:
     sniffed transition or an OTBR inventory change (filed, like the OTBR's
     uptime resets, under otbr:<source>). A device is every address its
     records name together: a transition's physical identity, a reboot's
-    `addresses`."""
+    `addresses`.
+
+    A reboot entered with `threadwatch rebooted` can be taken out again
+    (Journal.remove), so it is never the boot the span starts at while the
+    device has one that cannot: the span starts at the most recent boot
+    not entered by hand, and where every boot was, at the oldest of them.
+    Whatever an entry is undone to is then still here."""
     parent = {}
 
     def find(a):
@@ -141,11 +148,17 @@ def protected(records) -> set:
         for a in extra if isinstance(extra, list) else ():
             if isinstance(a, str):
                 parent[find(a.lower())] = find(r["addr"].lower())
-    boots = {}
+    boots, typed = {}, {}
     for r in mine:
         d = find(r["addr"].lower())
-        if r["kind"] == "reboot" and (d not in boots or r["ts"] > boots[d]["ts"]):
+        if r["kind"] != "reboot":
+            continue
+        if entered_by_hand(r["evidence"]):
+            if d not in typed or r["ts"] < typed[d]["ts"]:
+                typed[d] = r
+        elif d not in boots or r["ts"] > boots[d]["ts"]:
             boots[d] = r
+    boots = {**typed, **boots}
     keep, before = {r["id"] for r in boots.values()}, {}
     for r in sorted(mine, key=lambda r: r["ts"]):
         boot = boots.get(find(r["addr"].lower()))

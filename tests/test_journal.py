@@ -433,6 +433,48 @@ class BootExemptionTest(unittest.TestCase):
         self.assertEqual(sorted((r["ts"] - 3 * DAY, r["evidence"]["source"]) for r in journal.records),
                          [(0, "service_log"), (1680, "uptime_reset")])
 
+    TYPED = {"source": "operator_action", "reference": "threadwatch rebooted: power cycle"}
+
+    def test_a_boot_typed_by_hand_takes_nothing_its_undo_needs(self):
+        # `threadwatch rebooted` for the wrong device, long after its real last boot: the entry is the
+        # most recent boot, and the real one and its switches are over 90 days old by then.
+        journal = Journal()
+        self.story(journal)
+        boot(journal, 150 * DAY, "0a00000000000001", **self.TYPED)
+        journal.prune(200 * DAY)
+        self.assertEqual(self.kept(journal), sorted(self.PROTECTED + [("reboot", 150, None)]))
+        # --undo: the device is as it was before the entry.
+        mistake = next(r["id"] for r in journal.records if r["ts"] == 150 * DAY)
+        self.assertIn("removed the reboot", journal.remove(mistake, "test"))
+        journal.prune(200 * DAY)
+        self.assertEqual(self.kept(journal), self.PROTECTED)
+
+    def test_where_every_boot_was_typed_the_first_of_them_is_kept_from(self):
+        # A lock: nothing reads its boots. An entry by mistake must not cost it the real one before.
+        journal = Journal()
+        switch(journal, 88, 1 * DAY, "0e00000000000005")
+        switch(journal, 89, 2 * DAY, "0e00000000000005")            # the key it booted on
+        boot(journal, 3 * DAY, "0e00000000000005", **self.TYPED)    # a battery change
+        switch(journal, 90, 4 * DAY, "0e00000000000005")
+        boot(journal, 150 * DAY, "0e00000000000005", **self.TYPED)  # by mistake
+        journal.prune(200 * DAY)
+        real = [("reboot", 3, None), ("transition", 2, 89), ("transition", 4, 90)]
+        self.assertEqual(self.kept(journal), sorted(real + [("reboot", 150, None)]))
+        journal.remove(next(r["id"] for r in journal.records if r["ts"] == 150 * DAY), "test")
+        journal.prune(200 * DAY)
+        self.assertEqual(self.kept(journal), real)
+
+    def test_a_boot_read_after_a_typed_one_is_kept_from(self):
+        # A typed boot older than one the device reported is history like any other.
+        journal = Journal()
+        switch(journal, 89, 1 * DAY, "0a00000000000021")
+        boot(journal, 2 * DAY, "0a00000000000021", **self.TYPED)
+        switch(journal, 90, 3 * DAY, "0a00000000000021")            # the key it booted on
+        boot(journal, 4 * DAY, "0a00000000000021")
+        switch(journal, 91, 5 * DAY, "0a00000000000021")
+        journal.prune(200 * DAY)
+        self.assertEqual(self.kept(journal), [("reboot", 4, None), ("transition", 3, 90), ("transition", 5, 91)])
+
 
 class InboxTest(unittest.TestCase):
     """Reboots queued for the recorder, the journal's only writer."""

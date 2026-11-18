@@ -701,7 +701,8 @@ existing events, optional OTBR inventory, archived OTBR logs, the
 Matter boots `[matter_boots]` reads, and restarts read from MLE frame
 counter jumps (`counter_jump`, docs/ALERTING.md). Replay-protection decisions do not
 read it; the key guard forecast does, so each device's last boot and the
-switches since it are kept whatever their age.
+switches since it are kept whatever their age, counted from the last boot
+not entered with `threadwatch rebooted`.
 
 A journal file the recorder cannot load at start (damaged by a power
 loss, or over 16 MiB) is not written over: the first save moves it to
@@ -732,6 +733,11 @@ rebooted`, whether the recorder has taken it yet or not, and prints which
 one it is cancelling (the device, the time and the note). Run
 it again to cancel the one before. The recorder removes the entry from the
 journal outright, as if it had never been made, and says so in its log.
+An entry costs the journal nothing it held before: its records for a device
+are kept back to the last boot that was not entered this way (for a device
+whose every boot was, back to the first of them), however old, so after a
+cancel that boot and the key switches since it are the device's history
+again.
 Only entries made with `threadwatch rebooted` can be cancelled this way:
 boots read from the devices, seeded boots and the border router's are
 never touched. With nothing to cancel it says so and does nothing. It

@@ -688,7 +688,10 @@ lock's battery change, an Apple TV's power cycle) goes in with
 default). It queues a JSON list of reboot evidence in
 `data/state/journal-inbox/`, and the recorder takes every `*.json` there
 within a minute, saves the journal, and deletes the file. A file it
-cannot take whole is renamed `.rejected` and named in its log. Anything
+cannot take whole (not a list, a record it would refuse or drop) is
+renamed `.rejected` and named in its log. A file it can neither delete
+nor rename, because another user queued it, is named in the log once and
+left where it is. Anything
 else that needs to add reboots (a one-time seed) writes a list in the same
 format there: copy it in under another name and rename it to `.json`.
 

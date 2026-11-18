@@ -49,9 +49,7 @@ def _id(*values):
 def post(state_dir: Path, records: list[dict], label: str = "operator") -> Path:
     """Queue reboot evidence for the recorder: every record checked as the
     journal will check it, then one new file, written whole and renamed in."""
-    probe = Journal()
-    for r in records:
-        probe.reboot(r)
+    _check(records)
     d = state_dir / INBOX
     d.mkdir(parents=True, exist_ok=True)
     path = d / f"{time.time():.6f}-{os.getpid()}-{label}.json"
@@ -59,6 +57,16 @@ def post(state_dir: Path, records: list[dict], label: str = "operator") -> Path:
     tmp.write_text(json.dumps(records, indent=1))
     tmp.replace(path)
     return path
+
+
+def _check(records) -> None:
+    """ValueError unless the journal takes every record: reboot() refuses
+    a malformed one, and add() drops one over its size bound without a word."""
+    probe = Journal()
+    for r in records:
+        probe.reboot(r)
+    if probe.dropped:
+        raise ValueError("a record over the journal's 65536-byte bound")
 
 
 def unknown_coverage(reason="capture_completeness_not_measured"):
@@ -129,6 +137,7 @@ class Journal:
         self.load_status = "new"
         self.dirty = False
         self.saved_at = 0.0
+        self.inbox_stuck = set()       # INBOX file names that can be neither deleted nor renamed
         if path is not None and path.exists():
             try:
                 if path.stat().st_size > MAX_BYTES:
@@ -360,25 +369,28 @@ class Journal:
         """The queued INBOX files' reboots into the journal, oldest file
         first: the files taken, and a note for each one set aside whole as
         .rejected (unreadable, not a list, over INBOX_BYTES, or a record
-        reboot() refuses). The caller deletes the taken files once saved;
-        draining one again adds nothing, the record ids being their content."""
+        the journal refuses or would drop). The caller deletes the taken
+        files once saved; draining one again adds nothing, the record ids
+        being their content. A file that can be neither renamed nor, by the
+        caller, deleted (another user's) goes in ``inbox_stuck`` and is
+        left alone from then on."""
         taken, notes = [], []
-        for path in sorted((state_dir / INBOX).glob("*.json"))[:16]:
+        for path in [p for p in sorted((state_dir / INBOX).glob("*.json")) if p.name not in self.inbox_stuck][:16]:
             try:
                 if path.stat().st_size > INBOX_BYTES:
                     raise ValueError(f"over {INBOX_BYTES} bytes")
                 values = json.loads(path.read_text())
                 if not isinstance(values, list):
                     raise ValueError("not a JSON list")
-                probe = Journal()
-                for value in values:
-                    probe.reboot(value)
+                _check(values)
             except (OSError, ValueError, TypeError) as exc:
-                notes.append(f"{path.name} set aside as .rejected: {exc}")
                 try:
                     path.replace(path.with_suffix(".rejected"))
-                except OSError:
-                    pass
+                    notes.append(f"{path.name} set aside as .rejected: {exc}")
+                except OSError as stuck:
+                    self.inbox_stuck.add(path.name)
+                    notes.append(f"{path.name} not taken ({exc}) and it cannot be renamed .rejected ({stuck}): "
+                                 "left alone until the recorder restarts")
                 continue
             for value in values:
                 self.reboot(value)

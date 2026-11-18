@@ -4601,7 +4601,8 @@ class Pipeline:
     def _drain_journal_inbox(self, now: float) -> None:
         """Reboots queued by `threadwatch rebooted` or a seed (journal.post):
         into the journal, saved, then the files deleted. A failed save keeps
-        them for the next pass."""
+        them for the next pass. A file that cannot be deleted (queued by
+        another user) is said once and left: its records are in."""
         taken, notes = self.journal.drain(self.cfg.state_dir)
         for note in notes:
             print(f"[threadwatch] key journal inbox: {note}", file=sys.stderr, flush=True)
@@ -4611,7 +4612,12 @@ class Pipeline:
         if self.journal.dirty:
             return
         for path in taken:
-            path.unlink(missing_ok=True)
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as exc:
+                self.journal.inbox_stuck.add(path.name)
+                print(f"[threadwatch] key journal inbox: {path.name} is in the journal but cannot be deleted "
+                      f"({exc}); remove it by hand", file=sys.stderr, flush=True)
         print(f"[threadwatch] key journal inbox: took {', '.join(p.name for p in taken)}", flush=True)
 
     def matter_boots_status(self) -> dict | None:

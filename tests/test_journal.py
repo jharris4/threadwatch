@@ -452,6 +452,34 @@ class InboxTest(unittest.TestCase):
         saved = Journal(cfg.state_dir / "key-journal.json")
         self.assertEqual([r["ts"] for r in saved.records if r["kind"] == "reboot"], [5 * DAY])
 
+    def test_a_record_the_journal_would_drop_is_refused_not_lost(self):
+        big = {**self.lock, "attached": "x" * 70_000}
+        with self.assertRaises(ValueError):
+            post(self.state, [self.lock, big])
+        (self.state / INBOX).mkdir(exist_ok=True)
+        (self.state / INBOX / "0-big.json").write_text(json.dumps([self.lock, big]))
+        journal = Journal()
+        taken, notes = journal.drain(self.state)
+        self.assertEqual((taken, journal.records), ([], []))
+        self.assertIn("0-big.json set aside as .rejected", notes[0])
+
+    def test_a_file_that_cannot_be_deleted_or_renamed_is_said_once_and_stops_nothing(self):
+        from threadwatch.crypto import Decryptor
+        cfg = Config(data_dir=self.state / "data", config_dir=self.state, devices_path=self.state / "devices.json")
+        (self.state / "devices.json").write_text("[]")
+        pipe = Pipeline(cfg, NullEventLog(), Decryptor(network_key=bytes(16)))
+        post(cfg.state_dir, [self.lock])
+        (cfg.state_dir / INBOX / "0-bad.json").write_text("[")
+        with patch.object(Path, "unlink", side_effect=PermissionError("another user's")), \
+                patch.object(Path, "replace", side_effect=PermissionError("another user's")):
+            _, notes = pipe.journal.drain(cfg.state_dir)
+            self.assertIn("0-bad.json not taken", notes[0])
+        with patch.object(Path, "unlink", side_effect=PermissionError("another user's")):
+            pipe._drain_journal_inbox(6 * DAY)                   # the delete fails: no exception leaves the pass
+        self.assertEqual([r["ts"] for r in pipe.journal.records if r["kind"] == "reboot"], [5 * DAY])
+        self.assertEqual(pipe.journal.drain(cfg.state_dir), ([], []))    # neither file is read again
+        self.assertEqual(len(list((cfg.state_dir / INBOX).glob("*.json"))), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

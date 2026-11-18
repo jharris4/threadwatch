@@ -687,6 +687,13 @@ class HaAvailabilityCheckTest(unittest.TestCase):
             ("warn", "stacks", "2 unknown, not in [keys.stacks]: Front Path Motion (Motion Sensor 20XYZ firmware "
                                "3.2.2 is not checked (the table has 3.2.1)); Porch Plug (not in Home Assistant's "
                                "map and not listed by name)")])
+        # A version listed as unknown on purpose is counted and not warned about, like a name.
+        self.cfg.key_stacks["models"]["Motion Sensor 20XYZ"]["3.2.2"] = ("unknown", None)
+        checks = [c for c in doctor.check_ha_availability(self.cfg) if c[1] == "stacks"]
+        self.assertEqual(checks, [
+            ("ok", "stacks", "1 current, 0 old, 3 unknown ([keys.stacks])"),
+            ("warn", "stacks", "1 unknown, not in [keys.stacks]: Porch Plug (not in Home Assistant's "
+                               "map and not listed by name)")])
         self.mapping["id-motion"]["sw_version"] = "3.2.1"
         (self.d / "devices.json").write_text(json.dumps([{"name": "Front Path Motion",
                                                           "extendedAddress": "C233A4A5BF8391C9"}]))

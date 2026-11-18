@@ -671,10 +671,12 @@ def check_stacks(cfg, entries: list[dict], mapping: dict[str, dict]) -> list[Che
     from .stacks import device_stack
     counts: dict[str, int] = {}
     missing = []
+    # device_stack's reason for a table entry: by name, or the model and version it is listed under.
+    listed = {"listed by name"} | {f"{m} {v}" for m, versions in cfg.key_stacks["models"].items() for v in versions}
     for name in sorted({(e.get("name") or "").strip() for e in entries} - {""}):
         stack, _known, why = device_stack(cfg.key_stacks, name, mapping)
         counts[stack] = counts.get(stack, 0) + 1
-        if stack == "unknown" and why != "listed by name":
+        if stack == "unknown" and why not in listed:
             missing.append(f"{name} ({why})")
     out = [(OK, "stacks", ", ".join(f"{counts.get(s, 0)} {s}" for s in ("current", "old", "unknown"))
             + " ([keys.stacks])")]

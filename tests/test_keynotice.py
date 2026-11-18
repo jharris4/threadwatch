@@ -176,6 +176,53 @@ class NoticeFiringTest(unittest.TestCase):
         state, events, cache = kn.run(state, devs + [gate], T + HOUR, cache)
         self.assertEqual(self.fired(events), [("key_stranding_forecast", "changed")])
 
+    def with_switches(self, devs, switches):
+        return [Device(d.name, d.stack, d.boots, d.switches + tuple(switches.get(d.name, ())), d.parent, d.sleepy)
+                for d in devs]
+
+    def test_a_pass_just_after_a_rotation_falls_due_leaves_the_notice_as_it_is(self):
+        # Mudroom's 91 came as forecast. Den's 92 is due at T + 372 h and a pass lands a minute after, before
+        # its first frame is on record: the forecast has the rotation as overdue, fires none, and so has
+        # nothing two behind. That is not news: nothing is cleared and nothing sent.
+        r1, r2 = T + 72 * HOUR, T + 372 * HOUR
+        taken = {n: [Switch(r1 + 5, 90, 91)] for n in ("Mudroom Monitor", "Den Monitor", "Hall Bulb")}
+        devs = self.with_switches(mesh(), taken)
+        state, events, cache = kn.run(None, devs, r2 - HOUR + 60)
+        self.assertEqual(self.fired(events), [("key_stranding_forecast", "first forecast")])
+        sent = state["notice"]
+        state, events, cache = kn.run(json.loads(json.dumps(state)), devs, r2 + 60, cache)
+        self.assertEqual(self.fired(events), [])
+        self.assertEqual(state["notice"], sent)
+        # It never comes: the notice waits as long as the check does before calling the switch not seen,
+        # and only then is the stranding no longer forecast.
+        waited = kn.LAG_S + kn.GRACE_S
+        state, events, cache = kn.run(state, devs, r2 + waited - 60, cache)
+        self.assertEqual(self.fired(events), [])
+        state, events, cache = kn.run(state, devs, r2 + waited + 60, cache)
+        self.assertEqual(self.fired(events), [("key_stranding_cleared", None)])
+        self.assertTrue(any(f["note"].startswith("92 was forecast for ") for e, _s, f in events
+                            if e == "key_forecast_check"))
+
+    def test_a_first_notice_waits_while_a_rotation_just_due_is_not_on_record(self):
+        # The same pass with nothing sent before (a recorder started then). Shed has 92 booked too, a
+        # hundred hours after Den: with Den's rotation left out the forecast has 92 from Shed, and that is
+        # not sent as a first forecast.
+        r1, r2 = T + 72 * HOUR, T + 372 * HOUR
+        shed = clear("Shed Monitor", OLD, T - 200 * HOUR)
+        taken = {n: [Switch(r1 + 5, 90, 91)] for n in ("Mudroom Monitor", "Den Monitor", "Hall Bulb", "Shed Monitor")}
+        devs = self.with_switches(mesh() + [shed], taken)
+        wrong = kn.notice(devs, r2 + 60)
+        self.assertEqual((wrong["sequence"], wrong["started_by"], wrong["at"]), (92, "Shed Monitor", T + 472 * HOUR))
+        state, events, cache = kn.run(None, devs, r2 + 60)
+        self.assertEqual((self.fired(events), state["notice"]), ([], None))
+        # Den's 92 is on record by the next pass. Porch, two behind now, is key_lag's; the notice is the
+        # next number's.
+        taken = {**taken, "Den Monitor": taken["Den Monitor"] + [Switch(r2 + 90, 91, 92)],
+                 "Hall Bulb": taken["Hall Bulb"] + [Switch(r2 + 95, 91, 92)]}
+        state, events, cache = kn.run(state, self.with_switches(mesh() + [shed], taken), r2 + HOUR + 60, cache)
+        self.assertEqual(self.fired(events), [("key_stranding_forecast", "first forecast")])
+        self.assertEqual(state["notice"]["sequence"], 93)
+
 
 class ChecksTest(unittest.TestCase):
     """Mudroom starts 91 at T + 72 h and the routers, their guards open by then, follow; Kitchen, a sleepy

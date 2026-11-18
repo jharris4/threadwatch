@@ -965,8 +965,16 @@ The model, per stack:
 
 The notice goes out when the forecast first leaves a child two behind, again
 when its answer changes, again when its power-cycle window opens, and
-`key_stranding_cleared` once nothing is two behind. Each remedy it names is
-one the forecast has tested as a hypothetical boot:
+`key_stranding_cleared` once nothing is two behind. While an own rotation
+that fell due in the last 2 h 15 min is not on record, the notice is left as
+it is, nothing sent and nothing cleared: the forecast fires no overdue
+rotation, so it has lost that number and everything that follows from it,
+and the first frame on a new key is usually only seconds to minutes behind.
+After that the check reports the switch not seen and the notice follows the
+forecast again.
+
+Each remedy the notice names is one the forecast has tested as a
+hypothetical boot:
 
 - A battery pull brings the child back at its parent's key at that moment,
   and an exact +1 arms its guard for 624 h. It is named only where the

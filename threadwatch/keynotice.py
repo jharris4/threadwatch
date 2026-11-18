@@ -17,7 +17,9 @@ forecast shows would prevent it, tested as hypothetical boots:
   that would be ahead of its parent at the time.
 It goes out when first seen, when its answer changes, and when the power
 cycle's stretch opens; key_stranding_cleared when no child is forecast two
-behind any more.
+behind any more. While an own rotation that fell due in the last
+LAG_S + GRACE_S is not on record, none of that happens: the forecast has
+dropped the number as overdue, and it is most likely only not heard yet.
 
 The checks. Each switch is graded LAG_S after it, so the hourly boot read
 can land first: as forecast within TOL_S, late or early by more, not
@@ -294,6 +296,15 @@ def run(state: dict | None, devs, now: float, cache=None):
                 and not (g is not None and g.key is not None and g.key >= e[1]):
             del ledger[k]
     ledger.update((k, e) for k, e in ahead.items() if k not in ledger or ledger[k][2] > now)   # a time passed stays
+    # A rotation just due and not on record is most likely only not on
+    # record yet: its first frame reaches the journal seconds to minutes
+    # after, and a pass can land in between. The forecast fires no overdue
+    # rotation, so for that pass it has lost the number and all that follows
+    # from it. The notice is left as it is, nothing sent and nothing
+    # cleared, for as long as grade() waits before calling the switch not
+    # seen; after that the rotation really did not come.
+    if any(t >= now - (LAG_S + GRACE_S) for _n, t in fc.overdue):
+        return state, events, cache
     # The search is redone when the devices change, when the forecast's
     # first stranding does (time alone can do that: an own rotation that
     # did not come is not fired again), and when its time or window has passed.

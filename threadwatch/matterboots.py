@@ -230,7 +230,7 @@ def load(path: Path) -> dict:
             "history": [h for h in data.get("history") or [] if isinstance(h, list) and len(h) == 5
                         and all(_number(x) for x in h)],
             "held": [b for b in data.get("held") or [] if isinstance(b, dict) and _count(b.get("node"))
-                     and _number(b.get("found")) and _number(b.get("ts")) and isinstance(b.get("read"), dict)],
+                     and _number(b.get("ts")) and isinstance(b.get("read"), dict)],
             "read_at": data.get("read_at") if _number(data.get("read_at")) else None,
             "outage": data.get("outage") if isinstance(data.get("outage"), dict)
             and _number(data["outage"].get("since")) else {},

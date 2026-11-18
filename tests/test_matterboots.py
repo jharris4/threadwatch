@@ -248,18 +248,34 @@ class RecorderTest(unittest.TestCase):
         self.assertEqual([(r["name"], r["ts"], r["boots"]) for r in logged], [("Path Motion", T0 + 3000, 1)])
         self.assertEqual(pipe.matter_boots_status()["read"], 2)
         self.assertEqual(mb.load(self.cfg.state_dir / mb.STATE)["nodes"][str(MOTION)]["count"], 6)
-        # The plug is not in the HA map yet: its boot waits for its address, a day at most.
+        # The plug is not in the HA map yet: its boot waits for its address.
         self.assertEqual([b["node"] for b in pipe._matter_boots.state["held"]], [PLUG])
-        held = pipe._matter_boots.state["held"][0]
-        pipe._apply_matter_boots({**pipe._matter_boots.state, "held": [{**held, "node": AIR}, held]}, [],
-                                 {"at": T0 + 7200, "status": "ok"}, T0 + 7200)
-        self.assertEqual(len(pipe._matter_boots.state["held"]), 2)
+
+    def test_a_boot_of_a_node_with_no_address_waits_for_one_however_long(self):
+        from threadwatch.crypto import Decryptor
+        from threadwatch.events import NullEventLog
+        from threadwatch.pipeline import Pipeline
+        pipe = Pipeline(self.cfg, NullEventLog(), Decryptor(network_key=bytes(16)))
+        run = Runner()
+        days = [T0 + d * 86400 for d in range(4)]
+        for at, rows in zip(days, ({PLUG: (2, 50_000, 1)}, {PLUG: (3, 600, 1)}, {PLUG: (4, 900, 1)},
+                                   {PLUG: (4, 87_300, 1)}), strict=True):
+            run.outputs.append(output(at, rows))
+            pipe._apply_matter_boots(*mb.poll(self.cfg, pipe._matter_boots.state, at, run), at)
+        # Three days on: nothing filed without an address, one boot waiting (the newest), each one paged.
+        self.assertEqual([r for r in pipe.journal.records if r["kind"] == "reboot"], [])
+        self.assertEqual([(b["node"], b["ts"]) for b in pipe._matter_boots.state["held"]], [(PLUG, days[2] - 900)])
+        self.assertEqual(len([r for r in pipe.events.records if r["event"] == "device_rebooted"]), 2)
         (self.cfg.state_dir / "ha-map.json").write_text(json.dumps({
-            "dev-b": {"addr": "C4E2A91D07F35B6E", "node_id": MOTION, "name": "HA Motion", "entities": []},
             "dev-c": {"addr": "0A1B2C3D4E5F6071", "node_id": PLUG, "name": "HA Plug", "entities": []}}))
-        pipe._apply_matter_boots(pipe._matter_boots.state, [], {"at": T0 + 90_000, "status": "ok"}, T0 + 90_000)
-        self.assertEqual(sorted(r["addr"] for r in pipe.journal.records if r["kind"] == "reboot"),
-                         ["0a1b2c3d4e5f6071", "c4e2a91d07f35b6e", "c4e2a91d07f35b6e", "matter:16"])
+        pipe._apply_matter_boots(pipe._matter_boots.state, [], {"at": days[3], "status": "ok"}, days[3])
+        self.assertEqual([(r["addr"], r["ts"]) for r in pipe.journal.records if r["kind"] == "reboot"],
+                         [("0a1b2c3d4e5f6071", days[2] - 900)])
+        self.assertEqual(pipe._matter_boots.state["held"], [])
+        # A node the poller has forgotten loses the boot it had waiting.
+        held = {"node": AIR, "ts": T0, "read": {}, "first_read": True, "boots": 1, "after": None, "stamp": "uptime"}
+        pipe._apply_matter_boots({**pipe._matter_boots.state, "held": [held]}, [],
+                                 {"at": days[3], "status": "ok"}, days[3])
         self.assertEqual(pipe._matter_boots.state["held"], [])
 
     def test_a_lost_journal_gets_each_nodes_last_boot_again(self):

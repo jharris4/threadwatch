@@ -4563,30 +4563,31 @@ class Pipeline:
                                         device=self._matter_device)
         self._reboots.apply(scan, now)
 
-    MATTER_HOLD_S = 86400.0     # a boot of a node the HA map does not have waits this long for a name
-
     def _apply_matter_boots(self, state: dict, boots: list[dict], summary: dict, now: float) -> None:
         """A finished boot poll (matterboots.poll): each boot into the key
         journal, saved, then device_rebooted and reboots_climbing from
         them (reboots.RebootWatch), then the poller's state. A boot of a
-        node the [ha_availability] map does not have yet (paired since its
-        hourly rebuild) waits in the state for its addresses, MATTER_HOLD_S
-        at most, then goes in as matter:<node>. A failed save leaves the
-        result to be applied again on the next pass; the records come out
-        the same, so the journal takes them once."""
+        node the [ha_availability] map gives no address (paired since its
+        hourly rebuild, or the map off or failing) waits in the state for
+        one, however long: the journal ties a boot to its device by address
+        only. One boot waits per node, the newest, and a node the poller
+        has forgotten loses it. device_rebooted does not wait. A failed
+        save leaves the result to be applied again on the next pass; the
+        records come out the same, so the journal takes them once."""
         from .matterboots import climb_scan
         from .reboots import STATE_FILE, RebootWatch
-        held = []
-        for b in state.get("held", []) + [{**b, "found": now} for b in boots]:
+        held = {}
+        for b in state.get("held", []) + boots:
             addr, name = self._matter_device(b["node"])
-            if addr is None and now - b["found"] < self.MATTER_HOLD_S:
-                held.append(b)
+            if addr is None:
+                if str(b["node"]) in state.get("nodes", {}) and b["ts"] >= held.get(b["node"], b)["ts"]:
+                    held[b["node"]] = b
                 continue
             r = b["read"]
             self.journal.reboot({
-                "ts": b["ts"], "addr": addr or f"matter:{b['node']}", "source": "uptime_reset", "scope": "device",
+                "ts": b["ts"], "addr": addr, "source": "uptime_reset", "scope": "device",
                 "reference": f"Matter node {b['node']}: reboot count, uptime, boot reason read at {r['at']:.0f}",
-                "addresses": self.names.entry_addresses_of(addr) if addr else [], "name": name,
+                "addresses": self.names.entry_addresses_of(addr), "name": name,
                 "node_id": b["node"], "product": r["product"], "stamp": b["stamp"], "earliest": b.get("earliest"),
                 "first_read": b["first_read"], "boots": b["boots"], "previous_read_at": b["after"],
                 "read_at": r["at"], "reboot_count": r["count"], "uptime_s": r["uptime"], "boot_reason": r["reason"]})
@@ -4598,7 +4599,7 @@ class Pipeline:
             self._reboots = RebootWatch(self.cfg.state_dir / STATE_FILE, emit=self._emit,
                                         device=self._matter_device)
         self._reboots.apply(climb_scan(state, now), now)
-        for event, severity, fields in self._matter_boots.commit({**state, "held": held}, summary):
+        for event, severity, fields in self._matter_boots.commit({**state, "held": list(held.values())}, summary):
             self._emit(event, severity, now, **fields)
 
     def _drain_journal_inbox(self, now: float) -> None:

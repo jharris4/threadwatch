@@ -547,7 +547,11 @@ Each boot also goes into the key journal (`data/state/key-journal.json`),
 which is from here on an input to detection, not only a record: the key
 guard forecast reads each device's last boot and the key switches since
 it there, and the journal keeps those whatever their age. A node's first
-read puts its last boot in the journal without a notice. A power-on reboot or a brown-out is a device that lost power: on
+read puts its last boot in the journal without a notice. The journal ties
+a boot to its device by address, which the `[ha_availability]` map gives
+each node, so a boot of a node the map has no address for (paired since
+its hourly rebuild, or the map off) waits for one, however long: one boot
+per node, the newest. `device_rebooted` does not wait. A power-on reboot or a brown-out is a device that lost power: on
 a battery device, a battery sagging under the radio's load, while the
 battery level Home Assistant shows (estimated from the resting voltage)
 can still read normal. A watchdog reset is firmware that hung. A firmware

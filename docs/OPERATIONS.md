@@ -669,7 +669,9 @@ stamped by the HA host's clock; a pass with a stamp more than a minute
 outside its own start and end by this host's clock is dropped and retried,
 so a boot is never dated against a clock that disagrees. A failed poll
 retries in 15 minutes; otherwise it runs every `poll_s` (an hour). What a
-boot does is in docs/ALERTING.md, `device_rebooted`.
+boot does is in docs/ALERTING.md, `device_rebooted`. Turn `[ha_availability]`
+on as well: its map gives each node's address, and a boot waits for that
+address before it goes into the key journal.
 `data/state/matter-boots.json` keeps each node's last read and the boots
 of the last week.
 

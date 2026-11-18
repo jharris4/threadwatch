@@ -158,7 +158,9 @@ poll_s = 600                       # 300..900 seconds; failures back off up to a
 # container, over the [otbr] SSH access (target, port, key and sudo from
 # there). A boot goes into the key journal and is a device_rebooted
 # notice, and reboots_climbing is judged on these boots. The Matter Server
-# no longer logs boot reasons, so with this off both are blind.
+# no longer logs boot reasons, so with this off both are blind. The key
+# journal needs [ha_availability] on: its map gives each node's address,
+# and a boot waits for that address before it goes into the journal.
 enabled = false
 container = "app_core_matter_server"
 poll_s = 3600                     # 900..86400 seconds; a failed poll retries in 15 min

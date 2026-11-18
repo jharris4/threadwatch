@@ -21,7 +21,10 @@ other. A node unread for FORGET_S is dropped.
 
 A failed poll, or a node that does not answer, changes nothing: the next
 good read compares with the last good one, and an attribute one read
-lacks keeps its last value. The count misses no boot, but
+lacks keeps its last value. STALLED_S with no node read at all is a
+matter_boots_stalled notice, once, and the first pass that reads one after
+it a matter_boots_resumed: a poller that has stopped working is otherwise
+only a line in status.json. The count misses no boot, but
 of several boots between two good reads only the last has a time and a
 reason (`boots` counts them all). Without a count, uptime sees only the
 last of them. A node that gives neither is not judged.
@@ -60,6 +63,7 @@ SLACK_S = 60.0                       # read latency in the boot time a read impl
 HISTORY_S = 7 * 86400.0 + 3600.0
 RETRY_S = 900.0                      # after a failed or cut-short poll
 SKEW_S = 60.0                        # how far the HA host's clock may be from this host's
+STALLED_S = 3 * 3600.0               # this long with no node read is a matter_boots_stalled notice
 FORGET_S = 30 * 86400.0              # a node unread this long is gone (re-paired, removed)
 # How slow an uptime clock may run that CLOCKS does not correct (Phase 0:
 # 0.01% to 0.05% on BILRESA, MYGG and TOFSMYGGA): a boot may be this
@@ -220,6 +224,8 @@ def load(path: Path) -> dict:
             "held": [b for b in data.get("held") or [] if isinstance(b, dict) and _count(b.get("node"))
                      and _number(b.get("found")) and _number(b.get("ts")) and isinstance(b.get("read"), dict)],
             "read_at": data.get("read_at") if _number(data.get("read_at")) else None,
+            "outage": data.get("outage") if isinstance(data.get("outage"), dict)
+            and _number(data["outage"].get("since")) else {},
             "next_poll_at": data.get("next_poll_at") if _number(data.get("next_poll_at")) else 0,
             "last": data.get("last") if isinstance(data.get("last"), dict) else None}
 
@@ -269,10 +275,37 @@ class BootPoller:
         self.thread.start()
         return None
 
-    def commit(self, state: dict, summary: dict) -> None:
+    def commit(self, state: dict, summary: dict) -> list[tuple[str, str, dict]]:
+        """The pass's state kept and saved. Returns the events it calls
+        for, as (name, severity, fields): matter_boots_stalled once when no
+        node has been read for STALLED_S (from the last pass that read one,
+        or the first failure when none ever did), matter_boots_resumed when
+        one is read after that."""
         before = (self.state.get("last") or {}).get("status"), (self.state.get("last") or {}).get("read")
         ok = summary["status"] == "ok"
-        self.state = {**state, "last": summary,
+        events, outage = [], dict(state.get("outage") or {})
+        if summary.get("read"):
+            if outage.get("reported"):
+                gone = summary["at"] - outage["since"]
+                events.append(("matter_boots_resumed", "info", {
+                    "since": outage["since"], "stalled_for_s": round(gone), "nodes": summary.get("nodes", 0),
+                    "read": summary["read"],
+                    "note": (f"Matter boots are read again after {gone / 3600:.1f} h: {summary['read']} of "
+                             f"{summary.get('nodes', 0)} nodes answered. Boots in between are counted; only each "
+                             "device's last has a time")}))
+            outage = {}
+        else:
+            outage.setdefault("since", state["read_at"] if _number(state.get("read_at")) else summary["at"])
+            gone = summary["at"] - outage["since"]
+            if not outage.get("reported") and gone >= STALLED_S:
+                outage["reported"] = True
+                events.append(("matter_boots_stalled", "notice", {
+                    "since": outage["since"], "status": summary["status"],
+                    "note": (f"no Matter node has given its boots for {gone / 3600:.1f} h (last poll: "
+                             f"{summary['status']}): device_rebooted and reboots_climbing see nothing, and the "
+                             f"key journal's last boots go stale, until a poll succeeds; retried every "
+                             f"{RETRY_S / 60:.0f} min (docs/OPERATIONS.md, Matter boots over the same SSH)")}))
+        self.state = {**state, "outage": outage, "last": summary,
                       "next_poll_at": summary["at"] + (self.cfg.boots_poll_s if ok else RETRY_S)}
         if before != (summary["status"], summary.get("read")):
             print(f"[threadwatch] matter boots: {summary['status']}, read {summary.get('read', 0)} of "
@@ -285,3 +318,4 @@ class BootPoller:
             tmp.replace(self.path)
         except OSError as exc:
             print(f"[threadwatch] matter boots: state save failed: {exc}", flush=True)
+        return events

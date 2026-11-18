@@ -673,6 +673,12 @@ boot does is in docs/ALERTING.md, `device_rebooted`.
 `data/state/matter-boots.json` keeps each node's last read and the boots
 of the last week.
 
+Three hours with no node read is a `matter_boots_stalled` notice. Check
+`status.json`'s `matter_boots.status`, then the same command by hand from
+the recorder's host, which should print the container's node version:
+`ssh -p <port> -i <key> <target> 'sudo -n docker exec -i app_core_matter_server node --version'`.
+An add-on update can rename the container or change what it ships.
+
 ## Key-transition journal
 
 `threadwatch key-journal` prints a compact origin/adoption history;

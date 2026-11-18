@@ -112,7 +112,7 @@ class PollTest(unittest.TestCase):
     def test_a_hand_broken_state_file_loads_as_nothing_known(self):
         path = self.root / mb.STATE
         path.write_text(json.dumps({"nodes": {"16": {"at": "x"}}, "pending": [None], "history": [[1, 2]]}))
-        self.assertEqual(mb.load(path), {"nodes": {}, "history": [], "held": [], "read_at": None,
+        self.assertEqual(mb.load(path), {"nodes": {}, "history": [], "held": [], "read_at": None, "outage": {},
                                          "next_poll_at": 0, "last": None})
 
     def test_the_count_decides_so_a_clock_step_on_the_ha_host_is_no_boot(self):
@@ -263,6 +263,34 @@ class RecorderTest(unittest.TestCase):
         boots = [r for r in pipe.journal.records if r["kind"] == "reboot"]
         self.assertEqual([(r["ts"], r["evidence"]["first_read"]) for r in boots], [(T0 - 50_000, True)])
         self.assertEqual([r for r in pipe.events.records if r["event"] == "device_rebooted"], [])
+
+    def test_three_hours_with_no_node_read_is_said_once_and_so_is_the_first_read_after(self):
+        from threadwatch.crypto import Decryptor
+        from threadwatch.events import NullEventLog
+        from threadwatch.pipeline import Pipeline
+        pipe = Pipeline(self.cfg, NullEventLog(), Decryptor(network_key=bytes(16)))
+        run = Runner()
+
+        def after(minutes, out):
+            at = T0 + 60 * minutes
+            run.outputs.append(out if "output" in out else output(at, out))
+            pipe._apply_matter_boots(*mb.poll(self.cfg, pipe._matter_boots.state, at, run), at)
+            return [(r["event"], r["severity"]) for r in pipe.events.records if r["event"].startswith("matter_boots")]
+
+        down = {"status": "unreachable", "output": ""}
+        after(0, {MOTION: (5, 50_000, None)})
+        for minutes in range(15, 180, 15):
+            self.assertEqual(after(minutes, down), [])
+        self.assertEqual(after(180, down), [("matter_boots_stalled", "notice")])
+        self.assertEqual(mb.load(self.cfg.state_dir / mb.STATE)["outage"], {"since": T0, "reported": True})
+        self.assertEqual(after(195, {MOTION: None}), [("matter_boots_stalled", "notice")])     # listed, none answered
+        stalled = [r for r in pipe.events.records if r["event"] == "matter_boots_stalled"][0]
+        self.assertEqual((stalled["since"], stalled["status"]), (T0, "unreachable"))
+        self.assertIn("for 3.0 h", stalled["note"])
+        self.assertEqual(after(210, {MOTION: (6, 600, None)})[1:], [("matter_boots_resumed", "info")])
+        resumed = [r for r in pipe.events.records if r["event"] == "matter_boots_resumed"][0]
+        self.assertEqual((resumed["since"], resumed["stalled_for_s"], resumed["read"]), (T0, 12_600, 1))
+        self.assertEqual(len(after(270, {MOTION: (6, 4200, None)})), 2)
 
     def test_a_failed_journal_save_logs_nothing_and_is_applied_again(self):
         from unittest.mock import patch

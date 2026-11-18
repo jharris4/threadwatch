@@ -102,6 +102,8 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `srp_accepted` | info | `addr`, `name`, `refusals`, `since`, `refused_for_s`, `server`, `note`; only after an `srp_refused` went out |
 | `device_rebooted` | notice; info for a planned reboot (a firmware update, a commanded reset) or one shared by three or more devices within 5 min | `addr` (null for a Matter node the `[ha_availability]` map does not have), `name`, `node_id`, `reason` (Matter BootReason, 0-6; 0 when the device does not report one), `reason_name`, `crowd`, `boots` (how many the reboot count says fell since the read before; only the last is dated), `note`; dated when the device booted, up to `[matter_boots] poll_s` (an hour) before it is logged here |
 | `reboots_climbing` | warning | `addr`, `name`, `node_id`, `reboots_24h`, `baseline_per_day`, `baseline_h` (the hours the average is over: archived, or since the first boot read), `reasons` (count per `reason_name`), `since` (the first reboot in the 24 h), `muted`, `note`; once per climb |
+| `matter_boots_stalled` | notice | `since` (the last poll that read any node, or the first failure when none ever has), `status` (the last poll's, as in `status.json`), `note`; once per outage, when `[matter_boots]` has read no node for three hours |
+| `matter_boots_resumed` | info | `since`, `stalled_for_s`, `nodes`, `read`, `note`; once, at the first poll that reads a node after a `matter_boots_stalled` |
 | `credentials_stale` | warning | `failed`, `note` |
 | `clock_step` | info | `step_s` (signed), `note`. The host clock jumped, NTP correcting a boot without an RTC. Forward: silences spanning the jump are not counted against any device. Backward: every timestamp the recorder holds, `last-seen.json` included, is moved back with it |
 | `recorder_started` | info after a requested stop or on the first start ever, notice when the last run ended any other way | `cause` (`stopped`, `stalled`, `sniffer_died`, `stream_ended`, `crashed`, `unknown` for a run that left no note: a power cut or a kill, `first_start`), `gap_s` (since the last frame any run heard), `last_frame_ts`, `stopped_ts` (when the last run ended, if it left the note), `exit_code`, `note` |
@@ -526,7 +528,11 @@ failed poll or a node that does not answer loses no boot while the count
 is readable: the next good read compares with the last good one, and
 `boots` says how many fell between, though only the last has a time and a
 reason. A device re-paired under a new node id is a boot when it booted
-after the previous poll. Locks and Apple TVs are not Matter nodes here;
+after the previous poll. Three hours with no node read at all (the SSH
+access gone, the container renamed by an add-on update, the two hosts'
+clocks apart) is one `matter_boots_stalled` notice, and the first poll
+that reads a node again a `matter_boots_resumed`: until then
+`device_rebooted` and `reboots_climbing` see nothing. Locks and Apple TVs are not Matter nodes here;
 record their battery changes and power cycles with `threadwatch rebooted`.
 Before 2026-10-28 the Matter Server logged each boot reason, and with
 `[matter_boots]` off the recorder still reads those lines from the

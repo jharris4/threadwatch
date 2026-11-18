@@ -4598,7 +4598,8 @@ class Pipeline:
             self._reboots = RebootWatch(self.cfg.state_dir / STATE_FILE, emit=self._emit,
                                         device=self._matter_device)
         self._reboots.apply(climb_scan(state, now), now)
-        self._matter_boots.commit({**state, "held": held}, summary)
+        for event, severity, fields in self._matter_boots.commit({**state, "held": held}, summary):
+            self._emit(event, severity, now, **fields)
 
     def _drain_journal_inbox(self, now: float) -> None:
         """Reboots queued by `threadwatch rebooted` or a seed (journal.post):

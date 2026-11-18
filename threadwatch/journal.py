@@ -75,10 +75,13 @@ BOOT_MARGIN_S = 600   # a switch this soon before a boot stamp may be the boot's
 
 def protected(records) -> set:
     """Ids kept whatever their age or the caps: each device's most recent
-    reboot, its switches from BOOT_MARGIN_S before that on, and the last
-    switch per address and layer before then (the key it booted on). A
-    device is every address its records name together: a transition's
-    physical identity, a reboot's `addresses`."""
+    reboot, its switches from BOOT_MARGIN_S before that on (before its
+    `earliest`, where the stamp may be late), and the last switch per
+    address and layer before then (the key it booted on). A switch is a
+    sniffed transition or an OTBR inventory change (filed, like the OTBR's
+    uptime resets, under otbr:<source>). A device is every address its
+    records name together: a transition's physical identity, a reboot's
+    `addresses`."""
     parent = {}
 
     def find(a):
@@ -87,7 +90,7 @@ def protected(records) -> set:
             a = parent[a]
         return a
 
-    mine = [r for r in records if r["kind"] in ("reboot", "transition") and isinstance(r.get("addr"), str)]
+    mine = [r for r in records if r["kind"] in ("reboot", "transition", "inventory") and isinstance(r.get("addr"), str)]
     for r in mine:
         extra = (r["context"].get("physical_identity") or {} if r["kind"] == "transition" else r["evidence"])
         extra = extra.get("addresses") if isinstance(extra, dict) else None
@@ -102,12 +105,13 @@ def protected(records) -> set:
     keep, before = {r["id"] for r in boots.values()}, {}
     for r in sorted(mine, key=lambda r: r["ts"]):
         boot = boots.get(find(r["addr"].lower()))
-        if boot is None or r["kind"] != "transition":
+        if boot is None or r["kind"] == "reboot":
             continue
-        if r["ts"] >= boot["ts"] - BOOT_MARGIN_S:
+        earliest = boot["evidence"].get("earliest")
+        if r["ts"] >= min(boot["ts"], earliest if _time(earliest) else boot["ts"]) - BOOT_MARGIN_S:
             keep.add(r["id"])
         else:
-            before[(r["addr"], r["layer"])] = r["id"]
+            before[(r["addr"], r.get("layer", r["kind"]))] = r["id"]
     return keep | set(before.values())
 
 
@@ -484,6 +488,9 @@ class Journal:
                 self.records.remove(oldest)
                 self.dropped += 1
                 encoded = json.dumps(self.state(), separators=(",", ":"))
+            if len(encoded.encode()) > MAX_BYTES:
+                # Loading refuses a file this size and would start empty.
+                raise OSError(f"the protected records alone exceed {MAX_BYTES} bytes; the file on disk is kept")
             self.prune(now)
             self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.path.with_suffix(".tmp")

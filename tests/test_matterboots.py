@@ -111,7 +111,49 @@ class PollTest(unittest.TestCase):
     def test_a_hand_broken_state_file_loads_as_nothing_known(self):
         path = self.root / mb.STATE
         path.write_text(json.dumps({"nodes": {"16": {"at": "x"}}, "pending": [None], "history": [[1, 2]]}))
-        self.assertEqual(mb.load(path), {"nodes": {}, "history": [], "next_poll_at": 0, "last": None})
+        self.assertEqual(mb.load(path), {"nodes": {}, "history": [], "held": [], "read_at": None,
+                                         "next_poll_at": 0, "last": None})
+
+    def test_the_count_decides_so_a_clock_step_on_the_ha_host_is_no_boot(self):
+        self.poll(T0, {MOTION: (5, 50_000, None)})
+        finals, _ = self.poll(T0 + 3600 + 300, {MOTION: (5, 53_600, None)})     # the host's clock jumped 5 min
+        self.assertEqual(finals, [])
+
+    def test_an_attribute_one_read_lacks_keeps_its_last_value(self):
+        self.poll(T0, {MOTION: (5, 50_000, None)})
+        self.poll(T0 + 3600, {MOTION: (5, None, None)})                        # no uptime this time
+        finals, _ = self.poll(T0 + 7200, {MOTION: (None, 600, None)})          # no count, a short uptime
+        self.assertEqual([(b["node"], b["boots"], b["ts"]) for b in finals], [(MOTION, 1, T0 + 6600)])
+
+    def test_a_first_read_without_uptime_journals_the_boot_once_one_comes(self):
+        finals, _ = self.poll(T0, {MOTION: (5, None, None)})
+        self.assertEqual(finals, [])
+        finals, _ = self.poll(T0 + 3600, {MOTION: (5, 53_600, None)})
+        self.assertEqual([(b["first_read"], b["ts"]) for b in finals], [(True, T0 - 50_000)])
+        finals, _ = self.poll(T0 + 7200, {MOTION: (5, 57_200, None)})
+        self.assertEqual(finals, [])
+
+    def test_a_node_new_since_the_last_pass_that_booted_since_is_a_boot_and_a_gone_one_is_forgotten(self):
+        self.poll(T0, {MOTION: (5, 50_000, None)})
+        finals, _ = self.poll(T0 + 3600, {MOTION: (5, 53_600, None), PLUG: (1, 600, 1)})   # re-paired
+        self.assertEqual([(b["node"], b["first_read"], b["ts"]) for b in finals], [(PLUG, False, T0 + 3000)])
+        self.assertEqual([h[1] for h in self.state["history"]], [PLUG])
+        self.poll(T0 + mb.FORGET_S + 7200, {PLUG: (1, mb.FORGET_S + 4200, 1)})
+        self.assertEqual(sorted(self.state["nodes"]), [str(PLUG)])
+
+    def test_a_pass_cut_short_says_so_and_the_order_changes_each_pass(self):
+        out = output(T0, {MOTION: (5, 50_000, None)})
+        out["output"] += "\n" + json.dumps({"node": PLUG, "product": "Smart Plug", "at": T0, "error": "deadline"})
+        _, summary = self.poll(T0, out)
+        self.assertEqual((summary["status"], summary["failed"]), ("partial: the pass ran out of time", [PLUG]))
+        self.assertIn("Math.random()", mb.SCRIPT)
+
+    def test_each_boot_says_how_early_it_may_have_been(self):
+        self.poll(T0, {MOTION: (5, 50_000, None), PLUG: (2, None, None)})
+        finals, _ = self.poll(T0 + 3600, {MOTION: (6, 1000, None), PLUG: (3, None, None)})
+        got = {b["node"]: b for b in finals}
+        self.assertEqual((got[PLUG]["stamp"], got[PLUG]["ts"], got[PLUG]["earliest"]), ("read_time", T0 + 3600, T0))
+        self.assertAlmostEqual(got[MOTION]["earliest"], T0 + 2600 - 0.5)
 
 
 class ClimbTest(unittest.TestCase):
@@ -148,21 +190,54 @@ class RecorderTest(unittest.TestCase):
         from threadwatch.pipeline import Pipeline
         pipe = Pipeline(self.cfg, NullEventLog(), Decryptor(network_key=bytes(16)))
         run = Runner()
-        state = {}
         for at, rows in ((T0, {MOTION: (5, 50_000, None), PLUG: (2, 50_000, 1)}),
                          (T0 + 3600, {MOTION: (6, 600, None), PLUG: (2, 53_600, 1)})):
             run.outputs.append(output(at, rows))
-            state, finals, summary = mb.poll(self.cfg, state, at, run)
-            pipe._apply_matter_boots(state, finals, summary, at)
+            pipe._apply_matter_boots(*mb.poll(self.cfg, pipe._matter_boots.state, at, run), at)
         boots = [r for r in pipe.journal.records if r["kind"] == "reboot"]
         self.assertEqual([(r["addr"], r["evidence"]["first_read"], r["ts"]) for r in boots],
-                         [("c4e2a91d07f35b6e", True, T0 - 50_000), ("matter:48", True, T0 - 50_000),
-                          ("c4e2a91d07f35b6e", False, T0 + 3000)])
+                         [("c4e2a91d07f35b6e", True, T0 - 50_000), ("c4e2a91d07f35b6e", False, T0 + 3000)])
         self.assertEqual(boots[0]["evidence"]["addresses"], ["c4e2a91d07f35b6e", "9d04b1e2c3f5a607"])
-        self.assertEqual(boots[2]["evidence"]["source"], "uptime_reset")
+        self.assertEqual(boots[1]["evidence"]["source"], "uptime_reset")
         logged = [r for r in pipe.events.records if r["event"] == "device_rebooted"]
         self.assertEqual([(r["name"], r["ts"], r["boots"]) for r in logged], [("Path Motion", T0 + 3000, 1)])
         self.assertEqual(pipe.matter_boots_status()["read"], 2)
+        self.assertEqual(mb.load(self.cfg.state_dir / mb.STATE)["nodes"][str(MOTION)]["count"], 6)
+        # The plug is not in the HA map yet: its boot waits for its address, a day at most.
+        self.assertEqual([b["node"] for b in pipe._matter_boots.state["held"]], [PLUG])
+        held = pipe._matter_boots.state["held"][0]
+        pipe._apply_matter_boots({**pipe._matter_boots.state, "held": [{**held, "node": AIR}, held]}, [],
+                                 {"at": T0 + 7200, "status": "ok"}, T0 + 7200)
+        self.assertEqual(len(pipe._matter_boots.state["held"]), 2)
+        (self.cfg.state_dir / "ha-map.json").write_text(json.dumps({
+            "dev-b": {"addr": "C4E2A91D07F35B6E", "node_id": MOTION, "name": "HA Motion", "entities": []},
+            "dev-c": {"addr": "0A1B2C3D4E5F6071", "node_id": PLUG, "name": "HA Plug", "entities": []}}))
+        pipe._apply_matter_boots(pipe._matter_boots.state, [], {"at": T0 + 90_000, "status": "ok"}, T0 + 90_000)
+        self.assertEqual(sorted(r["addr"] for r in pipe.journal.records if r["kind"] == "reboot"),
+                         ["0a1b2c3d4e5f6071", "c4e2a91d07f35b6e", "c4e2a91d07f35b6e", "matter:16"])
+        self.assertEqual(pipe._matter_boots.state["held"], [])
+
+    def test_a_failed_journal_save_logs_nothing_and_is_applied_again(self):
+        from unittest.mock import patch
+
+        from threadwatch.crypto import Decryptor
+        from threadwatch.events import NullEventLog
+        from threadwatch.pipeline import Pipeline
+        pipe = Pipeline(self.cfg, NullEventLog(), Decryptor(network_key=bytes(16)))
+        run = Runner()
+        run.outputs.append(output(T0, {MOTION: (5, 50_000, None)}))
+        pipe._apply_matter_boots(*mb.poll(self.cfg, pipe._matter_boots.state, T0, run), T0)
+        run.outputs.append(output(T0 + 3600, {MOTION: (6, 600, None)}))
+        done = mb.poll(self.cfg, pipe._matter_boots.state, T0 + 3600, run)
+        with patch.object(Path, "write_text", side_effect=OSError("disk full")):
+            pipe._apply_matter_boots(*done, T0 + 3600)
+        self.assertEqual([r for r in pipe.events.records if r["event"] == "device_rebooted"], [])
+        self.assertEqual(mb.load(self.cfg.state_dir / mb.STATE)["nodes"][str(MOTION)]["count"], 5)
+        again = pipe._matter_boots.tick(T0 + 3630)
+        self.assertIs(again[1], done[1])
+        pipe._apply_matter_boots(*again, T0 + 3630)
+        self.assertEqual(len([r for r in pipe.events.records if r["event"] == "device_rebooted"]), 1)
+        self.assertEqual(len([r for r in pipe.journal.records if r["kind"] == "reboot"]), 2)
         self.assertEqual(mb.load(self.cfg.state_dir / mb.STATE)["nodes"][str(MOTION)]["count"], 6)
 
 

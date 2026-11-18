@@ -364,6 +364,10 @@ class BootExemptionTest(unittest.TestCase):
             with patch("threadwatch.journal.MAX_BYTES", 1):
                 journal.save(6 * DAY, force=True)
             self.assertEqual(self.kept(journal), self.PROTECTED)
+            # Only protected records left and still too big: loading would refuse the file and
+            # start empty, so it is not written.
+            self.assertFalse(path.exists())
+            self.assertTrue(journal.dirty)
             journal = Journal(path)
             self.story(journal)
             for k in range(6):
@@ -374,6 +378,24 @@ class BootExemptionTest(unittest.TestCase):
             self.assertEqual(self.kept(loaded), sorted(self.PROTECTED + [("transition", 10, 4), ("transition", 10, 5)]))
             self.assertEqual(loaded.load_status, "partial")
 
+
+    def test_a_late_stamp_reaches_back_to_its_earliest_and_the_otbr_inventory_counts_as_switches(self):
+        journal = Journal()
+        switch(journal, 89, 1 * DAY, "0f00000000000006")
+        switch(journal, 90, 2 * DAY, "0f00000000000006")            # just after the real boot
+        boot(journal, 2 * DAY + 3600, "0f00000000000006", earliest=2 * DAY - 60)   # found an hour later
+        journal.add({"id": "inv-1", "kind": "inventory", "ts": 1 * DAY, "addr": "otbr:x",
+                     "evidence": {"old_sequence": 88, "new_sequence": 89, "before": None, "after": {},
+                                  "guard": {"assessment": "unknown"}}})
+        boot(journal, 2 * DAY, "otbr:x", source="uptime_reset", scope="openthread_instance")
+        journal.add({"id": "inv-2", "kind": "inventory", "ts": 3 * DAY, "addr": "otbr:x",
+                     "evidence": {"old_sequence": 89, "new_sequence": 90, "before": {}, "after": {},
+                                  "guard": {"assessment": "unknown"}}})
+        journal.prune(200 * DAY)
+        self.assertEqual(sorted((r["addr"], r["kind"], r["ts"] // DAY) for r in journal.records),
+                         [("0f00000000000006", "reboot", 2), ("0f00000000000006", "transition", 1),
+                          ("0f00000000000006", "transition", 2), ("otbr:x", "inventory", 1),
+                          ("otbr:x", "inventory", 3), ("otbr:x", "reboot", 2)])
 
 
 class InboxTest(unittest.TestCase):

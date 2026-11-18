@@ -519,13 +519,15 @@ available through a restart that takes under a minute. With
 `[matter_boots]` on, the recorder reads every Matter node's reboot count,
 uptime and boot reason (General Diagnostics) each `poll_s`, an hour by
 default, through a fixed read-only script in the Matter Server container
-over the `[otbr]` SSH access. A count that changed, or an uptime that went
-back, is a boot, dated by the uptime (an air quality monitor's clock runs
+over the `[otbr]` SSH access. A count that changed is a boot (for a device
+that gives no count, an uptime that went back), dated by the uptime (an air quality monitor's clock runs
 0.15% slow and that is removed). A
 failed poll or a node that does not answer loses no boot while the count
 is readable: the next good read compares with the last good one, and
 `boots` says how many fell between, though only the last has a time and a
-reason. Locks and Apple TVs are not Matter nodes here and have no boots.
+reason. A device re-paired under a new node id is a boot when it booted
+after the previous poll. Locks and Apple TVs are not Matter nodes here;
+record their battery changes and power cycles with `threadwatch rebooted`.
 Before 2026-10-28 the Matter Server logged each boot reason, and with
 `[matter_boots]` off the recorder still reads those lines from the
 archived hours; the Matter Server no longer writes them. The node is

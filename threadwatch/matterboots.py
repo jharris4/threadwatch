@@ -9,14 +9,19 @@ nothing in new archives. Each node's General Diagnostics reboot count
 three attributes over the server's WebSocket on localhost. It only reads,
 and nothing from the recorder goes into it.
 
-A boot is a reboot count that changed, or a boot time (read time minus
-uptime) that moved later than the last read put it. It goes into the key
-journal as an `uptime_reset` reboot and is a device_rebooted notice;
-reboots_climbing is judged on these boots. A node's first read puts its
-last boot in the journal without a notice.
+A boot is a reboot count that changed, or, for a node that does not give
+a count both times, a boot time (read time minus uptime) that moved later
+than the last read put it: a clock step on the HA host moves every boot
+time and changes no count. It goes into the key journal as an
+`uptime_reset` reboot and is a device_rebooted notice; reboots_climbing is
+judged on these boots. A node's first read with an uptime puts its last
+boot in the journal without a notice, unless that boot came after the
+previous pass (a node re-paired under a new id): that is a boot like any
+other. A node unread for FORGET_S is dropped.
 
 A failed poll, or a node that does not answer, changes nothing: the next
-good read compares with the last good one. The count misses no boot, but
+good read compares with the last good one, and an attribute one read
+lacks keeps its last value. The count misses no boot, but
 of several boots between two good reads only the last has a time and a
 reason (`boots` counts them all). Without a count, uptime sees only the
 last of them. A node that gives neither is not judged.
@@ -47,7 +52,12 @@ SLACK_S = 60.0                       # read latency in the boot time a read impl
 # inside the 8 days reboots.json remembers a boot as logged, so a boot
 # still held here is never logged twice.
 HISTORY_S = 7 * 86400.0 + 3600.0
-RETRY_S = 900.0                      # after a failed poll
+RETRY_S = 900.0                      # after a failed or cut-short poll
+FORGET_S = 30 * 86400.0              # a node unread this long is gone (re-paired, removed)
+# How slow an uptime clock may run that CLOCKS does not correct (Phase 0:
+# 0.01% to 0.05% on BILRESA, MYGG and TOFSMYGGA): a boot may be this
+# fraction of its uptime earlier than read time minus uptime says.
+SLOW_BOUND = 0.0005
 
 SCRIPT = r"""// threadwatch matterboots: read-only.
 setTimeout(() => process.exit(2), 330000);
@@ -67,6 +77,9 @@ ws.onmessage = (ev) => {
 ws.onerror = () => { console.log(JSON.stringify({ error: 'websocket' })); process.exit(1); };
 ws.onopen = async () => {
   const nodes = (await call('get_nodes', {}, 60000)).result || [];
+  for (let i = nodes.length - 1; i > 0; i--) {   // a new order each pass: a deadline starves no one node
+    const j = Math.floor(Math.random() * (i + 1)); [nodes[i], nodes[j]] = [nodes[j], nodes[i]];
+  }
   for (const n of nodes) {
     const left = end - Date.now();
     const r = left > 0 ? await call('read_attribute', { node_id: n.node_id,
@@ -89,9 +102,10 @@ def _number(v) -> bool:
 
 
 def read(cfg, runner=run_command) -> tuple[dict[int, dict], str]:
-    """Each node's read, and "ok" when the script listed the nodes and finished."""
+    """Each node's read, and "ok" when the script listed the nodes and read
+    them all before its deadline."""
     result = runner(ssh_argv(cfg, cfg.boots_container, ["node", "-"], stdin=True), SCRIPT.encode(), TIMEOUT_S)
-    reads, done = {}, None
+    reads, done, cut = {}, None, False
     for line in result.get("output", "").splitlines():
         try:
             m = json.loads(line)
@@ -100,6 +114,7 @@ def read(cfg, runner=run_command) -> tuple[dict[int, dict], str]:
         if not isinstance(m, dict):
             continue
         done = m["done"] if _count(m.get("done")) else done
+        cut |= m.get("error") == "deadline"
         got = m.get("result") if isinstance(m.get("result"), dict) else {}
         if _count(m.get("node")) and _number(m.get("at")):
             uptime = got.get("0/51/2")
@@ -107,6 +122,8 @@ def read(cfg, runner=run_command) -> tuple[dict[int, dict], str]:
                                 else "", "count": got.get("0/51/1") if _count(got.get("0/51/1")) else None,
                                 "uptime": float(uptime) if _number(uptime) and uptime >= 0 else None,
                                 "reason": got.get("0/51/4") if _count(got.get("0/51/4")) else None}
+    if done and cut:
+        return reads, "partial: the pass ran out of time"
     return reads, "ok" if done else ("no nodes listed" if done == 0 else result.get("status", "failed"))
 
 
@@ -118,9 +135,10 @@ def boot_time(r: dict) -> float | None:
 
 
 def boots_between(prev: dict, r: dict, est: float | None) -> int:
-    """The boots a read shows since the node's last good read."""
-    if r["count"] is not None and prev.get("count") is not None and r["count"] != prev["count"]:
-        return r["count"] - prev["count"] if r["count"] > prev["count"] else 1
+    """The boots a read shows since the node's last good read: the count
+    decides when both reads have one, uptime only when one does not."""
+    if r["count"] is not None and prev.get("count") is not None:
+        return 0 if r["count"] == prev["count"] else r["count"] - prev["count"] if r["count"] > prev["count"] else 1
     if est is not None and _number(prev.get("boot")) and est - prev["boot"] > SLACK_S + 0.002 * (r["at"] - prev["at"]):
         return 1
     return 0
@@ -128,23 +146,35 @@ def boots_between(prev: dict, r: dict, est: float | None) -> int:
 
 def poll(cfg, state: dict, now: float, runner=run_command) -> tuple[dict, list[dict], dict]:
     """One pass on a copy of ``state``: the new state, the boots found, and
-    a summary for status.json."""
+    a summary for status.json. Each boot carries ``earliest``, how early
+    the boot may really have been."""
     state = copy.deepcopy(state)
     nodes, finals, failed = state.setdefault("nodes", {}), [], []
+    last_pass = state.get("read_at")               # the last pass that read anything
     reads, status = read(cfg, runner)
     for node, r in sorted(reads.items()):
         est = boot_time(r)
         if est is None and r["count"] is None:
             failed.append(node)
             continue
-        prev = nodes.get(str(node))
-        n = 1 if prev is None and est is not None else boots_between(prev, r, est) if prev else 0
-        if n:
-            finals.append({"node": node, "boots": n, "first_read": prev is None, "after": prev["at"] if prev else None,
+        prev = nodes.get(str(node)) or {}
+        n = boots_between(prev, r, est) if prev else 0
+        if not prev and est is not None and _number(last_pass) and est > last_pass:
+            n = 1                                  # new to us, booted since the last pass: re-paired
+        first = not n and not prev.get("journalled") and est is not None
+        if n or first:
+            finals.append({"node": node, "boots": n or 1, "first_read": first, "after": prev.get("at"),
                            "read": r, "ts": est if est is not None else r["at"],
+                           "earliest": est - SLOW_BOUND * r["uptime"] if est is not None else prev.get("at"),
                            "stamp": "uptime" if est is not None else "read_time"})
-        nodes[str(node)] = {"at": r["at"], "count": r["count"], "boot": est, "product": r["product"],
-                            "since": prev.get("since", r["at"]) if prev else r["at"]}
+        carry = not n                              # no boot: what this read lacks has not changed
+        nodes[str(node)] = {"at": r["at"], "product": r["product"] or prev.get("product", ""),
+                            "count": prev.get("count") if carry and r["count"] is None else r["count"],
+                            "boot": prev.get("boot") if carry and est is None else est,
+                            "since": prev.get("since", r["at"]),
+                            "journalled": bool(prev.get("journalled") or n or first)}
+    state["nodes"] = {k: v for k, v in nodes.items() if v["at"] >= now - FORGET_S}
+    state["read_at"] = now if len(reads) > len(failed) else last_pass
     state["history"] = [h for h in state.get("history", []) if h[0] >= now - HISTORY_S] + [
         [b["ts"], b["node"], b["read"]["reason"] or 0, b["boots"]] for b in finals if not b["first_read"]]
     return state, finals, {"at": now, "status": status, "nodes": len(reads), "read": len(reads) - len(failed),
@@ -173,23 +203,31 @@ def load(path: Path) -> dict:
                       and _number(v.get("since")) and isinstance(v.get("product"), str)},
             "history": [h for h in data.get("history") or [] if isinstance(h, list) and len(h) == 4
                         and all(_number(x) for x in h)],
+            "held": [b for b in data.get("held") or [] if isinstance(b, dict) and _count(b.get("node"))
+                     and _number(b.get("found")) and _number(b.get("ts")) and isinstance(b.get("read"), dict)],
+            "read_at": data.get("read_at") if _number(data.get("read_at")) else None,
             "next_poll_at": data.get("next_poll_at") if _number(data.get("next_poll_at")) else 0,
             "last": data.get("last") if isinstance(data.get("last"), dict) else None}
 
 
 class BootPoller:
-    """One worker for the SSH read; the capture
-    thread applies the result (Pipeline._apply_matter_boots) and then
-    commits the state, so a boot is never marked seen before it is journalled."""
+    """One worker for the SSH read; the capture thread applies the result
+    (Pipeline._apply_matter_boots) and then commits the state, so a boot is
+    never marked seen before it is journalled. A result whose journal save
+    failed is handed back (``retry``) and applied again on the next tick,
+    before any new pass."""
 
     def __init__(self, cfg):
         self.cfg, self.path = cfg, cfg.state_dir / STATE
         self.state = load(self.path)
-        self.thread = self.result = None
+        self.thread = self.result = self.retry = None
 
     def tick(self, now: float):
         """The finished pass (state, boots, summary) once; else None, and
         the next pass started when it is due."""
+        if self.retry is not None:
+            done, self.retry = self.retry, None
+            return done
         if self.thread is not None:
             if self.thread.is_alive():
                 return None

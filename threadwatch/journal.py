@@ -44,6 +44,47 @@ def guard():
             "reason": "device_guard_state_and_reset_history_not_observed"}
 
 
+BOOT_MARGIN_S = 600   # a switch this soon before a boot stamp may be the boot's own
+
+
+def protected(records) -> set:
+    """Ids kept whatever their age or the caps: each device's most recent
+    reboot, its switches from BOOT_MARGIN_S before that on, and the last
+    switch per address and layer before then (the key it booted on). A
+    device is every address its records name together: a transition's
+    physical identity, a reboot's `addresses`."""
+    parent = {}
+
+    def find(a):
+        while parent.setdefault(a, a) != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    mine = [r for r in records if r["kind"] in ("reboot", "transition") and isinstance(r.get("addr"), str)]
+    for r in mine:
+        extra = (r["context"].get("physical_identity") or {} if r["kind"] == "transition" else r["evidence"])
+        extra = extra.get("addresses") if isinstance(extra, dict) else None
+        for a in extra if isinstance(extra, list) else ():
+            if isinstance(a, str):
+                parent[find(a.lower())] = find(r["addr"].lower())
+    boots = {}
+    for r in mine:
+        d = find(r["addr"].lower())
+        if r["kind"] == "reboot" and (d not in boots or r["ts"] > boots[d]["ts"]):
+            boots[d] = r
+    keep, before = {r["id"] for r in boots.values()}, {}
+    for r in sorted(mine, key=lambda r: r["ts"]):
+        boot = boots.get(find(r["addr"].lower()))
+        if boot is None or r["kind"] != "transition":
+            continue
+        if r["ts"] >= boot["ts"] - BOOT_MARGIN_S:
+            keep.add(r["id"])
+        else:
+            before[(r["addr"], r["layer"])] = r["id"]
+    return keep | set(before.values())
+
+
 class Journal:
     def __init__(self, path: Path | None = None):
         self.path = path
@@ -65,7 +106,9 @@ class Journal:
                 records = state.get("records")
                 if not isinstance(records, list):
                     raise ValueError("invalid records")
-                self.records = [r for r in records[-MAX_RECORDS:] if self._valid(r)]
+                valid = [r for r in records if self._valid(r)]
+                tail = {r["id"] for r in valid[-MAX_RECORDS:]} | protected(valid)
+                self.records = [r for r in valid if r["id"] in tail]
                 # Points are rebuilt from validated records: hand-edited nested
                 # state cannot fabricate a prior transition or break capture.
                 self.load_status = "loaded" if len(self.records) == len(records) else "partial"
@@ -157,11 +200,18 @@ class Journal:
 
     def prune(self, now):
         before = len(self.records)
-        self.records = sorted((r for r in self.records if r["ts"] >= now - KEEP_S),
-                              key=lambda r: r["ts"])[-MAX_RECORDS:]
-        size = sum(self._sizes.get(r["id"], 0) for r in self.records)
-        while self.records and size > MAX_BYTES:
-            size -= self._sizes.get(self.records.pop(0)["id"], 0)
+        keep = protected(self.records)
+        records = sorted((r for r in self.records if r["ts"] >= now - KEEP_S or r["id"] in keep),
+                         key=lambda r: r["ts"])
+        excess = len(records) - MAX_RECORDS
+        size = sum(self._sizes.get(r["id"], 0) for r in records)
+        self.records = []
+        for r in records:                     # oldest first; the protected ones always stay
+            if r["id"] not in keep and (excess > 0 or size > MAX_BYTES):
+                excess -= 1
+                size -= self._sizes.get(r["id"], 0)
+                continue
+            self.records.append(r)
         self.ids = {r["id"] for r in self.records}
         self._sizes = {k: v for k, v in self._sizes.items() if k in self.ids}
         self._bytes = sum(self._sizes.values())
@@ -371,8 +421,12 @@ class Journal:
             return
         try:
             encoded = json.dumps(self.state(), separators=(",", ":"))
-            while len(encoded.encode()) > MAX_BYTES and self.records:
-                self.records.pop(0)
+            keep = protected(self.records)
+            while len(encoded.encode()) > MAX_BYTES:
+                oldest = next((r for r in self.records if r["id"] not in keep), None)
+                if oldest is None:
+                    break
+                self.records.remove(oldest)
                 self.dropped += 1
                 encoded = json.dumps(self.state(), separators=(",", ":"))
             self.prune(now)

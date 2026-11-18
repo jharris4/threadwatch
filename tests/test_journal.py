@@ -308,5 +308,72 @@ class JournalTest(unittest.TestCase):
             self.assertEqual(earlier[0]["sequence"], 87)
 
 
+DAY = 86400
+
+
+def switch(journal, seq, ts, addr, addresses=None):
+    """A transition whose context names the device's inventory addresses."""
+    identity = {"physical_identity": {"addresses": addresses}} if addresses else {}
+    journal.observe(addr, "mac", seq, ts, row={}, context=lambda: identity,
+                    packet=lambda: {"ts": ts}, coverage=lambda *_: unknown_coverage())
+
+
+def boot(journal, ts, addr, **extra):
+    journal.reboot({"ts": ts, "addr": addr, "source": "uptime_reset", "scope": "device",
+                    "reference": "test", **extra})
+
+
+class BootExemptionTest(unittest.TestCase):
+    """Each device's last boot, the switches since it and the key it booted
+    on outlive the 90 days and every cap; nothing else does."""
+
+    def story(self, journal):
+        switch(journal, 88, 1 * DAY, "0a00000000000001")        # an older key, superseded
+        boot(journal, 2 * DAY, "0a00000000000001")              # an older boot of the same device
+        switch(journal, 89, 3 * DAY, "0a00000000000001")        # the key it booted on
+        boot(journal, 4 * DAY, "0a00000000000001", addresses=["0a00000000000001", "0b00000000000002"])
+        switch(journal, 90, 4 * DAY - 120, "0a00000000000001")  # at the boot, logged a little after
+        switch(journal, 91, 5 * DAY, "0b00000000000002")        # since the boot, under a later address
+        switch(journal, 70, 1 * DAY, "0c00000000000003")        # a device with no boot on record
+        switch(journal, 71, 2 * DAY, "0c00000000000003")
+
+    def kept(self, journal):
+        return sorted((r["kind"], r["ts"] // DAY, r.get("new_sequence")) for r in journal.records)
+
+    PROTECTED = [("reboot", 4, None), ("transition", 3, 89), ("transition", 3, 90), ("transition", 5, 91)]
+
+    def test_the_age_filter_keeps_the_last_boot_and_what_follows_it(self):
+        journal = Journal()
+        self.story(journal)
+        journal.prune(200 * DAY)
+        self.assertEqual(self.kept(journal), self.PROTECTED)
+
+    def test_the_record_and_byte_caps_drop_only_unprotected_records(self):
+        for name, value in (("MAX_RECORDS", 4), ("MAX_BYTES", 1)):
+            with self.subTest(cap=name), patch(f"threadwatch.journal.{name}", value):
+                journal = Journal()
+                self.story(journal)
+                journal.prune(6 * DAY)
+                self.assertEqual(self.kept(journal), self.PROTECTED)
+
+    def test_save_and_load_keep_them_past_the_byte_and_record_bounds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "key-journal.json"
+            journal = Journal(path)
+            self.story(journal)
+            with patch("threadwatch.journal.MAX_BYTES", 1):
+                journal.save(6 * DAY, force=True)
+            self.assertEqual(self.kept(journal), self.PROTECTED)
+            journal = Journal(path)
+            self.story(journal)
+            for k in range(6):
+                switch(journal, k, 10 * DAY + k, "0d00000000000004")
+            journal.save(11 * DAY, force=True)
+            with patch("threadwatch.journal.MAX_RECORDS", 2):
+                loaded = Journal(path)
+            self.assertEqual(self.kept(loaded), sorted(self.PROTECTED + [("transition", 10, 4), ("transition", 10, 5)]))
+            self.assertEqual(loaded.load_status, "partial")
+
+
 if __name__ == "__main__":
     unittest.main()

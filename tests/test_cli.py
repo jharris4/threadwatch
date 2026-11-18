@@ -211,6 +211,70 @@ class RebootedTest(CliCase):
         self.assertEqual((code, err), (0, ""))
         self.assertIn("within a minute", out)
 
+    def drain(self):
+        """What the recorder does each pass: the inbox into the journal, saved, the files deleted."""
+        from threadwatch.config import Config
+        from threadwatch.crypto import Decryptor
+        from threadwatch.events import NullEventLog
+        from threadwatch.pipeline import Pipeline
+        cfg = Config(data_dir=self.d / "data", config_dir=self.d, devices_path=self.d / "devices.json")
+        pipe = Pipeline(cfg, NullEventLog(), Decryptor(network_key=bytes(16)))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            pipe._drain_journal_inbox(time.time())
+        return pipe.journal, err.getvalue()
+
+    def test_undo_cancels_the_last_entry_whether_still_queued_or_in_the_journal(self):
+        from threadwatch.journal import post
+        state = self.d / "data" / "state"
+        self.run_cli("rebooted", "side door lock", "--at", "2026-11-06T13:16:02", "--note", "battery")
+        self.run_cli("rebooted", "side door lock", "--at", "2026-11-07T09:00", "--note", "wrong device")
+        self.run_cli("rebooted", "side door sensor", "--at", "2026-11-08T09:00")
+        # Later boots of the lock that were not entered by hand: a seeded one and one read from the device.
+        later = time.mktime((2026, 11, 9, 9, 0, 0, 0, 0, -1))
+        post(state, [{"ts": later, "addr": "3e5a0c7f21b94d68", "source": "operator_action", "scope": "device",
+                      "reference": "battery change, from the notes"},
+                     {"ts": later + 60, "addr": "71d2e80b4c9a3f15", "source": "uptime_reset", "scope": "device",
+                      "reference": "Matter node 16"}], label="seed")
+        code, out, _ = self.run_cli("rebooted", "side door lock", "--undo")
+        self.assertEqual(code, 0)
+        self.assertIn("cancelling: 'Side Door Lock' rebooted 2026-11-07 09:00:00 (wrong device)", out)
+        # The entry and its undo are drained in the same pass, in the order they were queued.
+        journal, log = self.drain()
+        notes = sorted(r["evidence"]["reference"] for r in journal.records if r["kind"] == "reboot")
+        self.assertEqual(notes, ["Matter node 16", "battery change, from the notes", "threadwatch rebooted: battery",
+                                 "threadwatch rebooted: power cycle or battery change"])
+        self.assertEqual(log.count("removed the reboot of Side Door Lock at 2026-11-07 09:00:00 "
+                                   "(threadwatch rebooted: wrong device)"), 1)
+        self.assertEqual(list(self.inbox.glob("*.json")), [])
+        # Now the lock's last hand entry is in the journal file; once its undo is queued there is none left.
+        code, out, _ = self.run_cli("rebooted", "lock", "--undo")
+        self.assertIn("rebooted 2026-11-06 13:16:02 (battery)", out)
+        code, _, err = self.run_cli("rebooted", "lock", "--undo")
+        self.assertEqual(code, 1)
+        self.assertIn("nothing to undo", err)
+        self.assertEqual(len(list(self.inbox.glob("*.json"))), 1)
+        journal, log = self.drain()
+        self.assertEqual(len([r for r in journal.records if r["kind"] == "reboot"]), 3)
+        self.assertIn("removed the reboot of Side Door Lock at 2026-11-06 13:16:02", log)
+
+    def test_undo_with_nothing_to_undo_or_with_at_or_note_queues_nothing(self):
+        for args, code in ((("--undo",), 1), (("--undo", "--at", "2026-11-06T13:16"), 2),
+                           (("--undo", "--note", "battery"), 2)):
+            got, _, err = self.run_cli("rebooted", "side door lock", *args)
+            self.assertEqual(got, code, args)
+            self.assertIn("threadwatch rebooted:", err)
+        self.assertFalse(self.inbox.exists())
+        code, _, err = self.run_cli("rebooted", "side door lock", "--undo")
+        self.assertIn("no reboot of 'Side Door Lock' entered with threadwatch rebooted", err)
+
+    def test_undo_warns_when_no_recorder_on_this_host_will_take_the_file(self):
+        self.run_cli("rebooted", "side door lock")
+        code, out, err = self.run_cli("rebooted", "side door lock", "--undo")
+        self.assertEqual(code, 0)
+        self.assertIn("no recorder is running on this host", err)
+        self.assertNotIn("within a minute", out)
+
     def test_an_ambiguous_device_or_a_future_time_queues_nothing(self):
         for args in (("side door",), ("side door lock", "--at", "2099-01-01T00:00"),
                      ("side door lock", "--at", "yesterday")):

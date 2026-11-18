@@ -465,6 +465,32 @@ class InboxTest(unittest.TestCase):
         saved = Journal(cfg.state_dir / "key-journal.json")
         self.assertEqual([r["ts"] for r in saved.records if r["kind"] == "reboot"], [5 * DAY])
 
+    def test_a_removal_takes_out_only_a_reboot_entered_by_hand_and_the_file_is_taken_either_way(self):
+        from threadwatch.journal import reboot_id
+        hand = {**self.lock, "reference": "threadwatch rebooted: battery"}
+        seeded = {**self.lock, "ts": 4 * DAY}                          # operator_action, not typed by hand
+        read = {**self.lock, "ts": 3 * DAY, "source": "uptime_reset", "reference": "Matter node 16"}
+        journal = Journal()
+        journal.otbr({"records": [{"id": "s1", "ts": 2 * DAY, "kind": "service_started", "file": "f", "line": 1,
+                                   "raw": "x"}]})
+        for r in (hand, seeded, read):
+            journal.reboot(r)
+        otbr = next(r["id"] for r in journal.records if r["addr"] == "otbr:log")
+        with self.assertRaises(ValueError):
+            post(self.state, [{"remove": 5}])
+        post(self.state, [{"remove": i} for i in (reboot_id(seeded), reboot_id(read), otbr, "reboot:" + "0" * 24)])
+        taken, notes = journal.drain(self.state)
+        self.assertEqual((len(taken), len(journal.records)), (1, 4))
+        self.assertEqual([n.endswith("it is kept") for n in notes], [True, True, True, False])
+        self.assertIn("not in the journal; nothing removed", notes[3])
+        post(self.state, [{"remove": reboot_id(hand)}])
+        for path in taken:
+            path.unlink()
+        _, notes = journal.drain(self.state)
+        self.assertEqual(sorted(r["ts"] for r in journal.records), [2 * DAY, 3 * DAY, 4 * DAY])
+        self.assertIn("removed the reboot of 0e00000000000005", notes[0])
+        self.assertEqual(journal._bytes, sum(len(json.dumps(r).encode()) for r in journal.records))
+
     def test_a_record_the_journal_would_drop_is_refused_not_lost(self):
         big = {**self.lock, "attached": "x" * 70_000}
         with self.assertRaises(ValueError):

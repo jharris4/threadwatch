@@ -6,7 +6,9 @@ last boot and the switches since it from here, so pruning keeps those
 whatever their age (protected). The recorder is the only writer: it holds
 the records in memory and rewrites the file from them. Anyone else (the
 `threadwatch rebooted` command, a one-time seed) queues reboots with post()
-in the state directory's INBOX, which the recorder drains each pass. A
+in the state directory's INBOX, which the recorder drains each pass; so
+does `threadwatch rebooted --undo`, a request to remove a reboot that
+command entered (Journal.remove). A
 file that cannot be loaded (damaged, over the size bound) is not written
 over: the first save moves it aside as key-journal.unreadable-<time>.json.
 
@@ -48,9 +50,33 @@ def _id(*values):
     return hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()[:24]
 
 
+def reboot_id(evidence: dict) -> str:
+    """The id Journal.reboot gives this evidence's record."""
+    return "reboot:" + _id(evidence)
+
+
+OPERATOR = "threadwatch rebooted:"     # the reference of every reboot `threadwatch rebooted` queues
+
+
+def entered_by_hand(evidence) -> bool:
+    """A reboot queued by `threadwatch rebooted`: the only kind a removal
+    request may take out (never a boot read from a device, a seed's, or
+    the OTBR's)."""
+    return (isinstance(evidence, dict) and evidence.get("source") == "operator_action"
+            and isinstance(evidence.get("reference"), str) and evidence["reference"].startswith(OPERATOR))
+
+
+def removal(value) -> bool:
+    """An INBOX entry asking for a record to be removed, not a reboot:
+    {"remove": <record id>, ...}, queued by `threadwatch rebooted --undo`."""
+    return isinstance(value, dict) and "remove" in value
+
+
 def post(state_dir: Path, records: list[dict], label: str = "operator") -> Path:
-    """Queue reboot evidence for the recorder: every record checked as the
-    journal will check it, then one new file, written whole and renamed in."""
+    """Queue reboot evidence (or removal requests) for the recorder: every
+    entry checked as the journal will check it, then one new file, written
+    whole and renamed in. Files are named by the time they were queued and
+    drained in that order."""
     _check(records)
     d = state_dir / INBOX
     d.mkdir(parents=True, exist_ok=True)
@@ -62,10 +88,15 @@ def post(state_dir: Path, records: list[dict], label: str = "operator") -> Path:
 
 
 def _check(records) -> None:
-    """ValueError unless the journal takes every record: reboot() refuses
-    a malformed one, and add() drops one over its size bound without a word."""
+    """ValueError unless the journal takes every entry: reboot() refuses
+    a malformed one, add() drops one over its size bound without a word,
+    and a removal request names a reboot record's id."""
     probe = Journal()
     for r in records:
+        if removal(r):
+            if not (isinstance(r["remove"], str) and r["remove"].startswith("reboot:") and len(r["remove"]) <= 64):
+                raise ValueError("a removal request names no reboot record")
+            continue
         probe.reboot(r)
     if probe.dropped:
         raise ValueError("a record over the journal's 65536-byte bound")
@@ -369,10 +400,12 @@ class Journal:
         self.dirty = True
 
     def drain(self, state_dir: Path) -> tuple[list[Path], list[str]]:
-        """The queued INBOX files' reboots into the journal, oldest file
-        first: the files taken, and a note for each one set aside whole as
-        .rejected (unreadable, not a list, over INBOX_BYTES, or a record
-        the journal refuses or would drop). The caller deletes the taken
+        """The queued INBOX files' reboots and removal requests into the
+        journal, oldest file first, so an entry and its undo queued close
+        together are taken in that order: the files taken, and a note for
+        each removal and for each file set aside whole as .rejected
+        (unreadable, not a list, over INBOX_BYTES, or a record the journal
+        refuses or would drop). The caller deletes the taken
         files once saved; draining one again adds nothing, the record ids
         being their content. A file that can be neither renamed nor, by the
         caller, deleted (another user's) goes in ``inbox_stuck`` and is
@@ -396,9 +429,32 @@ class Journal:
                                  "left alone until the recorder restarts")
                 continue
             for value in values:
-                self.reboot(value)
+                if removal(value):
+                    notes.append(self.remove(value["remove"], path.name))
+                else:
+                    self.reboot(value)
             taken.append(path)
         return taken, notes
+
+    def remove(self, record_id: str, asked_by: str) -> str:
+        """Take out a reboot `threadwatch rebooted` entered, outright: no
+        record of the removal stays, so pruning and the forecast need to
+        know nothing about it. Any other record is left. The note for the
+        log says what was done."""
+        r = next((r for r in self.records if r["id"] == record_id), None)
+        if r is None:
+            return f"{asked_by} asked to remove {record_id}, which is not in the journal; nothing removed"
+        if r["kind"] != "reboot" or not entered_by_hand(r["evidence"]):
+            return (f"{asked_by} asked to remove {record_id}, which was not entered with threadwatch rebooted; "
+                    "it is kept")
+        self.records.remove(r)
+        self.ids.discard(record_id)
+        self._bytes -= self._sizes.pop(record_id, 0)
+        self.dirty = True
+        e = r["evidence"]
+        return (f"removed the reboot of {e.get('name') or r['addr']} at "
+                f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(r['ts']))} ({e['reference']}), "
+                f"as {asked_by} asked")
 
     def topology(self, addr, previous, current, ts):
         self.add({"id": _id("rloc", addr, previous, current, ts), "kind": "topology", "ts": ts,
@@ -418,7 +474,7 @@ class Journal:
                 or not isinstance(evidence.get("reference"), str) or not evidence["reference"]):
             raise ValueError("reboot evidence needs ts, addr, source (operator_action/service_log/uptime_reset), "
                              "scope (device/process/openthread_instance), and a nonempty reference")
-        self.add({"id": "reboot:" + _id(evidence), "kind": "reboot", "ts": evidence["ts"],
+        self.add({"id": reboot_id(evidence), "kind": "reboot", "ts": evidence["ts"],
                   "addr": evidence["addr"], "evidence": evidence})
 
     def inventory(self, sample):

@@ -710,9 +710,21 @@ within a minute, saves the journal, and deletes the file. A file it
 cannot take whole (not a list, a record it would refuse or drop) is
 renamed `.rejected` and named in its log. A file it can neither delete
 nor rename, because another user queued it, is named in the log once and
-left where it is. Anything
-else that needs to add reboots (a one-time seed) writes a list in the same
-format there: copy it in under another name and rename it to `.json`.
+left where it is. Anything else that needs to add reboots (a one-time
+seed) writes a list in the same format there: copy it in under another
+name and rename it to `.json`.
+
+An entry made by mistake (the wrong device, the wrong time) is taken back
+with `threadwatch rebooted "Side Door Lock" --undo`, on the same host. It
+cancels that device's most recent reboot entered with `threadwatch
+rebooted`, whether the recorder has taken it yet or not, and prints which
+one it is cancelling (the device, the time and the note). Run
+it again to cancel the one before. The recorder removes the entry from the
+journal outright, as if it had never been made, and says so in its log.
+Only entries made with `threadwatch rebooted` can be cancelled this way:
+boots read from the devices, seeded boots and the border router's are
+never touched. With nothing to cancel it says so and does nothing. It
+takes no `--at` or `--note`.
 
 The JSON has `incidents`, `devices`, and `records`. An incident keeps its
 network observation interval separately from its first sender's local

@@ -23,6 +23,33 @@ def _inventory_path(cfg) -> Path:
     return cfg.devices_path or cfg.config_dir / "devices.json"
 
 
+def _last_entered_reboot(state_dir: Path, addrs: set[str]) -> dict | None:
+    """The most recent reboot of a device (any of ``addrs``) entered with
+    `threadwatch rebooted`, in the key journal file or still waiting in its
+    inbox, and not already asked to be removed: {"id", "ts", "reference"}.
+    Read only; the recorder stays the journal's only writer."""
+    from .journal import INBOX, STATE, Journal, entered_by_hand, reboot_id, removal
+    found, removing = [], set()
+    for r in Journal(state_dir / STATE).records:
+        if r["kind"] == "reboot":
+            found.append((r["id"], r["evidence"]))
+    for p in sorted((state_dir / INBOX).glob("*.json")):
+        try:
+            values = json.loads(p.read_text())
+        except (OSError, ValueError):
+            continue
+        for v in values if isinstance(values, list) else ():
+            if removal(v):
+                removing.add(v["remove"])
+            elif isinstance(v, dict):
+                found.append((reboot_id(v), v))
+    mine = [{"id": i, "ts": e["ts"], "reference": e["reference"]} for i, e in found
+            if i not in removing and entered_by_hand(e) and isinstance(e.get("ts"), (int, float))
+            and {str(a).lower() for a in [e.get("addr"), *(e.get("addresses") if isinstance(e.get("addresses"), list)
+                                                          else [])]} & addrs]
+    return max(mine, key=lambda r: r["ts"], default=None)
+
+
 def _snapshot_ha_logs(cfg, dest: Path) -> None:
     """The HA add-on logs for a snapshot saved by hand: one progress line
     per add-on (lines, MB, elapsed) refreshed every 5 s on a tty, then the
@@ -197,7 +224,11 @@ def main(argv=None) -> int:
     p_reb.add_argument("device", help="an inventory name (or a fragment of one) or a 16-hex extended address")
     p_reb.add_argument("--at", help="when, ISO-8601, local time unless it says otherwise (default: now), "
                                     "e.g. 2026-11-06T13:16")
-    p_reb.add_argument("--note", default="power cycle or battery change", help="what was done")
+    p_reb.add_argument("--note", help="what was done (default: power cycle or battery change)")
+    p_reb.add_argument("--undo", action="store_true",
+                       help="cancel this device's most recent reboot entered with threadwatch rebooted (a wrong "
+                            "device or a wrong time): the recorder takes it out of the key journal; boots read "
+                            "from devices and seeded ones are never touched")
 
     p_br = sub.add_parser("border-routers", help="ask the LAN (mDNS) which Thread border routers it can see, "
                                                  "with their current extended addresses")
@@ -662,23 +693,40 @@ def main(argv=None) -> int:
         import sys
         from datetime import datetime
 
-        from .journal import post
+        from .journal import OPERATOR, post
         from .names import _entry_for, _norm, entry_addresses, read_inventory
+        if args.undo and (args.at is not None or args.note is not None):
+            parser.exit(2, "threadwatch rebooted: --undo takes no --at or --note\n")
         path = _inventory_path(cfg)
         try:
             entry = _entry_for(read_inventory(path), args.device, path)
             addrs = [_norm(a) for a in entry_addresses(entry)]
-            when = datetime.fromisoformat(args.at.replace("Z", "+00:00")).timestamp() if args.at else time.time()
-            if when > time.time() + 60:
-                raise ValueError(f"--at {args.at} is in the future")
             if not addrs:
                 raise ValueError(f"{entry.get('name')!r} has no address in {path.name}")
-            queued = post(cfg.state_dir, [{"ts": when, "addr": addrs[0], "addresses": addrs, "name": entry.get("name"),
-                                           "source": "operator_action", "scope": "device",
-                                           "reference": f"threadwatch rebooted: {args.note}"}])
+            if args.undo:
+                last = _last_entered_reboot(cfg.state_dir, set(addrs))
+                if last is None:
+                    raise ValueError(f"no reboot of {entry.get('name')!r} entered with threadwatch rebooted is in "
+                                     "the key journal or waiting for it; nothing to undo")
+                when = last["ts"]
+                queued = post(cfg.state_dir, [{"remove": last["id"], "name": entry.get("name"),
+                                               "requested_at": time.time()}], label="undo")
+            else:
+                when = datetime.fromisoformat(args.at.replace("Z", "+00:00")).timestamp() if args.at else time.time()
+                if when > time.time() + 60:
+                    raise ValueError(f"--at {args.at} is in the future")
+                note = args.note if args.note is not None else "power cycle or battery change"
+                queued = post(cfg.state_dir, [{"ts": when, "addr": addrs[0], "addresses": addrs,
+                                               "name": entry.get("name"), "source": "operator_action",
+                                               "scope": "device", "reference": f"{OPERATOR} {note}"}])
         except (ValueError, OSError) as exc:
             parser.exit(1, f"threadwatch rebooted: {exc}\n")
-        print(f"{entry.get('name')!r} rebooted {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(when))} -> {queued}")
+        stamp = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(when))
+        if args.undo:
+            print(f"cancelling: {entry.get('name')!r} rebooted {stamp} "
+                  f"({last['reference'][len(OPERATOR):].strip()}) -> {queued}")
+        else:
+            print(f"{entry.get('name')!r} rebooted {stamp} -> {queued}")
         # Only a recorder on this host takes the file: say so when none is
         # writing status.json here, instead of promising a minute.
         from .review import status_state
@@ -687,7 +735,8 @@ def main(argv=None) -> int:
         except (OSError, ValueError):
             status = None
         if status_state(status, time.time())[0] in ("live", "quiet"):
-            print("(the recorder adds it to the key journal within a minute)")
+            print("(the recorder takes it out of the key journal within a minute)" if args.undo
+                  else "(the recorder adds it to the key journal within a minute)")
         else:
             print("threadwatch rebooted: no recorder is running on this host, so nothing takes the file yet. It "
                   "waits for a recorder started here; if the recorder runs on another host, run this command "

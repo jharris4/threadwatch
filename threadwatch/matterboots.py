@@ -253,9 +253,22 @@ class BootPoller:
     def rejournal(self) -> None:
         """The key journal starts empty (new, lost or unreadable) while this
         state says each node's last boot is in it: every node's next read
-        journals its last boot again, as a first read does."""
+        journals its last boot again, as a first read does. That read is
+        due at once and the cleared marks are saved, so a restart before it
+        (the new journal then loads as any other) does not lose them."""
         for node in self.state.get("nodes", {}).values():
             node["journalled"] = False
+        self.state["next_poll_at"] = 0
+        self._save()
+
+    def _save(self) -> None:
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self.state))
+            tmp.replace(self.path)
+        except OSError as exc:
+            print(f"[threadwatch] matter boots: state save failed: {exc}", flush=True)
 
     def tick(self, now: float):
         """The finished pass (state, boots, summary) once; else None, and
@@ -319,11 +332,5 @@ class BootPoller:
             print(f"[threadwatch] matter boots: {summary['status']}, read {summary.get('read', 0)} of "
                   f"{summary.get('nodes', 0)} nodes" + (f", no answer from {summary['failed']}"
                                                          if summary.get("failed") else ""), flush=True)
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(self.state))
-            tmp.replace(self.path)
-        except OSError as exc:
-            print(f"[threadwatch] matter boots: state save failed: {exc}", flush=True)
+        self._save()
         return events

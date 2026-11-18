@@ -295,6 +295,28 @@ class RecorderTest(unittest.TestCase):
         self.assertEqual([(r["ts"], r["evidence"]["first_read"]) for r in boots], [(T0 - 50_000, True)])
         self.assertEqual([r for r in pipe.events.records if r["event"] == "device_rebooted"], [])
 
+    def test_a_lost_journal_is_still_read_into_after_a_restart_before_the_next_poll(self):
+        from threadwatch.crypto import Decryptor
+        from threadwatch.events import NullEventLog
+        from threadwatch.pipeline import Pipeline
+        pipe = Pipeline(self.cfg, NullEventLog(), Decryptor(network_key=bytes(16)))
+        run = Runner()
+        run.outputs.append(output(T0, {MOTION: (5, 50_000, None)}))
+        pipe._apply_matter_boots(*mb.poll(self.cfg, pipe._matter_boots.state, T0, run), T0)
+        self.assertEqual(mb.load(self.cfg.state_dir / mb.STATE)["next_poll_at"], T0 + 3600)
+        (self.cfg.state_dir / "key-journal.json").write_text("{")          # cut off by a power loss
+        pipe = Pipeline(self.cfg, NullEventLog(), Decryptor(network_key=bytes(16)))
+        pipe.journal.event({"event": "recorder_started", "ts": T0 + 60})
+        pipe.journal.save(T0 + 60, force=True)                             # the new journal is on disk
+        pipe = Pipeline(self.cfg, NullEventLog(), Decryptor(network_key=bytes(16)))    # restarted before any poll
+        self.assertEqual(pipe.journal.load_status, "loaded")
+        self.assertEqual((pipe._matter_boots.state["nodes"][str(MOTION)]["journalled"],
+                          pipe._matter_boots.state["next_poll_at"]), (False, 0))
+        run.outputs.append(output(T0 + 3600, {MOTION: (5, 53_600, None)}))
+        pipe._apply_matter_boots(*mb.poll(self.cfg, pipe._matter_boots.state, T0 + 3600, run), T0 + 3600)
+        boots = [r for r in pipe.journal.records if r["kind"] == "reboot"]
+        self.assertEqual([(r["ts"], r["evidence"]["first_read"]) for r in boots], [(T0 - 50_000, True)])
+
     def test_three_hours_with_no_node_read_is_said_once_and_so_is_the_first_read_after(self):
         from threadwatch.crypto import Decryptor
         from threadwatch.events import NullEventLog

@@ -98,6 +98,24 @@ def boot_log(records) -> list[Boot]:
     return sorted(out, key=lambda b: b.ts)
 
 
+def newest(rows, inventory) -> dict[str, dict]:
+    """Each inventory name's row from the recorder's device rows
+    (review.device_rows): the address heard last."""
+    out = {}
+    for r in sorted(rows, key=lambda r: r["last_seen"] or 0):
+        if r["name"] in inventory:
+            out[r["name"]] = r
+    return out
+
+
+def links(rows: dict[str, dict]) -> dict[str, tuple[str | None, bool]]:
+    """devices()' ``links`` from newest(): a child's parent, and whether it
+    is sleepy (a child that polls). A name with no role on record is left
+    out, so devices() takes it for a router."""
+    return {n: (r["parent"] if r["role"] == "child" else None, r["role"] == "child" and bool(r["polls"]))
+            for n, r in rows.items() if r["role"]}
+
+
 def devices(records, entries, key_stacks: dict, ha_map: dict, links: dict[str, tuple[str | None, bool]],
             otbr: str | None = None, until: float | None = None) -> list[Device]:
     """Every inventory device as the forecast takes it. ``links`` gives

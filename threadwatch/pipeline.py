@@ -466,6 +466,15 @@ class Pipeline:
             self._matter_boots = BootPoller(cfg)
             if self.journal.load_status in ("new", "unreadable"):
                 self._matter_boots.rejournal()
+        # The key forecast's stranding notice and checks (keynotice.py): a
+        # pass every KEY_FORECAST_S on a worker thread, its events emitted
+        # and its state saved by the next periodic pass.
+        self._keyfc_path = cfg.state_dir / "key-forecast.json"
+        self._keyfc_state = None if ephemeral else self._load_key_forecast()
+        self._keyfc_cache = None
+        self._keyfc_thread = None
+        self._keyfc_result = None
+        self._next_keyfc = 0.0
         # Home Assistant availability ([ha_availability]): a worker polls
         # /api/states every poll_s (and rebuilds the device map over the
         # websocket every registry_refresh_s); the next periodic pass
@@ -3882,6 +3891,8 @@ class Pipeline:
             done = self._matter_boots.tick(now)
             if done is not None:
                 self._apply_matter_boots(*done, now)
+        if not self.ephemeral:
+            self._poll_key_forecast(now)
         self._retire_listed_addresses(now)
         # Devices on another PAN (a neighbour's mesh, an unpaired device
         # announcing itself) are tracked for the report but never alerted on:
@@ -4332,6 +4343,60 @@ class Pipeline:
 
         self._haavail_thread = threading.Thread(target=run, name="ha-availability", daemon=True)
         self._haavail_thread.start()
+
+    KEY_FORECAST_S = 3600.0
+
+    def _load_key_forecast(self) -> dict | None:
+        try:
+            data = json.loads(self._keyfc_path.read_text())
+        except (OSError, ValueError):
+            return None
+        return data if isinstance(data, dict) and isinstance(data.get("ledger"), dict) else None
+
+    def _poll_key_forecast(self, now: float) -> None:
+        """Every KEY_FORECAST_S: keynotice.run on a worker thread, from
+        copies of the key journal's records, the inventory and each
+        device's parent; the pass after it ends emits its events and saves
+        its state. The remedy search takes some hundred forecasts, which is
+        why it is off the capture thread."""
+        if self._keyfc_thread is not None:
+            if self._keyfc_thread.is_alive():
+                return
+            self._keyfc_thread.join()
+            self._keyfc_thread = None
+            result, self._keyfc_result = self._keyfc_result, None
+            if isinstance(result, str):
+                print(f"[threadwatch] key forecast: {result}", file=sys.stderr, flush=True)
+            elif result is not None:
+                self._keyfc_state, events, self._keyfc_cache = result
+                for event, severity, fields in events:
+                    self._emit(event, severity, now, **fields)
+                tmp = self._keyfc_path.with_suffix(".tmp")
+                tmp.write_text(json.dumps(self._keyfc_state))
+                tmp.replace(self._keyfc_path)
+            return
+        if now < self._next_keyfc:
+            return
+        self._next_keyfc = now + self.KEY_FORECAST_S
+        from . import keylog
+        from .review import device_rows
+        entries = list(self.names.entries)
+        rows = device_rows(self.seen, self.names, self.cfg.quiet_min_rssi_dbm, now)
+        links = keylog.links(keylog.newest(rows, {e["name"] for e in entries if isinstance(e.get("name"), str)}))
+        records, state, cache = list(self.journal.records), json.loads(json.dumps(self._keyfc_state)), self._keyfc_cache
+
+        def run():
+            from . import keynotice
+            from .haavail import load_map
+            try:
+                devs = keylog.devices(records, entries, self.cfg.key_stacks, load_map(self.cfg.state_dir), links,
+                                      otbr=self.cfg.key_otbr_device)
+                self._keyfc_result = keynotice.run(state, devs, now, cache)
+            except Exception as exc:
+                self._keyfc_result = f"{type(exc).__name__}: {exc}"
+
+        self._keyfc_thread = threading.Thread(target=run, name="key-forecast", daemon=True)
+        self._keyfc_thread.start()
 
     # When an unnamed address's first registration is heard, the map is
     # rebuilt this long after it (the Matter Server has the device's new

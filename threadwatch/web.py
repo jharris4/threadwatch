@@ -200,6 +200,19 @@ LEGEND = [
      "[keys] census_delay_s after a key sequence advance: how many devices are on each generation, who is one "
      "behind (normal, and never paged), who is two or more behind (cut off), which routers trail the "
      "mesh, and who could not be judged for want of a fresh frame. Information only."),
+    ("key_stranding_forecast", "Key stranding forecast",
+     "The key guard forecast leaves a sleepy child two key generations behind its parent: which number, "
+     "when, which children, and the battery pulls and power cycles the forecast has tested that prevent it. "
+     "Warning, when first forecast, when the answer changes and when the power-cycle window opens. See "
+     "Key guard forecast in docs/ALERTING.md."),
+    ("key_stranding_cleared", "Key stranding no longer forecast",
+     "No sleepy child is forecast two behind any more. Information only."),
+    ("key_forecast_check", "Key forecast check",
+     "Recorded key switches against the forecast made before them: one per new number, one for the rest of "
+     "an hourly pass. Information only."),
+    ("key_switch_unforecast", "Key switch not forecast",
+     "A key switch taken early or with no forecast on a device whose stack is known: a boot nothing "
+     "recorded, a forced update or a wrong rule. Notice, logged only."),
     ("retransmissions", "Retransmissions elevated",
      "In one minute, more than 20% of data frames were repeats (same sender and sequence number "
      "within 2 s), and more than double the recent baseline. A repeat means the sender got no "
@@ -1271,13 +1284,8 @@ class Site:
             return self.page("keys", f'<h1>keys</h1><p class="empty">no key journal to forecast from '
                                      f'({esc(journal.load_status)})</p>')
         inventory = {e["name"] for e in names.entries if isinstance(e.get("name"), str)}
-        newest = {}
-        for r in sorted(device_rows(self.seen(), names, self.cfg.quiet_min_rssi_dbm, now),
-                        key=lambda r: r["last_seen"] or 0):
-            if r["name"] in inventory:
-                newest[r["name"]] = r     # the address heard last
-        links = {n: (r["parent"] if r["role"] == "child" else None, r["role"] == "child" and bool(r["polls"]))
-                 for n, r in newest.items() if r["role"]}
+        newest = keylog.newest(device_rows(self.seen(), names, self.cfg.quiet_min_rssi_dbm, now), inventory)
+        links = keylog.links(newest)
         unplaced = {n: ("never heard" if n not in newest else "no role on record") + ", so it is forecast as a router"
                     if n not in links else "a child with no parent on record, so nothing is judged against a parent"
                     for n in inventory if n not in links or links[n][0] is None and newest[n]["role"] == "child"}

@@ -91,6 +91,10 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `key_lag_census` | info | `sequence`, `mesh_generation`, `counts` (devices per generation, fresh ones only), `behind_parent_1`, `behind_parent_2plus`, `routers_behind` (each: `name`, `addr`, `generation`, `lag`, and `parent` / `parent_generation` or `mesh_generation`), `unknown` (no fresh frame: not judged), `suspects` (the observation's first sender, then every device whose first frame on the new generation came while its parent was still fresh on the old one, entries as in `key_sequence_advanced`), `note`; `[keys] census_delay_s` after each advance |
 | `key_lag` | warning for a child, critical for a router; notice when `episode` > 1 (reopened within `[keys] rearm_s`) | `addr`, `name`, `role`, `generation`, `parent`, `parent_addr`, `parent_generation` (a child) or `mesh_generation` (a router), `lag`, `since`, `lagged_for_s`, `rssi_dbm`, `reception`, `polls_acked`, `episode`, `since_previous_s`, `note` |
 | `key_lag_cleared` | info | `addr`, `name`, `role`, `generation`, `parent`, `parent_addr`, `parent_generation` or `mesh_generation`, `since`, `lagged_for_s`, `rejoined`, `rejoin_ts`, `note`; only after a `key_lag` went out |
+| `key_stranding_forecast` | warning | `sequence` (the number that strands), `at`, `started_by`, `two_behind` (the sleepy children), `later` (children first left two behind by a later number in the forecast), `pulls` (each child: `from` / `until` where a battery pull keeps it from being two behind, else `parent_behind` or `again` / `at`, the number that strands it after any pull), `power_cycle` (`units`, `from`, `until`, or null), `why` (`first forecast`, `changed`, `power-cycle window open`), `note`. See "Key guard forecast" below |
+| `key_stranding_cleared` | info | `sequence`, `note`: no sleepy child is forecast two behind any more |
+| `key_forecast_check` | info | `name`, `sequence`, `switches` (each `name`, `old`, `new`, `at`, `forecast_at`, `kind`: `as forecast`, `late`, `early`, `not forecast`, `at a boot` or `not seen`), `note`. One per new number, one for the rest of each hourly pass |
+| `key_switch_unforecast` | notice | `name` (when one), `switches` as above, `note`: a switch taken early or with no forecast, on a device whose stack is known |
 | `retransmission_elevation` | notice for the first elevated minute, warning once the rate has stayed up for `[retransmissions] confirm_s` (`confirmed`); notice regardless when one sender-target pair is `top_share` >= 0.5 of the retries (a chronic bad link, not a storm precursor) | `rate`, `baseline`, `addr`, `name`, `top_sender`, `top_target`, `top_share`, `confirmed`, `sustained_s`, `cause` (`rejoin_wave` when the mesh was re-attaching after a partition change inside the last five minutes), `note` |
 | `partition_or_leader_change` | warning | `previous`, `current`, each with `partition`, `leader_router` and `leader` (the router id with the device's name once the MLE layer has matched it); logged once the change has held for `[partition] settle_s` |
 | `partition_storm` | warning | `previous`, `current` (as above), `partitions` (distinct states seen), `leaders`, `changes` (flips), `since`, `until`, `duration_s`, `note`; several changes inside `[partition] settle_s`, logged as one |
@@ -908,6 +912,80 @@ none succeed. Capture continues and the ring keeps every frame, but
 everything that reads inside them (sleepy-device identity, rejoins,
 starvation, the partition) has stopped. It repeats every six hours until
 `config/credentials.toml` is updated and the recorder restarted.
+
+## Key guard forecast
+
+`key_stranding_forecast`, `key_stranding_cleared`, `key_forecast_check` and
+`key_switch_unforecast` come from the key guard forecast (`keyguard.py`,
+`keyforecast.py`, `keynotice.py`; the `/keys` page shows the same forecast).
+Once an hour the recorder works out, from the key journal's boots and key
+switches and the stack table (`[keys.stacks]`), every key switch the guard
+model predicts, and which sleepy children it leaves two behind their parent:
+the stranding `key_lag` pages after the fact.
+
+The model, per stack:
+
+- Current OpenThread (the OTBR, Nanoleaf, TIMMERFLOTTE, the locks, BILRESA,
+  and by behaviour HEIMAN, FP300, MYGGBETT, MYGGSPRAY). A boot clears the
+  switch guard and restarts the 672 h rotation timer; every switch restarts
+  the timer; only an exact +1 arms the 624 h guard; a Child ID Request or a
+  Link Accept forces a switch past an armed guard.
+- The old logic, OpenThread `7074a43e4` and `b9dcdbca4` (ALPSTUGA, Eve
+  Energy, the arre button, and by behaviour Eve Door and Eve Motion). One
+  flag and one timer: a boot clears the flag and starts the timer; the first
+  +1 after it sets the flag and leaves the timer running; a later +1 is
+  refused until the timer reaches 624 h and restarts it; a jump of two is
+  always taken. So a unit that resets and takes no +1 at that boot has a
+  number booked: it starts one itself 672 h after the boot, whatever the
+  rest of the mesh is doing.
+- Unknown stacks (the Apple TVs) and current-logic routers are taken to
+  follow every new number at once: the worst case for their children.
+
+The notice goes out when the forecast first leaves a child two behind, again
+when its answer changes, again when its power-cycle window opens, and
+`key_stranding_cleared` once nothing is two behind. Each remedy it names is
+one the forecast has tested as a hypothetical boot:
+
+- A battery pull brings the child back at its parent's key at that moment,
+  and an exact +1 arms its guard for 624 h. It is named only where the
+  parent is ahead of the child, and only for the stretch of time in which the
+  child is then never two behind in the forecast. Otherwise the note says
+  why not: the parent is never ahead before the stranding (it jumps two at
+  once), or a later number strands the child again after any pull (two more
+  numbers within 624 h).
+- A power cycle of the old-logic units with a number booked, all together,
+  moves their numbers to 672 h after the power cycle. Too early or too late
+  it books an early number instead, so the note gives the window in which
+  nothing is left two behind, and names only the units that window needs. A
+  unit ahead of its parent at the time is never named: a reboot does not
+  take a key back.
+
+The search tries a boot every 6 h from now to the stranding and finds each
+window's edges to the minute, a few hundred forecasts, on a worker thread
+and only when the journal or the parents have changed.
+
+`key_forecast_check` grades each recorded switch 75 min after it (so the
+hourly boot read can land first) against the last forecast made before it:
+as forecast within 15 min, late, at a boot on record, or not seen an hour
+after its time. `key_switch_unforecast` names the switches taken early or
+with no forecast on a device whose stack is known. Each means one of the
+model's blind spots, which have to be explained by hand:
+
+- A forced update on the current stack: a re-attach takes the parent's key
+  past an armed guard. Replayed from the 2026-10-06 state, the six such
+  switches between 11-03 and 11-15 would each have been a notice, the OTBR's
+  a late check.
+- A boot nothing recorded. The hourly Matter read sees every Matter node's
+  boot; the locks and the Apple TVs have no boot source (`threadwatch
+  rebooted` enters one by hand).
+- Switches carried over TREL, which the sniffer cannot hear.
+- An Announce-driven channel change, which restarts Thread like a boot on
+  both stacks.
+- A wrong rule, or a stack in the table that a firmware update changed.
+
+Every step past the first new number rests on the ones before it, so read a
+forecast weeks out as the direction, not a schedule; each ALPSTUGA watchdog
+reset books another number. The notice follows the forecast as it changes.
 
 ## Secrets
 

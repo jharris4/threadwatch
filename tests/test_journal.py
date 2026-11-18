@@ -323,6 +323,19 @@ def boot(journal, ts, addr, **extra):
                     "reference": "test", **extra})
 
 
+class RebootSourceTest(unittest.TestCase):
+    def test_every_listed_source_is_taken_and_another_refused(self):
+        journal = Journal()
+        for n, source in enumerate(("operator_action", "service_log", "uptime_reset", "counter_jump")):
+            journal.reboot({"ts": 10.0 + n, "addr": "0011223344556677", "source": source, "scope": "device",
+                            "reference": "test"})
+        self.assertEqual([r["evidence"]["source"] for r in journal.records],
+                         ["operator_action", "service_log", "uptime_reset", "counter_jump"])
+        with self.assertRaisesRegex(ValueError, "counter_jump"):
+            journal.reboot({"ts": 20.0, "addr": "0011223344556677", "source": "parent_request", "scope": "device",
+                            "reference": "test"})
+
+
 class BootExemptionTest(unittest.TestCase):
     """Each device's last boot, the switches since it and the key it booted
     on outlive the 90 days and every cap; nothing else does."""

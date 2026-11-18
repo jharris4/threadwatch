@@ -687,8 +687,9 @@ An add-on update can rename the container or change what it ships.
 `--json` includes all evidence and references. It reads
 `data/state/key-journal.json` and retained events, without decoding the ring
 or contacting HA. The recorder builds the journal from accepted keyfacts,
-existing events, optional OTBR inventory, archived OTBR logs and the
-Matter boots `[matter_boots]` reads. Replay-protection decisions do not
+existing events, optional OTBR inventory, archived OTBR logs, the
+Matter boots `[matter_boots]` reads, and restarts read from MLE frame
+counter jumps (`counter_jump`, docs/ALERTING.md). Replay-protection decisions do not
 read it; the key guard forecast does, so each device's last boot and the
 switches since it are kept whatever their age.
 
@@ -817,7 +818,9 @@ Confirmed operator/service evidence can be included in a report with
   "scope": "device", "reference": "maintenance log entry recording a power cycle"}]
 ```
 
-Sources are `operator_action`, `service_log`, or `uptime_reset`; scope is
+Sources are `operator_action`, `service_log`, or `uptime_reset`
+(`counter_jump` is the recorder's own, for a restart it read from the
+radio); scope is
 `device`, `process`, or `openthread_instance`. Supply the actual timestamp,
 identity and evidence reference. These declarations are external evidence,
 not independently verified device telemetry. No firmware guard duration or

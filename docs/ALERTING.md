@@ -539,8 +539,9 @@ after the previous poll. Three hours with no node read at all (the SSH
 access gone, the container renamed by an add-on update, the two hosts'
 clocks apart) is one `matter_boots_stalled` notice, and the first poll
 that reads a node again a `matter_boots_resumed`: until then
-`device_rebooted` and `reboots_climbing` see nothing. Locks and Apple TVs are not Matter nodes here;
-record their battery changes and power cycles with `threadwatch rebooted`.
+`device_rebooted` and `reboots_climbing` see nothing. Locks and Apple TVs are not Matter nodes here, so
+neither gets a `device_rebooted`: a border router's restart is read from the radio into the key journal
+(below), and a lock's battery change is recorded with `threadwatch rebooted`.
 Before 2026-10-28 the Matter Server logged each boot reason, and with
 `[matter_boots]` off the recorder still reads those lines from the
 archived hours; the Matter Server no longer writes them. The node is
@@ -562,6 +563,27 @@ can still read normal. A watchdog reset is firmware that hung. A firmware
 update's reboot or a commanded reset is info, and so is a reboot three or
 more devices share within 5 min (a power cut, or a Matter Server restart
 replaying startup events); neither counts toward a climb.
+
+The radio is a second boot source, for the key journal only: it raises no
+event. A restart of a device's Thread stack shows in its MLE frame
+counter. OpenThread saves the counter 1000 ahead of the one in use and
+resumes from the saved value at a start, so the first message after a
+restart carries a counter most of 1000 above the last one before it, where
+a running router's rises by one every half minute or so. The recorder
+writes a `counter_jump` boot when an inventory device's counter rises by
+400 or more between two messages heard in one run, under one key sequence,
+faster than 0.2 a second, with nothing blind between them. The boot is
+stamped with the second message and ranges back to the first. It covers
+what the Matter read cannot: a border router that is not a Matter node,
+whether it restarts on the same address or onto a new one (its counter
+carries over, and the boot is written once the two addresses are known to
+be one device). For a Matter node it dates the boot to the second, and the
+forecast keeps the better-dated stamp of a boot on record twice. Not
+caught: a restart while the recorder was down or blind; a device that sent
+no MLE message for over an hour or so before it came back (off the air
+that long, or a sleepy device that rarely speaks), since messages the
+sniffer missed could then be the jump; and a device that first speaks
+under another key sequence afterwards, where its counter starts again.
 
 `reboots_climbing` is a device rebooting far more than it usually does: at
 least 5 reboots in the last 24 h, and at least three times its own daily
@@ -983,8 +1005,10 @@ model's blind spots, which have to be explained by hand:
   switches between 11-03 and 11-15 would each have been a notice, the OTBR's
   a late check.
 - A boot nothing recorded. The hourly Matter read sees every Matter node's
-  boot; the locks and the Apple TVs have no boot source (`threadwatch
-  rebooted` enters one by hand).
+  boot, and a restart heard on the radio is read from the device's frame
+  counter (`counter_jump`; its limits are with `device_rebooted` under Events);
+  the locks have no boot source (`threadwatch rebooted` enters one by
+  hand).
 - Switches carried over TREL, which the sniffer cannot hear.
 - An Announce-driven channel change, which restarts Thread like a boot on
   both stacks.

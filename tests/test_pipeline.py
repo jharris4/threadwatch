@@ -3960,6 +3960,25 @@ class BorderRouterTest(unittest.TestCase):
             pipe.ingest(frame(first + i * every, addr, rssi=rssi))
         return first + (n - 1) * every
 
+    def test_a_hubs_restart_onto_a_new_address_is_a_boot_in_the_key_journal(self):
+        pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        t = time.time() - 3600
+        self.heard(pipe, self.OLD, t)
+        pipe.ingest(mle_frame(t + 20, self.OLD, 0, advertisement(7, 1), mle_counter=5000))
+        pipe._apply_border_routers([self.router(self.HOST, self.OLD)], t + 30)
+        pipe.ingest(mle_frame(t + 100, self.NEW, 0, advertisement(7, 1), mle_counter=5972))
+        pipe._apply_border_routers([self.router(self.HOST, self.NEW)], t + 110)
+        self.heard(pipe, self.NEW, t + 120)
+        self.assertEqual([r for r in pipe.journal.records if r["kind"] == "reboot"], [])     # not yet one device
+        pipe._apply_border_routers([self.router(self.HOST, self.NEW)], t + 200)
+        self.assertEqual(pipe.seen.table[self.OLD]["rotated_to"], self.NEW)
+        (boot,) = [r for r in pipe.journal.records if r["kind"] == "reboot"]
+        e = boot["evidence"]
+        self.assertEqual((boot["ts"], boot["addr"], e["source"], e["earliest"], e["jump"], e["previous_address"],
+                          e["name"], e["addresses"]),
+                         (t + 100, self.NEW, "counter_jump", t + 20, 972, self.OLD, "Living Room Apple TV",
+                          [self.NEW, self.OLD]))
+
     def test_rebooted_hub_keeps_its_name_and_the_old_address_retires(self):
         pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
         t = time.time() - 3600                              # real-clock times: the restart below judges silences by now
@@ -6720,6 +6739,124 @@ class InventoryReloadTest(unittest.TestCase):
         pipe.periodic(1_700_000_000.0)
         self.assertEqual(pipe.names.name(self.OLD), "Hall Sensor")
         self.assertEqual(self._reloads(pipe), [])
+
+
+class RestartFromCounterTest(unittest.TestCase):
+    """A `counter_jump` reboot in the key journal: a device's MLE frame
+    counter jumping by most of 1000 between two messages heard in one run
+    is a restart of its Thread stack (Pipeline._note_restart)."""
+
+    T = 1_700_000_000.0
+    NEW = "e17f3a9b2c4d5e6f"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        (d / "devices.json").write_text(json.dumps([{"name": "Hall Hub", "extendedAddress": ROUTER}]))
+        self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json")
+        self.pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _say(self, pipe, after, counter, src=ROUTER, sequence=0):
+        pipe.ingest(mle_frame(self.T + after, src, sequence, advertisement(7, 1), mle_counter=counter))
+
+    @staticmethod
+    def _boots(pipe):
+        return [r for r in pipe.journal.records if r["kind"] == "reboot"]
+
+    def test_a_jump_between_two_messages_is_one_boot_ranged_back_to_the_first(self):
+        for after, counter in ((0, 5000), (32, 5001), (68, 5994), (100, 5995)):
+            self._say(self.pipe, after, counter)
+        (boot,) = self._boots(self.pipe)
+        e = boot["evidence"]
+        self.assertEqual((boot["ts"], boot["addr"], e["source"], e["scope"], e["earliest"], e["jump"], e["name"],
+                          e["key_sequence"], e["addresses"]),
+                         (self.T + 68, ROUTER, "counter_jump", "openthread_instance", self.T + 32, 993, "Hall Hub",
+                          0, [ROUTER]))
+        self.assertEqual(e["reference"], "MLE frame counter 5001 to 5994 under key sequence 0 in 36 s")
+        from threadwatch import keylog
+        from threadwatch.keyguard import Boot
+        self.assertEqual(keylog.boot_log(self._boots(self.pipe)), [Boot(self.T + 68, earliest=self.T + 32)])
+
+    def test_the_jump_has_a_floor_and_ordinary_traffic_is_under_it(self):
+        for after, counter in ((0, 100), (30, 101), (60, 180), (90, 579)):       # +1, +79, +399
+            self._say(self.pipe, after, counter)
+        self.assertEqual(self._boots(self.pipe), [])
+        self._say(self.pipe, 120, 979)                                           # +400
+        self.assertEqual([b["evidence"]["jump"] for b in self._boots(self.pipe)], [400])
+
+    def test_a_jump_its_traffic_could_explain_is_not_a_boot(self):
+        self._say(self.pipe, 0, 100)
+        self._say(self.pipe, 7200, 1100)             # two hours unheard: 0.14 a second
+        self.assertEqual(self._boots(self.pipe), [])
+        self._say(self.pipe, 7200 + 4000, 2100)      # 0.25 a second
+        self.assertEqual(len(self._boots(self.pipe)), 1)
+
+    def test_a_device_not_in_the_inventory_is_left_alone(self):
+        self._say(self.pipe, 0, 100, src=STRANGER)
+        self._say(self.pipe, 30, 1100, src=STRANGER)
+        self.assertEqual(self._boots(self.pipe), [])
+
+    def test_a_counter_under_another_key_generation_is_not_compared(self):
+        self._say(self.pipe, 0, 5000, sequence=0)
+        self._say(self.pipe, 30, 990, sequence=1)    # the new generation's counter starts again
+        self._say(self.pipe, 60, 991, sequence=1)
+        self.assertEqual(self._boots(self.pipe), [])
+
+    def test_the_first_message_of_a_run_is_not_judged_against_the_run_before(self):
+        self._say(self.pipe, 0, 100)
+        self.pipe.seen.save()
+        again = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
+        again._blind.clear()                         # its start-up span runs to the real clock, past these stamps
+        self.assertEqual(again._mle_counter[ROUTER][0][0], 100)
+        self._say(again, 60, 1100)                   # the recorder was down in between
+        self.assertEqual(self._boots(again), [])
+        self._say(again, 90, 1101)
+        self._say(again, 120, 2090)                  # both heard in this run
+        self.assertEqual(len(self._boots(again)), 1)
+
+    def test_a_jump_across_a_blind_span_is_not_a_boot(self):
+        self._say(self.pipe, 0, 100)
+        self._say(self.pipe, 10, 101)
+        self.pipe._blind.append((self.T + 20, 30.0))
+        self._say(self.pipe, 60, 1100)
+        self.assertEqual(self._boots(self.pipe), [])
+
+    def test_a_restart_onto_a_new_address_is_a_boot_once_the_two_are_one_device(self):
+        self._say(self.pipe, 0, 5000)
+        self._say(self.pipe, 80, 5972, src=self.NEW)                 # a Parent Request, say, from an address unknown
+        self._say(self.pipe, 81, 5973, src=self.NEW)
+        self.assertEqual(self._boots(self.pipe), [])
+        for _ in range(2):                                           # said twice: one record
+            self.pipe._device_rotated(ROUTER, self.NEW, self.T + 300, "a test")
+        (boot,) = self._boots(self.pipe)
+        e = boot["evidence"]
+        self.assertEqual((boot["ts"], boot["addr"], e["earliest"], e["jump"], e["previous_address"], e["name"]),
+                         (self.T + 80, self.NEW, self.T, 972, ROUTER, "Hall Hub"))
+        self.assertEqual(sorted(e["addresses"]), sorted([ROUTER, self.NEW]))
+
+    def test_a_new_address_whose_counter_does_not_carry_over_is_no_boot(self):
+        self._say(self.pipe, 0, 5000)
+        self._say(self.pipe, 80, 12, src=self.NEW)                   # a factory reset: the counter starts again
+        self.pipe._device_rotated(ROUTER, self.NEW, self.T + 300, "a test")
+        self.assertEqual(self._boots(self.pipe), [])
+
+    def test_a_clock_step_back_moves_the_first_message_with_the_counters(self):
+        self._say(self.pipe, 0, 100)
+        self.pipe._rewind(self.T + 20 - 1800, 1800, 20.0)
+        self.assertEqual(self.pipe._mle_first[ROUTER], (0, 100, self.T - 1800))
+        self._say(self.pipe, 30 - 1800, 101)         # stamped by the corrected clock
+        self._say(self.pipe, 60 - 1800, 1090)
+        self.assertEqual([(b["ts"], b["evidence"]["earliest"]) for b in self._boots(self.pipe)],
+                         [(self.T + 60 - 1800, self.T + 30 - 1800)])
+
+    def test_a_forgotten_address_forgets_its_first_message(self):
+        self._say(self.pipe, 0, 100)
+        self.assertEqual(self.pipe._mle_first[ROUTER], (0, 100, self.T))
+        self.pipe._forget(ROUTER)
+        self.assertNotIn(ROUTER, self.pipe._mle_first)
 
 
 if __name__ == "__main__":

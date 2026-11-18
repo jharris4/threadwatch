@@ -463,16 +463,19 @@ class Journal:
                                                               "attachment_completion_unknown"}})
 
     def reboot(self, evidence):
-        """Explicit evidence supplied by an operator, never inferred from a
-        Parent Request. Scope must say device, process, or OT instance.
-        Reporting imports do not modify the recorder's journal.
+        """Explicit evidence: supplied by an operator, read from a log or an
+        uptime, or the recorder's own reading of a frame counter jump
+        (Pipeline._note_restart). Never inferred from a Parent Request.
+        Scope must say device, process, or OT instance. Reporting imports
+        do not modify the recorder's journal.
         """
         if (not isinstance(evidence, dict) or not _time(evidence.get("ts"))
                 or not isinstance(evidence.get("addr"), str)
-                or evidence.get("source") not in ("operator_action", "service_log", "uptime_reset")
+                or evidence.get("source") not in ("operator_action", "service_log", "uptime_reset", "counter_jump")
                 or evidence.get("scope") not in ("device", "process", "openthread_instance")
                 or not isinstance(evidence.get("reference"), str) or not evidence["reference"]):
-            raise ValueError("reboot evidence needs ts, addr, source (operator_action/service_log/uptime_reset), "
+            raise ValueError("reboot evidence needs ts, addr, source "
+                             "(operator_action/service_log/uptime_reset/counter_jump), "
                              "scope (device/process/openthread_instance), and a nonempty reference")
         self.add({"id": reboot_id(evidence), "kind": "reboot", "ts": evidence["ts"],
                   "addr": evidence["addr"], "evidence": evidence})

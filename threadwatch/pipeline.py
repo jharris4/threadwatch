@@ -527,6 +527,10 @@ class Pipeline:
         # _counter_advances). Memory only: after a restart the guard judges
         # by the highest counter alone until this refills.
         self._mac_recent: dict[str, dict[int | None, deque]] = {}
+        # Each address's first MLE counter accepted in this run, with its
+        # key generation and when: a counter jump is a restart only between
+        # two frames this run heard (_note_restart). Memory only.
+        self._mle_first: dict[str, tuple[int | None, int, float]] = {}
         for addr, row in self.seen.table.items():
             for key, table in (("counter", self._mac_counter), ("mle_counter", self._mle_counter)):
                 gens = {}
@@ -1301,6 +1305,8 @@ class Pipeline:
                 for seq, (counter, t) in list(gens.items()):
                     if before(t):
                         gens[seq] = (counter, t - back)
+        self._mle_first = {a: (seq, counter, t - back if before(t) else t)
+                           for a, (seq, counter, t) in self._mle_first.items()}
         # A minute of resend memory is not worth sorting out across the
         # step: the guard judges by the highest counter until it refills.
         self._mac_recent.clear()
@@ -1573,6 +1579,7 @@ class Pipeline:
         self.quiet_reported.discard(addr)
         self._pending_routers.pop(addr, None)
         self._mac_recent.pop(addr, None)
+        self._mle_first.pop(addr, None)
         # The names harvested for it go too: kept, they would outlive the
         # row in observed-names.json and be suggested for an address the
         # recorder no longer tracks.
@@ -1721,6 +1728,59 @@ class Pipeline:
                                   f"({last[0]}) under key generation {sequence} is not counted as a sighting: "
                                   "a replay of an earlier frame, or the device's counter went backwards")
         return False
+
+    # A restart of a device's Thread stack, read from its MLE frame counter.
+    # OpenThread saves the counter 1000 ahead of the one in use and saves it
+    # again as traffic goes by; at a start it resumes from the saved value.
+    # So the first message after a restart carries a counter most of 1000
+    # above the last before it, where a running device's rises by one a
+    # message: a router sends an MLE message every half minute or so.
+    RESTART_JUMP_MIN = 400      # a restart's jump: 850 to 1000 measured, several restarts unheard add up
+    RESTART_RATE_MIN = 0.2      # counts a second: below it, messages the sniffer missed could be the jump
+
+    def _note_restart(self, addr: str, sequence: int | None, before: tuple[int, float], counter: int,
+                      ts: float, previous: str | None = None) -> None:
+        """A `counter_jump` reboot in the key journal when ``addr``'s MLE
+        counter under one key generation went from ``before`` (counter,
+        when) to ``counter`` at ``ts`` by more than its traffic explains.
+        The restart lies between the two messages: the record is stamped
+        with the second and ranges back to the first. ``previous`` is the
+        address the device had before the restart, when it took a new one
+        and carried its counter over (_device_rotated).
+
+        Only an inventory device, and only two messages heard with nothing
+        blind between them: across a gap in listening a busy router's
+        unheard messages can add up to the same jump. Not caught: a restart
+        while the recorder was down or blind, one that left the device off
+        the air for over an hour or so (the rate falls under
+        RESTART_RATE_MIN), and one after which the device first speaks
+        under another key generation, where its counter starts again."""
+        jump, gap = counter - before[0], ts - before[1]
+        if (sequence is None or addr not in self.names.by_addr or jump < self.RESTART_JUMP_MIN or gap <= 0
+                or jump < self.RESTART_RATE_MIN * gap
+                or any(start < ts and before[1] < start + length for start, length in self._blind)):
+            return
+        evidence = {"ts": ts, "addr": addr, "source": "counter_jump", "scope": "openthread_instance",
+                    "reference": f"MLE frame counter {before[0]} to {counter} under key sequence {sequence} "
+                                 f"in {gap:.0f} s",
+                    "addresses": self.names.entry_addresses_of(addr), "name": self.names.name(addr),
+                    "stamp": "radio", "earliest": before[1], "jump": jump, "key_sequence": sequence}
+        if previous is not None:
+            # The inventory may list neither address beside the other: the
+            # journal joins a device's records on this list.
+            evidence["previous_address"] = previous
+            evidence["addresses"] += [a for a in self.names.entry_addresses_of(previous)
+                                      if a not in evidence["addresses"]]
+        self.journal.reboot(evidence)
+
+    def _note_rotated_restart(self, previous: str, addr: str) -> None:
+        """A restart that came back on a new address carries the old
+        address's counter over: judged once the two are known to be one
+        device, from the old address's last message to the new one's first
+        in this run."""
+        first = self._mle_first.get(addr)
+        if first is not None and first[0] in self._mle_counter.get(previous, {}):
+            self._note_restart(addr, first[0], self._mle_counter[previous][first[0]], first[1], first[2], previous)
 
     def _accept_counter(self, gens: dict, sequence: int | None, counter: int, ts: float,
                         recent: dict | None = None, who: str | None = None) -> bool:
@@ -2018,6 +2078,7 @@ class Pipeline:
         # the message itself is fresh.
         fresh_mle = False
         if who and info is not None and info.secured and info.counter is not None:
+            before = self._mle_counter.get(who, {}).get(info.key_sequence)
             fresh_mle = self._counter_advances(self._mle_counter, who, info.counter, ts, "MLE message",
                                                info.key_sequence)
             self._key_observations.append(("mle", info.key_sequence, ts, fresh_mle,
@@ -2026,6 +2087,9 @@ class Pipeline:
             live = live or fresh_mle
             if fresh_mle:
                 self._check_advertised(who, "mle", info.key_sequence, info.counter, ts)
+                first = self._mle_first.setdefault(who, (info.key_sequence, info.counter, ts))
+                if before is not None and before[1] >= first[2]:
+                    self._note_restart(who, info.key_sequence, before, info.counter, ts)
         if info is not None and info.secured and fresh_mle:
             self._apply_mle(f, info, src_for_mle)
         if srp is not None:
@@ -3128,6 +3192,7 @@ class Pipeline:
             return new_name
         name, fresh = self.names.rotate(addr, previous, evidence, now)
         self._retire_rotated(previous, addr, name, now)
+        self._note_rotated_restart(previous, addr)
         if fresh:
             label = name or addr
             fix = f'threadwatch name {addr} "{name}"' if name else f'threadwatch name {addr} "<name>"'
@@ -5547,6 +5612,7 @@ class Pipeline:
                 + ("Named from its entry; nothing to edit." if name
                    else "Not in devices.json: see the devices page."))
         self._border_router_changed = (now, name or host)
+        self._note_rotated_restart(prev, ext)
         self._emit("border_router_address_changed", "notice", now, addr=ext, name=name,
                    previous=prev, hostname=host, evidence=why, note=note)
 

@@ -1,7 +1,6 @@
 """matterboots: each Matter node's boots from its reboot count and uptime,
 read through a fixed script; made-up nodes, products and addresses."""
 
-import gzip
 import json
 import sys
 import tempfile
@@ -11,11 +10,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import tests  # noqa: F401  (the mDNS guard)
-from tests.test_halogs import journal_line
 from threadwatch import matterboots as mb
 from threadwatch import reboots
 from threadwatch.config import Config
-from threadwatch.halogs import hour_name
 
 T0 = 1_757_800_800.0            # a round UTC hour
 AIR, MOTION, PLUG = 0x10, 0x20, 0x30
@@ -50,19 +47,6 @@ def output(at, rows, done=True):
                                                                                     if done else []))}
 
 
-def resume_line(ts, node):
-    return journal_line(ts, f"\x1b[2m INFO   \x1b[0;1;90mCaseServer           \x1b[0;35m@1:{node:x}•5d67 "
-                            f"\x1b[39mResumed session with \x1b[1m@1:{node:x} \x1b[0m2↔1", "app_core_matter_server")
-
-
-def archive(root: Path, hour: float, lines=()):
-    d = root / reboots.SLUG
-    d.mkdir(parents=True, exist_ok=True)
-    with gzip.open(d / f"{hour_name(hour)}.log.gz", "wt") as fh:
-        for line in lines:
-            fh.write(line)
-
-
 class PollTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -74,7 +58,7 @@ class PollTest(unittest.TestCase):
 
     def poll(self, at, rows, **kw):
         self.run.outputs.append(rows if "output" in rows else output(at, rows, **kw))
-        self.state, finals, summary = mb.poll(self.cfg, self.state, self.root / "ha-logs", at, self.run)
+        self.state, finals, summary = mb.poll(self.cfg, self.state, at, self.run)
         return finals, summary
 
     def test_the_command_is_fixed_and_the_script_goes_on_stdin(self):
@@ -93,7 +77,7 @@ class PollTest(unittest.TestCase):
         self.assertTrue(all(b["first_read"] for b in finals))
         self.assertEqual(got[PLUG]["ts"], T0 - 1_000_000)
         self.assertAlmostEqual(got[AIR]["ts"], T0 - 1_000_000 / (1 - 0.001526), places=3)
-        self.assertEqual(got[AIR]["stamp"], "uptime")        # no archive at all: nothing to wait for
+        self.assertEqual(got[AIR]["stamp"], "uptime")
         self.assertEqual(self.state["history"], [])          # a first read is not a reboot to page on
 
     def test_a_count_change_and_an_uptime_going_back_are_each_a_boot(self):
@@ -124,35 +108,10 @@ class PollTest(unittest.TestCase):
         _, summary = self.poll(T0 + 14400, {}, done=True)
         self.assertEqual(summary["status"], "no nodes listed")
 
-    def test_an_air_monitor_waits_for_the_session_resume_line(self):
-        logs = self.root / "ha-logs"
-        archive(logs, T0)
-        self.poll(T0 + 1800, {AIR: (7, 1_000_000, 1)})
-        boot = T0 + 3700                                     # after the newest archived hour ends
-        finals, summary = self.poll(T0 + 7200, {AIR: (8, (T0 + 7200 - boot) * (1 - 0.001526) + 4, 3)})
-        self.assertEqual((finals, summary["pending"]), ([], 1))
-        archive(logs, T0 + 3600, [resume_line(boot + 2, AIR)])
-        archive(logs, T0 + 7200)
-        finals, _ = self.poll(T0 + 10800, {AIR: (8, (T0 + 10800 - boot) * (1 - 0.001526) + 4, 3)})
-        self.assertEqual([(b["stamp"], b["ts"], b["read"]["reason"]) for b in finals],
-                         [("session_resume_log", boot + 2, 3)])
-        self.assertEqual(self.state["pending"], [])
-
-    def test_a_stamp_never_waits_past_its_limit(self):
-        archive(self.root / "ha-logs", T0)
-        self.poll(T0 + 1800, {AIR: (7, 1_000_000, 1)})
-        boot = T0 + 3700
-        self.poll(T0 + 7200, {AIR: (8, (T0 + 7200 - boot) * (1 - 0.001526), 3)})
-        finals, _ = self.poll(T0 + 7200 + mb.STAMP_WAIT_S,
-                              {AIR: (8, (mb.STAMP_WAIT_S + 3500) * (1 - 0.001526), 3)})
-        self.assertEqual([b["stamp"] for b in finals], ["uptime"])
-        self.assertAlmostEqual(finals[0]["ts"], boot, places=3)
-
     def test_a_hand_broken_state_file_loads_as_nothing_known(self):
         path = self.root / mb.STATE
         path.write_text(json.dumps({"nodes": {"16": {"at": "x"}}, "pending": [None], "history": [[1, 2]]}))
-        self.assertEqual(mb.load(path), {"nodes": {}, "pending": [], "history": [], "next_poll_at": 0,
-                                         "last": None})
+        self.assertEqual(mb.load(path), {"nodes": {}, "history": [], "next_poll_at": 0, "last": None})
 
 
 class ClimbTest(unittest.TestCase):
@@ -193,7 +152,7 @@ class RecorderTest(unittest.TestCase):
         for at, rows in ((T0, {MOTION: (5, 50_000, None), PLUG: (2, 50_000, 1)}),
                          (T0 + 3600, {MOTION: (6, 600, None), PLUG: (2, 53_600, 1)})):
             run.outputs.append(output(at, rows))
-            state, finals, summary = mb.poll(self.cfg, state, self.cfg.data_dir / "ha-logs", at, run)
+            state, finals, summary = mb.poll(self.cfg, state, at, run)
             pipe._apply_matter_boots(state, finals, summary, at)
         boots = [r for r in pipe.journal.records if r["kind"] == "reboot"]
         self.assertEqual([(r["addr"], r["evidence"]["first_read"], r["ts"]) for r in boots],

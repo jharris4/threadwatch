@@ -462,9 +462,8 @@ class Pipeline:
         # Every Matter node's boots, read live ([matter_boots], matterboots.py).
         self._matter_boots = None
         if not ephemeral and cfg.boots_enabled:
-            from .halogs import archive_dir
             from .matterboots import BootPoller
-            self._matter_boots = BootPoller(cfg, archive_dir(cfg))
+            self._matter_boots = BootPoller(cfg)
         # Home Assistant availability ([ha_availability]): a worker polls
         # /api/states every poll_s (and rebuilds the device map over the
         # websocket every registry_refresh_s); the next periodic pass

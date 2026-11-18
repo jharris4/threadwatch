@@ -21,19 +21,18 @@ of several boots between two good reads only the last has a time and a
 reason (`boots` counts them all). Without a count, uptime sees only the
 last of them. A node that gives neither is not judged.
 
-The stamp: for an ALPSTUGA, the Matter Server's `CaseServer ... Resumed
-session` line for the node from RESUME_WINDOW around the boot, read from
-the archived hours once they reach past it (STAMP_WAIT_S at most); else
-the read time minus uptime, with the slow clock in CLOCKS removed.
+The stamp is the read time minus uptime, with the slow clock in CLOCKS
+removed: within a second for a boot found within the hour. The Matter
+Server's `CaseServer ... Resumed session` line after an ALPSTUGA reset is
+no better (it is the reconnect, up to 6 s after the reset by uptime) and
+would hold the notice until the hourly archive had it.
 """
 
 from __future__ import annotations
 
 import copy
-import gzip
 import json
 import math
-import re
 import threading
 import time
 from pathlib import Path
@@ -43,9 +42,6 @@ from .otbr import run_command, ssh_argv
 STATE = "matter-boots.json"
 TIMEOUT_S = 360.0                    # the whole pass; 45 nodes took about 80 s on 2026-11-17
 CLOCKS = {"ALPSTUGA": 0.001526}      # product name part -> fraction its uptime runs slow
-RESUME_STAMPED = ("ALPSTUGA",)       # products whose reset the Matter Server logs as a session resume
-RESUME_WINDOW = (-120.0, 300.0)      # that line against the boot time uptime gives
-STAMP_WAIT_S = 3 * 3600.0
 SLACK_S = 60.0                       # read latency in the boot time a read implies
 # Boots kept for the climb, which looks back reboots.LOOKBACK_S (7 days):
 # inside the 8 days reboots.json remembers a boot as logged, so a boot
@@ -82,8 +78,6 @@ ws.onopen = async () => {
   process.exit(0);
 };
 """
-
-_RESUME = re.compile(r"CaseServer\s+\S+\s+Resumed session with @\d+:([0-9a-f]+)\b")
 
 
 def _count(v) -> bool:
@@ -132,35 +126,12 @@ def boots_between(prev: dict, r: dict, est: float | None) -> int:
     return 0
 
 
-def resumes(root: Path, ests: list[float]) -> tuple[float | None, dict[int, list[float]]]:
-    """The end of the newest archived Matter Server hour, and per node the
-    CaseServer session resumes in the hours around ``ests``."""
-    from .halogs import hour_start, journal_stamp
-    from .reboots import _ANSI, SLUG
-    files = sorted((root / SLUG).glob("????????-??.log.gz")) if (root / SLUG).is_dir() else []
-    found: dict[int, list[float]] = {}
-    lo, hi = min(ests, default=0) + RESUME_WINDOW[0], max(ests, default=0) + RESUME_WINDOW[1]
-    for path in files if ests else ():
-        if not lo - 3600 <= hour_start(path.name[:11]) <= hi:
-            continue
-        try:
-            with gzip.open(path, "rt", encoding="utf-8", errors="replace") as fh:
-                for line in fh:
-                    m, ts = _RESUME.search(_ANSI.sub("", line)), journal_stamp(line)
-                    if m and ts is not None:
-                        found.setdefault(int(m.group(1), 16), []).append(ts)
-        except (OSError, EOFError):
-            continue
-    return (hour_start(files[-1].name[:11]) + 3600 if files else None), found
-
-
-def poll(cfg, state: dict, root: Path, now: float, runner=run_command) -> tuple[dict, list[dict], dict]:
-    """One pass on a copy of ``state``: the new state, the boots now stamped
-    (oldest pending first), and a summary for status.json."""
+def poll(cfg, state: dict, now: float, runner=run_command) -> tuple[dict, list[dict], dict]:
+    """One pass on a copy of ``state``: the new state, the boots found, and
+    a summary for status.json."""
     state = copy.deepcopy(state)
-    nodes, pending = state.setdefault("nodes", {}), state.setdefault("pending", [])
+    nodes, finals, failed = state.setdefault("nodes", {}), [], []
     reads, status = read(cfg, runner)
-    failed = []
     for node, r in sorted(reads.items()):
         est = boot_time(r)
         if est is None and r["count"] is None:
@@ -169,29 +140,15 @@ def poll(cfg, state: dict, root: Path, now: float, runner=run_command) -> tuple[
         prev = nodes.get(str(node))
         n = 1 if prev is None and est is not None else boots_between(prev, r, est) if prev else 0
         if n:
-            pending.append({"node": node, "boots": n, "first_read": prev is None, "est": est,
-                            "after": prev["at"] if prev else None, "read": r, "detected": now})
+            finals.append({"node": node, "boots": n, "first_read": prev is None, "after": prev["at"] if prev else None,
+                           "read": r, "ts": est if est is not None else r["at"],
+                           "stamp": "uptime" if est is not None else "read_time"})
         nodes[str(node)] = {"at": r["at"], "count": r["count"], "boot": est, "product": r["product"],
                             "since": prev.get("since", r["at"]) if prev else r["at"]}
-    def stamped(p):
-        return p["est"] is not None and any(k in p["read"]["product"] for k in RESUME_STAMPED)
-    newest, lines = resumes(root, [p["est"] for p in pending if stamped(p)])
-    finals, state["pending"] = [], []
-    for p in pending:
-        near = [t for t in lines.get(p["node"], ()) if stamped(p)
-                and p["est"] + RESUME_WINDOW[0] <= t <= p["est"] + RESUME_WINDOW[1]]
-        if near:
-            finals.append({**p, "ts": min(near), "stamp": "session_resume_log"})
-        elif (stamped(p) and newest is not None and newest < p["est"] + RESUME_WINDOW[1]
-              and now - p["detected"] < STAMP_WAIT_S):
-            state["pending"].append(p)
-        else:
-            finals.append({**p, "ts": p["est"] if p["est"] is not None else p["read"]["at"],
-                           "stamp": "uptime" if p["est"] is not None else "read_time"})
     state["history"] = [h for h in state.get("history", []) if h[0] >= now - HISTORY_S] + [
         [b["ts"], b["node"], b["read"]["reason"] or 0, b["boots"]] for b in finals if not b["first_read"]]
     return state, finals, {"at": now, "status": status, "nodes": len(reads), "read": len(reads) - len(failed),
-                           "failed": failed, "pending": len(state["pending"])}
+                           "failed": failed}
 
 
 def climb_scan(state: dict, now: float) -> dict:
@@ -214,8 +171,6 @@ def load(path: Path) -> dict:
     nodes = data.get("nodes") if isinstance(data.get("nodes"), dict) else {}
     return {"nodes": {k: v for k, v in nodes.items() if isinstance(v, dict) and _number(v.get("at"))
                       and _number(v.get("since")) and isinstance(v.get("product"), str)},
-            "pending": [p for p in data.get("pending") or [] if isinstance(p, dict) and _count(p.get("node"))
-                        and _number(p.get("detected")) and isinstance(p.get("read"), dict)],
             "history": [h for h in data.get("history") or [] if isinstance(h, list) and len(h) == 4
                         and all(_number(x) for x in h)],
             "next_poll_at": data.get("next_poll_at") if _number(data.get("next_poll_at")) else 0,
@@ -223,12 +178,12 @@ def load(path: Path) -> dict:
 
 
 class BootPoller:
-    """One worker for the SSH read and the archive search; the capture
+    """One worker for the SSH read; the capture
     thread applies the result (Pipeline._apply_matter_boots) and then
     commits the state, so a boot is never marked seen before it is journalled."""
 
-    def __init__(self, cfg, archive_root: Path):
-        self.cfg, self.root, self.path = cfg, archive_root, cfg.state_dir / STATE
+    def __init__(self, cfg):
+        self.cfg, self.path = cfg, cfg.state_dir / STATE
         self.state = load(self.path)
         self.thread = self.result = None
 
@@ -247,7 +202,7 @@ class BootPoller:
 
         def run():
             try:
-                self.result = poll(self.cfg, state, self.root, time.time())
+                self.result = poll(self.cfg, state, time.time())
             except Exception as exc:
                 self.result = (state, [], {"at": time.time(), "status": f"failed: {type(exc).__name__}: {exc}"})
 

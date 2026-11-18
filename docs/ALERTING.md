@@ -100,7 +100,7 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `leader_resumed` | info | `partition`, `leader_router`, `leader`, `addr`, `name`, `since`, `stalled_for_s`, `note`; closes a `leader_stalled` |
 | `srp_refused` | warning | `addr`, `name`, `rcode`, `rcode_name`, `refusals`, `since`, `refused_for_s`, `accepted_ts` (the last accepted registration, if one was heard), `server` (the anycast locator answered from, when readable), `note`; once per streak |
 | `srp_accepted` | info | `addr`, `name`, `refusals`, `since`, `refused_for_s`, `server`, `note`; only after an `srp_refused` went out |
-| `device_rebooted` | notice; info for a planned reboot (a firmware update, a commanded reset) or one shared by three or more devices within 5 min | `addr` (null for a Matter node the `[ha_availability]` map does not have), `name`, `node_id`, `reason` (Matter BootReason, 0-6; 0 when the device does not report one), `reason_name`, `crowd`, `boots` (how many the reboot count says fell since the read before; only the last is dated), `note`; dated when the device booted, up to `[matter_boots] poll_s` (an hour) before it is logged here, up to three hours for an air quality monitor whose stamp waits for the Matter Server log |
+| `device_rebooted` | notice; info for a planned reboot (a firmware update, a commanded reset) or one shared by three or more devices within 5 min | `addr` (null for a Matter node the `[ha_availability]` map does not have), `name`, `node_id`, `reason` (Matter BootReason, 0-6; 0 when the device does not report one), `reason_name`, `crowd`, `boots` (how many the reboot count says fell since the read before; only the last is dated), `note`; dated when the device booted, up to `[matter_boots] poll_s` (an hour) before it is logged here |
 | `reboots_climbing` | warning | `addr`, `name`, `node_id`, `reboots_24h`, `baseline_per_day`, `baseline_h` (the hours the average is over: archived, or since the first boot read), `reasons` (count per `reason_name`), `since` (the first reboot in the 24 h), `muted`, `note`; once per climb |
 | `credentials_stale` | warning | `failed`, `note` |
 | `clock_step` | info | `step_s` (signed), `note`. The host clock jumped, NTP correcting a boot without an RTC. Forward: silences spanning the jump are not counted against any device. Backward: every timestamp the recorder holds, `last-seen.json` included, is moved back with it |
@@ -521,8 +521,7 @@ uptime and boot reason (General Diagnostics) each `poll_s`, an hour by
 default, through a fixed read-only script in the Matter Server container
 over the `[otbr]` SSH access. A count that changed, or an uptime that went
 back, is a boot, dated by the uptime (an air quality monitor's clock runs
-0.15% slow and that is removed), or for an air quality monitor by the
-Matter Server's session-resume line once the hourly archive has it. A
+0.15% slow and that is removed). A
 failed poll or a node that does not answer loses no boot while the count
 is readable: the next good read compares with the last good one, and
 `boots` says how many fell between, though only the last has a time and a

@@ -576,7 +576,8 @@ class Site:
         crypto = f'{(st.get("crypto") or {}).get("mac_decrypted", 0):,} decrypted'
         return (f'<header><a class="brand" href="/">threadwatch</a>'
                 f'<nav><a href="/">today</a> &nbsp; <a href="/devices">devices</a> &nbsp; '
-                f'<a href="/visitors">visitors</a> &nbsp; <a href="/snapshots">snapshots</a> &nbsp; '
+                f'<a href="/visitors">visitors</a> &nbsp; <a href="/keys">keys</a> &nbsp; '
+                f'<a href="/snapshots">snapshots</a> &nbsp; '
                 f'<a href="/status">status</a> &nbsp; <a href="/help">what these mean</a></nav>'
                 f'<span class="status">{live}{storm} &middot; ch {esc(st.get("channel"))} &middot; '
                 f'<b>{st.get("frames_total", 0):,}</b> frames &middot; {st.get("devices_tracked", 0)} devices '
@@ -1251,6 +1252,116 @@ class Site:
                   'quiet, and a phone leaving is not a failure.</p>')
         return self.page("visitors", f'<h1>visitors</h1>{note}{table}')
 
+    def keys_page(self) -> str:
+        """The key guard forecast (keyforecast.py), worked out afresh from
+        the key journal on each load: the next two new key numbers, every
+        sleepy child it leaves two behind its parent, each device's guard
+        and rotation timer, and what it cannot forecast. Parents and who is
+        sleepy (a child that polls) come from the recorder's device rows; a
+        device they give no role or parent is listed, since keylog takes it
+        for a router. A switch at the start itself is shown as due now."""
+        from . import keyforecast as kf
+        from . import keylog
+        from .haavail import load_map
+        from .journal import STATE, Journal
+        now = time.time()
+        names = self.names()
+        journal = Journal(self.cfg.state_dir / STATE)
+        if journal.load_status not in ("loaded", "partial") or not journal.records:
+            return self.page("keys", f'<h1>keys</h1><p class="empty">no key journal to forecast from '
+                                     f'({esc(journal.load_status)})</p>')
+        inventory = {e["name"] for e in names.entries if isinstance(e.get("name"), str)}
+        newest = {}
+        for r in sorted(device_rows(self.seen(), names, self.cfg.quiet_min_rssi_dbm, now),
+                        key=lambda r: r["last_seen"] or 0):
+            if r["name"] in inventory:
+                newest[r["name"]] = r     # the address heard last
+        links = {n: (r["parent"] if r["role"] == "child" else None, r["role"] == "child" and bool(r["polls"]))
+                 for n, r in newest.items() if r["role"]}
+        unplaced = {n: ("never heard" if n not in newest else "no role on record") + ", so it is forecast as a router"
+                    if n not in links else "a child with no parent on record, so nothing is judged against a parent"
+                    for n in inventory if n not in links or links[n][0] is None and newest[n]["role"] == "child"}
+        otbr = self.cfg.key_otbr_device
+        devs = keylog.devices(journal.records, names.entries, self.cfg.key_stacks, load_map(self.cfg.state_dir),
+                              links, otbr=otbr)
+        fc = kf.forecast(devs, now)
+        dev = {d.name: d for d in devs}
+
+        def stamp(ts):
+            return time.strftime("%m-%d %H:%M:%S", time.localtime(ts)) if ts is not None else "-"
+
+        def at(ts, label="due now"):    # a step or stranding at the start: the model has it happen already
+            return f'<span class="warn">{label}</span>' if ts == fc.start else stamp(ts)
+
+        def link(n):
+            return f'<a href="/device/{quote(n, safe="")}">{esc(n)}</a>'
+
+        warn = []
+        if otbr is None or otbr not in inventory:
+            warn.append(("<code>[keys] otbr_device</code> is not set" if otbr is None else
+                         f'<code>[keys] otbr_device</code> names {esc(otbr)}, which is not in devices.json')
+                        + ": the OTBR's key counter and boots from the [otbr] inventory are left out, so it "
+                          "is forecast from its frames alone")
+        if fc.cut:
+            warn.append(f'the forecast was cut short at {stamp(fc.end)} after {len(fc.numbers)} new numbers, each '
+                        f'within 624 h of the last: nothing after that is forecast')
+        warn += [f'{link(n)}: own rotation was due {stamp(t)} and is not on record (a boot was missed or a rule '
+                 f'is wrong), so it is not fired' for n, t in fc.overdue]
+        warn += [f'{link(n)}: {why}' for n, why in sorted(unplaced.items())]
+        head = (f'<p class="muted">From now, {stamp(fc.start)}, to {stamp(fc.end)}, by the guard model '
+                f'(keyguard.py) on the key journal ({len(journal.records):,} records, newest '
+                f'{stamp(max(r["ts"] for r in journal.records))}). It cannot see forced updates, switches '
+                f'carried over TREL, or boots nothing logged: each shows up later as a miss.</p>'
+                + "".join(f'<p class="warn">{w}</p>' for w in warn))
+        trs = [f'<tr><td class="n">{s.new}</td><td>{at(s.ts)}</td><td>{link(s.name)} <span class="muted">'
+               f'{esc(s.why)}</span></td><td class="n">'
+               f'{sum(x.ts == s.ts and x.new == s.new for x in fc.steps) - 1}</td>'
+               f'<td class="n">{sum(x.ts == s.ts for x in fc.stranded)}</td></tr>' for s in fc.numbers[:2]]
+        numbers = ('<table class="keys"><tr><th>number</th><th>due</th><th>started by</th><th>follow at once</th>'
+                   f'<th>left two behind</th></tr>{"".join(trs)}</table>' if trs
+                   else '<p class="empty">no new number within the forecast</p>')
+        now_steps = [s for s in fc.steps if s.ts == fc.start]
+        if now_steps:
+            numbers += ('<p class="muted">Due now: each hears a higher key it would take at once by the model. '
+                        'One still behind a while later has not been reached yet, or a rule is wrong: ' + ", ".join(
+                            f'{link(s.name)} {s.old}&rarr;{s.new}' for s in now_steps) + '</p>')
+        trs = [f'<tr><td>{at(x.ts, "now")}</td><td>{link(x.name)}</td><td class="n">{x.key}</td>'
+               f'<td>{link(x.parent)}</td><td class="n">{x.parent_key}</td></tr>' for x in fc.stranded]
+        risk = ('<table class="keys"><tr><th>from</th><th>sleepy child</th><th>on</th><th>parent</th>'
+                f'<th>parent on</th></tr>{"".join(trs)}</table>' if trs
+                else '<p class="empty">no sleepy child left two behind within the forecast</p>')
+
+        def opens(n):
+            g = fc.guards[n]
+            return (g.guard_open_at if g.guard == "until" else -1 if g.guard == "open" else float("inf"), n)
+        trs = []
+        for n in sorted(fc.guards, key=opens):
+            g, d = fc.guards[n], dev[n]
+            boot = g.boot or max(d.boots, key=lambda b: b.ts, default=None)
+            if g.guard == "until" and g.guard_open_at > now:
+                guard = f'closed <span class="muted">until {stamp(g.guard_open_at)}</span>'
+            elif g.guard == "until":
+                guard = f'<span class="ok">open</span> <span class="muted">since {stamp(g.guard_open_at)}</span>'
+            else:
+                guard = '<span class="ok">open</span>' if g.guard == "open" else '<span class="muted">unknown</span>'
+            rotation = stamp(g.rotation_at) + (f' <span class="muted">and {stamp(g.second_rotation_at)}</span>'
+                                               if g.second_rotation_at else "")
+            trs.append(f'<tr><td>{link(n)}</td><td class="n">{esc(g.key if g.key is not None else "-")}</td>'
+                       f'<td>{esc(", ".join(x for x in d.stack[:2] if x))}</td>'
+                       f'<td class="t">{stamp(boot.ts) if boot else "-"}'
+                       + (f'<small>range {stamp(boot.lo)} to {stamp(boot.hi)}</small>' if boot and boot.hi > boot.lo
+                          else "") + f'</td><td>{guard}</td><td class="t">{rotation}</td>'
+                       f'<td>{esc(g.confidence)}<br><span class="muted">{esc("; ".join(g.reasons))}</span></td></tr>')
+        table = ('<table><tr><th>device</th><th>key</th><th>stack</th><th>last boot</th><th>guard</th>'
+                 f'<th>own rotation</th><th>confidence</th></tr>{"".join(trs)}</table>')
+        unknown = "".join(f'<li>{link(n)} <span class="muted">' + esc(
+            "no key on record" if fc.guards[n].key is None else f'stack unknown: {dev[n].stack[2]}')
+            + '</span></li>' for n in fc.unknown)
+        return self.page("keys", f'<h1>keys</h1>{head}<h2>next new numbers</h2>{numbers}'
+                                 f'<h2>left two behind</h2>{risk}<h2>every device, by when its guard opens</h2>'
+                                 f'{table}<h2>nothing forecast</h2>'
+                                 + (f'<ul>{unknown}</ul>' if unknown else '<p class="empty">none</p>'))
+
     def help_page(self) -> str:
         sev = ('<div class="card"><b>Severities.</b> '
                '<span class="sev info">info</span> bookkeeping &middot; '
@@ -1363,6 +1474,8 @@ class Site:
             return 200, "text/html; charset=utf-8", self.snapshots_page().encode()
         if path == "/visitors":
             return 200, "text/html; charset=utf-8", self.visitors_page().encode()
+        if path == "/keys":
+            return 200, "text/html; charset=utf-8", self.keys_page().encode()
         if path.startswith("/device/"):
             target = unquote(path[len("/device/"):]).strip()
             if not target or len(target) > 100:

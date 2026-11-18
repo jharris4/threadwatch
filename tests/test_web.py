@@ -720,5 +720,115 @@ class VisitorsPageTest(unittest.TestCase):
             self.assertIn('<p class="empty">no visitors yet</p>', Site(cfg).visitors_page())
 
 
+class KeysPageTest(unittest.TestCase):
+    """/keys: the key guard forecast from the journal, read-only. Made-up
+    mesh: an old-logic router that booted on the top key and so fires
+    twice an hour apart, its sleepy child whose guard is closed (two
+    behind at the second firing), a router one behind with its guard open
+    (moved at the start: due now), one whose own rotation is overdue, and
+    an inventory device never heard."""
+
+    HALL, PORCH, SHED, GARDEN, ATTIC = (f"ab0000000000000{n}" for n in range(1, 6))
+    NAMES = {HALL: "Hall Air Monitor", PORCH: "Porch Sensor", SHED: "Shed Plug", GARDEN: "Garden Plug",
+             ATTIC: "Attic Lamp"}
+
+    @staticmethod
+    def moved(addr, ts, old, new, last=None):
+        return {"id": f"t{addr}{new}{ts}", "kind": "transition", "addr": addr, "layer": "mac", "ts": ts,
+                "new_sequence": new, "old_sequence": old, "last_old_observation_ts": last, "context": {},
+                "coverage": {}, "packet": None, "source_peer": None, "candidate_update_path": None,
+                "transport": None, "update_class": None, "link_reestablishment": None,
+                "observation_kind": "baseline" if old is None else "transition"}
+
+    @staticmethod
+    def booted(addr, ts):
+        return {"id": f"r{addr}{ts}", "kind": "reboot", "addr": addr, "ts": ts,
+                "evidence": {"ts": ts, "addr": addr, "source": "operator_action", "scope": "device",
+                             "reference": "test"}}
+
+    def site(self, d, records, otbr=None):
+        from threadwatch import stacks
+        from threadwatch.web import Site
+        (d / "devices.json").write_text(json.dumps([{"name": n, "extendedAddress": a} for a, n in self.NAMES.items()]))
+        cfg = Config(data_dir=d / "data", devices_path=d / "devices.json", key_otbr_device=otbr,
+                     key_stacks=stacks.parse({"devices": {"Hall Air Monitor": "old, reported",
+                                                          "Porch Sensor": "current, reported",
+                                                          "Shed Plug": "old, reported",
+                                                          "Garden Plug": "old, reported"}}))
+        cfg.state_dir.mkdir(parents=True, exist_ok=True)
+        if records is not None:
+            (cfg.state_dir / "key-journal.json").write_text(json.dumps({"version": 1, "records": records}))
+        now = time.time()
+        rows = {self.HALL: "0400", self.PORCH: "0401", self.SHED: "0800", self.GARDEN: "0c00"}
+        (cfg.state_dir / "last-seen.json").write_text(json.dumps({
+            a: {"first_seen": now - 86400, "last_seen": now - 30, "frames": 50, "rloc16": r, "rloc16_ts": now - 60,
+                "polls": 12 if a == self.PORCH else 0, "types": {}} for a, r in rows.items()}))
+        return Site(cfg)
+
+    def test_numbers_strandings_due_now_overdue_and_the_unplaced_are_on_the_page(self):
+        day, hour = 86400, 3600
+        now = time.time()
+        hall_boot = now - 10 * day
+        records = [self.moved(self.HALL, hall_boot - day, None, 5), self.booted(self.HALL, hall_boot),
+                   self.moved(self.PORCH, now - 31 * day, None, 4), self.booted(self.PORCH, now - 30 * day),
+                   self.moved(self.PORCH, now - day, 4, 5, last=now - day - 30),
+                   self.moved(self.SHED, now - 20 * day, None, 4), self.booted(self.SHED, now - day),
+                   self.moved(self.GARDEN, now - 31 * day, None, 5), self.booted(self.GARDEN, now - 30 * day)]
+
+        def stamp(ts):
+            return time.strftime("%m-%d %H:%M:%S", time.localtime(ts))
+        with tempfile.TemporaryDirectory() as tmp:
+            site = self.site(Path(tmp), records)
+            status, ctype, raw = site.respond("/keys")
+            body = raw.decode()
+        self.assertEqual((status, ctype), (200, "text/html; charset=utf-8"))
+        self.assertIn('<a href="/keys">keys</a>', body)
+        first, second = hall_boot + 672 * hour, hall_boot + 673 * hour
+        hall = '<a href="/device/Hall%20Air%20Monitor">Hall Air Monitor</a>'
+        # 6 from the router's own rotation, Garden Plug following; 7 an hour
+        # later, Shed Plug jumping and Garden Plug following, the child stranded.
+        self.assertIn(f'<td class="n">6</td><td>{stamp(first)}</td><td>{hall} <span class="muted">own rotation'
+                      '</span></td><td class="n">1</td><td class="n">0</td>', body)
+        self.assertIn(f'<td class="n">7</td><td>{stamp(second)}</td><td>{hall} <span class="muted">own rotation, '
+                      'second firing</span></td><td class="n">2</td><td class="n">1</td>', body)
+        self.assertIn(f'<tr><td>{stamp(second)}</td><td><a href="/device/Porch%20Sensor">Porch Sensor</a></td>'
+                      f'<td class="n">5</td><td>{hall}</td><td class="n">7</td></tr>', body)
+        # One behind with the guard open: moved at the start, so due now, not a time.
+        self.assertIn('Shed Plug</a> 4&rarr;5', body)
+        self.assertIn('Due now', body)
+        self.assertIn(f'Garden Plug</a>: own rotation was due {stamp(now - 2 * day)}', body)
+        self.assertIn('Attic Lamp</a>: never heard, so it is forecast as a router', body)
+        self.assertIn('Attic Lamp</a> <span class="muted">no key on record</span></li>', body)
+        self.assertIn("<code>[keys] otbr_device</code> is not set", body)
+        self.assertNotIn("cut short", body)
+        table = body[body.index("every device, by when its guard opens"):]
+        order = [table.index(f'>{n}</a>') for n in ("Garden Plug", "Hall Air Monitor", "Shed Plug", "Porch Sensor",
+                                                    "Attic Lamp")]
+        self.assertEqual(order, sorted(order))      # open, then by opening time, then unknown
+        self.assertIn(f'closed <span class="muted">until {stamp(now - day + 624 * hour)}</span>', table)
+        self.assertIn(f'{stamp(first)} <span class="muted">and {stamp(second)}</span>', table)
+
+    def test_the_otbr_line_names_a_device_or_the_page_says_so(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            records = [self.moved(self.HALL, time.time() - 86400, None, 5)]
+            body = self.site(Path(tmp), records, otbr="Cellar Router").keys_page()
+            self.assertIn("<code>[keys] otbr_device</code> names Cellar Router, which is not in devices.json", body)
+            body = self.site(Path(tmp), records, otbr="Attic Lamp").keys_page()
+            self.assertNotIn("otbr_device", body)
+
+    def test_a_child_already_two_behind_reads_now_not_a_time(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            t = time.time() - 86400
+            records = [self.moved(self.HALL, t, None, 5), self.moved(self.PORCH, t, None, 3)]
+            body = self.site(Path(tmp), records).keys_page()
+        self.assertIn('<tr><td><span class="warn">now</span></td><td><a href="/device/Porch%20Sensor">Porch Sensor</a>'
+                      '</td><td class="n">3</td>', body)
+
+    def test_no_journal_is_said_not_forecast(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            body = self.site(Path(tmp), None).keys_page()
+        self.assertIn('<p class="empty">no key journal to forecast from (new)</p>', body)
+
+
 if __name__ == "__main__":
     unittest.main()

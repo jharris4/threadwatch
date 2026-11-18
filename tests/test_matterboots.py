@@ -317,6 +317,18 @@ class RecorderTest(unittest.TestCase):
         boots = [r for r in pipe.journal.records if r["kind"] == "reboot"]
         self.assertEqual([(r["ts"], r["evidence"]["first_read"]) for r in boots], [(T0 - 50_000, True)])
 
+    def test_a_recorder_running_behind_does_not_poll_again_before_the_next_poll_is_due(self):
+        import time
+
+        from threadwatch.crypto import Decryptor
+        from threadwatch.events import NullEventLog
+        from threadwatch.pipeline import Pipeline
+        pipe = Pipeline(self.cfg, NullEventLog(), Decryptor(network_key=bytes(16)))
+        wall = time.time()
+        pipe._matter_boots.state["next_poll_at"] = wall + 3500              # a pass began 100 s ago
+        pipe.periodic(wall - 900)                                           # the frames are 15 min behind
+        self.assertIsNone(pipe._matter_boots.thread)
+
     def test_three_hours_with_no_node_read_is_said_once_and_so_is_the_first_read_after(self):
         from threadwatch.crypto import Decryptor
         from threadwatch.events import NullEventLog

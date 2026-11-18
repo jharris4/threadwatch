@@ -3953,7 +3953,10 @@ class Pipeline:
                 self.journal.inventory(samples[-1])
                 self._check_router_set(samples, now)
         if self._matter_boots is not None:
-            done = self._matter_boots.tick(now)
+            # Due by this host's clock, which the poller's schedule is kept
+            # in: ``now`` is the frame clock, and with the recorder behind
+            # every pass would be followed at once by another.
+            done = self._matter_boots.tick(time.time())
             if done is not None:
                 self._apply_matter_boots(*done, now)
         if not self.ephemeral:

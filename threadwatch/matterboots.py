@@ -272,7 +272,8 @@ class BootPoller:
 
     def tick(self, now: float):
         """The finished pass (state, boots, summary) once; else None, and
-        the next pass started when it is due."""
+        the next pass started when it is due. ``now`` is this host's clock,
+        as commit's schedule is, not the frame clock."""
         if self.retry is not None:
             done, self.retry = self.retry, None
             return done

@@ -478,9 +478,19 @@ it up if you care about the history; nothing else holds it.
                              still pending (attempts, last error) and the hours lost (back to
                              [record] keep_hours), plus the outage in progress, so a restart
                              carries on where the archive stopped
-        reboots.json         with [ha_logs] archive: the Matter node reboots already logged (a
-                             week back) and the devices whose climb has paged, so a restart
-                             neither logs a reboot twice nor pages the same climb again
+        reboots.json         with [matter_boots], or [ha_logs] archive: the Matter node reboots
+                             already logged (a week back) and the devices whose climb has paged,
+                             so a restart neither logs a reboot twice nor pages the same climb again
+        matter-boots.json    with [matter_boots]: each node's last read (reboot count, uptime, the
+                             boot time they give), the boots of the last week, a boot waiting for
+                             its node's address, and when the next poll is due
+        key-journal.json     the key journal: key switches, boots and the events around them, 90
+                             days, and each device's last boot and the switches since it whatever
+                             their age ("Key-transition journal", below)
+        journal-inbox/       reboots queued for the key journal by threadwatch rebooted or a seed;
+                             the recorder takes each file within a minute and deletes it
+        key-forecast.json    the key forecast's hourly pass: the stranding notice last sent, and
+                             each forecast switch still to be checked against the record
         ha-map.json          with [ha_availability]: HA device id -> extended address, HA name, the
                              inventory's name for it, and the entities whose state counts; rebuilt
                              over the websocket once an hour and cached so a restart polls at once;

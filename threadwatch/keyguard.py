@@ -1,6 +1,6 @@
 """One device's key switch guard and rotation timer, worked out from its
 stack, its boots and its key switches. A pure model: no file, network or
-clock access. Nothing in the recorder calls it yet; the mesh forecast will.
+clock access. The mesh forecast (keyforecast.py) is built on it.
 
 Two key logics are in the field (stacks.py says which a device runs).
 

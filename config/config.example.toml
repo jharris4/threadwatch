@@ -138,6 +138,41 @@ rearm_s = 3600             # 60 min
 # keysequence guardtime (624 h by default), which is a different setting.
 # rotation_hours = 672
 
+# Which OpenThread key logic each device runs, for the key guard forecast.
+# "old" is OpenThread before the 2024-03 key switch guard fix (a +1 taken
+# with the guard clear leaves the rotation timer running); "current" has
+# the fix. Each entry also says how that is known: reported (the device
+# reports an OpenThread commit in network diagnostic TLV 28), behaviour
+# (its recorded key switches fit only that logic) or assumed (neither).
+# "unknown" alone forecasts nothing for the device itself.
+# Models are keyed by Home Assistant's model and firmware version
+# (sw_version) exactly as HA reports them. A version not listed is
+# unknown, so a firmware update makes a device unknown until it is
+# checked; threadwatch doctor names every such device.
+[keys.stacks.models]
+"ALPSTUGA air quality monitor" = { "1.0.26" = "old, reported" }          # 7074a43e4
+"Eve Energy 20EBU4101" = { "3.5.0" = "old, reported" }                   # b9dcdbca4
+"Smart Button" = { "1.0.0+0" = "old, reported" }                         # arre, b9dcdbca4
+"Eve Door 20EBN9901" = { "3.2.1" = "old, behaviour" }                    # no TLV 28
+"Eve Motion 20EBY9901" = { "3.2.1" = "old, behaviour" }                  # no TLV 28
+"TOFSMYGGA plug outdoor" = { "1.4.8" = "old, assumed" }                  # no TLV 28, one unit
+"Essentials A19/A60" = { "5.1.45" = "current, reported" }                # Nanoleaf, fb0446f53
+"Essentials GU10" = { "5.1.45" = "current, reported" }                   # Nanoleaf, fb0446f53
+"TIMMERFLOTTE temp/hmd sensor" = { "1.2.2" = "current, reported" }       # 61e43cffb
+"BILRESA dual button" = { "1.9.15" = "current, reported" }               # de0739239
+"Smoke sensor(S1)" = { "1.8" = "current, behaviour" }                    # HEIMAN, no commit
+"CO sensor" = { "1.5" = "current, behaviour" }                           # HEIMAN, no commit
+"Presence Multi-Sensor FP300" = { "1.1.3.8" = "current, behaviour" }     # Aqara, no commit
+"MYGGBETT door/window sensor" = { "1.1.6" = "current, behaviour" }       # no commit
+"MYGGSPRAY wrlss mtn sensor" = { "1.1.6" = "current, behaviour" }        # no commit
+
+# Devices Home Assistant does not hold (border routers, HomeKit-only
+# locks), by inventory name. Nothing reads their firmware version, so an
+# update does not make them unknown; recheck them by hand after one.
+# [keys.stacks.devices]
+# "Side Door Lock" = "current, reported"
+# "Hall Border Router" = "unknown"
+
 [otbr]
 # Optional read-only inventory from the Home Assistant host, over SSH.
 # The recorder user needs a trusted host key and noninteractive docker access.

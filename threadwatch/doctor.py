@@ -658,6 +658,28 @@ def check_ha_availability(cfg, now: float | None = None) -> list[Check]:
     if empty:
         out.append((WARN, "ha-avail", f"{len(empty)} device(s) with no usable entity, so never judged: "
                                       + ", ".join(empty)))
+    return out + check_stacks(cfg, entries, mapping)
+
+
+def check_stacks(cfg, entries: list[dict], mapping: dict[str, dict]) -> list[Check]:
+    """With a [keys.stacks] table: every inventory device's key logic, from
+    the map just read, and WARN naming each one the table does not cover
+    (a firmware update, or a model nobody checked). A device listed as
+    unknown on purpose is counted, not warned about."""
+    if not (cfg.key_stacks["models"] or cfg.key_stacks["devices"]):
+        return []
+    from .stacks import device_stack
+    counts: dict[str, int] = {}
+    missing = []
+    for name in sorted({(e.get("name") or "").strip() for e in entries} - {""}):
+        stack, _known, why = device_stack(cfg.key_stacks, name, mapping)
+        counts[stack] = counts.get(stack, 0) + 1
+        if stack == "unknown" and why != "listed by name":
+            missing.append(f"{name} ({why})")
+    out = [(OK, "stacks", ", ".join(f"{counts.get(s, 0)} {s}" for s in ("current", "old", "unknown"))
+            + " ([keys.stacks])")]
+    if missing:
+        out.append((WARN, "stacks", f"{len(missing)} unknown, not in [keys.stacks]: " + "; ".join(missing)))
     return out
 
 

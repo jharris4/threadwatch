@@ -352,7 +352,7 @@ class ThreadDevicesTest(unittest.TestCase):
     def test_matter_over_thread_devices_with_names_and_addresses(self):
         registry = [
             {"id": "d1", "name": "Eve Motion", "name_by_user": "Living Room Motion", "model": "Eve Motion 20EBY9901",
-             "manufacturer": "Eve Systems", "identifiers": [["matter", "deviceid_x-1"]]},
+             "sw_version": "3.2.1", "manufacturer": "Eve Systems", "identifiers": [["matter", "deviceid_x-1"]]},
             {"id": "d2", "name": "Wifi Plug", "name_by_user": None, "model": "P100",
              "identifiers": [["matter", "deviceid_x-2"]]},
             {"id": "d3", "name": "Hue Bridge", "identifiers": [["hue", "abc"]]},
@@ -370,8 +370,9 @@ class ThreadDevicesTest(unittest.TestCase):
         notes = []
         found = thread_devices(fake, log=notes.append)
         self.assertEqual(found,
-                         [{"name": "Living Room Motion", "model": "Eve Motion 20EBY9901", "manufacturer": "Eve Systems",
-                                  "addr": "F00D000000000001", "node_id": 1, "available": True, "ha_device_id": "d1"}])
+                         [{"name": "Living Room Motion", "model": "Eve Motion 20EBY9901", "sw_version": "3.2.1",
+                           "manufacturer": "Eve Systems", "addr": "F00D000000000001", "node_id": 1, "available": True,
+                           "ha_device_id": "d1"}])
         self.assertEqual([t for t, _ in fake.calls].count("matter/node_diagnostics"), 4)   # not for the Hue bridge
         self.assertTrue(any("Odd" in n and "no extended address" in n for n in notes))
         self.assertTrue(any("Broken" in n for n in notes))

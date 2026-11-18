@@ -425,7 +425,7 @@ def normalize_ext(mac: str | None) -> str | None:
 def thread_devices(ha: HomeAssistant, log: Callable[[str], None] = lambda m: None,
                    failed: list[str] | None = None) -> list[dict]:
     """Every Matter-over-Thread device HA knows: name (the user's name when
-    set), model, extended address, node id. Devices whose diagnostics HA
+    set), model, firmware version, extended address, node id. Devices whose diagnostics HA
     cannot fetch are logged and skipped, not fatal, and their registry ids
     appended to ``failed`` when given."""
     registry = ha.call("config/device_registry/list") or []
@@ -452,6 +452,7 @@ def thread_devices(ha: HomeAssistant, log: Callable[[str], None] = lambda m: Non
             skipped += 1
             continue
         out.append({"name": name or addr, "model": dev.get("model") or None,
+                    "sw_version": dev.get("sw_version") or None,
                     "manufacturer": dev.get("manufacturer") or None,
                     "addr": addr, "node_id": diag.get("node_id"), "available": diag.get("available"),
                     # The registry id: stable across renames in HA and in

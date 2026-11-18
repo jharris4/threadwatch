@@ -4,13 +4,14 @@ import json
 import os
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import tests  # noqa: F401  (the mDNS guard, installed on a direct run too: tests/no_lan)
-from threadwatch import alerts
+from threadwatch import alerts, stacks
 from threadwatch import config as config_mod
 from threadwatch.record import RingWriter
 
@@ -497,6 +498,9 @@ class ExampleConfigTest(unittest.TestCase):
         ("keys", "census_delay_s"): ("key_census_delay_s", 3600, 60),
         ("keys", "rearm_s"): ("key_rearm_s", 3600, 120),
         ("keys", "rotation_hours"): ("key_rotation_hours", 672, 24),
+        # The example's table, parsed; the other value is a one-entry table.
+        ("keys", "stacks"): ("key_stacks", stacks.parse(tomllib.loads(EXAMPLE.read_text())["keys"]["stacks"]),
+                             {"models": {}, "devices": {"Hall Router": ("unknown", None)}}),
         ("otbr", "enabled"): ("otbr_enabled", False, True),
         ("otbr", "ssh_target"): ("otbr_ssh_target", "hassio@homeassistant.local", "admin@ha"),
         ("otbr", "ssh_port"): ("otbr_ssh_port", 2222, 22),
@@ -607,6 +611,8 @@ class ExampleConfigTest(unittest.TestCase):
                     body += '[otbr]\nssh_target = "test@ha"\n'
                 if table == "relay":           # one without the other is refused
                     body += 'label = "attic"\n' if key == "to" else 'to = "h:1"\n'
+                if key == "stacks":            # nested tables, which JSON cannot spell either
+                    body = '[keys.stacks.devices]\n"Hall Router" = "unknown"\n'
                 if key == "radios":            # an array of tables, which JSON cannot spell
                     body = "".join(f"[[record.radios]]\nlabel = {json.dumps(r['label'])}\n"
                                    f"serial = {json.dumps(r['serial'])}\n" for r in value)

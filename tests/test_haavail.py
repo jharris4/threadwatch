@@ -33,7 +33,8 @@ class MapAndPollTest(unittest.TestCase):
     /api/states to per-device availability."""
 
     REGISTRY = [
-        {"id": MOTION, "name": "Motion HA Name", "identifiers": [["matter", "x-1"]]},
+        {"id": MOTION, "name": "Motion HA Name", "identifiers": [["matter", "x-1"]],
+         "model": "Motion Sensor 20XYZ", "sw_version": "3.2.1"},
         {"id": GARDEN, "name": "Garden Sensor", "identifiers": [["matter", "x-2"]]},
         {"id": "wifi", "name": "Wifi Plug", "identifiers": [["matter", "x-3"]]},
     ]
@@ -62,9 +63,11 @@ class MapAndPollTest(unittest.TestCase):
         self.assertEqual(sorted(mapping), sorted([MOTION, GARDEN]))                  # the Wi-Fi plug is not Thread
         self.assertEqual(mapping[MOTION], {"addr": "C233A4A5BF8391C9", "node_id": 7, "ha_name": "Motion HA Name",
                                            "name": "Front Path Motion", "matched": True,
+                                           "model": "Motion Sensor 20XYZ", "sw_version": "3.2.1",
                                            "entities": ["binary_sensor.motion"]})     # not diagnostic, config, disabled
-        self.assertEqual((mapping[GARDEN]["name"], mapping[GARDEN]["matched"], mapping[GARDEN]["entities"]),
-                         ("Garden Sensor", False, ["sensor.garden_battery"]))          # diagnostic only: it counts
+        self.assertEqual((mapping[GARDEN]["name"], mapping[GARDEN]["matched"], mapping[GARDEN]["entities"],
+                          mapping[GARDEN]["model"], mapping[GARDEN]["sw_version"]),
+                         ("Garden Sensor", False, ["sensor.garden_battery"], None, None))  # diagnostic only: counts
         # The map round-trips through the state file the recorder caches it in.
         with tempfile.TemporaryDirectory() as d:
             haavail.save_map(Path(d), mapping)

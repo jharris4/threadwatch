@@ -68,9 +68,10 @@ def build_map(ha, entries: list[dict], log=lambda m: None, *, previous: dict[str
               now: float | None = None, carry_s: float = 0.0) -> dict[str, dict]:
     """The runtime link from HA's devices to the inventory: HA device id ->
     extended address (from the Matter node diagnostics), node id, the HA
-    name, the inventory's name for that address when it has one, and the
-    entities to watch. Built over the websocket (the one client `import`
-    uses); the once-a-minute poll is REST and needs only this.
+    name, model and firmware version, the inventory's name for that
+    address when it has one, and the entities to watch. Built over the
+    websocket (the one client `import` uses); the once-a-minute poll is
+    REST and needs only this.
 
     The diagnostics are a live read of each node, which fails while the
     node reboots (2026-10-10: a sensor's reboot dropped it from the map for
@@ -96,6 +97,8 @@ def build_map(ha, entries: list[dict], log=lambda m: None, *, previous: dict[str
         out[device_id] = {"addr": (dev.get("addr") or "").upper() or None, "node_id": dev.get("node_id"),
                           "ha_name": dev.get("name"), "name": inventory or dev.get("name"),
                           "matched": inventory is not None,
+                          # The key guard forecast's stack lookup (stacks.py).
+                          "model": dev.get("model"), "sw_version": dev.get("sw_version"),
                           "entities": usable_entities(by_device.get(device_id, []))}
     for device_id in failed:
         before = (previous or {}).get(device_id)

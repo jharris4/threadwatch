@@ -671,6 +671,31 @@ class HaAvailabilityCheckTest(unittest.TestCase):
         for t in texts:
             self.assertNotIn("tk_SECRET", t)
 
+    def test_with_a_stack_table_each_device_it_does_not_cover_is_named(self):
+        import json
+        (self.d / "devices.json").write_text(json.dumps([
+            {"name": "Front Path Motion", "extendedAddress": "C233A4A5BF8391C9"},
+            {"name": "Side Door Lock", "extendedAddress": "0A0B0C0D0E0F1011"},
+            {"name": "Hall Router", "extendedAddress": "1A1B1C1D1E1F2021"},
+            {"name": "Porch Plug", "extendedAddress": "2A2B2C2D2E2F3031"}]))
+        self.mapping["id-motion"].update(model="Motion Sensor 20XYZ", sw_version="3.2.2")
+        self.cfg.key_stacks = {"models": {"Motion Sensor 20XYZ": {"3.2.1": ("old", "behaviour")}},
+                               "devices": {"Side Door Lock": ("current", "reported"), "Hall Router": ("unknown", None)}}
+        checks = [c for c in doctor.check_ha_availability(self.cfg) if c[1] == "stacks"]
+        self.assertEqual(checks, [
+            ("ok", "stacks", "1 current, 0 old, 3 unknown ([keys.stacks])"),
+            ("warn", "stacks", "2 unknown, not in [keys.stacks]: Front Path Motion (Motion Sensor 20XYZ firmware "
+                               "3.2.2 is not checked (the table has 3.2.1)); Porch Plug (not in Home Assistant's "
+                               "map and not listed by name)")])
+        self.mapping["id-motion"]["sw_version"] = "3.2.1"
+        (self.d / "devices.json").write_text(json.dumps([{"name": "Front Path Motion",
+                                                          "extendedAddress": "C233A4A5BF8391C9"}]))
+        checks = [c for c in doctor.check_ha_availability(self.cfg) if c[1] == "stacks"]
+        self.assertEqual(checks, [("ok", "stacks", "0 current, 1 old, 0 unknown ([keys.stacks])")])
+        # No table, no line: the feature is not in use.
+        self.cfg.key_stacks = {"models": {}, "devices": {}}
+        self.assertEqual([c for c in doctor.check_ha_availability(self.cfg) if c[1] == "stacks"], [])
+
     def test_no_token_is_a_warning_and_off_is_nothing(self):
         (self.d / "ha.env").write_text("HA_URL=http://x\n")
         checks = doctor.check_ha_availability(self.cfg)

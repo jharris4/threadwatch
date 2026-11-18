@@ -196,6 +196,9 @@ class Config:
     # under 90% of it after the previous one is called "early" in the
     # key_sequence_advanced note. None says nothing about timing.
     key_rotation_hours: float | None = None
+    # [keys.stacks] which key logic each device runs (stacks.py), keyed by
+    # HA model and sw_version, or by inventory name for devices HA lacks.
+    key_stacks: dict = field(default_factory=lambda: {"models": {}, "devices": {}})
     # [otbr] optional read-only SSH/container inventory, separate from capture.
     otbr_enabled: bool = False
     otbr_ssh_target: str = ""
@@ -364,7 +367,7 @@ SECTIONS: dict[str, frozenset[str] | None] = {
     "quiet": frozenset(("silence_s", "min_rssi_dbm", "forget_unnamed_s")),
     "link": frozenset(("drop_db", "hold_s")),
     "polls": frozenset(("rearm_s", "confirm_s")),
-    "keys": frozenset(("confirm_s", "fresh_s", "census_delay_s", "rearm_s", "rotation_hours")),
+    "keys": frozenset(("confirm_s", "fresh_s", "census_delay_s", "rearm_s", "rotation_hours", "stacks")),
     "otbr": frozenset(("enabled", "ssh_target", "ssh_port", "ssh_identity_file", "sudo", "container", "poll_s")),
     "matter_boots": frozenset(("enabled", "container", "poll_s")),
     "ha_logs": frozenset(("enabled", "addons", "max_hours", "read_timeout_s", "deadline_s", "retry", "archive")),
@@ -718,6 +721,9 @@ def load(path: Path | None) -> Config:
             cfg.key_rotation_hours = _float("keys", "rotation_hours", keys["rotation_hours"])
             if not cfg.key_rotation_hours > 0:
                 raise ValueError(f"[keys] rotation_hours must be more than 0, not {cfg.key_rotation_hours:g}")
+        if "stacks" in keys:
+            from .stacks import parse
+            cfg.key_stacks = parse(keys["stacks"])
         otbr = raw.get("otbr", {})
         cfg.otbr_enabled = otbr.get("enabled", cfg.otbr_enabled)
         if not isinstance(cfg.otbr_enabled, bool):

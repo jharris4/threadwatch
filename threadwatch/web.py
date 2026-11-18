@@ -48,10 +48,6 @@ from .review import (
 )
 
 REFRESH_S = 60   # today's page reloads itself this often
-# A key switch is "since" when the old key's last accepted frame is at most
-# this long before the new key's first; every switch checked on 11-17 was
-# within 130 s. A longer gap may be the recorder not hearing the device.
-SWITCH_GAP_S = 300
 
 CSS = """
 :root{--bg:#fff;--fg:#1c1c1e;--muted:#6b6b70;--line:#e3e3e6;--card:#f6f6f8;
@@ -515,7 +511,7 @@ class Site:
         MAC and MLE spans of every address it has used, merged per key:
         '92 since 11-17 01:44:09 · 91 from 11-03 05:45:11 to 11-17 01:43:40'.
         A switch reads 'since' (or 'from') only when the old key's last frame
-        is at most SWITCH_GAP_S before the new key's first; otherwise 'by',
+        is at most keyfacts.SWITCH_GAP_S before the new key's first; otherwise 'by',
         because the recorder may not have heard the device in between. The
         first key on record is always 'by'. Empty when nothing is on record."""
         spans = {}
@@ -532,7 +528,7 @@ class Site:
 
         parts = []
         for i, (seq, (first, last)) in enumerate(order):
-            switched = i > 0 and order[i - 1][1][1] >= first - SWITCH_GAP_S
+            switched = i > 0 and keyfacts.switch_seen(order[i - 1][1][1], first)
             if i == len(order) - 1:
                 parts.append(f'{seq} {"since" if switched else "by"} {stamp(first)}')
             else:

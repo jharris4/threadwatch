@@ -7,10 +7,25 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import tests  # noqa: F401  (the mDNS guard, installed on a direct run too: tests/no_lan)
-from threadwatch.keyfacts import HISTORY_LIMIT, REJECTED_TS_LIMIT, facts, latest_generation, observe, summary
+from threadwatch.keyfacts import (
+    HISTORY_LIMIT,
+    REJECTED_TS_LIMIT,
+    SWITCH_GAP_S,
+    facts,
+    latest_generation,
+    observe,
+    summary,
+    switch_seen,
+)
 
 
 class KeyFactsTest(unittest.TestCase):
+    def test_a_switch_is_seen_when_the_old_key_was_heard_right_up_to_the_new_one(self):
+        self.assertTrue(switch_seen(1000.0, 1000.5))
+        self.assertTrue(switch_seen(1000.0, 1000.0 + SWITCH_GAP_S))
+        self.assertFalse(switch_seen(1000.0, 1000.1 + SWITCH_GAP_S))
+        self.assertFalse(switch_seen(None, 1000.0))       # never heard on the old key
+
     def test_latest_is_chronological_highest_is_historical_and_mixed_expires(self):
         row = {}
         observe(row, "mle", 87, 100, accepted=True)

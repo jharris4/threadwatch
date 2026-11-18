@@ -13,6 +13,19 @@ import math
 HISTORY_LIMIT = 8                    # per layer, per acceptance decision
 REJECTED_TS_LIMIT = 100              # rejection stamps kept per layer
 LAYERS = (("mac", "counter"), ("mle", "mle_counter"))
+# A key switch is seen when the old key's last accepted frame is at most
+# this long before the new key's first; every switch checked on 2026-11-17
+# was within 130 s. A longer gap may be the recorder not hearing the device.
+SWITCH_GAP_S = 300
+
+
+def switch_seen(last_old_ts, first_new_ts) -> bool:
+    """Was the device heard on its old key right up to its first frame on
+    the new one? Then the switch happened at that frame ("since"). If not,
+    the recorder may not have heard the device in between, and the switch
+    came at some point in the gap ("by"). The device page's key history and
+    the key guard's switch log both read a switch with this one rule."""
+    return last_old_ts is not None and last_old_ts >= first_new_ts - SWITCH_GAP_S
 
 
 def _int(value):

@@ -17,7 +17,9 @@ What a device does with a higher number it hears:
   its parent's stack;
 - an unknown stack and a current-logic router follow every number at
   once, whatever their guard: the worst case for their children (forced
-  updates took every such router past an armed guard in the record).
+  updates took every such router past an armed guard in the record). That
+  does not lift a sleepy child of unknown stack over a jump: two behind
+  its parent it is stranded like any other.
 
 Each device also fires its own rotation when its timer runs out, stranded
 or not. A rotation already overdue at the start is not fired: the record
@@ -97,7 +99,7 @@ class Forecast:
     stranded: tuple[Stranded, ...]         # each time a sleepy child falls two behind
     guards: dict[str, Guard]               # each device's state at the start
     final: dict[str, Guard]                # and at the end
-    unknown: tuple[str, ...]               # nothing forecast: unknown stack, or no key on record
+    unknown: tuple[str, ...]               # no guard or timer forecast: unknown stack, or no key on record
     overdue: tuple[tuple[str, float], ...]  # own rotations due before the start and not on record
     cut: bool                              # stopped at MAX_NUMBERS or MAX_EVENTS, not by the rule
 
@@ -122,12 +124,17 @@ class Forecast:
 
 def forecast(devices, now: float, boots=(), max_numbers: int = MAX_NUMBERS) -> Forecast:
     """Step the mesh from ``now``. ``boots`` are (name, time) pairs at or
-    after ``now``: boots known to come after the start, or hypothetical."""
+    after ``now``: boots known to come after the start, or hypothetical. A
+    boot for a name not among ``devices``, or before ``now``, is refused:
+    dropped quietly, a mistyped remedy would read as one that does not help."""
     dev = {d.name: d for d in devices}
+    for n, ts in boots:
+        if n not in dev or ts < now:
+            raise ValueError(f"boot of {n!r} at {ts}: " + ("before the start" if n in dev else "no such device"))
     g = {n: derive(d.stack, d.boots, d.switches) for n, d in dev.items()}
     start = dict(g)
     live = sorted(n for n in g if g[n].key is not None)
-    pending = sorted((ts, n) for n, ts in boots if n in live and ts >= now)
+    pending = sorted((ts, n) for n, ts in boots if n in live)
     overdue = tuple((n, g[n].rotation_at) for n in live if g[n].rotation_at is not None and g[n].rotation_at < now)
     steps: list[Step] = []
     stranded: list[Stranded] = []
@@ -160,14 +167,14 @@ def forecast(devices, now: float, boots=(), max_numbers: int = MAX_NUMBERS) -> F
                 key, new = g[n].key, heard(n)
                 if new is None or new <= key:
                     continue
+                if new - key >= 2 and dev[n].sleepy:
+                    if n not in behind:
+                        behind.add(n)
+                        stranded.append(Stranded(t, n, key, parent(n), new))
+                    continue
                 if at_once(n):
                     why = AT_ONCE
                 elif new - key >= 2:
-                    if dev[n].sleepy:
-                        if n not in behind:
-                            behind.add(n)
-                            stranded.append(Stranded(t, n, key, parent(n), new))
-                        continue
                     why = JUMPED
                 elif g[n].guard != "until" or g[n].guard_open_at <= t:
                     why = OPENED if g[n].guard_open_at == t else FOLLOWED

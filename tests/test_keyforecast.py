@@ -166,6 +166,18 @@ class TwoBehindTest(unittest.TestCase):
             Stranded(T + 200 * HOUR, "Porch Sensor", 90, "Porch Bulb", 92)))
         self.assertEqual(fc.unknown, ("Deck TV",))
 
+    def test_a_sleepy_child_of_unknown_stack_keeps_up_one_number_at_a_time_but_not_over_a_jump(self):
+        on90 = (Switch(T, None, 90),)
+        mesh = self.mesh() + [Device("Deck Remote", UNKNOWN, (), on90, parent="Deck TV", sleepy=True),
+                              Device("Loft Remote", UNKNOWN, (), on90, parent="Loft Monitor", sleepy=True)]
+        fc = forecast(mesh, T + HOUR, max_numbers=2)
+        self.assertEqual([(s.ts - T, s.new, s.why) for s in fc.steps if s.name == "Deck Remote"],
+                         [(100 * HOUR, 91, kf.AT_ONCE), (200 * HOUR, 92, kf.AT_ONCE)])
+        # Loft Monitor jumps 90 to 92 in one go: no stack can follow that from a sleepy child's seat.
+        self.assertIn(Stranded(T + 200 * HOUR, "Loft Remote", 90, "Loft Monitor", 92), fc.stranded)
+        self.assertEqual([s for s in fc.steps if s.name == "Loft Remote"], [])
+        self.assertEqual(fc.unknown, ("Deck Remote", "Deck TV", "Loft Remote"))
+
     def test_a_stranded_child_still_fires_its_own_rotation_and_can_be_stranded_again(self):
         fc = forecast(self.mesh(), T + HOUR, max_numbers=4)
         # Deck Sensor's own timer (from its +1 at T + 5 s) takes it to 91 under a parent on 93 by then.
@@ -258,11 +270,21 @@ class BootsTest(unittest.TestCase):
 
     def test_a_router_that_boots_one_behind_takes_the_key_at_boot(self):
         mesh = [clear("Hall Monitor", OLD, T, key=91), armed("Attic Monitor", OLD, T, key=90)]
-        fc = forecast(mesh, T + HOUR, boots=[("Attic Monitor", T + 2 * HOUR), ("Nobody", T + 2 * HOUR)])
+        fc = forecast(mesh, T + HOUR, boots=[("Attic Monitor", T + 2 * HOUR)])
         self.assertEqual(steps(fc)[0], (2 * HOUR, "Attic Monitor", 90, 91, kf.FOLLOWED, False))
         # A +1 at boot: flag set, timer from the boot, so no second firing and the guard opens at 624 h.
         self.assertEqual([(s.ts - T, s.name, s.why) for s in fc.firings][:2],
                          [(ROTATION_S, "Hall Monitor", kf.OWN), (ROTATION_S + HOUR, "Hall Monitor", kf.OWN_SECOND)])
+
+
+    def test_a_boot_for_no_such_device_or_before_the_start_is_refused(self):
+        mesh = [clear("Hall Monitor", OLD, T), Device("Spare Plug", OLD)]
+        with self.assertRaisesRegex(ValueError, "'Hal Monitor'.*no such device"):
+            forecast(mesh, T + HOUR, boots=[("Hal Monitor", T + 2 * HOUR)])
+        with self.assertRaisesRegex(ValueError, "'Hall Monitor'.*before the start"):
+            forecast(mesh, T + HOUR, boots=[("Hall Monitor", T)])
+        # At the start itself, and for a device never heard (no effect): both taken.
+        forecast(mesh, T + HOUR, boots=[("Hall Monitor", T + HOUR), ("Spare Plug", T + 2 * HOUR)])
 
 
 class LimitsTest(unittest.TestCase):

@@ -92,7 +92,7 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `key_lag` | warning for a child, critical for a router; notice when `episode` > 1 (reopened within `[keys] rearm_s`) | `addr`, `name`, `role`, `generation`, `parent`, `parent_addr`, `parent_generation` (a child) or `mesh_generation` (a router), `lag`, `since`, `lagged_for_s`, `rssi_dbm`, `reception`, `polls_acked`, `episode`, `since_previous_s`, `note` |
 | `key_lag_cleared` | info | `addr`, `name`, `role`, `generation`, `parent`, `parent_addr`, `parent_generation` or `mesh_generation`, `since`, `lagged_for_s`, `rejoined`, `rejoin_ts`, `note`; only after a `key_lag` went out |
 | `key_stranding_forecast` | warning | `sequence` (the number that strands), `at`, `started_by`, `two_behind` (the sleepy children), `later` (children first left two behind by a later number in the forecast), `pulls` (each child: `from` / `until` where a battery pull keeps it from being two behind, else `parent_behind` or `again` / `at`, the number that strands it after any pull), `power_cycle` (`units`, `from`, `until`, or null), `why` (`first forecast`, `changed`, `power-cycle window open`), `note`. See "Key guard forecast" below |
-| `key_stranding_cleared` | info | `sequence`, `note`: no sleepy child is forecast two behind any more |
+| `key_stranding_cleared` | info | `sequence`, `note`: no sleepy child is forecast two behind any more. Not sent when the stranding came true |
 | `key_forecast_check` | info | `name`, `sequence`, `switches` (each `name`, `old`, `new`, `at`, `forecast_at`, `kind`: `as forecast`, `late`, `early`, `not forecast`, `at a boot` or `not seen`), `note`. One per new number, one for the rest of each hourly pass |
 | `key_switch_unforecast` | notice | `name` (when one), `switches` as above, `note`: a switch taken early or with no forecast, on a device whose stack is known |
 | `retransmission_elevation` | notice for the first elevated minute, warning once the rate has stayed up for `[retransmissions] confirm_s` (`confirmed`); notice regardless when one sender-target pair is `top_share` >= 0.5 of the retries (a chronic bad link, not a storm precursor) | `rate`, `baseline`, `addr`, `name`, `top_sender`, `top_target`, `top_share`, `confirmed`, `sustained_s`, `cause` (`rejoin_wave` when the mesh was re-attaching after a partition change inside the last five minutes), `note` |
@@ -965,7 +965,10 @@ The model, per stack:
 
 The notice goes out when the forecast first leaves a child two behind, again
 when its answer changes, again when its power-cycle window opens, and
-`key_stranding_cleared` once nothing is two behind. While an own rotation
+`key_stranding_cleared` once nothing is forecast two behind any more because
+the forecast changed (a boot, a remedy taken). When the stranding has come
+instead, so that a child the notice named is two behind now, the notice is
+dropped without an event: `key_lag` reports the child. While an own rotation
 that fell due in the last 2 h 15 min is not on record, the notice is left as
 it is, nothing sent and nothing cleared: the forecast fires no overdue
 rotation, so it has lost that number and everything that follows from it,

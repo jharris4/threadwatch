@@ -17,7 +17,8 @@ forecast shows would prevent it, tested as hypothetical boots:
   that would be ahead of its parent at the time.
 It goes out when first seen, when its answer changes, and when the power
 cycle's stretch opens; key_stranding_cleared when no child is forecast two
-behind any more. While an own rotation that fell due in the last
+behind any more, unless that is because a child it named is two behind now
+(the notice is then dropped without a word: key_lag has the child). While an own rotation that fell due in the last
 LAG_S + GRACE_S is not on record, none of that happens: the forecast has
 dropped the number as overdue, and it is most likely only not heard yet.
 
@@ -317,9 +318,15 @@ def run(state: dict | None, devs, now: float, cache=None):
         cache = (key, notice(devs, now, fc))
     cur, prev = cache[1], state["notice"]
     if cur is None and prev is not None:
-        events.append(("key_stranding_cleared", "info", {
-            "name": None, "sequence": prev["sequence"],
-            "note": f"no sleepy child is forecast two behind any more ({prev['sequence']} on {_d(prev['at'])} was)"}))
+        # Nothing forecast because the forecast changed is cleared. Nothing
+        # forecast because the stranding has come (a child of the notice
+        # is two behind as the forecast starts) is not: key_lag says that,
+        # and "no longer forecast" would say the opposite.
+        if not {x.name for x in fc.stranded if x.ts <= fc.start} & set(prev["two_behind"]):
+            events.append(("key_stranding_cleared", "info", {
+                "name": None, "sequence": prev["sequence"],
+                "note": f"no sleepy child is forecast two behind any more ({prev['sequence']} on "
+                        f"{_d(prev['at'])} was)"}))
         state["notice"] = None
     elif cur is not None:
         opened = cur["power_cycle"] is not None and cur["power_cycle"]["from"] <= now <= cur["power_cycle"]["until"]

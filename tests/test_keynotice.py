@@ -223,6 +223,39 @@ class NoticeFiringTest(unittest.TestCase):
         self.assertEqual(self.fired(events), [("key_stranding_forecast", "first forecast")])
         self.assertEqual(state["notice"]["sequence"], 93)
 
+    def test_a_stranding_that_has_come_true_is_not_cleared(self):
+        # Shed refuses 91 behind a closed guard and jumps to 92 with the mesh; Gate and Yard, its sleepy
+        # children of unknown stack, stay on 90. Nothing further is forecast for them.
+        r1, r2 = T + 72 * HOUR, T + 372 * HOUR
+        unknown = ("unknown", None, "not in the table")
+        shed = armed("Shed Monitor", OLD, T - 10 * HOUR)
+        kids = [Device(n, unknown, (), (Switch(T - 99 * HOUR, None, 90),), "Shed Monitor", True)
+                for n in ("Gate Sensor", "Yard Sensor")]
+        devs = mesh()[:3] + [shed] + kids
+        state, events, cache = kn.run(None, devs, T)
+        self.assertEqual(self.fired(events), [("key_stranding_forecast", "first forecast")])
+        sent = state["notice"]
+        self.assertEqual((sent["sequence"], sent["two_behind"]), (92, ["Gate Sensor", "Yard Sensor"]))
+        taken = {n: [Switch(r1 + 5, 90, 91), Switch(r2 + 5, 91, 92)] for n in ("Den Monitor", "Hall Bulb")}
+        taken.update({"Mudroom Monitor": [Switch(r1 + 5, 90, 91)], "Shed Monitor": [Switch(r2 + 5, 90, 92)]})
+        came = self.with_switches(devs, taken)
+        # The pass after 92: both are two behind, as forecast. That is key_lag's to say, and "no sleepy
+        # child is forecast two behind any more" would say the opposite: the notice is dropped quietly.
+        before = json.loads(json.dumps(state))
+        state, events, cache = kn.run(state, came, r2 + 60, cache)
+        self.assertEqual((self.fired(events), state["notice"]), ([], None))
+        # One of its children two behind is enough: Yard was taken out of the inventory meanwhile.
+        state, events, cache = kn.run(before, came[:-1], r2 + 60)
+        self.assertEqual((self.fired(events), state["notice"]), ([], None))
+        # With none of them two behind (92 has not come, and Shed was power-cycled, so it follows 91
+        # and its children with it), the forecast did change, and that is cleared.
+        shed = devs[3]
+        cycled = self.with_switches(devs[:3] + [Device(shed.name, shed.stack, shed.boots + (Boot(T + HOUR),),
+                                                       shed.switches)] + kids, {})
+        self.assertIsNone(kn.notice(cycled, T + 2 * HOUR))
+        state, events, cache = kn.run(json.loads(json.dumps(before)), cycled, T + 2 * HOUR)
+        self.assertEqual(self.fired(events), [("key_stranding_cleared", None)])
+
 
 class ChecksTest(unittest.TestCase):
     """Mudroom starts 91 at T + 72 h and the routers, their guards open by then, follow; Kitchen, a sleepy

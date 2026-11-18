@@ -1338,6 +1338,8 @@ class Site:
         for n in sorted(fc.guards, key=opens):
             g, d = fc.guards[n], dev[n]
             boot = g.boot or max(d.boots, key=lambda b: b.ts, default=None)
+            span = (f'<small>range {stamp(boot.lo)} to {stamp(boot.hi)}</small>'
+                    if boot and stamp(boot.hi) != stamp(boot.lo) else "")
             if g.guard == "until" and g.guard_open_at > now:
                 guard = f'closed <span class="muted">until {stamp(g.guard_open_at)}</span>'
             elif g.guard == "until":
@@ -1348,9 +1350,8 @@ class Site:
                                                if g.second_rotation_at else "")
             trs.append(f'<tr><td>{link(n)}</td><td class="n">{esc(g.key if g.key is not None else "-")}</td>'
                        f'<td>{esc(", ".join(x for x in d.stack[:2] if x))}</td>'
-                       f'<td class="t">{stamp(boot.ts) if boot else "-"}'
-                       + (f'<small>range {stamp(boot.lo)} to {stamp(boot.hi)}</small>' if boot and boot.hi > boot.lo
-                          else "") + f'</td><td>{guard}</td><td class="t">{rotation}</td>'
+                       f'<td class="t">{stamp(boot.ts) if boot else "-"}{span}</td>'
+                       f'<td>{guard}</td><td class="t">{rotation}</td>'
                        f'<td>{esc(g.confidence)}' + ("" if g.confidence == "normal" else
                        f'<br><span class="muted">{esc("; ".join(g.reasons))}</span>') + '</td></tr>')
         table = ('<table><tr><th>device</th><th>key</th><th>stack</th><th>last boot</th><th>guard</th>'

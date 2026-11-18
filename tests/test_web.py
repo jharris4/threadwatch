@@ -811,6 +811,21 @@ class KeysPageTest(unittest.TestCase):
         self.assertEqual(table.count('<td>normal</td></tr>'), 4)
         self.assertIn('<td>none<br><span class="muted">stack unknown', table)
 
+    def test_a_boot_range_shows_only_when_its_ends_read_differently(self):
+        now = time.time()
+        hall_boot, garden_boot = int(now - 10 * 86400) + 0.6, now - 30 * 86400
+        records = [self.moved(self.HALL, hall_boot - 86400, None, 5), self.booted(self.HALL, hall_boot),
+                   self.moved(self.GARDEN, now - 31 * 86400, None, 5), self.booted(self.GARDEN, garden_boot)]
+        records[1]["evidence"]["earliest"] = hall_boot - 0.4     # same second on the page
+        records[3]["evidence"]["earliest"] = garden_boot - 3600
+        with tempfile.TemporaryDirectory() as tmp:
+            body = self.site(Path(tmp), records).respond("/keys")[2].decode()
+        table = body[body.index("every device, by when its guard opens"):]
+        hall = table[table.index(">Hall Air Monitor</a>"):]
+        garden = table[table.index(">Garden Plug</a>"):]
+        self.assertNotIn("<small>range", hall[:hall.index("</tr>")])
+        self.assertIn("<small>range", garden[:garden.index("</tr>")])
+
     def test_the_otbr_line_names_a_device_or_the_page_says_so(self):
         with tempfile.TemporaryDirectory() as tmp:
             records = [self.moved(self.HALL, time.time() - 86400, None, 5)]

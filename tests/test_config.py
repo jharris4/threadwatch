@@ -368,6 +368,22 @@ class EventsKeepDaysTest(unittest.TestCase):
             if bad not in ("nan", "inf"):
                 self.assertIn("more than 0", str(cm.exception))
 
+    def test_otbr_device_is_unset_by_default_and_takes_a_name_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "devices.json").write_text("[]")
+
+            def load(text):
+                (d / "config.toml").write_text(text)
+                return config_mod.load(d / "config.toml")
+            self.assertIsNone(load("[network]\nchannel = 25\n").key_otbr_device)
+            self.assertEqual(load('[keys]\notbr_device = "Hall Border Router"\n').key_otbr_device,
+                             "Hall Border Router")
+            for bad in ('""', '"  "', "7", "true", '["Hall Border Router"]'):
+                with self.subTest(bad=bad), self.assertRaises(ValueError) as cm:
+                    load(f"[keys]\notbr_device = {bad}\n")
+                self.assertIn("[keys] otbr_device must be an inventory name", str(cm.exception))
+
     def test_the_ha_logs_settings_are_off_by_default_and_checked_for_shape(self):
         cfg = self._load("[network]\nchannel = 25\n")
         self.assertEqual((cfg.ha_logs_enabled, cfg.ha_logs_addons, cfg.ha_logs_max_hours, cfg.ha_logs_read_timeout_s,
@@ -498,6 +514,7 @@ class ExampleConfigTest(unittest.TestCase):
         ("keys", "census_delay_s"): ("key_census_delay_s", 3600, 60),
         ("keys", "rearm_s"): ("key_rearm_s", 3600, 120),
         ("keys", "rotation_hours"): ("key_rotation_hours", 672, 24),
+        ("keys", "otbr_device"): ("key_otbr_device", "Hall Border Router", "Attic Router"),
         # The example's table, parsed; the other value is a one-entry table.
         ("keys", "stacks"): ("key_stacks", stacks.parse(tomllib.loads(EXAMPLE.read_text())["keys"]["stacks"]),
                              {"models": {}, "devices": {"Hall Router": ("unknown", None)}}),

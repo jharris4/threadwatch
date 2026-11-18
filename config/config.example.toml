@@ -137,6 +137,12 @@ rearm_s = 3600             # 60 min
 # Use the active dataset's Security Policy rotation time, not the
 # keysequence guardtime (624 h by default), which is a different setting.
 # rotation_hours = 672
+# The inventory name (devices.json) of the border router [otbr] reads. Its
+# key counter and uptime are filed under otbr:* in the key journal, not
+# under an address, and the /keys forecast joins them to this device.
+# Unset, or a name not in the inventory, the forecast has the OTBR's
+# frames only, and the page says so.
+otbr_device = "Hall Border Router"
 
 # Which OpenThread key logic each device runs, for the key guard forecast.
 # "old" is OpenThread before the 2024-03 key switch guard fix (a +1 taken

@@ -61,7 +61,8 @@ def switch_log(records) -> list[Switch]:
         elif r["kind"] == "inventory":
             e = r["evidence"]
             rows.append((r["ts"], e.get("new_sequence"), e.get("old_sequence"), (e.get("before") or {}).get("ts")))
-    rows = sorted(row for row in rows if _time(row[0]) and _int(row[1]))
+    # by time, then key: two records can share a stamp, and their other fields may be None
+    rows = sorted((row for row in rows if _time(row[0]) and _int(row[1])), key=lambda row: row[:2])
     out: list[Switch] = []
     key = None
     for ts, new, _old, _last in rows:
@@ -105,7 +106,7 @@ def devices(records, entries, key_stacks: dict, ha_map: dict, links: dict[str, t
     child that polls its parent); a name it leaves out is taken for a
     router. ``until`` leaves out records after that time, to forecast from
     a past state."""
-    per = by_device([r for r in records if until is None or r.get("ts", 0) <= until], entries, otbr)
+    per = by_device([r for r in records if until is None or _time(r.get("ts")) and r["ts"] <= until], entries, otbr)
     out = []
     for name in sorted({e["name"] for e in entries if isinstance(e.get("name"), str)}):
         parent, sleepy = links.get(name, (None, False))

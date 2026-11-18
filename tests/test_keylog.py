@@ -102,6 +102,12 @@ class SwitchLogTest(unittest.TestCase):
         self.assertEqual(keylog.switch_log(records), [Switch(T, None, 90), Switch(T + 3000, 90, 91),
                                                       Switch(T + 9000, 91, 92, unheard_from=T + 8400)])
 
+    def test_two_records_with_one_stamp_and_one_key(self):
+        # Sorting them must not come down to comparing an old key or a last-heard time with None.
+        records = [moved(HALL, T, None, 90, "mle"), moved(HALL, T, 89, 90, "mac", last=T - 1),
+                   moved(HALL, T + 100, 90, 91, "mle"), moved(HALL, T + 100, 90, 91, "mac", last=T + 99)]
+        self.assertEqual(keylog.switch_log(records), [Switch(T, None, 90), Switch(T + 100, 90, 91)])
+
     def test_a_record_without_a_key_number_is_skipped(self):
         broken = moved(HALL, T + 5, 90, None)
         self.assertEqual(keylog.switch_log([moved(HALL, T, None, 90), broken]), [Switch(T, None, 90)])
@@ -152,6 +158,10 @@ class DevicesTest(unittest.TestCase):
         past = {d.name: d for d in keylog.devices(records, ENTRIES, self.TABLE, self.HA_MAP, links, until=T + 20)}
         hall = past["Hall Air Monitor"]
         self.assertEqual((hall.boots, hall.switches), ((), (Switch(T, None, 90),)))
+        # A record with no time is left out, not compared with `until`.
+        broken = {"id": "x", "kind": "reboot", "addr": HALL, "ts": None, "evidence": {}}
+        past = keylog.devices([*records, broken], ENTRIES, self.TABLE, self.HA_MAP, links, until=T + 20)
+        self.assertEqual(len(past), 4)
 
 
 if __name__ == "__main__":

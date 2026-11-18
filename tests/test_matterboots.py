@@ -98,6 +98,21 @@ class PollTest(unittest.TestCase):
                                           MOTION: (5, 50_000 + week - 50, None)})
         self.assertEqual(finals, [])
 
+    def test_an_uptime_going_down_with_the_count_unchanged_is_a_boot(self):
+        self.poll(T0, {MOTION: (5, 50_000, None)})
+        finals, _ = self.poll(T0 + 3600, {MOTION: (5, 600, 1)})
+        self.assertEqual([(b["node"], b["boots"], b["ts"], b["first_read"]) for b in finals],
+                         [(MOTION, 1, T0 + 3000, False)])
+        self.assertEqual([h[1:4] for h in self.state["history"]], [[MOTION, 1, 1]])
+        # A read without an uptime keeps the stored one: the next read's uptime is compared with 600.
+        self.poll(T0 + 7200, {MOTION: (5, None, None)})
+        self.assertEqual(self.poll(T0 + 10800, {MOTION: (5, 7800, None)})[0], [])
+        finals, _ = self.poll(T0 + 14400, {MOTION: (5, 3000, None)})
+        self.assertEqual([(b["boots"], b["ts"]) for b in finals], [(1, T0 + 11400)])
+        # A boot read without an uptime does not keep the uptime from before it.
+        self.poll(T0 + 18000, {MOTION: (6, None, None)})
+        self.assertEqual(self.poll(T0 + 21600, {MOTION: (6, 2000, None)})[0], [])
+
     def test_a_failed_poll_and_a_silent_node_lose_no_boot(self):
         self.poll(T0, {MOTION: (5, 50_000, None), PLUG: (3, 50_000, 1)})
         finals, summary = self.poll(T0 + 3600, {"status": "unreachable", "output": ""})

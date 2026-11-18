@@ -521,9 +521,12 @@ available through a restart that takes under a minute. With
 `[matter_boots]` on, the recorder reads every Matter node's reboot count,
 uptime and boot reason (General Diagnostics) each `poll_s`, an hour by
 default, through a fixed read-only script in the Matter Server container
-over the `[otbr]` SSH access. A count that changed is a boot (for a device
-that gives no count, an uptime that went back), dated by the uptime (an air quality monitor's clock runs
-0.15% slow and that is removed). A
+over the `[otbr]` SSH access. A count that changed is a boot, and so is
+the device's own uptime going down while its count stayed the same (its
+number against its own earlier number, so no host clock is involved); for
+a device that gives no count, an uptime that went back. A boot is dated by
+the uptime (an air quality monitor's clock runs 0.15% slow and that is
+removed). A
 failed poll or a node that does not answer loses no boot while the count
 is readable: the next good read compares with the last good one, and
 `boots` says how many fell between, though only the last has a time and a

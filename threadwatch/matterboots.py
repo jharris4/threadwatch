@@ -9,12 +9,15 @@ nothing in new archives. Each node's General Diagnostics reboot count
 three attributes over the server's WebSocket on localhost. It only reads,
 and nothing from the recorder goes into it.
 
-A boot is a reboot count that changed, or, for a node that does not give
-a count both times, a boot time (read time minus uptime) that moved later
-than the last read put it: a clock step on the HA host moves every boot
-time and changes no count. It goes into the key journal as an
-`uptime_reset` reboot and is a device_rebooted notice; reboots_climbing is
-judged on these boots. A node's first read with an uptime puts its last
+A boot is a reboot count that changed; with the count unchanged, an
+uptime lower than the node's own uptime at its last read that had one
+(the device's number against its own earlier number, so no host clock is
+involved); or, for a node that does not give a count both times, a boot
+time (read time minus uptime) that moved later than the last read put it.
+A clock step on the HA host moves every boot time and changes neither a
+count nor an uptime, so it is no boot where there is a count. A boot goes
+into the key journal as an `uptime_reset` reboot and is a device_rebooted
+notice; reboots_climbing is judged on these boots. A node's first read with an uptime puts its last
 boot in the journal without a notice, unless that boot came after the
 previous pass (a node re-paired under a new id): that is a boot like any
 other. A node unread for FORGET_S is dropped.
@@ -146,10 +149,14 @@ def boot_time(r: dict) -> float | None:
 
 
 def boots_between(prev: dict, r: dict, est: float | None) -> int:
-    """The boots a read shows since the node's last good read: the count
-    decides when both reads have one, uptime only when one does not."""
+    """The boots a read shows since the node's last good read: when both
+    reads have a count, the count, and with the count unchanged the
+    device's own uptime going down (no host clock in that); the boot time
+    the uptime implies only when one read has no count."""
     if r["count"] is not None and prev.get("count") is not None:
-        return 0 if r["count"] == prev["count"] else r["count"] - prev["count"] if r["count"] > prev["count"] else 1
+        if r["count"] == prev["count"]:
+            return int(r["uptime"] is not None and _number(prev.get("uptime")) and r["uptime"] < prev["uptime"])
+        return r["count"] - prev["count"] if r["count"] > prev["count"] else 1
     if est is not None and _number(prev.get("boot")) and est - prev["boot"] > SLACK_S + 0.002 * (r["at"] - prev["at"]):
         return 1
     return 0
@@ -187,6 +194,7 @@ def poll(cfg, state: dict, now: float, runner=run_command, clock=time.time) -> t
         carry = not n                              # no boot: what this read lacks has not changed
         nodes[str(node)] = {"at": r["at"], "product": r["product"] or prev.get("product", ""),
                             "count": prev.get("count") if carry and r["count"] is None else r["count"],
+                            "uptime": prev.get("uptime") if carry and r["uptime"] is None else r["uptime"],
                             "boot": prev.get("boot") if carry and est is None else est,
                             "since": prev.get("since", r["at"]),
                             "journalled": bool(prev.get("journalled") or n or first)}

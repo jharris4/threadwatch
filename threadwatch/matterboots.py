@@ -26,6 +26,12 @@ of several boots between two good reads only the last has a time and a
 reason (`boots` counts them all). Without a count, uptime sees only the
 last of them. A node that gives neither is not judged.
 
+The read time is the HA host's clock and the switches a boot is set
+against carry this host's, so each pass is checked: a pass with a read
+stamped more than SKEW_S before it started or after it ended, by this
+host's clock, is dropped whole and retried. No boot is dated, and no
+uptime-only boot found, against a clock that disagrees.
+
 The stamp is the read time minus uptime, with the slow clock in CLOCKS
 removed: within a second for a boot found within the hour. The Matter
 Server's `CaseServer ... Resumed session` line after an ALPSTUGA reset is
@@ -53,6 +59,7 @@ SLACK_S = 60.0                       # read latency in the boot time a read impl
 # still held here is never logged twice.
 HISTORY_S = 7 * 86400.0 + 3600.0
 RETRY_S = 900.0                      # after a failed or cut-short poll
+SKEW_S = 60.0                        # how far the HA host's clock may be from this host's
 FORGET_S = 30 * 86400.0              # a node unread this long is gone (re-paired, removed)
 # How slow an uptime clock may run that CLOCKS does not correct (Phase 0:
 # 0.01% to 0.05% on BILRESA, MYGG and TOFSMYGGA): a boot may be this
@@ -144,14 +151,20 @@ def boots_between(prev: dict, r: dict, est: float | None) -> int:
     return 0
 
 
-def poll(cfg, state: dict, now: float, runner=run_command) -> tuple[dict, list[dict], dict]:
+def poll(cfg, state: dict, now: float, runner=run_command, clock=time.time) -> tuple[dict, list[dict], dict]:
     """One pass on a copy of ``state``: the new state, the boots found, and
     a summary for status.json. Each boot carries ``earliest``, how early
-    the boot may really have been."""
+    the boot may really have been. ``now`` is this host's clock as the
+    pass starts and ``clock`` reads it as the pass ends."""
     state = copy.deepcopy(state)
     nodes, finals, failed = state.setdefault("nodes", {}), [], []
     last_pass = state.get("read_at")               # the last pass that read anything
     reads, status = read(cfg, runner)
+    end = clock()
+    off = max((d for r in reads.values() for d in (now - r["at"], r["at"] - end)), default=0.0)
+    if off > SKEW_S:
+        return state, [], {"at": now, "nodes": len(reads), "read": 0, "failed": [],
+                           "status": f"clock: the Home Assistant host's clock is {off:.0f} s from this host's"}
     for node, r in sorted(reads.items()):
         est = boot_time(r)
         if est is None and r["count"] is None:

@@ -119,6 +119,20 @@ class PollTest(unittest.TestCase):
         finals, _ = self.poll(T0 + 3600 + 300, {MOTION: (5, 53_600, None)})     # the host's clock jumped 5 min
         self.assertEqual(finals, [])
 
+    def test_a_pass_stamped_by_a_clock_that_disagrees_with_this_hosts_is_dropped_whole(self):
+        self.poll(T0, {MOTION: (5, 50_000, None), PLUG: (None, 50_000, None)})
+        before = self.state
+        # The pass runs from T0 + 3600 to T0 + 3690 by this host's clock; the HA host's is behind, then ahead.
+        for off, measured in ((-600, 600), (600, 510)):
+            self.run.outputs.append(output(T0 + 3600 + off, {MOTION: (6, 600, None), PLUG: (None, 53_600, None)}))
+            state, finals, summary = mb.poll(self.cfg, self.state, T0 + 3600, self.run, clock=lambda: T0 + 3690)
+            self.assertEqual((state, finals, summary["read"]), (before, [], 0))
+            self.assertEqual(summary["status"],
+                             f"clock: the Home Assistant host's clock is {measured} s from this host's")
+        # The clocks agree again: the boot the dropped passes saw is found, dated right, and no other.
+        finals, _ = self.poll(T0 + 7200, {MOTION: (6, 4200, None), PLUG: (None, 57_200, None)})
+        self.assertEqual([(b["node"], b["ts"]) for b in finals], [(MOTION, T0 + 3000)])
+
     def test_an_attribute_one_read_lacks_keeps_its_last_value(self):
         self.poll(T0, {MOTION: (5, 50_000, None)})
         self.poll(T0 + 3600, {MOTION: (5, None, None)})                        # no uptime this time

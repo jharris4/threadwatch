@@ -151,6 +151,18 @@ sudo = true                       # sudo -n; no password prompt
 container = "app_core_openthread_border_router"
 poll_s = 600                       # 300..900 seconds; failures back off up to an hour
 
+[matter_boots]
+# Every Matter node's boots, read live from the node: reboot count, uptime
+# and boot reason (General Diagnostics 0/51/1, 0/51/2, 0/51/4), through a
+# fixed read-only script run by `docker exec -i` in the Matter Server
+# container, over the [otbr] SSH access (target, port, key and sudo from
+# there). A boot goes into the key journal and is a device_rebooted
+# notice, and reboots_climbing is judged on these boots. The Matter Server
+# no longer logs boot reasons, so with this off both are blind.
+enabled = false
+container = "app_core_matter_server"
+poll_s = 3600                     # 900..86400 seconds; a failed poll retries in 15 min
+
 [ha_logs]
 # Copy the Home Assistant OTBR and Matter Server add-on logs into every
 # snapshot, by hand or on a critical event, covering the snapshot's window

@@ -459,6 +459,12 @@ class Pipeline:
         if not ephemeral and cfg.otbr_enabled:
             from .otbr import InventoryPoller
             self._otbr_inventory = InventoryPoller(cfg)
+        # Every Matter node's boots, read live ([matter_boots], matterboots.py).
+        self._matter_boots = None
+        if not ephemeral and cfg.boots_enabled:
+            from .halogs import archive_dir
+            from .matterboots import BootPoller
+            self._matter_boots = BootPoller(cfg, archive_dir(cfg))
         # Home Assistant availability ([ha_availability]): a worker polls
         # /api/states every poll_s (and rebuilds the device map over the
         # websocket every registry_refresh_s); the next periodic pass
@@ -3869,6 +3875,10 @@ class Pipeline:
             if samples:
                 self.journal.inventory(samples[-1])
                 self._check_router_set(samples, now)
+        if self._matter_boots is not None:
+            done = self._matter_boots.tick(now)
+            if done is not None:
+                self._apply_matter_boots(*done, now)
         self._retire_listed_addresses(now)
         # Devices on another PAN (a neighbour's mesh, an unpaired device
         # announcing itself) are tracked for the report but never alerted on:
@@ -4525,7 +4535,7 @@ class Pipeline:
                 from .journal import scan_archive
                 result["key_journal_scan"] = scan_archive(self.cfg.data_dir, journal_scanned)
                 from .reboots import SLUG, scan
-                if SLUG in self.cfg.ha_logs_addons:
+                if SLUG in self.cfg.ha_logs_addons and not self.cfg.boots_enabled:
                     result["reboot_scan"] = scan(archive_dir(self.cfg))
                 pruned = prune_archive(self.cfg)
                 if pruned:
@@ -4549,6 +4559,33 @@ class Pipeline:
             self._reboots = RebootWatch(self.cfg.state_dir / STATE_FILE, emit=self._emit,
                                         device=self._matter_device)
         self._reboots.apply(scan, now)
+
+    def _apply_matter_boots(self, state: dict, boots: list[dict], summary: dict, now: float) -> None:
+        """A finished boot poll (matterboots.poll): each boot into the key
+        journal, saved, then device_rebooted and reboots_climbing from
+        them (reboots.RebootWatch), then the poller's state."""
+        from .matterboots import climb_scan
+        from .reboots import STATE_FILE, RebootWatch
+        for b in boots:
+            addr, name = self._matter_device(b["node"])
+            r = b["read"]
+            self.journal.reboot({
+                "ts": b["ts"], "addr": addr or f"matter:{b['node']}", "source": "uptime_reset", "scope": "device",
+                "reference": f"Matter node {b['node']}: reboot count, uptime, boot reason read at {r['at']:.0f}",
+                "addresses": self.names.entry_addresses_of(addr) if addr else [], "name": name,
+                "node_id": b["node"], "product": r["product"], "stamp": b["stamp"], "first_read": b["first_read"],
+                "boots": b["boots"], "previous_read_at": b["after"], "read_at": r["at"],
+                "reboot_count": r["count"], "uptime_s": r["uptime"], "boot_reason": r["reason"]})
+        self.journal.save(now, force=True)
+        if self._reboots is None:
+            self._reboots = RebootWatch(self.cfg.state_dir / STATE_FILE, emit=self._emit,
+                                        device=self._matter_device)
+        self._reboots.apply(climb_scan(state, now), now)
+        self._matter_boots.commit(state, summary)
+
+    def matter_boots_status(self) -> dict | None:
+        """The last boot poll's summary; None with [matter_boots] off."""
+        return (self._matter_boots.state.get("last") or {"status": "not polled yet"}) if self._matter_boots else None
 
     def _matter_device(self, node: int) -> tuple[str | None, str | None]:
         """(address, name) for a Matter node id, through the

@@ -504,6 +504,9 @@ class ExampleConfigTest(unittest.TestCase):
         ("otbr", "ssh_identity_file"): ("otbr_ssh_identity_file", "~/.ssh/threadwatch_otbr", "/tmp/test-identity"),
         ("otbr", "sudo"): ("otbr_sudo", True, False),
         ("otbr", "poll_s"): ("otbr_poll_s", 600, 900),
+        ("matter_boots", "enabled"): ("boots_enabled", False, True),
+        ("matter_boots", "container"): ("boots_container", "app_core_matter_server", "matter"),
+        ("matter_boots", "poll_s"): ("boots_poll_s", 3600, 900),
         ("ha_logs", "enabled"): ("ha_logs_enabled", True, False),
         ("ha_logs", "addons"): ("ha_logs_addons", ["core_openthread_border_router", "core_matter_server"],
                                 ["core_matter_server"]),
@@ -600,6 +603,8 @@ class ExampleConfigTest(unittest.TestCase):
                 body = f"[{table}]\n{key} = {json.dumps(str(value) if isinstance(value, Path) else value)}\n"
                 if (table, key) == ("otbr", "enabled"):
                     body += 'ssh_target = "test@ha"\n'
+                if (table, key) == ("matter_boots", "enabled"):
+                    body += '[otbr]\nssh_target = "test@ha"\n'
                 if table == "relay":           # one without the other is refused
                     body += 'label = "attic"\n' if key == "to" else 'to = "h:1"\n'
                 if key == "radios":            # an array of tables, which JSON cannot spell

@@ -204,6 +204,10 @@ class Config:
     otbr_ssh_identity_file: str = ""
     otbr_sudo: bool = False
     otbr_poll_s: float = 600
+    # [matter_boots] every Matter node's boots, read over the [otbr] SSH access.
+    boots_enabled: bool = False
+    boots_container: str = "app_core_matter_server"
+    boots_poll_s: float = 3600
     # [ha_logs] copy the Home Assistant OTBR and Matter Server add-on logs
     # into every snapshot (docs/ANALYSIS.md, "Snapshots"). Off by default: it
     # needs config/ha.env with a token from an admin user, since the add-on
@@ -362,6 +366,7 @@ SECTIONS: dict[str, frozenset[str] | None] = {
     "polls": frozenset(("rearm_s", "confirm_s")),
     "keys": frozenset(("confirm_s", "fresh_s", "census_delay_s", "rearm_s", "rotation_hours")),
     "otbr": frozenset(("enabled", "ssh_target", "ssh_port", "ssh_identity_file", "sudo", "container", "poll_s")),
+    "matter_boots": frozenset(("enabled", "container", "poll_s")),
     "ha_logs": frozenset(("enabled", "addons", "max_hours", "read_timeout_s", "deadline_s", "retry", "archive")),
     "ha_availability": frozenset(("enabled", "poll_s", "hold_s", "burst_devices", "burst_window_s",
                                   "burst_hold_s", "rearm_s", "registry_refresh_s")),
@@ -732,6 +737,17 @@ def load(path: Path | None) -> Config:
         cfg.otbr_poll_s = _float("otbr", "poll_s", otbr.get("poll_s", cfg.otbr_poll_s))
         if not 300 <= cfg.otbr_poll_s <= 900:
             raise ValueError("[otbr] poll_s must be between 300 and 900 seconds")
+        boots = raw.get("matter_boots", {})
+        cfg.boots_enabled = boots.get("enabled", cfg.boots_enabled)
+        if not isinstance(cfg.boots_enabled, bool):
+            raise ValueError("[matter_boots] enabled must be true or false")
+        cfg.boots_container = boots.get("container", cfg.boots_container)
+        validate_target(cfg.otbr_ssh_target or "unconfigured", cfg.otbr_ssh_port, cfg.boots_container)
+        if cfg.boots_enabled and not cfg.otbr_ssh_target:
+            raise ValueError("[matter_boots] reads over the [otbr] SSH access: set [otbr] ssh_target")
+        cfg.boots_poll_s = _float("matter_boots", "poll_s", boots.get("poll_s", cfg.boots_poll_s))
+        if not 900 <= cfg.boots_poll_s <= 86400:
+            raise ValueError("[matter_boots] poll_s must be between 900 and 86400 seconds")
         ha_logs = raw.get("ha_logs", {})
         for name, attr in (("enabled", "ha_logs_enabled"), ("retry", "ha_logs_retry"), ("archive", "ha_logs_archive")):
             value = ha_logs.get(name, getattr(cfg, attr))

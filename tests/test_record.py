@@ -563,8 +563,8 @@ class StatusConsumersTest(unittest.TestCase):
         self.assertEqual(sorted(st), ["alerts", "behind_s", "channel", "commit", "crypto", "current_file", "detector",
                                       "devices_tracked", "dominant_pan", "dropped_lines", "frames_total",
                                       "ha_availability", "ha_logs_archive", "keys", "last_frame_age_s",
-                                      "last_frame_ts", "merge", "otbr_inventory", "partition", "port", "radios",
-                                      "updated", "uptime_s", "version"])
+                                      "last_frame_ts", "matter_boots", "merge", "otbr_inventory",
+                                      "partition", "port", "radios", "updated", "uptime_s", "version"])
         self.assertEqual(st["keys"], {})                  # nothing heard yet: no generation on record
         self.assertIsNone(st["otbr_inventory"])           # optional SSH inventory off
         self.assertIsNone(st["ha_logs_archive"])          # [ha_logs] archive off

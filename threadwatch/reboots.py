@@ -1,4 +1,8 @@
-"""Device reboots, read from the Matter Server's log in the hourly archive.
+"""Device reboots: device_rebooted and reboots_climbing, judged on boots
+read live from each node by matterboots ([matter_boots]) or, with that
+off, on the Matter Server log lines in the hourly archive parsed here.
+The Matter Server stopped writing those lines (add-on 9.3.0, matter.js;
+none after 2026-10-28); the parser stays for older archives.
 
 A Matter device reports why it last started (General Diagnostics
 BootReason) each time a controller subscribes after a restart, and the
@@ -108,11 +112,12 @@ def distinct(boots) -> list[dict]:
     `crowd` set on those CROWD_NODES or more nodes share within CROWD_S."""
     out: list[dict] = []
     last: dict[int, float] = {}
-    for ts, node, reason in sorted(boots):
+    for ts, node, reason, *n in sorted(boots):
         if node in last and ts - last[node] <= DUPLICATE_S:
             continue
         last[node] = ts
-        out.append({"ts": ts, "node": node, "reason": reason, "crowd": False})
+        # n: the boots a reboot count says fell since the last read, this the last.
+        out.append({"ts": ts, "node": node, "reason": reason, "crowd": False, "n": int(n[0]) if n else 1})
     for b in out:
         near = {o["node"] for o in out if abs(o["ts"] - b["ts"]) <= CROWD_S}
         b["crowd"] = len(near) >= CROWD_NODES
@@ -140,8 +145,8 @@ def judge(boots: list[dict], node: int, first_seen: float | None, hours: list[st
     # to the last that ends before the window opens.
     covered_h = sum(1 for h in hours if int(floor // 3600) * 3600 <= hour_start(h) <= start - 3600.0)
     mine = [b for b in boots if b["node"] == node and counts(b)]
-    recent = sum(1 for b in mine if start < b["ts"] <= now)
-    before = sum(1 for b in mine if floor <= b["ts"] <= start)
+    recent = sum(b["n"] for b in mine if start < b["ts"] <= now)
+    before = sum(b["n"] for b in mine if floor <= b["ts"] <= start)
     per_day = before / (covered_h / 24.0) if covered_h else 0.0
     judged = covered_h >= BASELINE_MIN_H
     climbing = judged and recent >= CLIMB_MIN and recent >= CLIMB_RATIO * per_day
@@ -231,8 +236,11 @@ class RebootWatch:
             note = f"{name} restarted ({reason}): its firmware stopped responding and was reset"
         else:
             note = f"{name} restarted ({reason})"
+        if b["n"] > 1:
+            note += f". Its reboot count rose by {b['n']} since the read before: this is the last of them"
         self.emit("device_rebooted", "notice" if counts(b) else "info", b["ts"], addr=addr, name=name,
-                  node_id=b["node"], reason=b["reason"], reason_name=reason, crowd=b["crowd"], note=note)
+                  node_id=b["node"], reason=b["reason"], reason_name=reason, crowd=b["crowd"], boots=b["n"],
+                  note=note)
 
     def _climbing(self, node: int, boots: list[dict], verdict: dict, now: float) -> None:
         addr, name = self._who(node)

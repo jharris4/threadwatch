@@ -1,4 +1,10 @@
-"""Compact, bounded key-transition evidence; never an input to detection.
+"""Compact, bounded key-transition and boot evidence; an input to detection.
+
+Each Matter node's boots ([matter_boots], matterboots.py) are written here
+as `uptime_reset` reboots, and the key guard forecast reads each device's
+last boot and the switches since it from here, so pruning keeps those
+whatever their age (protected). The recorder is the only writer: it holds
+the records in memory and rewrites the file from them.
 
 Times are first *observations*, not device switch times. Baselines and
 MAC/MLE observations remain separate. No packet payloads or key material

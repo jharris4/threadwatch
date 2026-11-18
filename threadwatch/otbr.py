@@ -54,10 +54,15 @@ def validate_access(identity_file: str, sudo: bool) -> None:
 def command_argv(cfg, command: str) -> list[str]:
     if command not in COMMANDS:
         raise ValueError("OTBR command is not allowlisted")
-    validate_target(cfg.otbr_ssh_target, cfg.otbr_ssh_port, cfg.otbr_container)
+    return ssh_argv(cfg, cfg.otbr_container, ["ot-ctl", *command.split()])
+
+
+def ssh_argv(cfg, container: str, words: list[str], stdin: bool = False) -> list[str]:
+    """`docker exec` of fixed words in a container on the [otbr] SSH host."""
+    validate_target(cfg.otbr_ssh_target, cfg.otbr_ssh_port, container)
     validate_access(cfg.otbr_ssh_identity_file, cfg.otbr_sudo)
     remote = shlex.join([*(["sudo", "-n"] if cfg.otbr_sudo else []),
-                         "docker", "exec", cfg.otbr_container, "ot-ctl", *command.split()])
+                         "docker", "exec", *(["-i"] if stdin else []), container, *words])
     identity = (["-o", "IdentitiesOnly=yes", "-i", str(Path(cfg.otbr_ssh_identity_file).expanduser())]
                 if cfg.otbr_ssh_identity_file else [])
     return ["ssh", "-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
@@ -65,11 +70,21 @@ def command_argv(cfg, command: str) -> list[str]:
             "-o", "ClearAllForwardings=yes", *identity, "-p", str(cfg.otbr_ssh_port), cfg.otbr_ssh_target, remote]
 
 
-def run_command(argv: list[str]) -> dict:
-    """Bound output in memory and execution time; never invoke a local shell."""
+def run_command(argv: list[str], stdin: bytes | None = None, timeout_s: float | None = None) -> dict:
+    """Bound output in memory and execution time (TIMEOUT_S unless given);
+    never invoke a local shell. ``stdin`` (a few kilobytes, under any pipe
+    buffer) is written whole first."""
+    timeout_s = TIMEOUT_S if timeout_s is None else timeout_s
     started = time.monotonic()
     try:
-        process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        process = subprocess.Popen(argv, stdin=subprocess.DEVNULL if stdin is None else subprocess.PIPE,
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        if stdin is not None:
+            try:
+                process.stdin.write(stdin)
+                process.stdin.close()
+            except BrokenPipeError:
+                pass
     except FileNotFoundError as exc:
         # No ssh client on this host at all (a container image without
         # openssh-client): nothing about the border router was tried, so
@@ -81,7 +96,7 @@ def run_command(argv: list[str]) -> dict:
     output = bytearray()
     try:
         while True:
-            remaining = TIMEOUT_S - (time.monotonic() - started)
+            remaining = timeout_s - (time.monotonic() - started)
             if remaining <= 0:
                 status = "timeout"
                 break
@@ -102,7 +117,7 @@ def run_command(argv: list[str]) -> dict:
             # EOF can precede exit very slightly. Allow normal exit within
             # the original deadline before killing a stuck SSH process.
             try:
-                process.wait(timeout=max(0, TIMEOUT_S - (time.monotonic() - started)) if status is None else 0)
+                process.wait(timeout=max(0, timeout_s - (time.monotonic() - started)) if status is None else 0)
             except subprocess.TimeoutExpired:
                 status = status or "timeout"
                 process.kill()

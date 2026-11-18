@@ -88,7 +88,8 @@ class PollTest(unittest.TestCase):
         got = {b["node"]: b for b in finals}
         self.assertEqual((got[MOTION]["boots"], got[MOTION]["ts"]), (2, T0 + 6600))
         self.assertEqual((got[PLUG]["boots"], got[PLUG]["ts"]), (1, T0 + 6300))
-        self.assertEqual(sorted(h[1:] for h in self.state["history"]), [[MOTION, 0, 2], [PLUG, 0, 1]])
+        self.assertEqual(sorted(h[1:] for h in self.state["history"]),
+                         [[MOTION, 0, 2, T0 + 3600], [PLUG, 0, 1, T0 + 3600]])
 
     def test_slow_clock_creep_and_read_latency_are_not_boots(self):
         self.poll(T0, {AIR: (7, 1_000_000, 1), MOTION: (5, 50_000, None)})
@@ -178,6 +179,21 @@ class ClimbTest(unittest.TestCase):
         scan = mb.climb_scan(state, now)
         verdict = reboots.judge(reboots.distinct(scan["boots"]), MOTION, T0, scan["hours"], now)
         self.assertEqual((verdict["recent"], verdict["judged"], verdict["climbing"]), (6, True, True))
+
+    def test_boots_counted_across_days_without_a_read_are_not_a_climb_today(self):
+        now = T0 + 12 * 86400
+        daily = [[T0 + d * 86400 + 50_000, MOTION, 1, 1, T0 + d * 86400 + 47_000] for d in range(1, 6)]
+        # Six days with no read, then one: the count is up by 6, the last boot an hour ago.
+        state = {"nodes": {str(MOTION): {"since": T0}},
+                 "history": daily + [[now - 3600, MOTION, 1, 6, now - 6 * 86400]]}
+        scan = mb.climb_scan(state, now)
+        verdict = reboots.judge(reboots.distinct(scan["boots"]), MOTION, T0, scan["hours"], now)
+        self.assertEqual((verdict["recent"], verdict["climbing"]), (1, False))
+        # The same six with the read before them inside the last 24 h are six today.
+        state["history"][-1][4] = now - 7200
+        scan = mb.climb_scan(state, now)
+        verdict = reboots.judge(reboots.distinct(scan["boots"]), MOTION, T0, scan["hours"], now)
+        self.assertEqual((verdict["recent"], verdict["climbing"]), (6, True))
 
 
 class RecorderTest(unittest.TestCase):

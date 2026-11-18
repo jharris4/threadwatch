@@ -189,7 +189,8 @@ def poll(cfg, state: dict, now: float, runner=run_command, clock=time.time) -> t
     state["nodes"] = {k: v for k, v in nodes.items() if v["at"] >= now - FORGET_S}
     state["read_at"] = now if len(reads) > len(failed) else last_pass
     state["history"] = [h for h in state.get("history", []) if h[0] >= now - HISTORY_S] + [
-        [b["ts"], b["node"], b["read"]["reason"] or 0, b["boots"]] for b in finals if not b["first_read"]]
+        [b["ts"], b["node"], b["read"]["reason"] or 0, b["boots"], b["after"] if _number(b["after"]) else b["ts"]]
+        for b in finals if not b["first_read"]]             # the last: the read before, which bounds the undated boots
     return state, finals, {"at": now, "status": status, "nodes": len(reads), "read": len(reads) - len(failed),
                            "failed": failed}
 
@@ -214,7 +215,7 @@ def load(path: Path) -> dict:
     nodes = data.get("nodes") if isinstance(data.get("nodes"), dict) else {}
     return {"nodes": {k: v for k, v in nodes.items() if isinstance(v, dict) and _number(v.get("at"))
                       and _number(v.get("since")) and isinstance(v.get("product"), str)},
-            "history": [h for h in data.get("history") or [] if isinstance(h, list) and len(h) == 4
+            "history": [h for h in data.get("history") or [] if isinstance(h, list) and len(h) == 5
                         and all(_number(x) for x in h)],
             "held": [b for b in data.get("held") or [] if isinstance(b, dict) and _count(b.get("node"))
                      and _number(b.get("found")) and _number(b.get("ts")) and isinstance(b.get("read"), dict)],

@@ -112,12 +112,15 @@ def distinct(boots) -> list[dict]:
     `crowd` set on those CROWD_NODES or more nodes share within CROWD_S."""
     out: list[dict] = []
     last: dict[int, float] = {}
-    for ts, node, reason, *n in sorted(boots):
+    for ts, node, reason, *live in sorted(boots):
         if node in last and ts - last[node] <= DUPLICATE_S:
             continue
         last[node] = ts
-        # n: the boots a reboot count says fell since the last read, this the last.
-        out.append({"ts": ts, "node": node, "reason": reason, "crowd": False, "n": int(n[0]) if n else 1})
+        # live (matterboots): the boots a reboot count says fell since the
+        # read before, this the last and the only one dated, and when that
+        # read was.
+        out.append({"ts": ts, "node": node, "reason": reason, "crowd": False,
+                    "n": int(live[0]) if live else 1, "after": live[1] if len(live) > 1 else ts})
     for b in out:
         near = {o["node"] for o in out if abs(o["ts"] - b["ts"]) <= CROWD_S}
         b["crowd"] = len(near) >= CROWD_NODES
@@ -144,9 +147,18 @@ def judge(boots: list[dict], node: int, first_seen: float | None, hours: list[st
     # Whole archived hours from the one the node was first mentioned in
     # to the last that ends before the window opens.
     covered_h = sum(1 for h in hours if int(floor // 3600) * 3600 <= hour_start(h) <= start - 3600.0)
-    mine = [b for b in boots if b["node"] == node and counts(b)]
-    recent = sum(b["n"] for b in mine if start < b["ts"] <= now)
-    before = sum(b["n"] for b in mine if floor <= b["ts"] <= start)
+    recent = before = 0
+    for b in (b for b in boots if b["node"] == node and counts(b)):
+        if start < b["ts"] <= now:
+            # The undated boots of a row fell after the read before it: in
+            # the window when that read was, otherwise somewhere back to it,
+            # and then they go to the baseline. Boots counted across days
+            # without a read must not look like a climb today.
+            inside = b["after"] >= start
+            recent += b["n"] if inside else 1
+            before += 0 if inside else b["n"] - 1
+        elif floor <= b["ts"] <= start:
+            before += b["n"]
     per_day = before / (covered_h / 24.0) if covered_h else 0.0
     judged = covered_h >= BASELINE_MIN_H
     climbing = judged and recent >= CLIMB_MIN and recent >= CLIMB_RATIO * per_day

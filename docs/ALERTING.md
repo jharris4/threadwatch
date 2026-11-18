@@ -554,7 +554,10 @@ afternoon sets its own baseline and never pages, while a device that never
 rebooted pages at its fifth in a day. A device is judged only once 72
 hours cover it before the last 24 h (from its first boot read), so a new
 device, or the first days of `[matter_boots]`, logs its reboots and pages
-nothing for three days. A climb pages once and stays open while
+nothing for three days. When a reboot count rose by several between two
+reads, only the last boot has a time: the others count toward the last
+24 h when the read before them was inside it, and toward the baseline
+otherwise, so boots counted across days without a read are not a climb. A climb pages once and stays open while
 the last 24 h hold 5 reboots, however far its baseline catches up; it
 closes without a record. From 2026-09-22 a door button went from one
 power-on reboot a day to 25, its battery level reading about 40%

@@ -4,7 +4,9 @@ Each Matter node's boots ([matter_boots], matterboots.py) are written here
 as `uptime_reset` reboots, and the key guard forecast reads each device's
 last boot and the switches since it from here, so pruning keeps those
 whatever their age (protected). The recorder is the only writer: it holds
-the records in memory and rewrites the file from them.
+the records in memory and rewrites the file from them. Anyone else (the
+`threadwatch rebooted` command, a one-time seed) queues reboots with post()
+in the state directory's INBOX, which the recorder drains each pass.
 
 Times are first *observations*, not device switch times. Baselines and
 MAC/MLE observations remain separate. No packet payloads or key material
@@ -17,6 +19,7 @@ import copy
 import hashlib
 import json
 import math
+import os
 import re
 import sys
 import time
@@ -26,6 +29,8 @@ from pathlib import Path
 from .keyfacts import _int, _time, facts
 
 STATE = "key-journal.json"
+INBOX = "journal-inbox"        # a directory beside it: whole JSON lists of reboot evidence
+INBOX_BYTES = 1024 * 1024
 KEEP_S = 90 * 86400
 MAX_RECORDS = 8192
 MAX_BYTES = 16 * 1024 * 1024
@@ -39,6 +44,21 @@ EVENTS = frozenset(("key_sequence_advanced", "key_lag", "key_lag_cleared", "key_
 
 def _id(*values):
     return hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()[:24]
+
+
+def post(state_dir: Path, records: list[dict], label: str = "operator") -> Path:
+    """Queue reboot evidence for the recorder: every record checked as the
+    journal will check it, then one new file, written whole and renamed in."""
+    probe = Journal()
+    for r in records:
+        probe.reboot(r)
+    d = state_dir / INBOX
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / f"{time.time():.6f}-{os.getpid()}-{label}.json"
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(records, indent=1))
+    tmp.replace(path)
+    return path
 
 
 def unknown_coverage(reason="capture_completeness_not_measured"):
@@ -328,6 +348,35 @@ class Journal:
             self.otbr(report)
         self.archive_scan = {k: scan[k] for k in ("files", "pending_files")}
         self.dirty = True
+
+    def drain(self, state_dir: Path) -> tuple[list[Path], list[str]]:
+        """The queued INBOX files' reboots into the journal, oldest file
+        first: the files taken, and a note for each one set aside whole as
+        .rejected (unreadable, not a list, over INBOX_BYTES, or a record
+        reboot() refuses). The caller deletes the taken files once saved;
+        draining one again adds nothing, the record ids being their content."""
+        taken, notes = [], []
+        for path in sorted((state_dir / INBOX).glob("*.json"))[:16]:
+            try:
+                if path.stat().st_size > INBOX_BYTES:
+                    raise ValueError(f"over {INBOX_BYTES} bytes")
+                values = json.loads(path.read_text())
+                if not isinstance(values, list):
+                    raise ValueError("not a JSON list")
+                probe = Journal()
+                for value in values:
+                    probe.reboot(value)
+            except (OSError, ValueError, TypeError) as exc:
+                notes.append(f"{path.name} set aside as .rejected: {exc}")
+                try:
+                    path.replace(path.with_suffix(".rejected"))
+                except OSError:
+                    pass
+                continue
+            for value in values:
+                self.reboot(value)
+            taken.append(path)
+        return taken, notes
 
     def topology(self, addr, previous, current, ts):
         self.add({"id": _id("rloc", addr, previous, current, ts), "kind": "topology", "ts": ts,

@@ -14,7 +14,7 @@ from tests.test_otbr import T, log_lines
 from tests.test_pipeline import SENSOR, frame, stub_decryptor
 from threadwatch.config import Config
 from threadwatch.events import NullEventLog
-from threadwatch.journal import Journal, read_report, scan_archive, text_report, unknown_coverage
+from threadwatch.journal import INBOX, Journal, post, read_report, scan_archive, text_report, unknown_coverage
 from threadwatch.keyfacts import observe
 from threadwatch.otbr import SLUG, extract
 from threadwatch.pipeline import Pipeline
@@ -373,6 +373,52 @@ class BootExemptionTest(unittest.TestCase):
                 loaded = Journal(path)
             self.assertEqual(self.kept(loaded), sorted(self.PROTECTED + [("transition", 10, 4), ("transition", 10, 5)]))
             self.assertEqual(loaded.load_status, "partial")
+
+
+
+class InboxTest(unittest.TestCase):
+    """Reboots queued for the recorder, the journal's only writer."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.state = Path(self.tmp.name)
+        self.lock = {"ts": 5 * DAY, "addr": "0e00000000000005", "addresses": ["0e00000000000005"],
+                     "source": "operator_action", "scope": "device", "reference": "battery change"}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_post_refuses_what_the_journal_would_and_writes_nothing(self):
+        with self.assertRaises(ValueError):
+            post(self.state, [self.lock, {**self.lock, "source": "parent_request"}])
+        self.assertFalse((self.state / INBOX).exists())
+
+    def test_a_queued_file_is_taken_once_and_a_bad_one_is_set_aside_whole(self):
+        post(self.state, [self.lock])
+        (self.state / INBOX / "0-bad.json").write_text(json.dumps([self.lock, {"ts": 1}]))
+        (self.state / INBOX / "1-partial.json.tmp").write_text("[")       # still being copied in
+        journal = Journal()
+        taken, notes = journal.drain(self.state)
+        self.assertEqual(len(taken), 1)
+        self.assertEqual([r["ts"] for r in journal.records], [5 * DAY])
+        self.assertIn("0-bad.json set aside as .rejected", notes[0])
+        self.assertTrue((self.state / INBOX / "0-bad.rejected").exists())
+        journal.drain(self.state)                                         # not yet deleted: taken again
+        self.assertEqual(len(journal.records), 1)
+
+    def test_the_recorder_deletes_a_file_only_once_the_journal_is_saved(self):
+        from threadwatch.crypto import Decryptor
+        cfg = Config(data_dir=self.state / "data", config_dir=self.state, devices_path=self.state / "devices.json")
+        (self.state / "devices.json").write_text("[]")
+        pipe = Pipeline(cfg, NullEventLog(), Decryptor(network_key=bytes(16)))
+        post(cfg.state_dir, [self.lock])
+        with patch.object(Path, "write_text", side_effect=OSError("disk full")):
+            pipe._drain_journal_inbox(6 * DAY)
+        self.assertEqual(len(list((cfg.state_dir / INBOX).glob("*.json"))), 1)
+        pipe._drain_journal_inbox(6 * DAY + 1)
+        self.assertEqual(list((cfg.state_dir / INBOX).glob("*.json")), [])
+        saved = Journal(cfg.state_dir / "key-journal.json")
+        self.assertEqual([r["ts"] for r in saved.records if r["kind"] == "reboot"], [5 * DAY])
 
 
 if __name__ == "__main__":

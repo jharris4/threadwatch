@@ -72,6 +72,7 @@ sudo systemctl start threadwatch
 (Docker: `docker compose stop recorder`.) Everything else is safe beside
 a running recorder: `doctor`, `status`, `devices`, `device`, `replay`,
 `events`, `snapshots`, `snapshot`, `otbr-evidence`, `key-journal`, `border-routers`, `alert-test`, `serve`,
+`rebooted` (which queues a file in `data/state/journal-inbox/` for the recorder to take),
 and `name`, `hold`, `mute` and `import`, which write `config/` files the recorder reads
 only at its next start. `replay` and `device` run the pipeline in a mode that
 writes nothing to `data/state` and sends nothing to any sink.
@@ -675,8 +676,21 @@ of the last week.
 `--json` includes all evidence and references. It reads
 `data/state/key-journal.json` and retained events, without decoding the ring
 or contacting HA. The recorder builds the journal from accepted keyfacts,
-existing events, optional OTBR inventory and archived OTBR logs. Detector
-and replay-protection decisions do not read it.
+existing events, optional OTBR inventory, archived OTBR logs and the
+Matter boots `[matter_boots]` reads. Replay-protection decisions do not
+read it; the key guard forecast does, so each device's last boot and the
+switches since it are kept whatever their age.
+
+The recorder is the journal's only writer. A boot nothing reports (a
+lock's battery change, an Apple TV's power cycle) goes in with
+`threadwatch rebooted "Side Door Lock" --at 2026-01-15T09:30 --note
+"battery change"` (local time unless the stamp carries an offset; now by
+default). It queues a JSON list of reboot evidence in
+`data/state/journal-inbox/`, and the recorder takes every `*.json` there
+within a minute, saves the journal, and deletes the file. A file it
+cannot take whole is renamed `.rejected` and named in its log. Anything
+else that needs to add reboots (a one-time seed) writes a list in the same
+format there: copy it in under another name and rename it to `.json`.
 
 The JSON has `incidents`, `devices`, and `records`. An incident keeps its
 network observation interval separately from its first sender's local

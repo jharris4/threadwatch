@@ -3856,6 +3856,8 @@ class Pipeline:
         if self._parent_checks:
             self._settle_parent_checks(now, final)
         self.seen.maybe_save()
+        if not self.ephemeral:
+            self._drain_journal_inbox(now)
         self.journal.save(now)
         self._check_credentials(now)
         self._check_inventory(now)
@@ -4581,6 +4583,22 @@ class Pipeline:
                                         device=self._matter_device)
         self._reboots.apply(climb_scan(state, now), now)
         self._matter_boots.commit(state, summary)
+
+    def _drain_journal_inbox(self, now: float) -> None:
+        """Reboots queued by `threadwatch rebooted` or a seed (journal.post):
+        into the journal, saved, then the files deleted. A failed save keeps
+        them for the next pass."""
+        taken, notes = self.journal.drain(self.cfg.state_dir)
+        for note in notes:
+            print(f"[threadwatch] key journal inbox: {note}", file=sys.stderr, flush=True)
+        if not taken:
+            return
+        self.journal.save(now, force=True)
+        if self.journal.dirty:
+            return
+        for path in taken:
+            path.unlink(missing_ok=True)
+        print(f"[threadwatch] key journal inbox: took {', '.join(p.name for p in taken)}", flush=True)
 
     def matter_boots_status(self) -> dict | None:
         """The last boot poll's summary; None with [matter_boots] off."""

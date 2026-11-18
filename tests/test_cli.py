@@ -177,6 +177,38 @@ class SnapshotsTest(CliCase):
         self.assertIn("no snapshot named", err)
 
 
+class RebootedTest(CliCase):
+    """`threadwatch rebooted` queues an operator reboot for the recorder;
+    it never writes the journal itself."""
+
+    def setUp(self):
+        super().setUp()
+        (self.d / "devices.json").write_text(json.dumps([
+            {"name": "Side Door Lock", "extendedAddresses": ["3E5A0C7F21B94D68", "71D2E80B4C9A3F15"]},
+            {"name": "Side Door Sensor", "extendedAddress": "A0B1C2D3E4F50617"}]))
+        self.inbox = self.d / "data" / "state" / "journal-inbox"
+
+    def test_a_named_device_and_a_local_time_are_queued(self):
+        code, out, _ = self.run_cli("rebooted", "side door lock", "--at", "2026-11-06T13:16:02", "--note", "battery")
+        self.assertEqual(code, 0)
+        [queued] = list(self.inbox.glob("*.json"))
+        [record] = json.loads(queued.read_text())
+        self.assertEqual(record, {"ts": time.mktime((2026, 11, 6, 13, 16, 2, 0, 0, -1)), "addr": "3e5a0c7f21b94d68",
+                                  "addresses": ["3e5a0c7f21b94d68", "71d2e80b4c9a3f15"], "name": "Side Door Lock",
+                                  "source": "operator_action", "scope": "device",
+                                  "reference": "threadwatch rebooted: battery"})
+        self.assertIn("'Side Door Lock' rebooted 2026-11-06 13:16:02", out)
+        self.assertFalse((self.d / "data" / "state" / "key-journal.json").exists())
+
+    def test_an_ambiguous_device_or_a_future_time_queues_nothing(self):
+        for args in (("side door",), ("side door lock", "--at", "2099-01-01T00:00"),
+                     ("side door lock", "--at", "yesterday")):
+            code, _, err = self.run_cli("rebooted", *args)
+            self.assertEqual(code, 1, args)
+            self.assertIn("threadwatch rebooted:", err)
+        self.assertEqual(list(self.inbox.glob("*")) if self.inbox.exists() else [], [])
+
+
 class NameTest(CliCase):
     def test_a_named_address_is_read_back_from_beside_the_config_file(self):
         from unittest import mock

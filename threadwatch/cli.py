@@ -192,6 +192,13 @@ def main(argv=None) -> int:
     p_mute.add_argument("device", help="an inventory name (or a fragment of one) or a 16-hex extended address")
     p_mute.add_argument("--off", action="store_true", help="lift the mute")
 
+    p_reb = sub.add_parser("rebooted", help="record a power cycle or battery change the recorder cannot see (a "
+                                            "lock, an Apple TV) as a reboot in the key journal")
+    p_reb.add_argument("device", help="an inventory name (or a fragment of one) or a 16-hex extended address")
+    p_reb.add_argument("--at", help="when, ISO-8601, local time unless it says otherwise (default: now), "
+                                    "e.g. 2026-11-06T13:16")
+    p_reb.add_argument("--note", default="power cycle or battery change", help="what was done")
+
     p_br = sub.add_parser("border-routers", help="ask the LAN (mDNS) which Thread border routers it can see, "
                                                  "with their current extended addresses")
     p_br.add_argument("--seconds", type=float, default=4.0, help="how long to wait for answers")
@@ -649,6 +656,29 @@ def main(argv=None) -> int:
             parser.exit(1, f"threadwatch {args.cmd}: {exc}\n")
         print(f"{done} -> {path}")
         print("(the recorder picks this up within a minute)")
+        return 0
+
+    if args.cmd == "rebooted":
+        from datetime import datetime
+
+        from .journal import post
+        from .names import _entry_for, _norm, entry_addresses, read_inventory
+        path = _inventory_path(cfg)
+        try:
+            entry = _entry_for(read_inventory(path), args.device, path)
+            addrs = [_norm(a) for a in entry_addresses(entry)]
+            when = datetime.fromisoformat(args.at.replace("Z", "+00:00")).timestamp() if args.at else time.time()
+            if when > time.time() + 60:
+                raise ValueError(f"--at {args.at} is in the future")
+            if not addrs:
+                raise ValueError(f"{entry.get('name')!r} has no address in {path.name}")
+            queued = post(cfg.state_dir, [{"ts": when, "addr": addrs[0], "addresses": addrs, "name": entry.get("name"),
+                                           "source": "operator_action", "scope": "device",
+                                           "reference": f"threadwatch rebooted: {args.note}"}])
+        except (ValueError, OSError) as exc:
+            parser.exit(1, f"threadwatch rebooted: {exc}\n")
+        print(f"{entry.get('name')!r} rebooted {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(when))} -> {queued}")
+        print("(the recorder adds it to the key journal within a minute)")
         return 0
 
     if args.cmd == "name":

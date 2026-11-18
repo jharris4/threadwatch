@@ -811,6 +811,30 @@ class KeysPageTest(unittest.TestCase):
         self.assertEqual(table.count('<td>normal</td></tr>'), 4)
         self.assertIn('<td>none<br><span class="muted">stack unknown', table)
 
+    def test_a_number_counts_the_child_its_parent_strands_when_it_takes_the_number_later(self):
+        day, hour = 86400, 3600
+        now = time.time()
+        hall_boot, garden_boot = now - 10 * day, now - 27 * day
+        # Garden Plug starts 6 tomorrow. Hall Air Monitor took 5 at its boot, so its guard holds 6
+        # off for 16 days more; when it takes 6, its child on 4 is two behind.
+        records = [self.moved(self.HALL, hall_boot - day, None, 4), self.booted(self.HALL, hall_boot),
+                   self.moved(self.HALL, hall_boot + 60, 4, 5, last=hall_boot + 30),
+                   self.moved(self.GARDEN, now - 31 * day, None, 4), self.booted(self.GARDEN, garden_boot),
+                   self.moved(self.GARDEN, garden_boot + 60, 4, 5, last=garden_boot + 30),
+                   self.moved(self.PORCH, now - 31 * day, None, 3), self.booted(self.PORCH, now - 30 * day),
+                   self.moved(self.PORCH, now - 5 * day, 3, 4, last=now - 5 * day - 30)]
+
+        def stamp(ts):
+            return time.strftime("%m-%d %H:%M:%S", time.localtime(ts))
+        with tempfile.TemporaryDirectory() as tmp:
+            body = self.site(Path(tmp), records).respond("/keys")[2].decode()
+        hall = '<a href="/device/Hall%20Air%20Monitor">Hall Air Monitor</a>'
+        self.assertIn(f'<td class="n">6</td><td>{stamp(garden_boot + 672 * hour)}</td><td><a href="/device/'
+                      'Garden%20Plug">Garden Plug</a> <span class="muted">own rotation</span></td>'
+                      '<td class="n">0</td><td class="n">1</td>', body)
+        self.assertIn(f'<tr><td>{stamp(hall_boot + 624 * hour)}</td><td><a href="/device/Porch%20Sensor">Porch Sensor'
+                      f'</a></td><td class="n">4</td><td>{hall}</td><td class="n">6</td></tr>', body)
+
     def test_a_boot_range_shows_only_when_its_ends_read_differently(self):
         now = time.time()
         hall_boot, garden_boot = int(now - 10 * 86400) + 0.6, now - 30 * 86400

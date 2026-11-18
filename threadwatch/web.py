@@ -1267,8 +1267,9 @@ class Site:
 
     def keys_page(self) -> str:
         """The key guard forecast (keyforecast.py), worked out afresh from
-        the key journal on each load: the next two new key numbers, every
-        sleepy child it leaves two behind its parent, each device's guard
+        the key journal on each load: the next two new key numbers (each
+        with the children it leaves two behind, whenever their parent takes
+        it), every sleepy child left two behind its parent, each device's guard
         and rotation timer, and what it cannot forecast. Parents and who is
         sleepy (a child that polls) come from the recorder's device rows; a
         device they give no role or parent is listed, since keylog takes it
@@ -1324,7 +1325,7 @@ class Site:
         trs = [f'<tr><td class="n">{s.new}</td><td>{at(s.ts)}</td><td>{link(s.name)} <span class="muted">'
                f'{esc(s.why)}</span></td><td class="n">'
                f'{sum(x.ts == s.ts and x.new == s.new for x in fc.steps) - 1}</td>'
-               f'<td class="n">{sum(x.ts == s.ts for x in fc.stranded)}</td></tr>' for s in fc.numbers[:2]]
+               f'<td class="n">{sum(x.parent_key == s.new for x in fc.stranded)}</td></tr>' for s in fc.numbers[:2]]
         numbers = ('<table class="keys"><tr><th>number</th><th>due</th><th>started by</th><th>follow at once</th>'
                    f'<th>left two behind</th></tr>{"".join(trs)}</table>' if trs
                    else '<p class="empty">no new number within the forecast</p>')

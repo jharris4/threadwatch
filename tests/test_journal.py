@@ -397,6 +397,16 @@ class BootExemptionTest(unittest.TestCase):
                           ("0f00000000000006", "transition", 2), ("otbr:x", "inventory", 1),
                           ("otbr:x", "inventory", 3), ("otbr:x", "reboot", 2)])
 
+    def test_a_second_record_of_the_last_boot_is_kept_beside_the_later_dated_one(self):
+        journal = Journal()
+        boot(journal, 1 * DAY, "0a00000000000011", source="service_log")        # an older boot
+        boot(journal, 3 * DAY, "0a00000000000011", source="service_log")        # logged when it happened
+        # The same boot, first read weeks later off a slow uptime clock: dated 28 min late.
+        boot(journal, 3 * DAY + 1680, "0a00000000000011", first_read=True, earliest=3 * DAY - 180)
+        journal.prune(200 * DAY)
+        self.assertEqual(sorted((r["ts"] - 3 * DAY, r["evidence"]["source"]) for r in journal.records),
+                         [(0, "service_log"), (1680, "uptime_reset")])
+
 
 class InboxTest(unittest.TestCase):
     """Reboots queued for the recorder, the journal's only writer."""

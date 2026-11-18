@@ -77,7 +77,10 @@ def protected(records) -> set:
     """Ids kept whatever their age or the caps: each device's most recent
     reboot, its switches from BOOT_MARGIN_S before that on (before its
     `earliest`, where the stamp may be late), and the last switch per
-    address and layer before then (the key it booted on). A switch is a
+    address and layer before then (the key it booted on). Any other reboot
+    record in that span stays too: it is the same boot from another source
+    (a logged or seeded stamp beside a first read's later, uptime-dated
+    one), and often the better dated of the two. A switch is a
     sniffed transition or an OTBR inventory change (filed, like the OTBR's
     uptime resets, under otbr:<source>). A device is every address its
     records name together: a transition's physical identity, a reboot's
@@ -105,12 +108,12 @@ def protected(records) -> set:
     keep, before = {r["id"] for r in boots.values()}, {}
     for r in sorted(mine, key=lambda r: r["ts"]):
         boot = boots.get(find(r["addr"].lower()))
-        if boot is None or r["kind"] == "reboot":
+        if boot is None:
             continue
         earliest = boot["evidence"].get("earliest")
         if r["ts"] >= min(boot["ts"], earliest if _time(earliest) else boot["ts"]) - BOOT_MARGIN_S:
             keep.add(r["id"])
-        else:
+        elif r["kind"] != "reboot":
             before[(r["addr"], r.get("layer", r["kind"]))] = r["id"]
     return keep | set(before.values())
 

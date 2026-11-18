@@ -726,6 +726,17 @@ left where it is. Anything else that needs to add reboots (a one-time
 seed) writes a list in the same format there: copy it in under another
 name and rename it to `.json`.
 
+A Matter device needs no such entry: the hourly `[matter_boots]` read dates
+its boots from the device's own uptime. One entered anyway never replaces
+that. An entry within ten minutes of the boot the device reports counts as
+that same boot, and the forecast uses the device's time. Further off, the
+recorder takes the
+entry out of the journal at the first read after the entered time whose
+uptime shows the device was already running by then, and says so in its
+log. A read that returns no uptime rules nothing out, and a device that is
+not a Matter node, or that the `[ha_availability]` map has no address for,
+is not checked.
+
 An entry made by mistake (the wrong device, the wrong time) is taken back
 with `threadwatch rebooted "Side Door Lock" --undo`, on the same host. It
 cancels that device's most recent reboot entered with `threadwatch

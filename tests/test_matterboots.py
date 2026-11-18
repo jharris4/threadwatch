@@ -1,6 +1,8 @@
 """matterboots: each Matter node's boots from its reboot count and uptime,
 read through a fixed script; made-up nodes, products and addresses."""
 
+import contextlib
+import io
 import json
 import sys
 import tempfile
@@ -13,6 +15,7 @@ import tests  # noqa: F401  (the mDNS guard)
 from threadwatch import matterboots as mb
 from threadwatch import reboots
 from threadwatch.config import Config
+from threadwatch.journal import Journal
 
 T0 = 1_757_800_800.0            # a round UTC hour
 AIR, MOTION, PLUG = 0x10, 0x20, 0x30
@@ -250,6 +253,48 @@ class RecorderTest(unittest.TestCase):
         self.assertEqual(mb.load(self.cfg.state_dir / mb.STATE)["nodes"][str(MOTION)]["count"], 6)
         # The plug is not in the HA map yet: its boot waits for its address.
         self.assertEqual([b["node"] for b in pipe._matter_boots.state["held"]], [PLUG])
+
+    def typed(self, ts):
+        return {"ts": ts, "addr": "c4e2a91d07f35b6e", "addresses": ["c4e2a91d07f35b6e", "9d04b1e2c3f5a607"],
+                "name": "Path Motion", "source": "operator_action", "scope": "device",
+                "reference": "threadwatch rebooted: power cycle or battery change"}
+
+    def test_a_typed_boot_the_devices_own_uptime_rules_out_is_taken_out_of_the_journal(self):
+        from threadwatch.crypto import Decryptor
+        from threadwatch.events import NullEventLog
+        from threadwatch.pipeline import Pipeline
+        pipe = Pipeline(self.cfg, NullEventLog(), Decryptor(network_key=bytes(16)))
+        run = Runner()
+        run.outputs.append(output(T0, {MOTION: (5, 50_000, None)}))
+        pipe._apply_matter_boots(*mb.poll(self.cfg, pipe._matter_boots.state, T0, run), T0)
+        # Power-cycled at T0 + 600. `threadwatch rebooted` is run 20 minutes after (stamped then), again
+        # with --at five minutes off, and once more for a time after the next read.
+        late, close, after = self.typed(T0 + 1800), self.typed(T0 + 900), self.typed(T0 + 3900)
+        seeded = {**self.typed(T0 + 2000), "reference": "seed: a note"}       # not typed with the command
+        for e in (late, close, after, seeded):
+            pipe.journal.reboot(e)
+        run.outputs.append(output(T0 + 3600, {MOTION: (6, 3000, None)}))
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            pipe._apply_matter_boots(*mb.poll(self.cfg, pipe._matter_boots.state, T0 + 3600, run), T0 + 3600)
+        # The node had been up since T0 + 600 when it was read at T0 + 3600: no boot at T0 + 1800. The
+        # one five minutes off is the same boot (the model takes the read's stamp), the one after the
+        # read is not ruled out yet, and a seed's is never touched.
+        left = sorted(r["ts"] - T0 for r in pipe.journal.records if r["evidence"].get("source") == "operator_action")
+        self.assertEqual(left, [900, 2000, 3900])
+        self.assertIn("Path Motion", err.getvalue())
+        self.assertIn("threadwatch rebooted", err.getvalue())
+        self.assertEqual(len(Journal(self.cfg.state_dir / "key-journal.json").records), len(pipe.journal.records))
+        # The next read, with no boot since: the last typed one is ruled out too.
+        run.outputs.append(output(T0 + 7200, {MOTION: (6, 6600, None)}))
+        with contextlib.redirect_stderr(io.StringIO()):
+            pipe._apply_matter_boots(*mb.poll(self.cfg, pipe._matter_boots.state, T0 + 7200, run), T0 + 7200)
+        left = sorted(r["ts"] - T0 for r in pipe.journal.records if r["evidence"].get("source") == "operator_action")
+        self.assertEqual(left, [900, 2000])
+        # A read with no uptime rules nothing out: only the count says the node has not booted.
+        pipe.journal.reboot(self.typed(T0 + 9000))
+        run.outputs.append(output(T0 + 10800, {MOTION: (6, None, None)}))
+        pipe._apply_matter_boots(*mb.poll(self.cfg, pipe._matter_boots.state, T0 + 10800, run), T0 + 10800)
+        self.assertIn(T0 + 9000, [r["ts"] for r in pipe.journal.records])
 
     def test_a_boot_of_a_node_with_no_address_waits_for_one_however_long(self):
         from threadwatch.crypto import Decryptor

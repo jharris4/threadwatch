@@ -196,6 +196,8 @@ def poll(cfg, state: dict, now: float, runner=run_command, clock=time.time) -> t
                             "count": prev.get("count") if carry and r["count"] is None else r["count"],
                             "uptime": prev.get("uptime") if carry and r["uptime"] is None else r["uptime"],
                             "boot": prev.get("boot") if carry and est is None else est,
+                            # the last read whose uptime dated that boot: no boot between the two
+                            "up_at": r["at"] if est is not None else prev.get("up_at") if carry else None,
                             "since": prev.get("since", r["at"]),
                             "journalled": bool(prev.get("journalled") or n or first)}
     state["nodes"] = {k: v for k, v in nodes.items() if v["at"] >= now - FORGET_S}

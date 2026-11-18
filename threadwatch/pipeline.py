@@ -4727,6 +4727,7 @@ class Pipeline:
                 "node_id": b["node"], "product": r["product"], "stamp": b["stamp"], "earliest": b.get("earliest"),
                 "first_read": b["first_read"], "boots": b["boots"], "previous_read_at": b["after"],
                 "read_at": r["at"], "reboot_count": r["count"], "uptime_s": r["uptime"], "boot_reason": r["reason"]})
+        self._drop_typed_boots(state)
         self.journal.save(now, force=True)
         if self.journal.dirty:
             self._matter_boots.retry = (state, boots, summary)
@@ -4737,6 +4738,35 @@ class Pipeline:
         self._reboots.apply(climb_scan(state, now), now)
         for event, severity, fields in self._matter_boots.commit({**state, "held": list(held.values())}, summary):
             self._emit(event, severity, now, **fields)
+
+    def _drop_typed_boots(self, state: dict) -> None:
+        """Take out of the key journal each reboot entered with
+        `threadwatch rebooted` that the device itself rules out: a Matter
+        node whose uptime, at a read after the typed time, dated its boot
+        more than BOOT_MARGIN_S before it had not booted then. Typed
+        closer to the boot than that it is the same boot, and the model
+        takes the read's stamp (keyguard.one_per_boot). A time typed after
+        the node's last read waits for the next one. Each removal is said
+        in the log."""
+        from .journal import BOOT_MARGIN_S, entered_by_hand
+        typed = [r for r in self.journal.records if r["kind"] == "reboot" and entered_by_hand(r["evidence"])]
+        for node, v in state.get("nodes", {}).items() if typed else ():
+            boot, up_at = v.get("boot"), v.get("up_at")
+            if not (isinstance(boot, (int, float)) and isinstance(up_at, (int, float))):
+                continue
+            addr, name = self._matter_device(int(node))
+            mine = set(self.names.entry_addresses_of(addr)) if addr else set()
+            for r in typed:
+                listed = r["evidence"].get("addresses")
+                if (boot + BOOT_MARGIN_S < r["ts"] <= up_at
+                        and mine & {a.lower() for a in [r["addr"], *(listed if isinstance(listed, list) else [])]
+                                    if isinstance(a, str)}):
+                    self.journal.remove(r["id"], f"Matter node {node}")
+                    stamp = "%Y-%m-%d %H:%M:%S"
+                    print(f"[threadwatch] key journal: took out the reboot of {name or addr} entered with "
+                          f"threadwatch rebooted for {time.strftime(stamp, time.localtime(r['ts']))}: Matter node "
+                          f"{node}, read at {time.strftime(stamp, time.localtime(up_at))}, had been up since "
+                          f"{time.strftime(stamp, time.localtime(boot))}", file=sys.stderr, flush=True)
 
     def _drain_journal_inbox(self, now: float) -> None:
         """Reboots queued by `threadwatch rebooted` or a seed (journal.post):

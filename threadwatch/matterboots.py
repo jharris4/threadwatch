@@ -222,6 +222,13 @@ class BootPoller:
         self.state = load(self.path)
         self.thread = self.result = self.retry = None
 
+    def rejournal(self) -> None:
+        """The key journal starts empty (new, lost or unreadable) while this
+        state says each node's last boot is in it: every node's next read
+        journals its last boot again, as a first read does."""
+        for node in self.state.get("nodes", {}).values():
+            node["journalled"] = False
+
     def tick(self, now: float):
         """The finished pass (state, boots, summary) once; else None, and
         the next pass started when it is due."""

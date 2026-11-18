@@ -681,6 +681,13 @@ Matter boots `[matter_boots]` reads. Replay-protection decisions do not
 read it; the key guard forecast does, so each device's last boot and the
 switches since it are kept whatever their age.
 
+A journal file the recorder cannot load at start (damaged by a power
+loss, or over 16 MiB) is not written over: the first save moves it to
+`data/state/key-journal.unreadable-<time>.json`, says so in the log, and
+starts a new one. With `[matter_boots]` on, each node's last boot is then
+read into the new journal again; operator reboots and a seed are not, and
+have to be queued again or recovered from the file kept aside.
+
 The recorder is the journal's only writer. A boot nothing reports (a
 lock's battery change, an Apple TV's power cycle) goes in with
 `threadwatch rebooted "Side Door Lock" --at 2026-01-15T09:30 --note

@@ -379,6 +379,19 @@ class BootExemptionTest(unittest.TestCase):
             self.assertEqual(loaded.load_status, "partial")
 
 
+    def test_a_file_that_cannot_be_read_is_moved_aside_not_written_over(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "key-journal.json"
+            path.write_text('{"version": 1, "records": [{"id": "cut off mid-wri')
+            journal = Journal(path)
+            self.assertEqual(journal.load_status, "unreadable")
+            boot(journal, 4 * DAY, "0a00000000000001")
+            journal.save(5 * DAY, force=True)
+            journal.save(5 * DAY + 60, force=True)
+            [aside] = Path(tmp).glob("key-journal.unreadable-*.json")
+            self.assertEqual(aside.read_text(), '{"version": 1, "records": [{"id": "cut off mid-wri')
+            self.assertEqual([r["ts"] for r in Journal(path).records], [4 * DAY])
+
     def test_a_late_stamp_reaches_back_to_its_earliest_and_the_otbr_inventory_counts_as_switches(self):
         journal = Journal()
         switch(journal, 89, 1 * DAY, "0f00000000000006")

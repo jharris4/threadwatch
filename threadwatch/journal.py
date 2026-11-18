@@ -6,7 +6,9 @@ last boot and the switches since it from here, so pruning keeps those
 whatever their age (protected). The recorder is the only writer: it holds
 the records in memory and rewrites the file from them. Anyone else (the
 `threadwatch rebooted` command, a one-time seed) queues reboots with post()
-in the state directory's INBOX, which the recorder drains each pass.
+in the state directory's INBOX, which the recorder drains each pass. A
+file that cannot be loaded (damaged, over the size bound) is not written
+over: the first save moves it aside as key-journal.unreadable-<time>.json.
 
 Times are first *observations*, not device switch times. Baselines and
 MAC/MLE observations remain separate. No packet payloads or key material
@@ -138,6 +140,7 @@ class Journal:
         self.dirty = False
         self.saved_at = 0.0
         self.inbox_stuck = set()       # INBOX file names that can be neither deleted nor renamed
+        self._kept_aside = False       # an unreadable file has been moved out of save's way
         if path is not None and path.exists():
             try:
                 if path.stat().st_size > MAX_BYTES:
@@ -508,6 +511,16 @@ class Journal:
                 raise OSError(f"the protected records alone exceed {MAX_BYTES} bytes; the file on disk is kept")
             self.prune(now)
             self.path.parent.mkdir(parents=True, exist_ok=True)
+            if self.load_status == "unreadable" and not self._kept_aside:
+                # Never write over a file that could not be read: it may be
+                # the only record of boots no read can give again. A failed
+                # rename fails the save, and the file stays as it is.
+                aside = self.path.with_name(f"{self.path.stem}.unreadable-{int(time.time())}{self.path.suffix}")
+                if self.path.exists():
+                    self.path.replace(aside)
+                    print(f"[threadwatch] key journal: {self.path.name} could not be read at start; it is kept "
+                          f"as {aside.name} and a new journal starts empty", file=sys.stderr, flush=True)
+                self._kept_aside = True
             tmp = self.path.with_suffix(".tmp")
             tmp.write_text(json.dumps(self.state(), separators=(",", ":")))
             tmp.replace(self.path)

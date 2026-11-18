@@ -142,6 +142,36 @@ class NoticeTest(unittest.TestCase):
         self.assertEqual((n["sequence"], n["at"]), (92, T + 372 * HOUR))
         self.assertEqual((n["two_behind"], n["later"]), (["Gate Sensor", "Porch Sensor"], 0))
 
+    def test_a_booked_unit_the_whole_window_can_do_without_is_left_out(self):
+        # Attic reset at T - 100 h: its number is booked for after Porch's guard has opened, so cycling Den
+        # alone prevents 92 at every time cycling both does.
+        n = kn.notice(mesh() + [clear("Attic Monitor", OLD, T - 100 * HOUR)], T)
+        cycle = n["power_cycle"]
+        self.assertEqual((cycle["units"], cycle["from"]), (["Den Monitor"], T))
+        self.assertAlmostEqual(cycle["until"], T + 72 * HOUR, delta=kn.EDGE_S)
+
+    def test_fewer_units_never_means_a_later_or_a_shorter_window(self):
+        # Three units have a number booked. Cycling all three works from now until T + 91 h. Until Mudroom
+        # fires at T + 46 h, Den and Mudroom are enough; after it, Den and Gate, or Gate alone. None of
+        # those smaller sets covers the whole window, so none replaces the full set, whenever it is asked.
+        unknown = ("unknown", None, "not in the table")
+        devs = [armed("Loft Monitor", OLD, T - 607 * HOUR), clear("Den Monitor", OLD, T - 533 * HOUR),
+                armed("Shed Monitor", OLD, T - 120 * HOUR), clear("Mudroom Monitor", OLD, T - 626 * HOUR),
+                Device("Deck TV", unknown, (), (Switch(T - 400 * HOUR, None, 90),)),
+                armed("Porch Sensor", OLD, T - 700 * HOUR, at=T - 295 * HOUR, parent="Den Monitor", sleepy=True),
+                clear("Gate Sensor", OLD, T - 153 * HOUR, parent="Deck TV", sleepy=True)]
+        sent = None
+        for now in (T, T + 2 * HOUR, T + 30 * HOUR):
+            with self.subTest(hours=(now - T) / HOUR):
+                n = kn.notice(devs, now)
+                cycle = n["power_cycle"]
+                self.assertEqual((n["sequence"], n["two_behind"]), (94, ["Gate Sensor"]))
+                self.assertEqual(cycle["units"], ["Den Monitor", "Gate Sensor", "Mudroom Monitor"])
+                self.assertEqual(cycle["from"], now)
+                self.assertAlmostEqual(cycle["until"], T + 91 * HOUR, delta=kn.EDGE_S)
+                self.assertTrue(sent is None or kn.same(sent, n, now))      # nothing new to send
+                sent = sent or n
+
 
 class NoticeFiringTest(unittest.TestCase):
     def fired(self, events):

@@ -989,9 +989,10 @@ hypothetical boot:
 - A power cycle of the old-logic units with a number booked, all together,
   moves their numbers to 672 h after the power cycle. Too early or too late
   it books an early number instead, so the note gives the window in which
-  nothing is left two behind, and names only the units that window needs. A
-  unit ahead of its parent at the time is never named: a reboot does not
-  take a key back.
+  nothing is left two behind, and names only the units that window needs: a
+  unit is left out only if the rest prevent the stranding at every time in
+  the window, never for a later or a shorter one. A unit ahead of its parent
+  at the time is never named: a reboot does not take a key back.
 
 The search tries a boot every 6 h from now to the stranding and either side
 of every switch in the forecast (where a window starts or ends), and finds

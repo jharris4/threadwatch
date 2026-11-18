@@ -13,8 +13,9 @@ forecast shows would prevent it, tested as hypothetical boots:
   otherwise why it cannot help;
 - a power cycle of the old-logic units that have a number booked (no +1
   since their last boot), all together, with the stretch in which nothing
-  is left two behind, and only the units that stretch needs; never a unit
-  that would be ahead of its parent at the time.
+  is left two behind, and only the units that whole stretch needs (fewer
+  units never for a later or a shorter one); never a unit that would be
+  ahead of its parent at the time.
 It goes out when first seen, when its answer changes, and when the power
 cycle's stretch opens; key_stranding_cleared when no child is forecast two
 behind any more, unless that is because a child it named is two behind now
@@ -139,17 +140,21 @@ def notice(devs, now, fc=None) -> dict | None:
     if units:
         found, _grid, fit = _search(devs, now, fc, first.ts, [units], cycle=True)
         if units in found:
-            mid = sum(found[units]) / 2
-            need = units
+            # A unit is left out only where the rest still prevent it at
+            # every time the stretch so far covers, so fewer units never
+            # means a later or a shorter stretch, and the answer does not
+            # hang on which moment it was tried at. Both ends are tried
+            # first: one forecast each, where the search takes hundreds.
+            need, (start, end) = units, found[units]
             for u in units:
                 rest = tuple(x for x in need if x != u)
-                if rest and fit(rest, mid) and not {x.name for x in kf.forecast(
-                        devs, now, [(n, mid) for n in rest]).stranded if x.ts > now}:
-                    need = rest
-            if need != units:
-                fewer = _search(devs, now, fc, first.ts, [need], cycle=True)[0]
-                need, found = (need, fewer) if need in fewer else (units, found)    # the full set's, tested
-            cycle = {"units": list(need), "from": found[need][0], "until": found[need][1]}
+                if not rest or not all(fit(rest, t) and not {x.name for x in kf.forecast(
+                        devs, now, [(n, t) for n in rest]).stranded if x.ts > now} for t in (start, end)):
+                    continue
+                got = _search(devs, now, fc, first.ts, [rest], cycle=True)[0].get(rest)
+                if got is not None and got[0] <= start + EDGE_S and got[1] >= end - EDGE_S:
+                    need, start, end = rest, min(start, got[0]), max(end, got[1])
+            cycle = {"units": list(need), "from": start, "until": end}
     return {"sequence": first.parent_key, "at": first.ts, "started_by": starter, "two_behind": kids,
             "later": len({x.name for x in future if x.parent_key != first.parent_key} - set(kids)), "pulls": pulls,
             "power_cycle": cycle}

@@ -126,7 +126,7 @@ class BootLogTest(unittest.TestCase):
         logged = booted("otbr:log", T + 130, "service_log")
         boots = keylog.boot_log([noticed, logged])
         self.assertEqual(boots, [Boot(T + 130), Boot(T + 600, earliest=T)])
-        self.assertEqual(keyguard.one_per_boot(boots), [Boot(T + 130)])   # without the range the later stamp would win
+        self.assertEqual(keyguard.one_per_boot(boots), [Boot(T + 130)])   # the log's exact stamp is the better dated
         # A Matter node's uptime reset keeps its own `earliest`, whatever else its evidence holds.
         self.assertEqual(keylog.boot_log([booted(HALL, T + 600, earliest=T + 400, before={"ts": T})]),
                          [Boot(T + 600, earliest=T + 400)])

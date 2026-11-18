@@ -434,11 +434,6 @@ class OnePerBootTest(unittest.TestCase):
         got = keyguard.one_per_boot([c, a, b])
         self.assertEqual([x.ts for x in got], [a.ts, b.ts, c.ts])
 
-    # Fails on 36c2af3, which keeps the later of two equally good stamps. Decided on
-    # 2026-11-18 to keep the earlier, since boot stamps run late; see Phase 4 in the key
-    # guard forecast plan. Remove the mark with the one_per_boot change: until then an
-    # unexpected success fails the run.
-    @unittest.expectedFailure
     def test_duplicate_stamps_do_not_change_the_guard(self):
         at_boot = Switch(T0 + 90, 50, 51)
         once = derive(OLD, [Boot(T0)], [Switch(T0 - h(30), None, 50), at_boot])

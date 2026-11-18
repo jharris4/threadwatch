@@ -111,9 +111,9 @@ def one_per_boot(boots) -> list[Boot]:
     twice (a logged or seeded stamp, and a first read's uptime-dated one
     with a wide range): of stamps whose ranges come within BOOT_MARGIN_S
     of each other the better dated stays, which is the narrower range, and
-    of two as good the later."""
+    of two as good the earlier, since a boot stamp runs late if anything."""
     kept: list[Boot] = []
-    for b in sorted(boots, key=lambda b: (b.hi - b.lo, -b.ts)):
+    for b in sorted(boots, key=lambda b: (b.hi - b.lo, b.ts)):
         if not any(b.lo - BOOT_MARGIN_S <= k.hi and k.lo <= b.hi + BOOT_MARGIN_S for k in kept):
             kept.append(b)
     return sorted(kept, key=lambda b: b.ts)

@@ -84,9 +84,8 @@ def boot_log(records) -> list[Boot]:
     """One device's boot stamps, each with the range its source gives: a
     first read's `earliest`, a range's `until`. The OTBR's uptime reset is
     stamped with the sample that noticed it, so the boot lies between the
-    sample before and that one; without that range it would pass for an
-    exact stamp and beat the log's better one when keyguard.one_per_boot
-    merges the two."""
+    sample before and that one; with that range the log's exact stamp is
+    the better dated when keyguard.one_per_boot merges the two."""
     out = []
     for r in records:
         if r["kind"] != "reboot" or not _time(r.get("ts")):

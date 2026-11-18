@@ -659,6 +659,7 @@ def main(argv=None) -> int:
         return 0
 
     if args.cmd == "rebooted":
+        import sys
         from datetime import datetime
 
         from .journal import post
@@ -678,7 +679,19 @@ def main(argv=None) -> int:
         except (ValueError, OSError) as exc:
             parser.exit(1, f"threadwatch rebooted: {exc}\n")
         print(f"{entry.get('name')!r} rebooted {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(when))} -> {queued}")
-        print("(the recorder adds it to the key journal within a minute)")
+        # Only a recorder on this host takes the file: say so when none is
+        # writing status.json here, instead of promising a minute.
+        from .review import status_state
+        try:
+            status = json.loads((cfg.state_dir / "status.json").read_text())
+        except (OSError, ValueError):
+            status = None
+        if status_state(status, time.time())[0] in ("live", "quiet"):
+            print("(the recorder adds it to the key journal within a minute)")
+        else:
+            print("threadwatch rebooted: no recorder is running on this host, so nothing takes the file yet. It "
+                  "waits for a recorder started here; if the recorder runs on another host, run this command "
+                  "there.", file=sys.stderr)
         return 0
 
     if args.cmd == "name":

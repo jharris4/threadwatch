@@ -200,6 +200,17 @@ class RebootedTest(CliCase):
         self.assertIn("'Side Door Lock' rebooted 2026-11-06 13:16:02", out)
         self.assertFalse((self.d / "data" / "state" / "key-journal.json").exists())
 
+    def test_it_says_so_when_no_recorder_on_this_host_will_take_the_file(self):
+        code, out, err = self.run_cli("rebooted", "side door lock")
+        self.assertEqual(code, 0)
+        self.assertIn("no recorder is running on this host", err)
+        self.assertNotIn("within a minute", out)
+        (self.d / "data" / "state" / "status.json").write_text(json.dumps({"updated": time.time(),
+                                                                         "last_frame_age_s": 1.0}))
+        code, out, err = self.run_cli("rebooted", "side door lock")
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("within a minute", out)
+
     def test_an_ambiguous_device_or_a_future_time_queues_nothing(self):
         for args in (("side door",), ("side door lock", "--at", "2099-01-01T00:00"),
                      ("side door lock", "--at", "yesterday")):

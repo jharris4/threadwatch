@@ -685,7 +685,8 @@ The recorder is the journal's only writer. A boot nothing reports (a
 lock's battery change, an Apple TV's power cycle) goes in with
 `threadwatch rebooted "Side Door Lock" --at 2026-01-15T09:30 --note
 "battery change"` (local time unless the stamp carries an offset; now by
-default). It queues a JSON list of reboot evidence in
+default). Run it on the recorder's host: it says so when no recorder is
+running where it was run, since the file then waits there. It queues a JSON list of reboot evidence in
 `data/state/journal-inbox/`, and the recorder takes every `*.json` there
 within a minute, saves the journal, and deletes the file. A file it
 cannot take whole (not a list, a record it would refuse or drop) is

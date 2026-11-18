@@ -219,6 +219,48 @@ class ConfidenceTest(unittest.TestCase):
         lock, later = Boot(T, latest=T + 360), Boot(T + 2400)
         self.assertEqual(keyguard.one_per_boot([later, lock]), [lock, later])
 
+    def test_a_time_typed_by_hand_never_replaces_one_read_from_the_device(self):
+        # `threadwatch rebooted` four minutes after the fact, beside the read that dates the boot to 2 s.
+        typed, read = Boot(T + 240, typed=True), Boot(T, earliest=T - 1.8)
+        self.assertEqual(keyguard.one_per_boot([typed, read]), [read])
+        fired = Switch(T + ROTATION_S + 3, 90, 91)
+        g = derive(OLD, [typed, read], [first(), fired])
+        self.assertEqual((g.boot, g.timer_start, g.fired, g.rotation_at), (read, T, True, T + ROTATION_S + HOUR))
+        # Nor a first read's, wide as its range is, nor a logged or seeded stamp as exact as the typed one.
+        wide, logged = Boot(T + 1650, earliest=T - 200), Boot(T + 30)
+        self.assertEqual(keyguard.one_per_boot([Boot(T + 240, typed=True), wide]), [wide])
+        self.assertEqual(keyguard.one_per_boot([Boot(T - 60, typed=True), logged]), [logged])
+        # With nothing read from the device it stands, and of two typed for one boot the earlier.
+        self.assertEqual(keyguard.one_per_boot([typed, Boot(T + 100, typed=True)]), [Boot(T + 100, typed=True)])
+        # A typed boot most of an hour from the one read is another boot.
+        self.assertEqual(keyguard.one_per_boot([Boot(T + 2400, typed=True), read]), [read, Boot(T + 2400, typed=True)])
+
+    def test_a_boot_stamp_that_ran_late_still_reads_the_units_own_firing(self):
+        # The stamp may be BOOT_MARGIN_S late, so the 672 h firing can come that long before stamp + 672 h.
+        for boot, real in ((Boot(T + 300), T), (Boot(T + 590), T), (Boot(T + 1000, earliest=T + 200), T - 300)):
+            with self.subTest(boot=boot):
+                fired = Switch(real + ROTATION_S + 3, 90, 91)
+                g = derive(OLD, [boot], [first(), fired])
+                self.assertEqual((g.flag, g.fired, g.timer_start), (True, True, boot.ts))
+                self.assertEqual((g.rotation_at, g.second_rotation_at), (boot.ts + ROTATION_S + HOUR, None))
+        # Earlier than the stamp allows, it is a neighbour's: the unit still fires at 672 h.
+        g = derive(OLD, [Boot(T + 300)], [first(), Switch(T + ROTATION_S - 400, 90, 91)])
+        self.assertEqual((g.fired, g.rotation_at), (False, T + 300 + ROTATION_S))
+
+    def test_a_plus_one_as_the_guard_opens_is_no_miss_on_a_boot_stamp_that_ran_late(self):
+        one = Switch(T + HOUR, 90, 91)
+        for boot, real in ((Boot(T + 300), T), (Boot(T + 1000, earliest=T + 200), T - 300)):
+            with self.subTest(boot=boot):
+                g = derive(OLD, [boot], [first(), one, Switch(real + GUARD_S + 10, 91, 92)])
+                self.assertEqual((g.misses, g.confidence), ((), "normal"))
+        # Before the earliest the guard can have opened, it is still one.
+        early = Switch(T + GUARD_S - 400, 91, 92)
+        self.assertEqual(derive(OLD, [Boot(T + 300)], [first(), one, early]).misses, ((early, keyguard.UNSEEN),))
+        # A timer a switch started is dated by that switch's first frame, which runs seconds late, not minutes.
+        restart = Switch(T + GUARD_S + HOUR, 91, 92)
+        early = Switch(restart.ts + GUARD_S - 300, 92, 93)
+        self.assertEqual(derive(OLD, [Boot(T)], [first(), one, restart, early]).misses, ((early, keyguard.UNSEEN),))
+
 
 class AfterTest(unittest.TestCase):
     """after(): one more event taken exactly, for the forecast's simulated

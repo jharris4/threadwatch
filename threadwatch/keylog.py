@@ -18,6 +18,7 @@ have no listed address and join another way:
 
 from __future__ import annotations
 
+from .journal import entered_by_hand
 from .keyfacts import _int, _time, switch_seen
 from .keyforecast import Device
 from .keyguard import Boot, Switch
@@ -85,7 +86,9 @@ def boot_log(records) -> list[Boot]:
     first read's `earliest`, a range's `until`. The OTBR's uptime reset is
     stamped with the sample that noticed it, so the boot lies between the
     sample before and that one; with that range the log's exact stamp is
-    the better dated when keyguard.one_per_boot merges the two."""
+    the better dated when keyguard.one_per_boot merges the two. A stamp
+    entered with `threadwatch rebooted` is marked typed, and gives way
+    there to any other stamp of the same boot."""
     out = []
     for r in records:
         if r["kind"] != "reboot" or not _time(r.get("ts")):
@@ -94,7 +97,8 @@ def boot_log(records) -> list[Boot]:
         earliest, until = e.get("earliest"), e.get("until")
         if r["addr"].startswith("otbr:") and e.get("source") == "uptime_reset":
             earliest = (e.get("before") or {}).get("ts")
-        out.append(Boot(r["ts"], earliest if _time(earliest) else None, until if _time(until) else None))
+        out.append(Boot(r["ts"], earliest if _time(earliest) else None, until if _time(until) else None,
+                        entered_by_hand(e)))
     return sorted(out, key=lambda b: b.ts)
 
 

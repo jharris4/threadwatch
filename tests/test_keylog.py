@@ -131,6 +131,15 @@ class BootLogTest(unittest.TestCase):
         self.assertEqual(keylog.boot_log([booted(HALL, T + 600, earliest=T + 400, before={"ts": T})]),
                          [Boot(T + 600, earliest=T + 400)])
 
+    def test_a_stamp_entered_with_threadwatch_rebooted_is_marked_typed(self):
+        # Only that command's entries: a seed's stamp, also an operator's, came from a log or a note.
+        typed = booted(HALL, T + 240, "operator_action", reference="threadwatch rebooted: power cycle")
+        seeded = booted(HALL, T - 9000, "operator_action", reference="seed: server log line")
+        read = booted(HALL, T, earliest=T - 1.8)
+        boots = keylog.boot_log([typed, seeded, read])
+        self.assertEqual(boots, [Boot(T - 9000), Boot(T, earliest=T - 1.8), Boot(T + 240, typed=True)])
+        self.assertEqual(keyguard.one_per_boot(boots), [Boot(T - 9000), Boot(T, earliest=T - 1.8)])
+
 
 class DevicesTest(unittest.TestCase):
     TABLE = stacks.parse({"models": {"Air Monitor 2000": {"1.0.26": "old, reported"}},

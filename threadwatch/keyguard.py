@@ -27,9 +27,11 @@ flag and one timer:
   hour later (read from source, not yet seen on air).
 
 Times are first observations, and a boot stamp can run late, so a switch
-up to BOOT_MARGIN_S before a boot stamp counts as taken at that boot.
-That margin and STAMP_SLACK_S are for recorded stamps only: after() takes
-one more event exactly as given, for the forecast's simulated ones.
+up to BOOT_MARGIN_S before a boot stamp counts as taken at that boot, and
+a timer the boot started may have reached 624 h or 672 h that long before
+the stamp says (_late). That margin and STAMP_SLACK_S are for recorded
+stamps only: after() takes one more event exactly as given, for the
+forecast's simulated ones.
 """
 
 from __future__ import annotations
@@ -41,7 +43,7 @@ from .journal import BOOT_MARGIN_S
 HOUR = 3600
 GUARD_S = 624 * HOUR
 ROTATION_S = 672 * HOUR
-STAMP_SLACK_S = 120    # how far a recorded switch may run ahead of a time worked out from a boot stamp
+STAMP_SLACK_S = 120    # how far a recorded switch may run ahead of a time worked out from another switch's stamp
 
 RULES = {"current": "current logic: rules verified from source",
          "old": "old logic: rules verified from source and against recorded switches"}
@@ -61,6 +63,7 @@ class Boot:
     ts: float
     earliest: float | None = None     # a first read's uptime-dated stamp may be this early
     latest: float | None = None       # the end of a range (a lock's rejoin waves)
+    typed: bool = False               # entered with `threadwatch rebooted`: a person's time, not a device's or a log's
 
     @property
     def lo(self) -> float:
@@ -111,12 +114,22 @@ def one_per_boot(boots) -> list[Boot]:
     twice (a logged or seeded stamp, and a first read's uptime-dated one
     with a wide range): of stamps whose ranges come within BOOT_MARGIN_S
     of each other the better dated stays, which is the narrower range, and
-    of two as good the earlier, since a boot stamp runs late if anything."""
+    of two as good the earlier, since a boot stamp runs late if anything.
+    A typed stamp is the exception: it has no range, but only because
+    nobody gave one, so it stays only where no other stamp has the boot."""
     kept: list[Boot] = []
-    for b in sorted(boots, key=lambda b: (b.hi - b.lo, b.ts)):
+    for b in sorted(boots, key=lambda b: (b.typed, b.hi - b.lo, b.ts)):
         if not any(b.lo - BOOT_MARGIN_S <= k.hi and k.lo <= b.hi + BOOT_MARGIN_S for k in kept):
             kept.append(b)
     return sorted(kept, key=lambda b: b.ts)
+
+
+def _late(by: Boot | Switch | None) -> float:
+    """How far ahead of a time worked out from ``by``'s stamp a recorded
+    switch may run, which is how late the stamp may be: a boot's by
+    BOOT_MARGIN_S and by its range, as where derive() places the boot; a
+    switch's, a first frame, by STAMP_SLACK_S."""
+    return by.ts - by.lo + BOOT_MARGIN_S if isinstance(by, Boot) else STAMP_SLACK_S
 
 
 def _opens(kind: str, flag, flag_by: Switch | None, timer: float | None) -> float | None:
@@ -158,7 +171,7 @@ def derive(stack: tuple[str, str | None, str], boots, switches) -> Guard:
             doubts.append(f"the switch to {e.new} was first seen after a gap: the time it sets is the latest it can be")
         if e.jump == 1:
             opens = _opens(kind, flag, flag_by, timer)
-            if opens is not None and e.ts < opens - STAMP_SLACK_S:
+            if opens is not None and e.ts < opens - _late(flag_by if kind == "current" else timer_by):
                 misses.append((e, FORCED if kind == "current" else UNSEEN))
                 if kind == "old":
                     doubts.append(f"the switch to {e.new} was {UNSEEN}")
@@ -176,15 +189,15 @@ def _take(kind: str, e: Switch, at: float, state: tuple, own: bool | None = None
     """The rules for one switch up that the logic acts on (any on the
     current logic, a +1 on the old), applied to (flag, flag_by, timer,
     timer_by, fired). ``own`` says whether it is the device's own rotation
-    firing; None for a recorded switch, where a flag-clear +1 from
-    STAMP_SLACK_S before the 672 h mark on is read as one."""
+    firing; None for a recorded switch, where a flag-clear +1 from the
+    earliest the timer can have reached 672 h on is read as one (_late)."""
     flag, flag_by, timer, timer_by, fired = state
     if kind == "current":
         return (True, e, at, e, False) if e.jump == 1 else (flag, flag_by, at, e, False)
     if flag:
         return flag, flag_by, at, e, False
     if own is None:
-        own = timer is not None and e.ts >= timer + ROTATION_S - STAMP_SLACK_S
+        own = timer is not None and e.ts >= timer + ROTATION_S - _late(timer_by)
     return True, e, timer, timer_by, own
 
 

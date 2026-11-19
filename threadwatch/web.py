@@ -1322,8 +1322,9 @@ class Site:
                         + ": the OTBR's key counter and boots from the [otbr] inventory are left out, so it "
                           "is forecast from its frames alone")
         if fc.cut:
-            warn.append(f'the forecast was cut short at {stamp(fc.end)} after {len(fc.numbers)} new numbers, each '
-                        f'within 624 h of the last: nothing after that is forecast')
+            warn.append(f'the forecast was cut short at {stamp(fc.end)} after {len(fc.numbers)} new numbers without '
+                        f'two 624 h stretches in a row with no new number, which is where it ends otherwise: '
+                        f'nothing after that is forecast')
         warn += [f'{link(n)}: own rotation was due {stamp(t)} and is not on record (a boot was missed or a rule '
                  f'is wrong), so it is not fired' for n, t in fc.overdue]
         warn += [f'{link(n)}: {why}' for n, why in sorted(unplaced.items())]

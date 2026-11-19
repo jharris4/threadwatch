@@ -34,14 +34,15 @@ LOG_BYTES = 256 * 1024 * 1024
 LINE_BYTES = 8192
 
 
-def validate_target(target: str, port: int, container: str) -> None:
+def validate_target(target: str, port: int, container: str, section: str = "otbr") -> None:
+    """The SSH target and port are [otbr]'s; the container is ``section``'s."""
     pattern = r"(?:[A-Za-z0-9_][A-Za-z0-9_.-]*@)?[A-Za-z0-9][A-Za-z0-9_.-]*"
     if not isinstance(target, str) or not re.fullmatch(pattern, target):
         raise ValueError("[otbr] ssh_target must be a hostname or user@hostname, without SSH options")
     if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
         raise ValueError("[otbr] ssh_port must be an integer from 1 to 65535")
     if not isinstance(container, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", container):
-        raise ValueError("[otbr] container must be a Docker container name")
+        raise ValueError(f"[{section}] container must be a Docker container name")
 
 
 def validate_access(identity_file: str, sudo: bool) -> None:

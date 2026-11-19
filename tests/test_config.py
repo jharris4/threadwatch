@@ -300,6 +300,12 @@ class WrongTypeTest(unittest.TestCase):
                 self._load(f"[{section}]\n{key} = {bad}\n")
             self.assertIn(message, str(cm.exception))
 
+    def test_a_bad_container_names_its_own_section(self):
+        for section in ("otbr", "matter_boots"):
+            with self.assertRaises(ValueError, msg=section) as cm:
+                self._load(f'[{section}]\ncontainer = "not a name"\n')
+            self.assertEqual(str(cm.exception), f"[{section}] container must be a Docker container name")
+
     def test_a_quoted_number_still_loads(self):
         cfg = self._load('[quiet]\nsilence_s = "600"\n[web]\nport = "8081"\n')
         self.assertEqual((cfg.quiet_s, cfg.web_port), (600.0, 8081))

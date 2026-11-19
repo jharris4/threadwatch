@@ -757,7 +757,8 @@ def load(path: Path | None) -> Config:
         if not isinstance(cfg.boots_enabled, bool):
             raise ValueError("[matter_boots] enabled must be true or false")
         cfg.boots_container = boots.get("container", cfg.boots_container)
-        validate_target(cfg.otbr_ssh_target or "unconfigured", cfg.otbr_ssh_port, cfg.boots_container)
+        validate_target(cfg.otbr_ssh_target or "unconfigured", cfg.otbr_ssh_port, cfg.boots_container,
+                        "matter_boots")
         if cfg.boots_enabled and not cfg.otbr_ssh_target:
             raise ValueError("[matter_boots] reads over the [otbr] SSH access: set [otbr] ssh_target")
         cfg.boots_poll_s = _float("matter_boots", "poll_s", boots.get("poll_s", cfg.boots_poll_s))

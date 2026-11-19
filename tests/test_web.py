@@ -811,6 +811,22 @@ class KeysPageTest(unittest.TestCase):
         self.assertEqual(table.count('<td>normal</td></tr>'), 4)
         self.assertIn('<td>none<br><span class="muted">stack unknown', table)
 
+    def test_a_cut_forecast_says_what_ends_a_forecast(self):
+        # Cut short at MAX_NUMBERS: a chain with no two calm stretches in a row, whether every number came within
+        # 624 h of the last or long and short gaps alternated.
+        from dataclasses import replace
+        from unittest import mock
+
+        from threadwatch import keyforecast as kf
+        now = time.time()
+        records = [self.moved(self.HALL, now - 11 * 86400, None, 5), self.booted(self.HALL, now - 10 * 86400)]
+        real = kf.forecast
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(kf, "forecast", lambda *a, **k: replace(real(*a, **k), cut=True)):
+            body = self.site(Path(tmp), records).respond("/keys")[2].decode()
+        self.assertIn(" new numbers without two 624 h stretches in a row with no new number, which is where it "
+                      "ends otherwise: nothing after that is forecast", body)
+
     def test_a_number_counts_the_child_its_parent_strands_when_it_takes_the_number_later(self):
         day, hour = 86400, 3600
         now = time.time()

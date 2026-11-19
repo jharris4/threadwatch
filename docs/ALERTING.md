@@ -93,7 +93,7 @@ pages (docs/REVIEW.md) are the way to read them back. Fields common to all: `ts`
 | `key_lag_cleared` | info | `addr`, `name`, `role`, `generation`, `parent`, `parent_addr`, `parent_generation` or `mesh_generation`, `since`, `lagged_for_s`, `rejoined`, `rejoin_ts`, `note`; only after a `key_lag` went out |
 | `key_stranding_forecast` | warning | `sequence` (the number that strands), `at`, `started_by`, `two_behind` (the sleepy children), `later` (children first left two behind by a later number in the forecast), `pulls` (each child: `from` / `until` where a battery pull keeps it from being two behind, else `parent_behind` or `again` / `at`, the number that strands it after any pull), `power_cycle` (`units`, `from`, `until`, or null), `why` (`first forecast`, `changed`, `power-cycle window open`), `note`. See "Key guard forecast" below |
 | `key_stranding_cleared` | info | `sequence`, `note`: no sleepy child is forecast two behind any more. Not sent when the stranding came true |
-| `key_forecast_check` | info | `name`, `sequence`, `switches` (each `name`, `old`, `new`, `at`, `forecast_at`, `kind`: `as forecast`, `late`, `early`, `not forecast`, `at a boot` or `not seen`), `note`. One per new number, one for the rest of each hourly pass |
+| `key_forecast_check` | info | `name`, `sequence`, `switches` (each `name`, `old`, `new`, `at` (first seen on the new key), `unheard_from` (for a switch first seen after a gap, the last frame on the old key: it came somewhere in between; else null), `forecast_at`, `kind`: `as forecast`, `late`, `early`, `not forecast`, `at a boot` or `not seen`), `note`. One per new number, one for the rest of each hourly pass |
 | `key_switch_unforecast` | notice | `name` (when one), `switches` as above, `note`: a switch taken early or with no forecast, on a device whose stack is known |
 | `retransmission_elevation` | notice for the first elevated minute, warning once the rate has stayed up for `[retransmissions] confirm_s` (`confirmed`); notice regardless when one sender-target pair is `top_share` >= 0.5 of the retries (a chronic bad link, not a storm precursor) | `rate`, `baseline`, `addr`, `name`, `top_sender`, `top_target`, `top_share`, `confirmed`, `sustained_s`, `cause` (`rejoin_wave` when the mesh was re-attaching after a partition change inside the last five minutes), `note` |
 | `partition_or_leader_change` | warning | `previous`, `current`, each with `partition`, `leader_router` and `leader` (the router id with the device's name once the MLE layer has matched it); logged once the change has held for `[partition] settle_s` |
@@ -1011,7 +1011,13 @@ as forecast within 15 min, late, at a boot on record, or not seen an hour
 after its time. The switch that starts a new number is also graded against
 who was forecast to start it and when, as last forecast before anyone was on
 it: a number another device starts days early is "missed" against that start,
-even though the forecast starter is by then only forecast to follow it. `key_switch_unforecast` names the switches taken early or
+even though the forecast starter is by then only forecast to follow it.
+A switch first seen after a gap (a recorder outage, a device not heard for a
+while) came somewhere between its last frame on the old key and its first on
+the new one: it is as forecast when the forecast time falls in that gap, late
+or early by at least the distance to the gap's nearer end otherwise, and at a
+boot when a boot on record falls in the gap. It is not reported not seen
+while it is on record and waiting its 75 min to be graded. `key_switch_unforecast` names the switches taken early or
 with no forecast on a device whose stack is known. Each means one of the
 model's blind spots, which have to be explained by hand:
 

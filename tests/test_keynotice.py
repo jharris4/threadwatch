@@ -390,6 +390,32 @@ class ChecksTest(unittest.TestCase):
         self.assertIn("by Attic Monitor: missed (-2d14h against ", head["note"])
         self.assertIn(" from Mezzanine Monitor)", head["note"])
 
+    def test_a_switch_first_seen_after_a_gap_is_graded_against_the_whole_gap(self):
+        # The recorder is down from T + 71 h to T + 80 h, over Mezzanine's 91 at T + 72 h. Each router is first
+        # heard on 91 at T + 80 h. Mezzanine and Cellar were last heard on 90 at T + 71 h: the forecast time is in
+        # their stretch. Hall was heard on 90 at T + 74 h, so it was at least two hours late. Attic too, and it
+        # booted at T + 76 h, inside its stretch.
+        r1, back = T + 72 * HOUR, T + 80 * HOUR
+        state, _events, cache = kn.run(None, self.devs(), T)
+        state, _events, cache = kn.run(state, self.devs(), r1 - HOUR, cache)
+        recorded = {"Mezzanine Monitor": ((), (Switch(back, 90, 91, unheard_from=r1 - HOUR),)),
+                    "Cellar Monitor": ((), (Switch(back + 1, 90, 91, unheard_from=r1 - HOUR),)),
+                    "Hall Monitor": ((), (Switch(back + 2, 90, 91, unheard_from=r1 + 2 * HOUR),)),
+                    "Attic Monitor": ((Boot(r1 + 4 * HOUR),), (Switch(back + 3, 90, 91, unheard_from=r1 + 2 * HOUR),))}
+        # The first pass after the gap: every switch is on record and waits to be graded, none is "not seen".
+        state, events, cache = kn.run(state, self.devs(recorded.items()), back + 60, cache)
+        self.assertEqual(events, [])
+        state, events, cache = kn.run(state, self.devs(recorded.items()), back + 2 * HOUR, cache)
+        self.assertNotIn("key_switch_unforecast", [e for e, _s, _f in events])
+        head = next(f for e, _s, f in events if e == "key_forecast_check" and f["name"] == "Mezzanine Monitor")
+        self.assertIn("91 started between ", head["note"])
+        self.assertIn("by Mezzanine Monitor: as forecast (in the gap, against ", head["note"])
+        self.assertEqual(head["switches"][0]["unheard_from"], r1 - HOUR)
+        rest = next(f for e, _s, f in events if e == "key_forecast_check" and f["name"] is None)
+        self.assertEqual({r["name"]: r["kind"] for r in rest["switches"]},
+                         {"Cellar Monitor": "as forecast", "Hall Monitor": "late", "Attic Monitor": "at a boot"})
+        self.assertIn("Hall Monitor late at least +2h00m", rest["note"])
+
 
 class RecorderTest(unittest.TestCase):
     """The capture thread's side: a pass on a worker thread from copies, its

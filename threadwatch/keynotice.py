@@ -63,6 +63,29 @@ def _by(delta):
     return ("-" if delta < 0 else "+") + fmt_duration(abs(delta))
 
 
+def _lo(r):
+    """The earliest a graded switch can have come: first seen after a gap
+    (a "by"), anywhere from the last frame on the old key."""
+    return r["at"] if r["unheard_from"] is None else min(r["unheard_from"], r["at"])
+
+
+def _off(r, t):
+    """How far a graded switch came from a forecast time ``t``: from the
+    nearer end of the gap it may lie in, so 0 when ``t`` is inside it."""
+    return max(_lo(r), min(r["at"], t)) - t
+
+
+def _off_text(r, t):
+    d = _off(r, t)
+    if r["unheard_from"] is None:
+        return _by(d)
+    return "in the gap," if d == 0 else "at least " + _by(d)
+
+
+def _when(r, fmt=_s):
+    return fmt(r["at"]) if r["unheard_from"] is None else f"between {fmt(_lo(r))} and {fmt(r['at'])}"
+
+
 def _search(devs, now, fc, until, subjects, cycle):
     """For each subject (names booted together), the first stretch of
     [now, until) in which booting it leaves nothing it is watched for two
@@ -220,17 +243,24 @@ def grade(state: dict, devs, now: float) -> list[dict]:
         if not cursor < ts <= upto:
             continue
         e = ledger.pop(f"{n}\t{s.new}", None)
-        boot = any(b.lo - BOOT_MARGIN_S <= ts <= b.hi + BOOT_MARGIN_S for b in one_per_boot(by[n].boots))
-        delta = None if e is None else ts - e[2]
+        r = {"name": n, "old": s.old, "new": s.new, "at": ts, "unheard_from": s.unheard_from,
+             "forecast_at": e and e[2]}
+        lo = _lo(r)
+        boot = any(b.lo - BOOT_MARGIN_S <= ts and lo <= b.hi + BOOT_MARGIN_S for b in one_per_boot(by[n].boots))
+        delta = None if e is None else _off(r, e[2])
         kind = ("as forecast" if delta is not None and abs(delta) <= TOL_S else "at a boot" if boot
                 else "not forecast" if e is None else "early" if delta < 0 else "late")
-        out.append({"name": n, "old": s.old, "new": s.new, "at": ts, "forecast_at": e and e[2], "kind": kind,
-                    "known": by[n].stack[0] in RULES, "starts": first[s.new] == (ts, n),
+        out.append({**r, "kind": kind, "known": by[n].stack[0] in RULES, "starts": first[s.new] == (ts, n),
                     "number_forecast": starts.get(s.new)})
+    # A switch on record and not graded yet (it waits LAG_S, so one first
+    # heard after a recorder gap can come over GRACE_S after its forecast
+    # time) is not "not seen": it is graded when its turn comes.
+    waiting = {(n, s.new) for ts, n, s in sw if ts > upto}
     for e in ledger.values():
-        if not e[6] and e[2] + GRACE_S < upto:
+        if not e[6] and e[2] + GRACE_S < upto and (e[0], e[1]) not in waiting:
             e[6] = True
-            out.append({"name": e[0], "old": None, "new": e[1], "at": None, "forecast_at": e[2], "kind": "not seen",
+            out.append({"name": e[0], "old": None, "new": e[1], "at": None, "unheard_from": None, "forecast_at": e[2],
+                        "kind": "not seen",
                         "known": e[0] in by and by[e[0]].stack[0] in RULES, "starts": e[5], "number_forecast": None})
     state["cursor"] = max(cursor, upto)
     return out
@@ -247,10 +277,10 @@ def check_events(results: list[dict]) -> list[tuple[str, str, dict]]:
                     f"{fmt_duration(GRACE_S)} later")
         else:
             p = r["number_forecast"]
-            text = (f"{r['new']} started {_s(r['at'])} by {r['name']}: " + (
+            text = (f"{r['new']} started {_when(r)} by {r['name']}: " + (
                 "not forecast" if p is None else
-                ("as forecast" if abs(r["at"] - p[0]) <= TOL_S else "missed")
-                + f" ({_by(r['at'] - p[0])} against {_s(p[0])}" + (f" from {p[1]}" if p[1] != r["name"] else "")
+                ("as forecast" if abs(_off(r, p[0])) <= TOL_S else "missed")
+                + f" ({_off_text(r, p[0])} against {_s(p[0])}" + (f" from {p[1]}" if p[1] != r["name"] else "")
                 + ")"))
         out.append(("key_forecast_check", "info", {"name": r["name"], "sequence": r["new"], "switches": [r],
                                                    "note": text}))
@@ -260,7 +290,7 @@ def check_events(results: list[dict]) -> list[tuple[str, str, dict]]:
         ok = [r for r in rest if r["kind"] == "as forecast"]
         parts = [f"{len(ok)} as forecast" + (" (" + ", ".join(f"{r['name']} {r['old']}->{r['new']}" for r in ok)
                                              + ")" if len(ok) <= 3 else "")] if ok else []
-        parts += [f"{r['name']} {r['kind']}" + (f" {_by(r['at'] - r['forecast_at'])}" if r["kind"] in ("late", "early")
+        parts += [f"{r['name']} {r['kind']}" + (f" {_off_text(r, r['forecast_at'])}" if r["kind"] in ("late", "early")
                                                 else "") for r in rest if r not in ok]
         out.append(("key_forecast_check", "info", {"name": rest[0]["name"] if len(rest) == 1 else None,
                                                    "sequence": max(r["new"] for r in rest), "switches": rest,
@@ -268,8 +298,10 @@ def check_events(results: list[dict]) -> list[tuple[str, str, dict]]:
     if bad:
         out.append(("key_switch_unforecast", "notice", {
             "name": bad[0]["name"] if len(bad) == 1 else None, "switches": bad,
-            "note": "; ".join(f"{r['name']} took {r['new']} at {_d(r['at'])}" + (
-                f", {fmt_duration(r['forecast_at'] - r['at'])} before the forecast" if r["kind"] == "early"
+            "note": "; ".join(f"{r['name']} took {r['new']} " + ("at " if r["unheard_from"] is None else "")
+                              + _when(r, _d) + (
+                f", {'at least ' if r['unheard_from'] is not None else ''}"
+                f"{fmt_duration(-_off(r, r['forecast_at']))} before the forecast" if r["kind"] == "early"
                 else ", not forecast") for r in bad)
             + ": a boot nothing recorded, a forced update or a wrong rule. "
             + WHERE.format("key_switch_unforecast")}))

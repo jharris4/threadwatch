@@ -72,7 +72,7 @@ source covers them: every border router advertises a stable hostname and
 its current address, and the entry it writes carries both, for example
 
 ```json
-{"name": "AppleTV Living Room", "borderRouter": "appletv-living-room.local",
+{"name": "AppleTV Library", "borderRouter": "appletv-library.local",
  "extendedAddress": "C0FFEE0000000001", "model": "Apple BorderRouter"}
 ```
 
@@ -127,8 +127,8 @@ counted toward a burst; docs/ALERTING.md lists what that covers). `device_quiet`
 drops out at four o'clock is one setting, not two (README, devices.json):
 
 ```bash
-bin/threadwatch hold "Front Path Motion" 2h        # a known flapper: warn after two hours
-bin/threadwatch hold "Front Path Motion" --clear   # back to the default
+bin/threadwatch hold "Fence Motion" 2h        # a known flapper: warn after two hours
+bin/threadwatch hold "Fence Motion" --clear   # back to the default
 bin/threadwatch mute "Garden Sensor"               # log it, never page it
 bin/threadwatch mute "Garden Sensor" --off
 ```
@@ -188,16 +188,16 @@ triggers:
   - trigger: state
     entity_id:
       # a handful of always-powered Thread-based entities spread around the house
-      - sensor.office_air_quality_pm2_5
-      - sensor.garage_air_quality_pm2_5
-      - switch.fridge_outlet
+      - sensor.loft_air_quality_pm2_5
+      - sensor.gazebo_air_quality_pm2_5
+      - switch.heater_outlet
     to: "unavailable"
     for: "00:03:00"
 conditions:
   - condition: template
     value_template: >
-      {{ ['sensor.office_air_quality_pm2_5','sensor.garage_air_quality_pm2_5',
-          'switch.fridge_outlet']
+      {{ ['sensor.loft_air_quality_pm2_5','sensor.gazebo_air_quality_pm2_5',
+          'switch.heater_outlet']
          | select('is_state','unavailable') | list | count >= 2 }}
 actions:
   - action: notify.notify
@@ -224,7 +224,7 @@ the HA UI (Settings → Devices → your Thread devices) and write
 `config/devices.json` entries. Then let `threadwatch devices`'s
 unknown-address list catch newcomers and address rotations (Apple TVs
 rotate; append, never replace, addresses: `threadwatch name <new-addr>
-"Living Room Apple TV"` does exactly that).
+"Library Apple TV"` does exactly that).
 
 ## 4. Reading HA/OTBR evidence during an incident
 

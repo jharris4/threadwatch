@@ -189,7 +189,7 @@ class OnePanAnswerTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         d = Path(self.tmp.name)
-        (d / "devices.json").write_text(json.dumps([{"name": "Living Room AQ", "extendedAddress": SENSOR}]))
+        (d / "devices.json").write_text(json.dumps([{"name": "Library AQ", "extendedAddress": SENSOR}]))
         self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json", quiet_s=1800)
 
     def tearDown(self):
@@ -252,7 +252,7 @@ class AddressFloodTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         d = Path(self.tmp.name)
         (d / "devices.json").write_text(json.dumps([
-            {"name": "Living Room AQ", "extendedAddress": SENSOR, "threadRole": "sleepy-end-device"},
+            {"name": "Library AQ", "extendedAddress": SENSOR, "threadRole": "sleepy-end-device"},
         ]))
         self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json")
 
@@ -332,9 +332,9 @@ class QuietPolicyTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         d = Path(self.tmp.name)
         (d / "devices.json").write_text(json.dumps([
-            {"name": "Living Room Apple TV", "extendedAddress": ROUTER.upper(),
+            {"name": "Library Apple TV", "extendedAddress": ROUTER.upper(),
              "threadRole": "border-router-leader"},
-            {"name": "Living Room AQ", "extendedAddress": SENSOR, "threadRole": "sleepy-end-device"},
+            {"name": "Library AQ", "extendedAddress": SENSOR, "threadRole": "sleepy-end-device"},
         ]))
         self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json",
                           quiet_s=30 * 60)
@@ -474,9 +474,9 @@ class QuietPolicyTest(unittest.TestCase):
     def test_a_device_with_its_own_hold_is_judged_by_it_and_the_rest_by_the_one_window(self):
         d = Path(self.tmp.name)
         (d / "devices.json").write_text(json.dumps([
-            {"name": "Living Room Apple TV", "extendedAddress": ROUTER.upper(), "hold_s": 7200,
+            {"name": "Library Apple TV", "extendedAddress": ROUTER.upper(), "hold_s": 7200,
              "threadRole": "border-router-leader"},
-            {"name": "Living Room AQ", "extendedAddress": SENSOR, "threadRole": "sleepy-end-device"},
+            {"name": "Library AQ", "extendedAddress": SENSOR, "threadRole": "sleepy-end-device"},
         ]))
         pipe = self._pipe()
         t0 = 1_700_000_000.0
@@ -493,16 +493,16 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertEqual(self._quiet(pipe), [SENSOR, ROUTER])
         by_addr = {r["addr"]: r for r in pipe.events.records if r["event"] == "device_quiet"}
         self.assertEqual((by_addr[SENSOR]["name"], by_addr[SENSOR]["hold_s"], by_addr[SENSOR]["muted"],
-                          by_addr[SENSOR]["severity"]), ("Living Room AQ", 1800, False, "warning"))
+                          by_addr[SENSOR]["severity"]), ("Library AQ", 1800, False, "warning"))
         self.assertEqual((by_addr[ROUTER]["name"], by_addr[ROUTER]["hold_s"], by_addr[ROUTER]["muted"],
-                          by_addr[ROUTER]["severity"]), ("Living Room Apple TV", 7200, False, "warning"))
+                          by_addr[ROUTER]["severity"]), ("Library Apple TV", 7200, False, "warning"))
         self.assertNotIn("profile", pipe.events.records[-1])
 
     def test_a_muted_device_is_logged_at_notice_and_the_record_says_so(self):
         d = Path(self.tmp.name)
         (d / "devices.json").write_text(json.dumps([
-            {"name": "Living Room Apple TV", "extendedAddress": ROUTER.upper(), "mute": True},
-            {"name": "Living Room AQ", "extendedAddress": SENSOR, "mute": "yes"},        # not a boolean: ignored
+            {"name": "Library Apple TV", "extendedAddress": ROUTER.upper(), "mute": True},
+            {"name": "Library AQ", "extendedAddress": SENSOR, "mute": "yes"},        # not a boolean: ignored
         ]))
         pipe = self._pipe()
         t0 = 1_700_000_000.0
@@ -569,7 +569,7 @@ class QuietPolicyTest(unittest.TestCase):
         visits = [r for r in pipe.events.records if r["event"] == "visitor_left"]
         self.assertEqual([(v["addr"], v["severity"], v["name"], v["heard_for_s"], v["frames"],
                            v["parent"], v["parent_addr"], v["rloc16"]) for v in visits],
-                         [(STRANGER, "info", None, 16, 17, "Living Room Apple TV", ROUTER, "4403")])
+                         [(STRANGER, "info", None, 16, 17, "Library Apple TV", ROUTER, "4403")])
         visit = visits[0]
         self.assertEqual((visit["first_seen"], visit["last_seen"], visit["silent_for_s"]),
                          (t0, t0 + 16, 40 * 60 - 16))
@@ -615,7 +615,7 @@ class QuietPolicyTest(unittest.TestCase):
         gone = [r for r in pipe.events.records if r["event"] == "address_forgotten"]
         self.assertEqual([(r["addr"], r["severity"], r["last_seen"], r["silent_for_s"], r["frames"],
                            r["parent"], r["parent_addr"], r["rloc16"], r["observed_names"]) for r in gone],
-                         [(lingerer, "info", last, 3 * 86400, 60, "Living Room Apple TV", ROUTER, "4403",
+                         [(lingerer, "info", last, 3 * 86400, 60, "Library Apple TV", ROUTER, "4403",
                            {"default.service.arpa": 22})])
         self.assertIn("silent for 3.0 days", gone[0]["note"])
         self.assertNotIn(lingerer, pipe.seen.table)
@@ -801,7 +801,7 @@ class QuietPolicyTest(unittest.TestCase):
         return parse_frame(ts, psdu, 230)
 
     def test_a_parent_answering_the_keep_alive_holds_the_quiet_until_that_is_as_old(self):
-        # The Downstairs Bathroom monitor on 2026-09-09: unheard by the
+        # The Dressing Room monitor on 2026-09-09: unheard by the
         # recorder for 35 min while its parent answered its Child Update
         # Request every four minutes. Not off the mesh, just out of earshot.
         pipe = self._vouched_pipe()
@@ -834,7 +834,7 @@ class QuietPolicyTest(unittest.TestCase):
         self.assertIn("out of the recorder's earshot", ev[0]["note"])
 
     def test_an_acknowledgement_from_the_device_holds_the_quiet_and_is_told(self):
-        # The Upstairs Bathroom monitor on 2026-09-09: its last frame at
+        # The Utility Room monitor on 2026-09-09: its last frame at
         # 08:21:01, its radio still acknowledging its child's polls until
         # 08:22:44, then nothing. The report waits for the acknowledgements
         # to be as old as the silence, and says how long they went on.
@@ -908,8 +908,8 @@ class QuietPolicyTest(unittest.TestCase):
     def test_retransmission_alert_names_the_sender_and_target(self):
         d = Path(self.tmp.name)
         (d / "devices.json").write_text(json.dumps([
-            {"name": "Basement AQ", "extendedAddress": SENSOR},
-            {"name": "Irrigation", "extendedAddress": ROUTER},
+            {"name": "Bunk Room AQ", "extendedAddress": SENSOR},
+            {"name": "Icebox", "extendedAddress": ROUTER},
         ]))
         pipe = self._pipe()
         t = 1_700_000_000.0
@@ -929,9 +929,9 @@ class QuietPolicyTest(unittest.TestCase):
         send(STRANGER, "0000", 200, base + 61)   # closes the window
         ev = [r for r in pipe.events.records if r["event"] == "retransmission_elevation"]
         self.assertEqual(len(ev), 1)
-        self.assertEqual((ev[0]["addr"], ev[0]["name"], ev[0]["top_target"]), (SENSOR, "Basement AQ", "Irrigation"))
+        self.assertEqual((ev[0]["addr"], ev[0]["name"], ev[0]["top_target"]), (SENSOR, "Bunk Room AQ", "Icebox"))
         self.assertEqual(ev[0]["top_share"], 1.0)
-        self.assertIn("Basement AQ repeated frames to Irrigation", ev[0]["note"])
+        self.assertIn("Bunk Room AQ repeated frames to Icebox", ev[0]["note"])
         self.assertEqual(ev[0]["severity"], "notice")   # one bad link: logged, not paged
 
     def test_a_neighbours_retransmissions_are_not_ours(self):
@@ -1731,13 +1731,13 @@ class QuietPolicyTest(unittest.TestCase):
         det.storm_active, det.storm_since = True, 1_700_000_000.0
         det.storm_details = {"period": 100.0, "onsets": [1_700_000_000.0, 1_700_000_100.0, 1_700_000_200.0]}
         det.add_frame = lambda ts: None                        # hold the detector's state as set
-        pipe._border_router_changed = (1_700_000_000.0 - 300, "Living Room Apple TV")
+        pipe._border_router_changed = (1_700_000_000.0 - 300, "Library Apple TV")
         t0 = 1_700_000_200.0
         pipe.ingest(frame(t0, ROUTER))
         storms = [r for r in pipe.events.records if r["event"] == "phase_locked_storm"]
         self.assertEqual([(r["severity"], r["confirmed"], r["auto_snapshot"]) for r in storms],
                          [("notice", False, "auto-phase_locked_storm")])
-        self.assertIn("began after Living Room Apple TV came back under a new address at "
+        self.assertIn("began after Library Apple TV came back under a new address at "
                       + time.strftime("%H:%M:%S", time.localtime(1_700_000_000.0 - 300)), storms[0]["note"])
         self.assertIn("the ring is being saved as auto-phase_locked_storm", storms[0]["note"])
         self.assertEqual(saved, [("auto-phase_locked_storm", "phase_locked_storm")])
@@ -2074,11 +2074,11 @@ class QuietPolicyTest(unittest.TestCase):
         from threadwatch.device import resolve_target
         d = Path(self.tmp.name)
         (d / "devices.json").write_text(json.dumps([
-            {"name": "Living Room Apple TV", "extendedAddress": ROUTER.upper()},
-            {"name": "Living Room Apple TV", "extendedAddress": SENSOR},
+            {"name": "Library Apple TV", "extendedAddress": ROUTER.upper()},
+            {"name": "Library Apple TV", "extendedAddress": SENSOR},
         ]))
         addrs, name = resolve_target(self.cfg, "apple tv")
-        self.assertEqual((sorted(addrs), name), (sorted([ROUTER, SENSOR]), "Living Room Apple TV"))
+        self.assertEqual((sorted(addrs), name), (sorted([ROUTER, SENSOR]), "Library Apple TV"))
 
     def test_returned_device_can_go_quiet_again(self):
         pipe = self._pipe()
@@ -2676,7 +2676,7 @@ class KeyGenerationTest(unittest.TestCase):
             {"name": "Attic Router", "extendedAddress": ROUTER2},
             {"name": "Shed Router", "extendedAddress": ROUTER3},
             {"name": "Porch Sensor", "extendedAddress": SENSOR},
-            {"name": "Garage Sensor", "extendedAddress": SENSOR2}]))
+            {"name": "Gazebo Sensor", "extendedAddress": SENSOR2}]))
         self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json")
 
     def tearDown(self):
@@ -2770,7 +2770,7 @@ class KeyGenerationTest(unittest.TestCase):
         self._heard(pipe, t + 200, ROUTER, "0400", 6)
         pipe.ingest(frame(t + 210, "e5e5e5e5e5e5e5e5", sequence=6))    # unknown role: not judged
         pipe.ingest(short_frame(t + 211, "0403", "e5e5e5e5e5e5e5e5", sequence=6))
-        # The garage sensor moves to 6 while the shed router is still on 5.
+        # The gazebo sensor moves to 6 while the shed router is still on 5.
         pipe.ingest(frame(t + 220, SENSOR2, sequence=6))
         self._heard(pipe, t + 230, ROUTER2, "0800", 6)
         state = json.loads((self.cfg.state_dir / "key-generations.json").read_text())
@@ -2785,7 +2785,7 @@ class KeyGenerationTest(unittest.TestCase):
         self.assertEqual([s["addr"] for s in census["suspects"]], [SENSOR, SENSOR2])
         self.assertIn("origin candidates: Porch Sensor "
                       "(ahead of last known parent sequence: Hall Router on 5), "
-                      "Garage Sensor (ahead of last known parent sequence: Attic Router on 5)", census["note"])
+                      "Gazebo Sensor (ahead of last known parent sequence: Attic Router on 5)", census["note"])
         # After the census the window is closed: a straggler moving ahead
         # of a parent that is one behind is key_lag's story, not a suspect.
         pipe2.ingest(frame(t + 800, ROUTER3, sequence=5))
@@ -3346,7 +3346,7 @@ class KeyGenerationTest(unittest.TestCase):
             pipe.ingest(frame(t + dt, "d4d4d4d4d4d4d4d4", sequence=4))  # (past the visit limit: a device)
         t += 3600
         t = self._mesh(pipe, t, 5, routers=(ROUTER, ROUTER2, ROUTER3), children=(SENSOR,))
-        pipe.ingest(frame(t, SENSOR2, sequence=4))                       # the garage sensor never followed
+        pipe.ingest(frame(t, SENSOR2, sequence=4))                       # the gazebo sensor never followed
         pipe.periodic(t)                                                 # the census for 5 is not yet due
         self.assertEqual(self._events(pipe, "key_lag_census"), [])
         t = self._mesh(pipe, t, 6, routers=(ROUTER, ROUTER2), children=())    # rotation to 6
@@ -3365,12 +3365,12 @@ class KeyGenerationTest(unittest.TestCase):
         self.assertEqual([(i["name"], i["generation"], i["parent"], i["parent_generation"], i["lag"])
                           for i in ev["behind_parent_1"]], [("Porch Sensor", 5, "Hall Router", 6, 1)])
         self.assertEqual([(i["name"], i["generation"], i["lag"]) for i in ev["behind_parent_2plus"]],
-                         [("Garage Sensor", 4, 2)])
+                         [("Gazebo Sensor", 4, 2)])
         self.assertEqual([(i["name"], i["generation"], i["mesh_generation"], i["lag"]) for i in ev["routers_behind"]],
                          [("Shed Router", 5, 6, 1)])
         self.assertEqual(ev["unknown"], ["d4d4d4d4d4d4d4d4"])
         self.assertIn("one behind: Porch Sensor", ev["note"])
-        self.assertIn("cut off (2+ behind): Garage Sensor", ev["note"])
+        self.assertIn("cut off (2+ behind): Gazebo Sensor", ev["note"])
         self.assertIn("routers behind the mesh: Shed Router", ev["note"])
         self.assertIn("1 not judged", ev["note"])
         pipe.periodic(due + 3600)                                        # once per rotation
@@ -3379,8 +3379,8 @@ class KeyGenerationTest(unittest.TestCase):
         # rules: a router one behind the mesh is the census's to name.
         summary = pipe.summary(due + 10)
         self.assertEqual((summary["key_counts"], summary["key_one_behind"], summary["key_cut_off"]),
-                         ({"6": 2, "5": 2, "4": 1}, ["Porch Sensor"], ["Garage Sensor"]))
-        self.assertIn("keys: 2 on 6, 2 on 5, 1 on 4; 1 one behind their parent; cut off: Garage Sensor",
+                         ({"6": 2, "5": 2, "4": 1}, ["Porch Sensor"], ["Gazebo Sensor"]))
+        self.assertIn("keys: 2 on 6, 2 on 5, 1 on 4; 1 one behind their parent; cut off: Gazebo Sensor",
                       summary["note"])
 
     def test_the_census_survives_a_restart_and_the_state_file_is_in_snapshots(self):
@@ -3715,18 +3715,18 @@ class RetransmissionConfirmTest(unittest.TestCase):
         from threadwatch.review import group_episodes
         recs = [
             {"ts": self.T, "event": "retransmission_elevation", "severity": "notice", "confirmed": False,
-             "rate": 0.25, "baseline": 0.05, "top_sender": "Kitchen Light", "top_target": "broadcast",
+             "rate": 0.25, "baseline": 0.05, "top_sender": "Kids Room Light", "top_target": "broadcast",
              "top_share": 0.14, "note": "retries spread across devices"},
             {"ts": self.T + 240, "event": "retransmission_elevation", "severity": "warning", "confirmed": True,
-             "rate": 0.31, "baseline": 0.05, "sustained_s": 300, "top_sender": "Basement AQ",
-             "top_target": "Irrigation", "top_share": 0.3, "note": "retransmissions elevated for 5 min"},
+             "rate": 0.31, "baseline": 0.05, "sustained_s": 300, "top_sender": "Bunk Room AQ",
+             "top_target": "Icebox", "top_share": 0.3, "note": "retransmissions elevated for 5 min"},
         ]
         eps = group_episodes(recs)
         self.assertEqual([(e["title"], e["count"], e["severity"], e["max_rate"]) for e in eps],
-                         [("retransmissions: Kitchen Light -> broadcast", 2, "warning", 0.31)])
+                         [("retransmissions: Kids Room Light -> broadcast", 2, "warning", 0.31)])
         # A confirmed record with nothing open within the hour is a row of its own.
         eps = group_episodes(recs[1:])
-        self.assertEqual([(e["title"], e["count"]) for e in eps], [("retransmissions: Basement AQ -> Irrigation", 1)])
+        self.assertEqual([(e["title"], e["count"]) for e in eps], [("retransmissions: Bunk Room AQ -> Icebox", 1)])
 
 
 class RecorderStartTest(unittest.TestCase):
@@ -3856,7 +3856,7 @@ class ObservedNamesTest(unittest.TestCase):
             row = {"first_seen": 1.0, "last_seen": 2.0, "frames": 1, "types": {}}
             (cfg.state_dir / "last-seen.json").write_text(json.dumps({SENSOR: row}))
             (cfg.state_dir / "observed-names.json").write_text(json.dumps(
-                {SENSOR: {"porch.local": "x", "den.local": True, "hall.local": 2}}))
+                {SENSOR: {"porch.local": "x", "darkroom.local": True, "hall.local": 2}}))
             pipe = Pipeline(cfg, NullEventLog(), stub_decryptor())
             self.assertEqual(pipe.observed_names, {SENSOR: {"hall.local": 2}})
             pipe._note_observed_name(SENSOR, "porch.local")         # raised on "x" += 1
@@ -3920,13 +3920,13 @@ class BorderRouterTest(unittest.TestCase):
     """An Apple hub reboots, takes a new Thread address, keeps its name."""
 
     OLD, NEW, OTBR = "c0ffee0000000001", "1234567890abcdef", "07b200000000af1b"
-    HOST = "appletv-living-room.local"
+    HOST = "appletv-library.local"
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         d = Path(self.tmp.name)
         (d / "devices.json").write_text(json.dumps([
-            {"name": "Living Room Apple TV", "extendedAddress": self.OLD.upper()},
+            {"name": "Library Apple TV", "extendedAddress": self.OLD.upper()},
             {"name": "HA OTBR", "borderRouter": "HomeAssistant-OTBR.local."}]))
         self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json", border_router_browse_s=0)
 
@@ -3948,7 +3948,7 @@ class BorderRouterTest(unittest.TestCase):
         self.assertEqual(leaked, [])
 
     @staticmethod
-    def router(host, ext, instance="AppleTV Living Room", vendor="Apple", model="BorderRouter"):
+    def router(host, ext, instance="AppleTV Library", vendor="Apple", model="BorderRouter"):
         return {"hostname": host, "ext": ext, "instance": instance, "vendor": vendor, "model": model}
 
     @staticmethod
@@ -3976,7 +3976,7 @@ class BorderRouterTest(unittest.TestCase):
         e = boot["evidence"]
         self.assertEqual((boot["ts"], boot["addr"], e["source"], e["earliest"], e["jump"], e["previous_address"],
                           e["name"], e["addresses"]),
-                         (t + 100, self.NEW, "counter_jump", t + 20, 972, self.OLD, "Living Room Apple TV",
+                         (t + 100, self.NEW, "counter_jump", t + 20, 972, self.OLD, "Library Apple TV",
                           [self.NEW, self.OLD]))
 
     def test_rebooted_hub_keeps_its_name_and_the_old_address_retires(self):
@@ -3988,7 +3988,7 @@ class BorderRouterTest(unittest.TestCase):
                                     self.router("homeassistant-otbr.local", self.OTBR, "HA OTBR #AF1B",
                                                 "Home Assistant")], t)
         self.assertEqual([r["event"] for r in pipe.events.records if r["event"].startswith("border_router")], [])
-        self.assertEqual(pipe.routers[self.HOST]["name"], "Living Room Apple TV")          # bound by listed address
+        self.assertEqual(pipe.routers[self.HOST]["name"], "Library Apple TV")          # bound by listed address
         self.assertEqual(pipe.routers["homeassistant-otbr.local"]["name"], "HA OTBR")      # bound by borderRouter
         self.assertEqual(pipe.names.name(self.OTBR), "HA OTBR")
         # Reboot: the browse sees the new address before the sniffer hears
@@ -3998,7 +3998,7 @@ class BorderRouterTest(unittest.TestCase):
         self.assertIsNone(pipe.names.name(self.NEW))
         pipe.ingest(frame(t + 600, self.NEW))
         first = [r for r in pipe.events.records if r["event"] == "device_first_seen" and r["addr"] == self.NEW]
-        self.assertEqual(first[0]["name"], "Living Room Apple TV")
+        self.assertEqual(first[0]["name"], "Library Apple TV")
         self.assertEqual(pipe._pending_routers, {})
         # The frame that binds the name is the only one the new address has:
         # no router id yet, and no average worth comparing. Nothing is
@@ -4013,9 +4013,9 @@ class BorderRouterTest(unittest.TestCase):
         ev = [r for r in pipe.events.records if r["event"] == "border_router_address_changed"]
         self.assertEqual(len(ev), 1)
         self.assertEqual((ev[0]["addr"], ev[0]["previous"], ev[0]["name"]),
-                         (self.NEW, self.OLD, "Living Room Apple TV"))
+                         (self.NEW, self.OLD, "Library Apple TV"))
         self.assertIn("nothing to edit", ev[0]["note"])
-        self.assertEqual(pipe.names.name(self.NEW), "Living Room Apple TV")
+        self.assertEqual(pipe.names.name(self.NEW), "Library Apple TV")
         self.assertEqual(pipe.seen.table[self.OLD]["rotated_to"], self.NEW)
         self.assertEqual(pipe.routers[self.HOST]["previous"], [{"addr": self.OLD, "until": t + 600}])
         pipe.periodic(t + 3000)                            # 50 min on: the old address never reads as quiet
@@ -4024,9 +4024,9 @@ class BorderRouterTest(unittest.TestCase):
         # The binding survives a restart, through the state file.
         pipe.seen.save()
         pipe2 = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
-        self.assertEqual(pipe2.names.name(self.NEW), "Living Room Apple TV")
+        self.assertEqual(pipe2.names.name(self.NEW), "Library Apple TV")
         self.assertEqual(pipe2.names.border_routers[self.NEW]["hostname"], self.HOST)
-        self.assertEqual(pipe2.names.resolve("living room apple tv")[0], [self.OLD, self.NEW])
+        self.assertEqual(pipe2.names.resolve("library apple tv")[0], [self.OLD, self.NEW])
         self.assertNotIn(self.OLD, [r["addr"] for r in pipe2.events.records if r["event"] == "device_quiet"])
         self.assertEqual(pipe2.routers[self.HOST]["addr"], self.NEW)
 
@@ -4071,7 +4071,7 @@ class BorderRouterTest(unittest.TestCase):
                                         for i in range(1000)], t + 60)
         self.assertEqual(list(pipe.routers), [self.HOST])          # the one that already answers for it
         self.assertEqual(pipe.routers[self.HOST]["addr"], self.OLD)
-        self.assertEqual(pipe.routers[self.HOST]["instance"], "AppleTV Living Room")
+        self.assertEqual(pipe.routers[self.HOST]["instance"], "AppleTV Library")
         self.assertEqual(out.getvalue().count("already answers for"), 1000)
         self.assertLessEqual(len(pipe.routers), pipe.ROUTERS_MAX)
 
@@ -4100,7 +4100,7 @@ class BorderRouterTest(unittest.TestCase):
         it stays silent."""
         d = Path(self.tmp.name)
         (d / "devices.json").write_text(json.dumps([
-            {"name": "Living Room Apple TV", "extendedAddress": self.OLD, "borderRouter": self.HOST},
+            {"name": "Library Apple TV", "extendedAddress": self.OLD, "borderRouter": self.HOST},
             {"name": "Hall Sensor", "extendedAddress": self.OTBR}]))
         pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
         t = time.time() - 3600
@@ -4116,7 +4116,7 @@ class BorderRouterTest(unittest.TestCase):
         conflicts = [r for r in pipe.events.records if r["event"] == "border_router_address_conflict"]
         self.assertEqual(len(conflicts), 1)
         self.assertEqual((conflicts[0]["addr"], conflicts[0]["name"], conflicts[0]["claimed_by"]),
-                         (self.OTBR, "Hall Sensor", "Living Room Apple TV"))
+                         (self.OTBR, "Hall Sensor", "Library Apple TV"))
         pipe._apply_border_routers([self.router(self.HOST, self.OTBR)], t + 700)
         self.assertEqual(len([r for r in pipe.events.records
                               if r["event"] == "border_router_address_conflict"]), 1)   # said once
@@ -4154,7 +4154,7 @@ class BorderRouterTest(unittest.TestCase):
         pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
         t = time.time() - 7200
         at = self.rotate_without_corroboration(pipe, t)
-        self.assertEqual(pipe.names.name(self.NEW), "Living Room Apple TV")   # named
+        self.assertEqual(pipe.names.name(self.NEW), "Library Apple TV")   # named
         self.assertEqual(pipe.routers[self.HOST]["addr"], self.NEW)
         self.assertNotIn("rotated_to", pipe.seen.table[self.OLD])             # not retired
         self.assertEqual([r["event"] for r in pipe.events.records
@@ -4164,7 +4164,7 @@ class BorderRouterTest(unittest.TestCase):
         self.assertEqual((ev[0]["addr"], ev[0]["previous"]), (self.NEW, self.OLD))
         self.assertIn("on air together", ev[0]["missing"])
         self.assertIn("dB from the old address", ev[0]["missing"])
-        self.assertIn(f'threadwatch name {self.NEW} "Living Room Apple TV"', ev[0]["note"])
+        self.assertIn(f'threadwatch name {self.NEW} "Library Apple TV"', ev[0]["note"])
         # And the old address goes on being judged: the silence it is in is
         # reported, which is the whole point of not retiring it.
         pipe.periodic(at + 1700)
@@ -4249,7 +4249,7 @@ class BorderRouterTest(unittest.TestCase):
         self.assertEqual([r["event"] for r in pipe.events.records if r["event"] == "device_returned"], [])
         self.assertEqual(pipe.quiet_reported, {self.OLD})            # the episode stays open
         self.assertEqual(pipe.names.entry_addresses_of(self.NEW), [self.NEW])
-        self.assertEqual(pipe.names.name(self.NEW), "Living Room Apple TV")   # still named, though
+        self.assertEqual(pipe.names.name(self.NEW), "Library Apple TV")   # still named, though
 
     def test_corroboration_arriving_after_the_window_does_not_retire(self):
         # The window has to bind the corroborating case too, or it is not a
@@ -4296,7 +4296,7 @@ class BorderRouterTest(unittest.TestCase):
         # browse names the same address again: the same binding with more
         # behind it, not an mDNS claim that demotes what the operator wrote.
         (Path(self.tmp.name) / "devices.json").write_text(json.dumps([
-            {"name": "Living Room Apple TV",
+            {"name": "Library Apple TV",
              "extendedAddresses": [self.OLD.upper(), self.NEW.upper()]}]))
         pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
         t = time.time() - 7200
@@ -4397,7 +4397,7 @@ class BorderRouterTest(unittest.TestCase):
         self.assertEqual(list(pipe._pending_routers), [self.NEW])
         pipe.ingest(frame(t + 41 * 60, self.NEW))
         self.assertEqual((pipe.routers[self.HOST]["addr"], pipe.names.name(self.NEW)),
-                         (self.NEW, "Living Room Apple TV"))
+                         (self.NEW, "Library Apple TV"))
         # Named on the advertisement; retired once the hub is heard holding
         # the router id it had before the reboot.
         self.assertNotIn("rotated_to", pipe.seen.table[self.OLD])
@@ -4422,7 +4422,7 @@ class BorderRouterTest(unittest.TestCase):
         # The newest record still waits, and binds when its address is heard.
         self.assertIn(self.NEW, pipe._pending_routers)
         pipe.ingest(frame(t + 10, self.NEW))
-        self.assertEqual(pipe.names.name(self.NEW), "Living Room Apple TV")
+        self.assertEqual(pipe.names.name(self.NEW), "Library Apple TV")
         self.assertEqual(pipe.routers[self.HOST]["addr"], self.NEW)
         # The once-per-address memory is bounded too, at the price of a
         # repeated line past the bound; within it a record is logged once.
@@ -4493,7 +4493,7 @@ class BorderRouterTest(unittest.TestCase):
         self.hold_rloc16(pipe, self.NEW, "1c00", t + 33 * 60)
         pipe._apply_border_routers([self.router(self.HOST, self.NEW)], t + 40 * 60)
         back = [r for r in pipe.events.records if r["event"] == "device_returned"]
-        self.assertEqual([(r["addr"], r["name"]) for r in back], [(self.OLD, "Living Room Apple TV")])
+        self.assertEqual([(r["addr"], r["name"]) for r in back], [(self.OLD, "Library Apple TV")])
         self.assertIn(self.NEW, back[0]["note"])
         self.assertEqual(pipe.quiet_reported, set())
         self.assertNotIn("quiet_reported", pipe.seen.table[self.OLD])
@@ -4508,15 +4508,15 @@ class BorderRouterTest(unittest.TestCase):
         pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
         t = 1_700_000_000.0
         self.heard(pipe, "0011223344556677", t)
-        stranger = self.router("homepod-kitchen.local", "0011223344556677", "HomePod Kitchen")
+        stranger = self.router("homepod-kids-room.local", "0011223344556677", "HomePod Kids Room")
         pipe._apply_border_routers([stranger], t)
         pipe._apply_border_routers([stranger], t + 600)
         ev = [r for r in pipe.events.records if r["event"] == "border_router_unlisted"]
         self.assertEqual(len(ev), 1)
-        self.assertIn("homepod-kitchen.local", ev[0]["note"])
+        self.assertIn("homepod-kids-room.local", ev[0]["note"])
         self.assertIsNone(pipe.names.name("0011223344556677"))
         self.heard(pipe, "8899aabbccddeeff", t + 100)
-        pipe._apply_border_routers([self.router("homepod-kitchen.local", "8899aabbccddeeff", "HomePod Kitchen")],
+        pipe._apply_border_routers([self.router("homepod-kids-room.local", "8899aabbccddeeff", "HomePod Kids Room")],
                                    t + 1200)
         ev = [r for r in pipe.events.records if r["event"] == "border_router_address_changed"]
         self.assertEqual((ev[0]["name"], ev[0]["previous"]), (None, "0011223344556677"))
@@ -4537,7 +4537,7 @@ class BorderRouterTest(unittest.TestCase):
             self.assertEqual(pipe.routers, {})     # nothing applied until the next tick
             pipe.periodic(t + 30)                  # applies it
             self.assertEqual(calls, [4.0])
-            self.assertEqual(pipe.routers[self.HOST]["name"], "Living Room Apple TV")
+            self.assertEqual(pipe.routers[self.HOST]["name"], "Library Apple TV")
             pipe.periodic(t + 60)                  # not yet time for another
             self.assertIsNone(pipe._browse_thread)
             self.assertEqual(len(calls), 1)
@@ -4594,7 +4594,7 @@ class PartitionLeaderTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         d = Path(self.tmp.name)
         (d / "devices.json").write_text(json.dumps(
-            [{"name": "Living Room Apple TV", "extendedAddress": self.LEADER, "threadRole": "border-router-leader"}]))
+            [{"name": "Library Apple TV", "extendedAddress": self.LEADER, "threadRole": "border-router-leader"}]))
         self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json")
 
     def tearDown(self):
@@ -4612,8 +4612,8 @@ class PartitionLeaderTest(unittest.TestCase):
         self.assertEqual(pipe.leader_label(60), "r60")
         pipe.decryptor = SimpleNamespace(short_to_ext={"f000": self.LEADER})   # the leader's MLE advert
         self.assertEqual(pipe.partition_status()["leader_addr"], self.LEADER)
-        self.assertEqual(pipe.partition_status()["leader_name"], "Living Room Apple TV")
-        self.assertEqual(pipe.leader_label(60), "r60 (Living Room Apple TV)")
+        self.assertEqual(pipe.partition_status()["leader_name"], "Library Apple TV")
+        self.assertEqual(pipe.leader_label(60), "r60 (Library Apple TV)")
         self.assertEqual(pipe.leader_label(3), "r3")                          # 0x0c00: nobody matched
 
 
@@ -5691,7 +5691,7 @@ class LeaderAndPartitionTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         d = Path(self.tmp.name)
         (d / "devices.json").write_text(json.dumps([{"name": "Hall Router", "extendedAddress": ROUTER},
-                                                    {"name": "Den Router", "extendedAddress": self.R2},
+                                                    {"name": "Darkroom Router", "extendedAddress": self.R2},
                                                     {"name": "Loft Router", "extendedAddress": self.R3}]))
         self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json")
         self.pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
@@ -5792,7 +5792,7 @@ class LeaderAndPartitionTest(unittest.TestCase):
 
         # Porch Sensor is attached to Hall Router (child 1 of router 60).
         child_update_request(SENSOR, "f001", self.PART, 60)
-        # The mesh merges under Den Router; the change settles.
+        # The mesh merges under Darkroom Router; the change settles.
         self._adv(t0 + 30, self.R2, 12, partition=0x51119999, leader=11)
         self._adv(t0 + 40, ROUTER, 12, partition=0x51119999, leader=11)
         self.pipe.periodic(t0 + 71)
@@ -6026,7 +6026,7 @@ class ParentCheckTest(unittest.TestCase):
     """parent_check: a Parent Request addressed to one router is a device
     with a working parent looking for a better one, not a rejoin
     (docs/ALERTING.md). Porch Sensor is a child of Hall Router (RLOC16
-    0xf000); Den Router is the other router it asks."""
+    0xf000); Darkroom Router is the other router it asks."""
 
     R2 = "a2a2a2a2a2a2a2a2"
     PART = 0x5eed1234
@@ -6036,7 +6036,7 @@ class ParentCheckTest(unittest.TestCase):
         d = Path(self.tmp.name)
         (d / "devices.json").write_text(json.dumps([{"name": "Porch Sensor", "extendedAddress": SENSOR},
                                                     {"name": "Hall Router", "extendedAddress": ROUTER},
-                                                    {"name": "Den Router", "extendedAddress": self.R2}]))
+                                                    {"name": "Darkroom Router", "extendedAddress": self.R2}]))
         self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json")
         self.pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
         self.t0 = 1_700_000_000.0
@@ -6073,11 +6073,11 @@ class ParentCheckTest(unittest.TestCase):
         self.pipe.periodic(t + 11)
         [ev] = self._events("parent_check")
         self.assertEqual((ev["ts"], ev["severity"], ev["name"], ev["parent"], ev["asked"], ev["moved_to"]),
-                         (t, "info", "Porch Sensor", "Hall Router", ["Hall Router", "Den Router"], None))
-        self.assertEqual(ev["margins"], {"Den Router": 41, "Hall Router": 21})
+                         (t, "info", "Porch Sensor", "Hall Router", ["Hall Router", "Darkroom Router"], None))
+        self.assertEqual(ev["margins"], {"Darkroom Router": 41, "Hall Router": 21})
         self.assertEqual(ev["note"], "Porch Sensor looked for a better parent and stayed with Hall Router "
                                      "(no Child ID Request followed). Link margin each router measured on "
-                                     "its request: Den Router 41 dB, Hall Router 21 dB.")
+                                     "its request: Darkroom Router 41 dB, Hall Router 21 dB.")
         self.assertEqual(self._events("mle_rejoin_attempt"), [])
         self.assertNotIn("rejoin_ts", self.pipe.seen.table[SENSOR])
 
@@ -6088,8 +6088,8 @@ class ParentCheckTest(unittest.TestCase):
         self.pipe.ingest(mle_frame(t + 1, SENSOR, 0, b"\x0b", dst=self.R2))   # Child ID Request
         self.pipe.periodic(t + 11)
         [ev] = self._events("parent_check")
-        self.assertEqual(ev["moved_to"], "Den Router")
-        self.assertIn("looked for a better parent and moved to Den Router.", ev["note"])
+        self.assertEqual(ev["moved_to"], "Darkroom Router")
+        self.assertIn("looked for a better parent and moved to Darkroom Router.", ev["note"])
         self.assertEqual(self._events("mle_rejoin_attempt"), [])
         # A Child ID Request is still an attach: the key-lag check reads it.
         self.assertEqual(self.pipe.seen.table[SENSOR]["rejoin_ts"], t + 1)
@@ -6114,7 +6114,7 @@ class SrpRefusedTest(unittest.TestCase):
         d = Path(self.tmp.name)
         (d / "devices.json").write_text(json.dumps([{"name": "Porch Sensor", "extendedAddress": SENSOR},
                                                     {"name": "Hall Router", "extendedAddress": ROUTER},
-                                                    {"name": "Den Router", "extendedAddress": self.R2}]))
+                                                    {"name": "Darkroom Router", "extendedAddress": self.R2}]))
         self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json")
         self.pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
 
@@ -6198,7 +6198,7 @@ class SrpRefusedTest(unittest.TestCase):
         for i, dns_id in enumerate((11, 12, 13)):
             t = t0 + 10 * i
             self._request(t, dns_id)                                           # the sensor asks its parent
-            # The server's answer comes over the mesh: Den Router hands it to
+            # The server's answer comes over the mesh: Darkroom Router hands it to
             # Hall Router with a mesh header naming the sensor...
             self._response(t + 0.1, dns_id, 2, src=self.R2, dst=ROUTER, mesh=("fc11", "c407"))
             # ...and Hall Router hands it to the sensor: the same answer again.
@@ -6468,13 +6468,13 @@ class CorroboratedQuietTest(unittest.TestCase):
         t0 = 1_700_000_000.0
         self.pipe._lost_leader = {"addr": ROUTER, "name": "Hall Router", "leader_router": 60,
                                   "partition": 1, "ts": t0 + 25, "leader": "r60 (Hall Router)",
-                                  "successor": "r57 (Den Router)"}
+                                  "successor": "r57 (Darkroom Router)"}
         self._marginal_silence(t0)
         rec = self._quiet()[0]
         self.assertEqual((rec["severity"], rec["reception"], rec["was_leader"]), ("warning", "marginal", True))
         self.assertTrue(rec["note"].startswith(
             "it was the mesh leader: it stopped leading at " + time.strftime("%H:%M:%S", time.localtime(t0 + 25))
-            + " and the routers re-elected r57 (Den Router): the device failed, whatever the signal here. "
+            + " and the routers re-elected r57 (Darkroom Router): the device failed, whatever the signal here. "
             "sniffer hears this device at the edge of its range"))
         # A leader lost long before this silence is a different story.
         self.pipe.events.records.clear()
@@ -6508,7 +6508,7 @@ class RouterSetChangedTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         d = Path(self.tmp.name)
         (d / "devices.json").write_text(json.dumps([{"name": "Hall Router", "extendedAddress": ROUTER},
-                                                    {"name": "Den Router", "extendedAddress": self.R2}]))
+                                                    {"name": "Darkroom Router", "extendedAddress": self.R2}]))
         self.cfg = Config(data_dir=d / "data", devices_path=d / "devices.json")
         self.pipe = Pipeline(self.cfg, NullEventLog(), stub_decryptor())
         self.samples = []

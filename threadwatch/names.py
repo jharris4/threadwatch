@@ -12,7 +12,7 @@ ever observed):
 
     [
       {"name": "Office Air Quality", "extendedAddress": "66417FE110ED6950"},
-      {"name": "Living Room Apple TV",
+      {"name": "Library Apple TV",
        "extendedAddresses": ["B62C32BF669272DB", "E6C279E8F0C70298"],
        "model": "Apple TV 4K", "note": "rotates its address"}
     ]
@@ -36,7 +36,7 @@ finds every border router on the LAN over mDNS (threadwatch/mdns.py),
 where the hostname is stable and the current extended address is
 advertised, and keeps hostname -> address in the state file
 border-routers.json. An entry is tied to a hostname either explicitly,
-with `"borderRouter": "appletv-living-room.local"` (`threadwatch import`
+with `"borderRouter": "appletv-library.local"` (`threadwatch import`
 writes it), or implicitly, the first time a discovered address matches
 one the entry lists; from then on a new address for that hostname is
 named from the entry without anyone editing this file. The addresses

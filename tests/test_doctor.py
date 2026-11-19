@@ -623,8 +623,8 @@ class HaAvailabilityCheckTest(unittest.TestCase):
         from threadwatch.config import Config
         self.tmp = tempfile.TemporaryDirectory()
         d = Path(self.tmp.name)
-        (d / "devices.json").write_text(json.dumps([{"name": "Front Path Motion",
-                                                     "extendedAddress": "C233A4A5BF8391C9"}]))
+        (d / "devices.json").write_text(json.dumps([{"name": "Fence Motion",
+                                                     "extendedAddress": "5A17C0DE2B9E4F61"}]))
         self.cfg = Config(data_dir=d / "data", config_dir=d, devices_path=d / "devices.json")
         self.cfg.ha_availability_enabled = True
         body = json.dumps([{"entity_id": "binary_sensor.motion", "state": "on"}]).encode()
@@ -643,7 +643,7 @@ class HaAvailabilityCheckTest(unittest.TestCase):
         threading.Thread(target=self.httpd.serve_forever, args=(0.005,), daemon=True).start()
         (d / "ha.env").write_text(f"HA_URL=http://127.0.0.1:{self.httpd.server_port}\nHA_TOKEN=tk_SECRET\n")
         self.mapping = {
-            "id-motion": {"addr": "C233A4A5BF8391C9", "ha_name": "Motion", "name": "Front Path Motion", "matched": True,
+            "id-motion": {"addr": "5A17C0DE2B9E4F61", "ha_name": "Motion", "name": "Fence Motion", "matched": True,
                           "entities": ["binary_sensor.motion"]},
             "id-garden": {"addr": "1669674DD15CF0FA", "ha_name": "Garden Sensor", "name": "Garden Sensor",
                           "matched": False, "entities": []},
@@ -674,7 +674,7 @@ class HaAvailabilityCheckTest(unittest.TestCase):
     def test_with_a_stack_table_each_device_it_does_not_cover_is_named(self):
         import json
         (self.d / "devices.json").write_text(json.dumps([
-            {"name": "Front Path Motion", "extendedAddress": "C233A4A5BF8391C9"},
+            {"name": "Fence Motion", "extendedAddress": "5A17C0DE2B9E4F61"},
             {"name": "Side Door Lock", "extendedAddress": "0A0B0C0D0E0F1011"},
             {"name": "Hall Router", "extendedAddress": "1A1B1C1D1E1F2021"},
             {"name": "Porch Plug", "extendedAddress": "2A2B2C2D2E2F3031"}]))
@@ -684,7 +684,7 @@ class HaAvailabilityCheckTest(unittest.TestCase):
         checks = [c for c in doctor.check_ha_availability(self.cfg) if c[1] == "stacks"]
         self.assertEqual(checks, [
             ("ok", "stacks", "1 current, 0 old, 3 unknown ([keys.stacks])"),
-            ("warn", "stacks", "2 unknown, not in [keys.stacks]: Front Path Motion (Motion Sensor 20XYZ firmware "
+            ("warn", "stacks", "2 unknown, not in [keys.stacks]: Fence Motion (Motion Sensor 20XYZ firmware "
                                "3.2.2 is not checked (the table has 3.2.1)); Porch Plug (not in Home Assistant's "
                                "map and not listed by name)")])
         # A version listed as unknown on purpose is counted and not warned about, like a name.
@@ -695,8 +695,8 @@ class HaAvailabilityCheckTest(unittest.TestCase):
             ("warn", "stacks", "1 unknown, not in [keys.stacks]: Porch Plug (not in Home Assistant's "
                                "map and not listed by name)")])
         self.mapping["id-motion"]["sw_version"] = "3.2.1"
-        (self.d / "devices.json").write_text(json.dumps([{"name": "Front Path Motion",
-                                                          "extendedAddress": "C233A4A5BF8391C9"}]))
+        (self.d / "devices.json").write_text(json.dumps([{"name": "Fence Motion",
+                                                          "extendedAddress": "5A17C0DE2B9E4F61"}]))
         checks = [c for c in doctor.check_ha_availability(self.cfg) if c[1] == "stacks"]
         self.assertEqual(checks, [("ok", "stacks", "0 current, 1 old, 0 unknown ([keys.stacks])")])
         # No table, no line: the feature is not in use.
@@ -862,11 +862,11 @@ class CheckBorderRoutersTest(unittest.TestCase):
         level, _s, text = self._check(found=[{"instance": "hub", "ext": None}])[0]
         self.assertEqual(level, "warn")
         self.assertIn("none found over mDNS", text)
-        level, _s, text = self._check(found=[{"instance": "Living Room", "ext": "b62c32bf669272db"},
+        level, _s, text = self._check(found=[{"instance": "Library", "ext": "b62c32bf669272db"},
                                              {"instance": "Office", "ext": "1669674dd15cf0fa"},
                                              {"instance": "no address", "ext": None}])[0]
         self.assertEqual(level, "ok")
-        self.assertEqual(text, "2 found over mDNS: Living Room (b62c32bf669272db), Office (1669674dd15cf0fa)")
+        self.assertEqual(text, "2 found over mDNS: Library (b62c32bf669272db), Office (1669674dd15cf0fa)")
 
     def test_the_whole_run_never_opens_a_socket(self):
         # run_doctor reaches the browse through check_border_routers (the

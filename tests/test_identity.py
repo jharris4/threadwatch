@@ -166,8 +166,8 @@ class ResolveShortTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             dd = Path(tmp)
             (dd / "devices.json").write_text(json.dumps([
-                {"name": "Front Door", "extendedAddress": SED.upper(), "threadRole": "sleepy-end-device"},
-                {"name": "Living Room Motion", "extendedAddress": OTHER, "threadRole": "sleepy-end-device"},
+                {"name": "Fence Gate", "extendedAddress": SED.upper(), "threadRole": "sleepy-end-device"},
+                {"name": "Library Motion", "extendedAddress": OTHER, "threadRole": "sleepy-end-device"},
             ]))
             cfg = Config(data_dir=dd / "data", devices_path=dd / "devices.json")
             pipe = Pipeline(cfg, NullEventLog(), Decryptor(network_key=KEY))
@@ -180,7 +180,7 @@ class ResolveShortTest(unittest.TestCase):
             self.assertEqual([r["addr"] for r in pipe.events.records if r["event"] == "device_first_seen"], [SED])
             pipe.periodic(t0 + 91 * 60)
             quiet = [(r["addr"], r["name"]) for r in pipe.events.records if r["event"] == "device_quiet"]
-            self.assertEqual(quiet, [(SED, "Front Door")])
+            self.assertEqual(quiet, [(SED, "Fence Gate")])
             pipe.ingest(parse_frame(t0 + 92 * 60, secured_frame(SED, "c829", 200, ftype=3), 195))
             self.assertEqual(pipe.events.records[-1]["event"], "device_returned")
             # The short address is remembered with the row, and seeds the next run.
@@ -221,7 +221,7 @@ class ResolveShortTest(unittest.TestCase):
         # quiet checks stopped, and the neighbour's frames counted as its.
         with tempfile.TemporaryDirectory() as tmp:
             dd = Path(tmp)
-            (dd / "devices.json").write_text(json.dumps([{"name": "Front Door", "extendedAddress": SED}]))
+            (dd / "devices.json").write_text(json.dumps([{"name": "Fence Gate", "extendedAddress": SED}]))
             cfg = Config(data_dir=dd / "data", devices_path=dd / "devices.json")
             cfg.pan_id = PAN
             pipe = Pipeline(cfg, NullEventLog(), Decryptor(network_key=KEY))
@@ -670,7 +670,7 @@ class UnsecuredMleTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             dd = Path(tmp)
             (dd / "devices.json").write_text(json.dumps([
-                {"name": "Front Door", "extendedAddress": SED.upper(), "threadRole": "sleepy-end-device"}]))
+                {"name": "Fence Gate", "extendedAddress": SED.upper(), "threadRole": "sleepy-end-device"}]))
             cfg = Config(data_dir=dd / "data", devices_path=dd / "devices.json")
             dec = Decryptor(network_key=KEY)
             pipe = Pipeline(cfg, NullEventLog(), dec)

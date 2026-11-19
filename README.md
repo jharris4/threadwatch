@@ -190,7 +190,7 @@ returns, then name it:
 
     bin/threadwatch name 66417fe110ed6950 "Office Air Quality"
     bin/threadwatch devices --suggest   # ready-to-paste entries for every unknown
-    bin/threadwatch hold "Front Path Motion" 2h   # a known flapper: warn after two hours, not 30 min
+    bin/threadwatch hold "Fence Motion" 2h   # a known flapper: warn after two hours, not 30 min
     bin/threadwatch mute "Garden Sensor"          # log its silences, never page them
 
 `name` appends to `config/devices.json` (an existing name gains the
@@ -230,7 +230,7 @@ matches no entry, and is reported as `ha_device_unlisted` instead.
 | `extendedAddresses` | one of the two | a list of them, for a device that has had several. Both fields may be present; every address named is this device |
 | `model` | no | free text (`threadwatch import` fills it from Home Assistant or mDNS) |
 | `note` | no | free text for the person editing the file |
-| `borderRouter` | no | the mDNS hostname of a border router (`appletv-living-room.local`), so a new address announced under that hostname is named from this entry without an edit (docs/HOME-ASSISTANT.md) |
+| `borderRouter` | no | the mDNS hostname of a border router (`appletv-library.local`), so a new address announced under that hostname is named from this entry without an edit (docs/HOME-ASSISTANT.md) |
 | `hold_s` | no | seconds, more than 0: this device's own hold before a warning, replacing `[quiet] silence_s` for `device_quiet` and `[ha_availability] hold_s` for `ha_unavailable`; for a device that drops out on its own for a while and comes back (`threadwatch hold NAME 2h`, `--clear` to remove) |
 | `mute` | no | `true`: the device's own trouble (`device_quiet`, `ha_unavailable`, `poll_starvation`, `rssi_degradation`, `reboots_climbing`) is a notice, logged and never paged, and it never counts toward a burst; `key_lag`, `frame_counter_mismatch`, `srp_refused` and `poll_unserved` still page (`threadwatch mute NAME`, `--off` to lift) |
 

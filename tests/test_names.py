@@ -159,7 +159,7 @@ class RotationHintTest(unittest.TestCase):
     def _names(self, d):
         inv = Path(d) / "devices.json"
         inv.write_text(json.dumps([
-            {"name": "Living Room Apple TV", "extendedAddresses": [TV1.upper(), TV2]},
+            {"name": "Library Apple TV", "extendedAddresses": [TV1.upper(), TV2]},
             {"name": "Office AQ", "extendedAddress": AQ},
         ]))
         return DeviceNames(inv)
@@ -182,10 +182,10 @@ class RotationHintTest(unittest.TestCase):
             seen = self._seen()
             report = seen.report(names, quiet_after_s=1800, now=self.T + 7300)
             hints = rotation_hints(report["unknown"], seen.table, names)
-            self.assertEqual(hints, {self.NEW: {"name": "Living Room Apple TV", "previous": TV2,
+            self.assertEqual(hints, {self.NEW: {"name": "Library Apple TV", "previous": TV2,
                                                 "delta_s": 90, "rotates": True}})
             entries = {e["extendedAddress"]: e for e in suggest_entries(report["unknown"], {}, hints)}
-            self.assertIn("possibly a new address of Living Room Apple TV (which rotates): its previous "
+            self.assertIn("possibly a new address of Library Apple TV (which rotates): its previous "
                           f"address {TV2} fell silent 1 min after this one appeared", entries[self.NEW.upper()]["note"])
             self.assertNotIn("possibly", entries[self.LATER.upper()]["note"])
             self.assertNotIn("possibly", entries[self.OTHER.upper()]["note"])
@@ -205,11 +205,11 @@ class NameTest(unittest.TestCase):
             inv = Path(d) / "config" / "devices.json"
             msg = adopt(inv, "26:97:6E:7F:7D:20:96:4A", "Office Air Quality")
             self.assertIn("added 'Office Air Quality' = " + AQ, msg)
-            adopt(inv, TV1, "Living Room Apple TV")
+            adopt(inv, TV1, "Library Apple TV")
             entries = json.loads(inv.read_text())
             self.assertEqual(entries, [
                 {"name": "Office Air Quality", "extendedAddress": AQ.upper()},
-                {"name": "Living Room Apple TV", "extendedAddress": TV1.upper()},
+                {"name": "Library Apple TV", "extendedAddress": TV1.upper()},
             ])
             names = DeviceNames(inv)
             self.assertEqual(names.name(AQ), "Office Air Quality")
@@ -217,16 +217,16 @@ class NameTest(unittest.TestCase):
     def test_same_name_gains_a_rotated_address(self):
         with tempfile.TemporaryDirectory() as d:
             inv = Path(d) / "devices.json"
-            inv.write_text(json.dumps([{"name": "Living Room Apple TV", "extendedAddress": TV1.upper(),
+            inv.write_text(json.dumps([{"name": "Library Apple TV", "extendedAddress": TV1.upper(),
                                         "note": "rotates"}]))
-            msg = adopt(inv, TV2, "living room apple tv")
+            msg = adopt(inv, TV2, "library apple tv")
             self.assertIn("2 addresses", msg)
             entry = json.loads(inv.read_text())[0]
             self.assertNotIn("extendedAddress", entry)
             self.assertEqual(entry["extendedAddresses"], [TV1.upper(), TV2.upper()])
             self.assertNotIn("role", entry)
             self.assertEqual(entry["note"], "rotates")
-            self.assertEqual(DeviceNames(inv).name(TV2), "Living Room Apple TV")
+            self.assertEqual(DeviceNames(inv).name(TV2), "Library Apple TV")
 
     def test_two_namings_at_once_both_land(self):
         # BUG-12: adopt read, changed and replaced the file with nothing to
@@ -285,12 +285,12 @@ class NameTest(unittest.TestCase):
             before = json.dumps([{"name": "Office Air Quality", "extendedAddress": AQ.upper()}, None])
             inv.write_text(before)
             with self.assertRaises(ValueError) as cm:
-                adopt(inv, TV1, "Living Room Apple TV")
+                adopt(inv, TV1, "Library Apple TV")
             self.assertIn("devices.json: entry 2 is null, not a device object", str(cm.exception))
             self.assertEqual(inv.read_text(), before)
             inv.write_text(json.dumps(["Hall Router"]))
             with self.assertRaises(ValueError) as cm:
-                adopt(inv, TV1, "Living Room Apple TV")
+                adopt(inv, TV1, "Library Apple TV")
             self.assertIn("entry 1 is a str", str(cm.exception))
 
     def test_an_address_field_of_the_wrong_type_is_skipped_and_named(self):
@@ -314,7 +314,7 @@ class NameTest(unittest.TestCase):
             # A command about to rewrite the file refuses, as it does for
             # a stray null, rather than dropping those addresses.
             with self.assertRaises(ValueError) as cm:
-                adopt(inv, TV1, "Living Room Apple TV")
+                adopt(inv, TV1, "Library Apple TV")
             self.assertIn("entry 1 (Sensor): extendedAddresses is int, not a list", str(cm.exception))
             self.assertEqual(inv.read_text(), before)
 
@@ -347,7 +347,7 @@ class ToleranceTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             inv = Path(tmp) / "devices.json"
             inv.write_text(json.dumps([
-                {"name": "Living Room Apple TV", "extendedAddresses": [TV1, TV2], "hold_s": 7200},
+                {"name": "Library Apple TV", "extendedAddresses": [TV1, TV2], "hold_s": 7200},
                 {"name": "Office Air Quality", "extendedAddress": AQ, "mute": True},
                 {"name": "Plug", "extendedAddress": PLUG, "hold_s": "2h", "mute": "yes"},
             ]))
@@ -365,27 +365,27 @@ class ToleranceTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             inv = Path(tmp) / "devices.json"
             inv.write_text(json.dumps([
-                {"name": "Living Room Apple TV", "extendedAddresses": [TV1, TV2], "model": "Apple TV 4K"},
+                {"name": "Library Apple TV", "extendedAddresses": [TV1, TV2], "model": "Apple TV 4K"},
                 {"name": "Office Air Quality", "extendedAddress": AQ},
             ]))
             self.assertEqual(set_hold(inv, "office air quality", 7200), "'Office Air Quality': hold 2h")
             self.assertEqual(set_hold(inv, AQ, 1800.0), "'Office Air Quality': hold 30m (was 2h)")
-            self.assertEqual(set_mute(inv, "apple", True), "'Living Room Apple TV': muted")
-            self.assertEqual(set_mute(inv, TV2, True), "'Living Room Apple TV' is already muted")
+            self.assertEqual(set_mute(inv, "apple", True), "'Library Apple TV': muted")
+            self.assertEqual(set_mute(inv, TV2, True), "'Library Apple TV' is already muted")
             self.assertEqual(json.loads(inv.read_text()), [
-                {"name": "Living Room Apple TV", "extendedAddresses": [TV1, TV2], "model": "Apple TV 4K", "mute": True},
+                {"name": "Library Apple TV", "extendedAddresses": [TV1, TV2], "model": "Apple TV 4K", "mute": True},
                 {"name": "Office Air Quality", "extendedAddress": AQ, "hold_s": 1800},
             ])
             self.assertTrue(inv.with_name("devices.json.lock").exists())
             self.assertEqual(set_hold(inv, "office", None), "'Office Air Quality': hold 30m -> default")
             self.assertEqual(set_hold(inv, "office", None), "'Office Air Quality' already has the default hold")
-            self.assertEqual(set_mute(inv, "apple", False), "'Living Room Apple TV': unmuted")
-            self.assertEqual(set_mute(inv, "apple", False), "'Living Room Apple TV' is not muted")
+            self.assertEqual(set_mute(inv, "apple", False), "'Library Apple TV': unmuted")
+            self.assertEqual(set_mute(inv, "apple", False), "'Library Apple TV' is not muted")
             self.assertEqual(json.loads(inv.read_text()), [
-                {"name": "Living Room Apple TV", "extendedAddresses": [TV1, TV2], "model": "Apple TV 4K"},
+                {"name": "Library Apple TV", "extendedAddresses": [TV1, TV2], "model": "Apple TV 4K"},
                 {"name": "Office Air Quality", "extendedAddress": AQ},
             ])
-            for target, hold, want in (("nobody", 60, "not a name or address"), ("o", 60, "matches several"),
+            for target, hold, want in (("nobody", 60, "not a name or address"), ("a", 60, "matches several"),
                                        ("office", 0, "more than 0"), ("office", -1, "more than 0"),
                                        ("office", True, "more than 0"), ("  ", 60, "required")):
                 with self.subTest(target=target, hold=hold), self.assertRaises(ValueError) as cm:
@@ -426,21 +426,21 @@ class LearnedBorderRoutersTest(unittest.TestCase):
         from threadwatch.names import DeviceNames
         with tempfile.TemporaryDirectory() as d:
             inv = Path(d) / "devices.json"
-            inv.write_text(json.dumps([{"name": "Living Room Apple TV", "extendedAddress": TV1.upper()},
+            inv.write_text(json.dumps([{"name": "Library Apple TV", "extendedAddress": TV1.upper()},
                                        {"name": "OTBR", "borderRouter": "otbr.local"}]))
             learned = Path(d) / "border-routers.json"
             learned.write_text(json.dumps({
-                "appletv-living-room.local": {"addr": TV2, "name": "Living Room Apple TV",
-                                              "instance": "AppleTV Living Room",
+                "appletv-library.local": {"addr": TV2, "name": "Library Apple TV",
+                                              "instance": "AppleTV Library",
                                               "vendor": "Apple", "model": "BorderRouter"},
                 "otbr.local": {"addr": AQ, "name": None, "instance": "OTBR #1"},
                 "junk.local": {"addr": "nope"},
             }))
             names = DeviceNames(inv, learned)
-            self.assertEqual(names.name(TV2), "Living Room Apple TV")
+            self.assertEqual(names.name(TV2), "Library Apple TV")
             self.assertEqual(names.addresses_of(TV1), [TV1, TV2])
             self.assertEqual(names.name(AQ), "OTBR")                       # borderRouter field, even unnamed in state
-            self.assertEqual(names.border_routers[TV2]["instance"], "AppleTV Living Room")
+            self.assertEqual(names.border_routers[TV2]["instance"], "AppleTV Library")
             self.assertNotIn("nope", names.border_routers)
             self.assertIsNone(DeviceNames(inv, Path(d) / "absent.json").name(TV2))
 
@@ -452,20 +452,20 @@ class LearnedBorderRoutersTest(unittest.TestCase):
         OLDER = "0011223344556677"
         with tempfile.TemporaryDirectory() as d:
             inv = Path(d) / "devices.json"
-            inv.write_text(json.dumps([{"name": "Living Room Apple TV", "extendedAddress": TV1.upper()}]))
+            inv.write_text(json.dumps([{"name": "Library Apple TV", "extendedAddress": TV1.upper()}]))
             learned = Path(d) / "border-routers.json"
             learned.write_text(json.dumps({
-                "appletv-living-room.local": {"addr": AQ, "name": "Living Room Apple TV", "instance": "AppleTV",
+                "appletv-library.local": {"addr": AQ, "name": "Library Apple TV", "instance": "AppleTV",
                                               "previous": [{"addr": OLDER, "until": 1.0}, {"addr": TV2, "until": 2.0},
                                                            "junk", {"addr": "nope"}]},
             }))
             names = DeviceNames(inv, learned)
-            self.assertEqual([names.name(a) for a in (AQ, TV2, OLDER)], ["Living Room Apple TV"] * 3)
+            self.assertEqual([names.name(a) for a in (AQ, TV2, OLDER)], ["Library Apple TV"] * 3)
             self.assertEqual(names.addresses_of(TV1), [TV1, AQ, TV2, OLDER])
-            self.assertEqual(names.resolve("living room")[0], [TV1, AQ, TV2, OLDER])
+            self.assertEqual(names.resolve("library")[0], [TV1, AQ, TV2, OLDER])
             self.assertFalse(names.border_routers[AQ]["retired"])
             self.assertTrue(names.border_routers[TV2]["retired"])
-            self.assertEqual(names.border_routers[OLDER]["hostname"], "appletv-living-room.local")
+            self.assertEqual(names.border_routers[OLDER]["hostname"], "appletv-library.local")
             self.assertNotIn("nope", names.border_routers)
 
 
@@ -523,21 +523,21 @@ class OfflineLearnedNamesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             inv = d / "devices.json"
-            inv.write_text(json.dumps([{"name": "Living Room Apple TV", "extendedAddress": TV1.upper()}]))
+            inv.write_text(json.dumps([{"name": "Library Apple TV", "extendedAddress": TV1.upper()}]))
             cfg = Config(data_dir=d / "data", devices_path=inv)
             cfg.state_dir.mkdir(parents=True, exist_ok=True)
             (cfg.state_dir / "border-routers.json").write_text(json.dumps({
-                "appletv-living-room.local": {"addr": TV2, "name": "Living Room Apple TV",
-                                              "instance": "AppleTV Living Room"}}))
+                "appletv-library.local": {"addr": TV2, "name": "Library Apple TV",
+                                              "instance": "AppleTV Library"}}))
             pipe = Pipeline(cfg, NullEventLog(), Decryptor(network_key=bytes(16)), ephemeral=True)
-            self.assertEqual(pipe.names.name(TV2), "Living Room Apple TV")
+            self.assertEqual(pipe.names.name(TV2), "Library Apple TV")
             self.assertIn(TV2, pipe._resolve_candidates(1_756_800_000.0))
             # Read, not written: the live state is still the recorder's.
             pipe.periodic(1_756_800_030.0)
             pipe.seen.save()
             self.assertEqual(sorted(p.name for p in cfg.state_dir.iterdir()), ["border-routers.json"])
             self.assertEqual(json.loads((cfg.state_dir / "border-routers.json").read_text())
-                             ["appletv-living-room.local"]["addr"], TV2)
+                             ["appletv-library.local"]["addr"], TV2)
 
 
 class UnreadableStateTest(unittest.TestCase):
@@ -726,14 +726,14 @@ class ReloadTest(unittest.TestCase):
         name, a rotation record by the previous address. The edit that
         triggers the reload can remove either: the binding is carried to
         the entry of the same device, by a shared listed address first."""
-        self._write([{"name": "Living Room Hub", "extendedAddress": self.A},
+        self._write([{"name": "Library Hub", "extendedAddress": self.A},
                      {"name": "Porch Sensor", "extendedAddress": self.C}])
         learned = self.d / "border-routers.json"
-        learned.write_text(json.dumps({"hub.local": {"addr": self.D, "name": "Living Room Hub",
+        learned.write_text(json.dumps({"hub.local": {"addr": self.D, "name": "Library Hub",
                                                     "previous": [{"addr": self.A, "until": 1.0}]}}))
         names = DeviceNames(self.inv, learned, self.d / "device-rotations.json")
         names.rotate(self.B, self.C, "srp", 10.0)
-        self.assertEqual((names.name(self.D), names.name(self.B)), ("Living Room Hub", "Porch Sensor"))
+        self.assertEqual((names.name(self.D), names.name(self.B)), ("Library Hub", "Porch Sensor"))
         # The hub renamed, the sensor's old address taken out before `name` confirmed the new one.
         self._write([{"name": "Lounge Hub", "extendedAddress": self.A},
                      {"name": "Porch Sensor"}])
@@ -755,10 +755,10 @@ class ReloadTest(unittest.TestCase):
         """The same two edits as above, seen at the next start (web, replay,
         a restarted recorder): the hub's record is matched by the retired
         address its entry still lists, the rotation by the name it wrote."""
-        self._write([{"name": "Living Room Hub", "extendedAddress": self.A},
+        self._write([{"name": "Library Hub", "extendedAddress": self.A},
                      {"name": "Porch Sensor", "extendedAddress": self.C}])
         learned = self.d / "border-routers.json"
-        learned.write_text(json.dumps({"hub.local": {"addr": self.D, "name": "Living Room Hub",
+        learned.write_text(json.dumps({"hub.local": {"addr": self.D, "name": "Library Hub",
                                                     "previous": [{"addr": self.A, "until": 1.0}]}}))
         rot = self.d / "device-rotations.json"
         DeviceNames(self.inv, learned, rot).rotate(self.B, self.C, "srp", 10.0)

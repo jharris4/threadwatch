@@ -368,8 +368,8 @@ week pages nothing:
   cannot be judged: `first on air`, with `parent_unknown` or
   `parent_sequence_not_fresh`. Until the census, every further device whose
   first frame on the new generation comes while its parent is still fresh
-  on the old one joins the suspects (Front Door Button did the same 74 s
-  after Front Door, under a parent still two behind); a child heard on it
+  on the old one joins the suspects (Fence Gate Button did the same 74 s
+  after Fence Gate, under a parent still two behind); a child heard on it
   after its parent moved simply followed, `parent_already_observed_at_or_above_sequence`.
   The event carries `scope=device`, `confidence=observation_only` and
   `reasons` (`accepted_authenticated_frame`, `mesh_adoption_not_established`,

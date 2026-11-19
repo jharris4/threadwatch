@@ -366,15 +366,15 @@ class EventsFilterTest(CliCase):
         from threadwatch.config import load
         from threadwatch.events import EventLog
         (self.d / "devices.json").write_text(json.dumps([
-            {"name": "Living Room Apple TV", "extendedAddresses": ["b62c32bf669272db", "e6c279e8f0c70298"]},
+            {"name": "Library Apple TV", "extendedAddresses": ["b62c32bf669272db", "e6c279e8f0c70298"]},
             {"name": "Office AQ", "extendedAddress": "26976e7f7d20964a"},
         ]))
         (self.d / "config.toml").write_text(f'[record]\ndata_dir = "{self.d / "data"}"\n'
                                             f'[devices]\ninventory = "devices.json"\n')
         log = EventLog(load(Path(self.cfg)).events_dir)
         t = 1_756_800_000.0
-        log.emit("device_quiet", "warning", t, addr="b62c32bf669272db", name="Living Room Apple TV", silent_for_s=1800)
-        log.emit("device_first_seen", "info", t + 60, addr="e6c279e8f0c70298", name="Living Room Apple TV")
+        log.emit("device_quiet", "warning", t, addr="b62c32bf669272db", name="Library Apple TV", silent_for_s=1800)
+        log.emit("device_first_seen", "info", t + 60, addr="e6c279e8f0c70298", name="Library Apple TV")
         log.emit("device_quiet", "notice", t + 120, addr="26976e7f7d20964a", name="Office AQ", silent_for_s=1800)
         log.emit("mle_rejoin_attempt", "notice", t + 180, src="8001")
         log.emit("phase_locked_storm", "critical", t + 240 + 86400)
@@ -404,12 +404,12 @@ class EventsFilterTest(CliCase):
         from threadwatch.events import EventLog
         log = EventLog(load(Path(self.cfg)).events_dir)
         log.emit("device_returned", "notice", 1_756_800_000.0 + 1800, addr="b62c32bf669272db",
-                 name="Living Room Apple TV")
+                 name="Library Apple TV")
         code, out, err = self.run_cli("events", "--episodes", "--severity", "warning")
         self.assertEqual(code, 0, err)
         lines = out.splitlines()
         self.assertEqual(len(lines), 2, out)                    # the closed quiet and the storm; not the Office notice
-        self.assertIn("Living Room Apple TV quiet for 60m", lines[0])
+        self.assertIn("Library Apple TV quiet for 60m", lines[0])
         self.assertNotIn("went quiet", out)
         self.assertNotIn("Office", out)
         self.assertIn("[critical", lines[1])
@@ -481,7 +481,7 @@ class EventsFilterTest(CliCase):
         self.assertEqual(code, 0, err)
         self.assertIn("1 device first seen", out)
         self.assertIn("Office AQ", out)
-        self.assertNotIn("Living Room", out)
+        self.assertNotIn("Library", out)
         code, out, err = self.run_cli("events", "--episodes", "--device", "Office")
         self.assertEqual(code, 0, err)
         self.assertIn("1 device first seen", out)
@@ -493,10 +493,10 @@ class EventsFilterTest(CliCase):
         from threadwatch.events import EventLog
         log = EventLog(load(Path(self.cfg)).events_dir)
         log.emit("device_returned", "notice", 1_756_800_000.0 + 1800, addr="b62c32bf669272db",
-                 name="Living Room Apple TV")
+                 name="Library Apple TV")
         code, out, err = self.run_cli("events", "--episodes", "-n", "2", "--device", "apple tv")
         self.assertEqual(code, 0, err)
-        self.assertIn("Living Room Apple TV quiet for 60m", out)
+        self.assertIn("Library Apple TV quiet for 60m", out)
         self.assertNotIn("was quiet before", out)
 
 
@@ -621,19 +621,19 @@ class DispatchTest(CliCase):
     def test_hold_and_mute_write_the_inventory_and_refuse_what_they_cannot_resolve(self):
         (self.d / "config.toml").write_text(f'[record]\ndata_dir = "{self.d / "data"}"\n[devices]\n'
                                             'inventory = "devices.json"\n')
-        entries = [{"name": "Front Path Motion", "extendedAddress": "C233A4A5BF8391C9"},
+        entries = [{"name": "Fence Motion", "extendedAddress": "5A17C0DE2B9E4F61"},
                    {"name": "Garden Sensor", "extendedAddress": "1669674DD15CF0FA"},
                    {"name": "Garden Plug", "extendedAddress": "B62C32BF669272DB", "model": "Plug"}]
         (self.d / "devices.json").write_text(json.dumps(entries))
-        code, out, _ = self.run_cli("hold", "Front Path Motion", "2h")
+        code, out, _ = self.run_cli("hold", "Fence Motion", "2h")
         self.assertEqual(code, 0)
-        self.assertIn("'Front Path Motion': hold 2h", out)
+        self.assertIn("'Fence Motion': hold 2h", out)
         self.assertIn("the recorder picks this up within a minute", out)
         code, out, _ = self.run_cli("mute", "1669674dd15cf0fa")                          # by address
         self.assertEqual(code, 0)
         self.assertIn("'Garden Sensor': muted", out)
         saved = {e["name"]: e for e in json.loads((self.d / "devices.json").read_text())}
-        self.assertEqual(saved["Front Path Motion"], dict(entries[0], hold_s=7200))
+        self.assertEqual(saved["Fence Motion"], dict(entries[0], hold_s=7200))
         self.assertEqual(saved["Garden Sensor"], dict(entries[1], mute=True))
         self.assertEqual(saved["Garden Plug"], entries[2])
         for args, want in ((("hold", "garden", "1h"), "matches several devices: Garden Plug, Garden Sensor"),
@@ -646,7 +646,7 @@ class DispatchTest(CliCase):
                 self.assertEqual(code, 1)
                 self.assertIn(want, err)
                 self.assertIn(f"threadwatch {args[0]}:", err)
-        code, out, _ = self.run_cli("hold", "front path", "--clear")
+        code, out, _ = self.run_cli("hold", "fence", "--clear")
         self.assertEqual(code, 0)
         self.assertIn("hold 2h -> default", out)
         code, out, _ = self.run_cli("mute", "garden sensor", "--off")

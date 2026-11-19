@@ -1185,8 +1185,8 @@ class Pipeline:
         listening, and nothing else proved the device alive for as long.
 
         A device whose parent keeps answering it is out of the recorder's
-        earshot, not off the mesh: on 2026-09-09 the Downstairs Bathroom Air
-        Quality paged a warning-level silence while its parent answered its
+        earshot, not off the mesh: on 2026-09-09 an air-quality monitor
+        paged a warning-level silence while its parent answered its
         keep-alive every four minutes, the same day two other monitors
         really died. The report waits until the proxy evidence is as old
         as the silence, and then says how long it lasted."""
@@ -2805,7 +2805,7 @@ class Pipeline:
                 "leader_name": self.names.name(ext) if ext else None}
 
     def leader_label(self, router_id: int) -> str:
-        """'r60 (Living Room Apple TV)', or just 'r60' until it is known."""
+        """'r60 (Library Apple TV)', or just 'r60' until it is known."""
         who = self.leader_device(router_id)
         label = who.get("leader_name") or who.get("leader_addr")
         return f"r{router_id} ({label})" if label else f"r{router_id}"
@@ -5160,7 +5160,7 @@ class Pipeline:
     def _note_suspect(self, who: str, row: dict, generation: int, frame: str, ts: float) -> None:
         """A device's first frame on the highest generation, while the
         census for it is still to come: a second device found ahead of its
-        parent (Front Door Button, 74 s after Front Door on 2026-09-17,
+        parent (Fence Gate Button, 74 s after Fence Gate on 2026-09-17,
         under a parent still on 85) joins the suspects. Persisted with the
         generation record, so the census after a restart still has it."""
         if generation != self._keys.get("highest") or self._keys.get("census_at") is None:

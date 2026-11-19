@@ -351,7 +351,7 @@ class FakeHA:
 class ThreadDevicesTest(unittest.TestCase):
     def test_matter_over_thread_devices_with_names_and_addresses(self):
         registry = [
-            {"id": "d1", "name": "Eve Motion", "name_by_user": "Living Room Motion", "model": "Eve Motion 20EBY9901",
+            {"id": "d1", "name": "Eve Motion", "name_by_user": "Library Motion", "model": "Eve Motion 20EBY9901",
              "sw_version": "3.2.1", "manufacturer": "Eve Systems", "identifiers": [["matter", "deviceid_x-1"]]},
             {"id": "d2", "name": "Wifi Plug", "name_by_user": None, "model": "P100",
              "identifiers": [["matter", "deviceid_x-2"]]},
@@ -370,7 +370,7 @@ class ThreadDevicesTest(unittest.TestCase):
         notes = []
         found = thread_devices(fake, log=notes.append)
         self.assertEqual(found,
-                         [{"name": "Living Room Motion", "model": "Eve Motion 20EBY9901", "sw_version": "3.2.1",
+                         [{"name": "Library Motion", "model": "Eve Motion 20EBY9901", "sw_version": "3.2.1",
                            "manufacturer": "Eve Systems", "addr": "F00D000000000001", "node_id": 1, "available": True,
                            "ha_device_id": "d1"}])
         self.assertEqual([t for t, _ in fake.calls].count("matter/node_diagnostics"), 4)   # not for the Hue bridge
@@ -459,31 +459,31 @@ class PlanInventoryTest(unittest.TestCase):
 
     def test_merge_keeps_hand_written_entries_and_reports_each_change(self):
         existing = [
-            {"name": "Living Room Motion", "extendedAddress": "F00D000000000001", "note": "by the window"},
+            {"name": "Library Motion", "extendedAddress": "F00D000000000001", "note": "by the window"},
             {"name": "Old Name", "extendedAddress": "F00D000000000002"},
-            {"name": "Living Room Apple TV", "extendedAddresses": ["B62C32BF669272DB"]},
-            {"name": "Back Door Lock", "extendedAddress": "0000000000000001", "note": "HomeKit-only"},
+            {"name": "Library Apple TV", "extendedAddresses": ["B62C32BF669272DB"]},
+            {"name": "Balcony Door Lock", "extendedAddress": "0000000000000001", "note": "HomeKit-only"},
         ]
         found = [
-            {"name": "Living Room Motion", "model": "Eve Motion", "addr": "F00D000000000001"},
-            {"name": "Den Stairs Motion", "model": "Eve Motion", "addr": "F00D000000000002"},
-            {"name": "Living Room Apple TV", "model": "Apple TV", "addr": "E6C279E8F0C70298"},
-            {"name": "Kitchen Plug", "model": None, "addr": "AAAAAAAAAAAAAAAA"},
+            {"name": "Library Motion", "model": "Eve Motion", "addr": "F00D000000000001"},
+            {"name": "Darkroom Stairs Motion", "model": "Eve Motion", "addr": "F00D000000000002"},
+            {"name": "Library Apple TV", "model": "Apple TV", "addr": "E6C279E8F0C70298"},
+            {"name": "Kids Room Plug", "model": None, "addr": "AAAAAAAAAAAAAAAA"},
         ]
         planned, changes = plan_inventory(existing, found)
         self.assertEqual(changes, [
-            "Living Room Motion: model 'Eve Motion'",
-            "rename 'Old Name' -> 'Den Stairs Motion' (F00D000000000002)",
-            "Den Stairs Motion: model 'Eve Motion'",
-            "Living Room Apple TV: new address E6C279E8F0C70298 (now 2 addresses)",
-            "Living Room Apple TV: model 'Apple TV'",
-            "add 'Kitchen Plug' = AAAAAAAAAAAAAAAA",
+            "Library Motion: model 'Eve Motion'",
+            "rename 'Old Name' -> 'Darkroom Stairs Motion' (F00D000000000002)",
+            "Darkroom Stairs Motion: model 'Eve Motion'",
+            "Library Apple TV: new address E6C279E8F0C70298 (now 2 addresses)",
+            "Library Apple TV: model 'Apple TV'",
+            "add 'Kids Room Plug' = AAAAAAAAAAAAAAAA",
         ])
-        self.assertEqual(planned[0], {"name": "Living Room Motion", "extendedAddress": "F00D000000000001",
+        self.assertEqual(planned[0], {"name": "Library Motion", "extendedAddress": "F00D000000000001",
                                       "note": "by the window", "model": "Eve Motion"})
         self.assertEqual(planned[2]["extendedAddresses"], ["B62C32BF669272DB", "E6C279E8F0C70298"])
         self.assertEqual(planned[3], existing[3])                       # untouched
-        self.assertEqual(planned[4], {"name": "Kitchen Plug", "extendedAddress": "AAAAAAAAAAAAAAAA"})
+        self.assertEqual(planned[4], {"name": "Kids Room Plug", "extendedAddress": "AAAAAAAAAAAAAAAA"})
         self.assertEqual(existing[1]["name"], "Old Name")               # the input list is not mutated
         again, changes = plan_inventory(planned, found)
         self.assertEqual((again, changes), (planned, []))               # idempotent
@@ -492,30 +492,30 @@ class PlanInventoryTest(unittest.TestCase):
         # Three contact sensors all named "Contact Sensor" in HA, one of
         # them already in the file: not one rotating device with three
         # addresses, but three entries, each with the address it has.
-        existing = [{"name": "Contact Sensor", "extendedAddress": "1111111111111111", "note": "front door"},
-                    {"name": "Living Room Apple TV", "extendedAddress": "B62C32BF669272DB"}]
+        existing = [{"name": "Contact Sensor", "extendedAddress": "1111111111111111", "note": "fence gate"},
+                    {"name": "Library Apple TV", "extendedAddress": "B62C32BF669272DB"}]
         found = [{"name": "Contact Sensor", "model": "Eve Door", "addr": a}
                  for a in ("1111111111111111", "2222222222222222", "3333333333333333")]
-        found.append({"name": "Living Room Apple TV", "model": "Apple TV", "addr": "E6C279E8F0C70298"})
+        found.append({"name": "Library Apple TV", "model": "Apple TV", "addr": "E6C279E8F0C70298"})
         planned, changes = plan_inventory(existing, found)
         self.assertEqual([e["name"] for e in planned],
-                         ["Contact Sensor (1111)", "Living Room Apple TV", "Contact Sensor (2222)",
+                         ["Contact Sensor (1111)", "Library Apple TV", "Contact Sensor (2222)",
                           "Contact Sensor (3333)"])
         self.assertEqual([len(_addrs(e)) for e in planned], [1, 2, 1, 1])   # only the TV rotates
-        self.assertEqual(planned[0]["note"], "front door")
+        self.assertEqual(planned[0]["note"], "fence gate")
         self.assertIn("'Contact Sensor' names 3 devices in Home Assistant", changes[0])
         self.assertIn("rename them there", changes[0])
         self.assertIn("rename 'Contact Sensor' -> 'Contact Sensor (1111)'", changes[1])
         self.assertIn("add 'Contact Sensor (2222)' = 2222222222222222", changes)
-        self.assertIn("Living Room Apple TV: new address E6C279E8F0C70298 (now 2 addresses)", changes)
+        self.assertIn("Library Apple TV: new address E6C279E8F0C70298 (now 2 addresses)", changes)
         again, changes = plan_inventory(planned, found)
         self.assertEqual(again, planned)
         self.assertEqual(len(changes), 1)                              # only the reminder to rename in HA
         # Renamed apart in HA: the entries follow, by address.
-        found[1]["name"], found[2]["name"] = "Back Door", "Garage Door"
+        found[1]["name"], found[2]["name"] = "Balcony Door", "Gazebo Door"
         renamed, changes = plan_inventory(planned, found)
         self.assertEqual([e["name"] for e in renamed],
-                         ["Contact Sensor", "Living Room Apple TV", "Back Door", "Garage Door"])
+                         ["Contact Sensor", "Library Apple TV", "Balcony Door", "Gazebo Door"])
 
 
     def test_shared_names_are_told_apart_even_when_address_tails_match(self):
@@ -548,17 +548,17 @@ class PlanInventoryTest(unittest.TestCase):
         # own address and renamed it, so one entry held both devices and
         # the new one lost its identity. Address before name settles it,
         # whichever order HA answers in.
-        existing = [{"name": "Kitchen", "extendedAddress": "1111111111111111", "note": "by the sink"}]
-        order = [{"name": "Kitchen", "model": None, "addr": "2222222222222222"},
+        existing = [{"name": "Kids Room", "extendedAddress": "1111111111111111", "note": "by the sink"}]
+        order = [{"name": "Kids Room", "model": None, "addr": "2222222222222222"},
                  {"name": "Hall", "model": None, "addr": "1111111111111111"}]
         for found in (order, list(reversed(order))):
             planned, changes = plan_inventory(existing, found)
-            self.assertEqual([e["name"] for e in planned], ["Hall", "Kitchen"])
+            self.assertEqual([e["name"] for e in planned], ["Hall", "Kids Room"])
             self.assertEqual([_addrs(e) for e in planned],
                              [["1111111111111111"], ["2222222222222222"]])
             self.assertEqual(planned[0]["note"], "by the sink")     # the note stays with its address
-            self.assertIn("rename 'Kitchen' -> 'Hall' (1111111111111111)", changes)
-            self.assertIn("add 'Kitchen' = 2222222222222222", changes)
+            self.assertIn("rename 'Kids Room' -> 'Hall' (1111111111111111)", changes)
+            self.assertIn("add 'Kids Room' = 2222222222222222", changes)
 
     def test_a_rename_onto_a_name_a_kept_entry_holds_stays_two_devices(self):
         # HA gives a device the name of an entry kept by hand for one HA
@@ -567,27 +567,27 @@ class PlanInventoryTest(unittest.TestCase):
         import tempfile
 
         from threadwatch.names import DeviceNames
-        existing = [{"name": "Garage Light", "extendedAddress": "AAAAAAAAAAAAAAAA", "note": "died"},
+        existing = [{"name": "Gazebo Light", "extendedAddress": "AAAAAAAAAAAAAAAA", "note": "died"},
                     {"name": "Porch Light", "extendedAddress": "BBBBBBBBBBBBCDEF"}]
-        found = [{"name": "Garage Light", "model": None, "addr": "BBBBBBBBBBBBCDEF"}]
+        found = [{"name": "Gazebo Light", "model": None, "addr": "BBBBBBBBBBBBCDEF"}]
         planned, changes = plan_inventory(existing, found)
-        self.assertEqual([e["name"] for e in planned], ["Garage Light", "Garage Light (CDEF)"])
+        self.assertEqual([e["name"] for e in planned], ["Gazebo Light", "Gazebo Light (CDEF)"])
         self.assertEqual(planned[0], existing[0])
         self.assertEqual(changes, [
-            "'Garage Light' (BBBBBBBBBBBBCDEF) is also the name of an entry Home Assistant does not report "
+            "'Gazebo Light' (BBBBBBBBBBBBCDEF) is also the name of an entry Home Assistant does not report "
             "(AAAAAAAAAAAAAAAA): told apart here by address; rename or remove one of them in the inventory",
-            "rename 'Porch Light' -> 'Garage Light (CDEF)' (BBBBBBBBBBBBCDEF)",
+            "rename 'Porch Light' -> 'Gazebo Light (CDEF)' (BBBBBBBBBBBBCDEF)",
         ])
         with tempfile.TemporaryDirectory() as d:
             inv = Path(d) / "devices.json"
             inv.write_text(json.dumps(planned))
-            self.assertEqual(DeviceNames(inv).resolve("Garage Light")[0], ["aaaaaaaaaaaaaaaa"])
+            self.assertEqual(DeviceNames(inv).resolve("Gazebo Light")[0], ["aaaaaaaaaaaaaaaa"])
         again, changes = plan_inventory(planned, found)
         self.assertEqual((again, len(changes)), (planned, 1))          # only the reminder
         # The tail grows past a name already in the file.
-        existing.append({"name": "Garage Light (CDEF)", "extendedAddress": "CCCCCCCCCCCCCCCC"})
+        existing.append({"name": "Gazebo Light (CDEF)", "extendedAddress": "CCCCCCCCCCCCCCCC"})
         planned, _ = plan_inventory(existing, found)
-        self.assertEqual(planned[1]["name"], "Garage Light (BBCDEF)")
+        self.assertEqual(planned[1]["name"], "Gazebo Light (BBCDEF)")
         # Two entries swapping names in one import collide with nothing.
         existing = [{"name": "A", "extendedAddress": "1111111111111111"},
                     {"name": "B", "extendedAddress": "2222222222222222"}]
@@ -669,41 +669,41 @@ class WritePrivateTest(unittest.TestCase):
 
 
 class PlanBorderRoutersTest(unittest.TestCase):
-    R = {"hostname": "appletv-living-room.local", "ext": "c0ffee0000000001", "instance": "AppleTV Living Room",
+    R = {"hostname": "appletv-library.local", "ext": "c0ffee0000000001", "instance": "AppleTV Library",
          "vendor": "Apple", "model": "BorderRouter"}
 
     def test_match_by_hostname_address_or_name_else_add(self):
         existing = [
-            {"name": "Living Room Apple TV", "extendedAddresses": ["C0FFEE0000000000", "C0FFEE0000000001"],
+            {"name": "Library Apple TV", "extendedAddresses": ["C0FFEE0000000000", "C0FFEE0000000001"],
              "note": "hub"},
             {"name": "HA OTBR", "borderRouter": "homeassistant-otbr.local"},
-            {"name": "HomePod Kitchen"},
+            {"name": "HomePod Kids Room"},
         ]
         routers = [self.R,
                    {"hostname": "homeassistant-otbr.local", "ext": "07b200000000af1b", "instance": "HA OTBR #AF1B",
                     "vendor": "Home Assistant", "model": "OpenThread Border Router"},
-                   {"hostname": "homepod-kitchen.local", "ext": "0011223344556677", "instance": "HomePod Kitchen",
+                   {"hostname": "homepod-kids-room.local", "ext": "0011223344556677", "instance": "HomePod Kids Room",
                     "vendor": "Apple", "model": "BorderRouter"},
-                   {"hostname": "homepod-den.local", "ext": "8899aabbccddeeff", "instance": "HomePod Den",
+                   {"hostname": "homepod-darkroom.local", "ext": "8899aabbccddeeff", "instance": "HomePod Darkroom",
                     "vendor": "Apple", "model": "BorderRouter"},
                    {"hostname": "broken.local", "ext": None, "instance": "Broken"}]
         planned, changes = plan_border_routers(existing, routers)
         self.assertEqual(changes, [
-            "Living Room Apple TV: border router appletv-living-room.local",        # matched by listed address
-            "Living Room Apple TV: model 'Apple BorderRouter'",
+            "Library Apple TV: border router appletv-library.local",        # matched by listed address
+            "Library Apple TV: model 'Apple BorderRouter'",
             "HA OTBR: new address 07B200000000AF1B (now 1 addresses)",             # matched by hostname
             "HA OTBR: model 'Home Assistant OpenThread Border Router'",
-            "HomePod Kitchen: border router homepod-kitchen.local",                 # matched by name
-            "HomePod Kitchen: new address 0011223344556677 (now 1 addresses)",
-            "HomePod Kitchen: model 'Apple BorderRouter'",
-            "add 'HomePod Den' = 8899AABBCCDDEEFF (border router homepod-den.local)",
+            "HomePod Kids Room: border router homepod-kids-room.local",                 # matched by name
+            "HomePod Kids Room: new address 0011223344556677 (now 1 addresses)",
+            "HomePod Kids Room: model 'Apple BorderRouter'",
+            "add 'HomePod Darkroom' = 8899AABBCCDDEEFF (border router homepod-darkroom.local)",
         ])
         self.assertEqual(planned[0]["extendedAddresses"], ["C0FFEE0000000000", "C0FFEE0000000001"])   # kept, in order
         self.assertEqual(planned[0]["note"], "hub")
         self.assertEqual(planned[1]["extendedAddresses"], ["07B200000000AF1B"])
-        self.assertEqual(planned[3], {"name": "HomePod Den", "borderRouter": "homepod-den.local",
+        self.assertEqual(planned[3], {"name": "HomePod Darkroom", "borderRouter": "homepod-darkroom.local",
                                       "extendedAddress": "8899AABBCCDDEEFF", "model": "Apple BorderRouter"})
-        self.assertEqual(existing[2], {"name": "HomePod Kitchen"})                  # input untouched
+        self.assertEqual(existing[2], {"name": "HomePod Kids Room"})                  # input untouched
         self.assertEqual(plan_border_routers(planned, routers), (planned, []))       # idempotent
 
     def test_a_second_hub_under_the_same_display_name_is_a_second_entry(self):
@@ -729,13 +729,13 @@ class PlanBorderRoutersTest(unittest.TestCase):
         self.assertEqual(planned[0]["extendedAddresses"], ["1111111111111111", "3333333333333333"])
 
     def test_a_reboot_appends_the_new_address_and_keeps_the_name(self):
-        entry = {"name": "Living Room Apple TV", "borderRouter": "appletv-living-room.local",
+        entry = {"name": "Library Apple TV", "borderRouter": "appletv-library.local",
                  "extendedAddress": "C0FFEE0000000001"}
         planned, changes = plan_border_routers([entry],
-                                               [dict(self.R, ext="1234567890abcdef", instance="AppleTV Living Room")])
-        self.assertEqual(changes, ["Living Room Apple TV: new address 1234567890ABCDEF (now 2 addresses)",
-                                   "Living Room Apple TV: model 'Apple BorderRouter'"])
-        self.assertEqual(planned[0]["name"], "Living Room Apple TV")
+                                               [dict(self.R, ext="1234567890abcdef", instance="AppleTV Library")])
+        self.assertEqual(changes, ["Library Apple TV: new address 1234567890ABCDEF (now 2 addresses)",
+                                   "Library Apple TV: model 'Apple BorderRouter'"])
+        self.assertEqual(planned[0]["name"], "Library Apple TV")
 
 
 class RunImportTest(unittest.TestCase):
@@ -764,7 +764,7 @@ class RunImportTest(unittest.TestCase):
                 pass
 
         ha_mod.HomeAssistant = FakeHA
-        ha_mod.thread_devices = lambda ha, log=None: [{"name": "Living Room Motion", "model": "Eve Motion",
+        ha_mod.thread_devices = lambda ha, log=None: [{"name": "Library Motion", "model": "Eve Motion",
                                                        "addr": "F00D000000000001"}]
         ha_mod.thread_dataset = lambda ha, dataset_id=None: {"network_name": "MyHome", "channel": 25, "pan_id": 0xabcd,
                                                              "ext_pan_id": "32572a6010074654",
@@ -822,7 +822,7 @@ class RunImportTest(unittest.TestCase):
         # A stray null the recorder skips must not become an AttributeError
         # deep in the planner: the file and entry are named, nothing written.
         inv = self.d / "devices.json"
-        inv.write_text(json.dumps([{"name": "Living Room Motion", "extendedAddress": "F00D000000000001"}, None]))
+        inv.write_text(json.dumps([{"name": "Library Motion", "extendedAddress": "F00D000000000001"}, None]))
         with self.assertRaises(ValueError) as cm:
             run_import(self.cfg, inv, write=True, out=lambda line: None)
         self.assertIn("devices.json: entry 2 is null, not a device object", str(cm.exception))
@@ -846,18 +846,18 @@ class RunImportTest(unittest.TestCase):
         lines = []
         run_import(self.cfg, self.d / "devices.json", out=lines.append)
         text = "\n".join(lines)
-        self.assertIn("mDNS: 1 border router(s): AppleTV Living Room", text)
+        self.assertIn("mDNS: 1 border router(s): AppleTV Library", text)
         self.assertIn("Home Assistant: 1 Matter-over-Thread devices", text)
-        self.assertIn("add 'AppleTV Living Room' = C0FFEE0000000001 (border router appletv-living-room.local)", text)
-        self.assertIn("add 'Living Room Motion' = F00D000000000001", text)
+        self.assertIn("add 'AppleTV Library' = C0FFEE0000000001 (border router appletv-library.local)", text)
+        self.assertIn("add 'Library Motion' = F00D000000000001", text)
         self.assertIn("network key: not in credentials.toml; --write stores it", text)
         self.assertIn("nothing written", text)
         self.assertFalse((self.d / "devices.json").exists())
         lines.clear()
         run_import(self.cfg, self.d / "devices.json", write=True, out=lines.append)
         entries = json.loads((self.d / "devices.json").read_text())
-        self.assertEqual([e["name"] for e in entries], ["AppleTV Living Room", "Living Room Motion"])
-        self.assertEqual(entries[0]["borderRouter"], "appletv-living-room.local")
+        self.assertEqual([e["name"] for e in entries], ["AppleTV Library", "Library Motion"])
+        self.assertEqual(entries[0]["borderRouter"], "appletv-library.local")
         self.assertIn("00112233445566778899aabbccddeeff", (self.d / "credentials.toml").read_text())
         self.assertIn("the recorder picks up devices.json within a minute", "\n".join(lines))
         self.assertIn("reads the network key at start: restart it", "\n".join(lines))
@@ -905,14 +905,14 @@ class RunImportTest(unittest.TestCase):
         lines = []
         run_import(self.cfg, self.d / "devices.json", use_ha=False, out=lines.append)
         self.assertEqual(self.calls, [])                                        # HA never contacted
-        self.assertIn("AppleTV Living Room", "\n".join(lines))
+        self.assertIn("AppleTV Library", "\n".join(lines))
         lines.clear()
         import threadwatch.mdns as mdns_mod
         mdns_mod.browse = lambda timeout=3.0, log=None: []
         run_import(self.cfg, self.d / "devices.json", credentials=False, out=lines.append)
         text = "\n".join(lines)
         self.assertIn("no border routers answered", text)
-        self.assertIn("Living Room Motion", text)
+        self.assertIn("Library Motion", text)
         self.assertNotIn("network key", text)
 
 

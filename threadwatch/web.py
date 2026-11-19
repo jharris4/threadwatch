@@ -550,7 +550,7 @@ class Site:
 
     @staticmethod
     def role_html(r: dict, now: float) -> str:
-        """'leader · router 60', 'router 33', 'child of Mudroom Air Quality',
+        """'leader · router 60', 'router 33', 'child of Mezzanine Air Quality',
         each with its RLOC16 and how long ago the recorder last saw it in
         use; the mapping lives in the recorder's memory and its state file,
         so it can lag a re-attach."""
@@ -836,7 +836,7 @@ class Site:
                 nm = '<span class="warn">unknown</span>'
             if r.get("border_router_label"):
                 # A named border router needs only the tag: its mDNS instance
-                # and model ("AppleTV Basement Room (Apple BorderRouter)")
+                # and model ("AppleTV Boiler Room (Apple BorderRouter)")
                 # restate the name, and on the OTBR the model is the instance
                 # name again. The full label stays where it is the only
                 # identification, an unnamed address, and on the device page.

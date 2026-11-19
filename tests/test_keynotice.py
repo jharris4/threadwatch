@@ -30,11 +30,11 @@ def armed(name, stack, boot, at=None, key=90, **kw):
 
 
 def mesh(parent_of_den=None):
-    """Mudroom starts 91 at T + 72 h. Den reset at T - 300 h with no +1 since: it takes 91 as its first +1,
+    """Mezzanine starts 91 at T + 72 h. Darkroom reset at T - 300 h with no +1 since: it takes 91 as its first +1,
     keeps its timer and starts 92 at T + 372 h. Hall, a current-logic router, follows each at once. Porch, a
     sleepy child of Hall, took 90 at T - 100 h and refuses 91 until T + 524 h: 92 finds it two behind."""
-    return [armed("Mudroom Monitor", OLD, T - 600 * HOUR),
-            clear("Den Monitor", OLD, T - 300 * HOUR, parent=parent_of_den),
+    return [armed("Mezzanine Monitor", OLD, T - 600 * HOUR),
+            clear("Darkroom Monitor", OLD, T - 300 * HOUR, parent=parent_of_den),
             clear("Hall Bulb", CURRENT, T - 50 * HOUR),
             armed("Porch Sensor", CURRENT, T - 700 * HOUR, at=T - 100 * HOUR, parent="Hall Bulb", sleepy=True)]
 
@@ -43,32 +43,32 @@ class NoticeTest(unittest.TestCase):
     def test_a_booked_number_with_a_pull_and_a_power_cycle_that_prevent_it(self):
         n = kn.notice(mesh(), T)
         self.assertEqual((n["sequence"], n["at"], n["started_by"], n["two_behind"], n["later"]),
-                         (92, T + 372 * HOUR, "Den Monitor", ["Porch Sensor"], 0))
+                         (92, T + 372 * HOUR, "Darkroom Monitor", ["Porch Sensor"], 0))
         # A pull lifts Porch to Hall's key, which is ahead of it from 91 on; the guard it arms then
         # outlasts 92, so it is one behind, not two.
         pull = n["pulls"]["Porch Sensor"]
         self.assertEqual(pull["from"], T + 72 * HOUR)
         self.assertAlmostEqual(pull["until"], T + 372 * HOUR, delta=kn.EDGE_S)
         self.assertLess(pull["until"], T + 372 * HOUR)
-        # Power-cycling Den before Mudroom's 91 moves its 92 past Porch's guard. After 91 it would take 91 as
+        # Power-cycling Darkroom before Mezzanine's 91 moves its 92 past Porch's guard. After 91 it would take 91 as
         # its first +1 since that boot, keep its timer and book 93 too early: the window ends at 91.
         cycle = n["power_cycle"]
-        self.assertEqual((cycle["units"], cycle["from"]), (["Den Monitor"], T))
+        self.assertEqual((cycle["units"], cycle["from"]), (["Darkroom Monitor"], T))
         self.assertAlmostEqual(cycle["until"], T + 72 * HOUR, delta=kn.EDGE_S)
         text = kn.note(n, T)
-        self.assertIn("92 from Den Monitor on ", text)
+        self.assertIn("92 from Darkroom Monitor on ", text)
         self.assertIn("leaves 1 sleepy children two behind. A battery pull helps 1: Porch Sensor (", text)
-        self.assertIn("Power-cycling Den Monitor between ", text)
+        self.assertIn("Power-cycling Darkroom Monitor between ", text)
         self.assertIn("(open now)", text)
         self.assertTrue(text.endswith("key_stranding_forecast in docs/ALERTING.md."))
 
     def test_no_power_cycle_for_a_unit_while_it_is_ahead_of_its_parent(self):
-        # Den is a mains child of Loft, which is on 89 until its guard opens at T + 50 h: Den is ahead of it
+        # Darkroom is a mains child of Loft, which is on 89 until its guard opens at T + 50 h: Darkroom is ahead of it
         # until then, so the window opens at T + 50 h instead of now.
         loft = armed("Loft Monitor", OLD, T - 574 * HOUR, key=89)
         n = kn.notice(mesh("Loft Monitor") + [loft], T)
         cycle = n["power_cycle"]
-        self.assertEqual(cycle["units"], ["Den Monitor"])
+        self.assertEqual(cycle["units"], ["Darkroom Monitor"])
         self.assertAlmostEqual(cycle["from"], T + 50 * HOUR, delta=kn.EDGE_S)
         self.assertGreaterEqual(cycle["from"], T + 50 * HOUR)
         self.assertAlmostEqual(cycle["until"], T + 72 * HOUR, delta=kn.EDGE_S)
@@ -126,12 +126,12 @@ class NoticeTest(unittest.TestCase):
         n = kn.notice(mesh() + [yard], T)
         self.assertEqual((n["sequence"], n["two_behind"]), (92, ["Porch Sensor"]))
         self.assertIn("from", n["pulls"]["Porch Sensor"])
-        self.assertEqual(n["power_cycle"]["units"], ["Den Monitor"])
+        self.assertEqual(n["power_cycle"]["units"], ["Darkroom Monitor"])
 
     def test_a_unit_booted_with_no_key_on_record_is_not_tried(self):
         gate = Device("Gate Door", OLD, (Boot(T - 10 * HOUR),), ())
         n = kn.notice(mesh() + [gate], T)
-        self.assertEqual(n["power_cycle"]["units"], ["Den Monitor"])
+        self.assertEqual(n["power_cycle"]["units"], ["Darkroom Monitor"])
 
     def test_children_the_same_number_strands_later_are_in_the_notice(self):
         # Shed took 91 as its first +1 since its boot at T - 224 h, so its guard opens at T + 400 h: it takes
@@ -143,22 +143,22 @@ class NoticeTest(unittest.TestCase):
         self.assertEqual((n["two_behind"], n["later"]), (["Gate Sensor", "Porch Sensor"], 0))
 
     def test_a_booked_unit_the_whole_window_can_do_without_is_left_out(self):
-        # Attic reset at T - 100 h: its number is booked for after Porch's guard has opened, so cycling Den
+        # Attic reset at T - 100 h: its number is booked for after Porch's guard has opened, so cycling Darkroom
         # alone prevents 92 at every time cycling both does.
         n = kn.notice(mesh() + [clear("Attic Monitor", OLD, T - 100 * HOUR)], T)
         cycle = n["power_cycle"]
-        self.assertEqual((cycle["units"], cycle["from"]), (["Den Monitor"], T))
+        self.assertEqual((cycle["units"], cycle["from"]), (["Darkroom Monitor"], T))
         self.assertAlmostEqual(cycle["until"], T + 72 * HOUR, delta=kn.EDGE_S)
 
     def test_fewer_units_never_means_a_later_or_a_shorter_window(self):
-        # Three units have a number booked. Cycling all three works from now until T + 91 h. Until Mudroom
-        # fires at T + 46 h, Den and Mudroom are enough; after it, Den and Gate, or Gate alone. None of
+        # Three units have a number booked. Cycling all three works from now until T + 91 h. Until Mezzanine
+        # fires at T + 46 h, Darkroom and Mezzanine are enough; after it, Darkroom and Gate, or Gate alone. None of
         # those smaller sets covers the whole window, so none replaces the full set, whenever it is asked.
         unknown = ("unknown", None, "not in the table")
-        devs = [armed("Loft Monitor", OLD, T - 607 * HOUR), clear("Den Monitor", OLD, T - 533 * HOUR),
-                armed("Shed Monitor", OLD, T - 120 * HOUR), clear("Mudroom Monitor", OLD, T - 626 * HOUR),
+        devs = [armed("Loft Monitor", OLD, T - 607 * HOUR), clear("Darkroom Monitor", OLD, T - 533 * HOUR),
+                armed("Shed Monitor", OLD, T - 120 * HOUR), clear("Mezzanine Monitor", OLD, T - 626 * HOUR),
                 Device("Deck TV", unknown, (), (Switch(T - 400 * HOUR, None, 90),)),
-                armed("Porch Sensor", OLD, T - 700 * HOUR, at=T - 295 * HOUR, parent="Den Monitor", sleepy=True),
+                armed("Porch Sensor", OLD, T - 700 * HOUR, at=T - 295 * HOUR, parent="Darkroom Monitor", sleepy=True),
                 clear("Gate Sensor", OLD, T - 153 * HOUR, parent="Deck TV", sleepy=True)]
         sent = None
         for now in (T, T + 2 * HOUR, T + 30 * HOUR):
@@ -166,7 +166,7 @@ class NoticeTest(unittest.TestCase):
                 n = kn.notice(devs, now)
                 cycle = n["power_cycle"]
                 self.assertEqual((n["sequence"], n["two_behind"]), (94, ["Gate Sensor"]))
-                self.assertEqual(cycle["units"], ["Den Monitor", "Gate Sensor", "Mudroom Monitor"])
+                self.assertEqual(cycle["units"], ["Darkroom Monitor", "Gate Sensor", "Mezzanine Monitor"])
                 self.assertEqual(cycle["from"], now)
                 self.assertAlmostEqual(cycle["until"], T + 91 * HOUR, delta=kn.EDGE_S)
                 self.assertTrue(sent is None or kn.same(sent, n, now))      # nothing new to send
@@ -191,10 +191,10 @@ class NoticeFiringTest(unittest.TestCase):
         self.assertIn("(open now)", events[-1][2]["note"])
         state, events, cache = kn.run(state, devs, T + 52 * HOUR, cache)
         self.assertEqual(self.fired(events), [])
-        # Den power-cycled inside the window: nothing is forecast two behind any more.
-        den = devs[1]
-        done = [Device(den.name, den.stack, den.boots + (Boot(T + 53 * HOUR),), den.switches, den.parent)
-                if d is den else d for d in devs]
+        # Darkroom power-cycled inside the window: nothing is forecast two behind any more.
+        dk = devs[1]
+        done = [Device(dk.name, dk.stack, dk.boots + (Boot(T + 53 * HOUR),), dk.switches, dk.parent)
+                if d is dk else d for d in devs]
         state, events, cache = kn.run(state, done, T + 54 * HOUR, cache)
         self.assertEqual(self.fired(events), [("key_stranding_cleared", None)])
         self.assertIsNone(state["notice"])
@@ -211,11 +211,11 @@ class NoticeFiringTest(unittest.TestCase):
                 for d in devs]
 
     def test_a_pass_just_after_a_rotation_falls_due_leaves_the_notice_as_it_is(self):
-        # Mudroom's 91 came as forecast. Den's 92 is due at T + 372 h and a pass lands a minute after, before
+        # Mezzanine's 91 came as forecast. Darkroom's 92 is due at T + 372 h and a pass lands a minute after, before
         # its first frame is on record: the forecast has the rotation as overdue, fires none, and so has
         # nothing two behind. That is not news: nothing is cleared and nothing sent.
         r1, r2 = T + 72 * HOUR, T + 372 * HOUR
-        taken = {n: [Switch(r1 + 5, 90, 91)] for n in ("Mudroom Monitor", "Den Monitor", "Hall Bulb")}
+        taken = {n: [Switch(r1 + 5, 90, 91)] for n in ("Mezzanine Monitor", "Darkroom Monitor", "Hall Bulb")}
         devs = self.with_switches(mesh(), taken)
         state, events, cache = kn.run(None, devs, r2 - HOUR + 60)
         self.assertEqual(self.fired(events), [("key_stranding_forecast", "first forecast")])
@@ -235,19 +235,20 @@ class NoticeFiringTest(unittest.TestCase):
 
     def test_a_first_notice_waits_while_a_rotation_just_due_is_not_on_record(self):
         # The same pass with nothing sent before (a recorder started then). Shed has 92 booked too, a
-        # hundred hours after Den: with Den's rotation left out the forecast has 92 from Shed, and that is
+        # hundred hours after Darkroom: with Darkroom's rotation left out the forecast has 92 from Shed, and that is
         # not sent as a first forecast.
         r1, r2 = T + 72 * HOUR, T + 372 * HOUR
         shed = clear("Shed Monitor", OLD, T - 200 * HOUR)
-        taken = {n: [Switch(r1 + 5, 90, 91)] for n in ("Mudroom Monitor", "Den Monitor", "Hall Bulb", "Shed Monitor")}
+        taken = {n: [Switch(r1 + 5, 90, 91)] for n in ("Mezzanine Monitor", "Darkroom Monitor",
+                                                         "Hall Bulb", "Shed Monitor")}
         devs = self.with_switches(mesh() + [shed], taken)
         wrong = kn.notice(devs, r2 + 60)
         self.assertEqual((wrong["sequence"], wrong["started_by"], wrong["at"]), (92, "Shed Monitor", T + 472 * HOUR))
         state, events, cache = kn.run(None, devs, r2 + 60)
         self.assertEqual((self.fired(events), state["notice"]), ([], None))
-        # Den's 92 is on record by the next pass. Porch, two behind now, is key_lag's; the notice is the
+        # Darkroom's 92 is on record by the next pass. Porch, two behind now, is key_lag's; the notice is the
         # next number's.
-        taken = {**taken, "Den Monitor": taken["Den Monitor"] + [Switch(r2 + 90, 91, 92)],
+        taken = {**taken, "Darkroom Monitor": taken["Darkroom Monitor"] + [Switch(r2 + 90, 91, 92)],
                  "Hall Bulb": taken["Hall Bulb"] + [Switch(r2 + 95, 91, 92)]}
         state, events, cache = kn.run(state, self.with_switches(mesh() + [shed], taken), r2 + HOUR + 60, cache)
         self.assertEqual(self.fired(events), [("key_stranding_forecast", "first forecast")])
@@ -266,8 +267,8 @@ class NoticeFiringTest(unittest.TestCase):
         self.assertEqual(self.fired(events), [("key_stranding_forecast", "first forecast")])
         sent = state["notice"]
         self.assertEqual((sent["sequence"], sent["two_behind"]), (92, ["Gate Sensor", "Yard Sensor"]))
-        taken = {n: [Switch(r1 + 5, 90, 91), Switch(r2 + 5, 91, 92)] for n in ("Den Monitor", "Hall Bulb")}
-        taken.update({"Mudroom Monitor": [Switch(r1 + 5, 90, 91)], "Shed Monitor": [Switch(r2 + 5, 90, 92)]})
+        taken = {n: [Switch(r1 + 5, 90, 91), Switch(r2 + 5, 91, 92)] for n in ("Darkroom Monitor", "Hall Bulb")}
+        taken.update({"Mezzanine Monitor": [Switch(r1 + 5, 90, 91)], "Shed Monitor": [Switch(r2 + 5, 90, 92)]})
         came = self.with_switches(devs, taken)
         # The pass after 92: both are two behind, as forecast. That is key_lag's to say, and "no sleepy
         # child is forecast two behind any more" would say the opposite: the notice is dropped quietly.
@@ -288,7 +289,7 @@ class NoticeFiringTest(unittest.TestCase):
 
 
 class ChecksTest(unittest.TestCase):
-    """Mudroom starts 91 at T + 72 h and the routers, their guards open by then, follow; Kitchen, a sleepy
+    """Mezzanine starts 91 at T + 72 h and the routers, their guards open by then, follow; Kids Room, a sleepy
     current-logic child, is forecast to take it when its guard opens at T + 500 h. Nothing is booked."""
 
     def devs(self, recorded=()):
@@ -297,11 +298,11 @@ class ChecksTest(unittest.TestCase):
         def dev(d):
             return Device(d.name, d.stack, d.boots + rec.get(d.name, ((), ()))[0],
                           d.switches + rec.get(d.name, ((), ()))[1], d.parent, d.sleepy)
-        return [dev(d) for d in (armed("Mudroom Monitor", OLD, T - 600 * HOUR),
+        return [dev(d) for d in (armed("Mezzanine Monitor", OLD, T - 600 * HOUR),
                                  armed("Hall Monitor", OLD, T - 590 * HOUR),
                                  armed("Attic Monitor", OLD, T - 560 * HOUR),
                                  armed("Cellar Monitor", OLD, T - 580 * HOUR),
-                                 armed("Kitchen Sensor", CURRENT, T - 700 * HOUR, at=T - 124 * HOUR,
+                                 armed("Kids Room Sensor", CURRENT, T - 700 * HOUR, at=T - 124 * HOUR,
                                        parent="Hall Monitor", sleepy=True))]
 
     def test_each_switch_against_the_forecast_made_before_it(self):
@@ -309,27 +310,27 @@ class ChecksTest(unittest.TestCase):
         state, events, cache = kn.run(None, self.devs(), T)
         self.assertEqual(events, [])
         ledger = {(e[0], e[1]): (e[2], e[5]) for e in state["ledger"].values()}
-        self.assertEqual(ledger[("Mudroom Monitor", 91)], (r1, True))
-        self.assertEqual(ledger[("Kitchen Sensor", 91)], (T + 500 * HOUR, False))
+        self.assertEqual(ledger[("Mezzanine Monitor", 91)], (r1, True))
+        self.assertEqual(ledger[("Kids Room Sensor", 91)], (T + 500 * HOUR, False))
         state = json.loads(json.dumps(state))
-        recorded = {"Mudroom Monitor": ((), (Switch(r1 + 5, 90, 91),)),
+        recorded = {"Mezzanine Monitor": ((), (Switch(r1 + 5, 90, 91),)),
                     "Hall Monitor": ((), (Switch(r1 + 40 * 60, 90, 91),)),                       # late
                     "Cellar Monitor": ((Boot(r1 + 2 * HOUR),), (Switch(r1 + 2 * HOUR + 30, 90, 91),)),  # at a boot
-                    "Kitchen Sensor": ((), (Switch(r1 + 600, 90, 91),))}                         # 17 days early
+                    "Kids Room Sensor": ((), (Switch(r1 + 600, 90, 91),))}                         # 17 days early
         now = r1 + 4 * HOUR       # everything above is past the grading lag
         state, events, cache = kn.run(state, self.devs(recorded.items()), now, cache)
         by = {}
         for e, sev, f in events:
             by.setdefault(e, []).append((sev, f))
         (sev, head), (_sev, rest) = by["key_forecast_check"]
-        self.assertEqual((sev, head["sequence"], head["name"]), ("info", 91, "Mudroom Monitor"))
-        self.assertIn("by Mudroom Monitor: as forecast (+5s against ", head["note"])
+        self.assertEqual((sev, head["sequence"], head["name"]), ("info", 91, "Mezzanine Monitor"))
+        self.assertIn("by Mezzanine Monitor: as forecast (+5s against ", head["note"])
         kinds = {r["name"]: r["kind"] for r in rest["switches"]}
         self.assertEqual(kinds, {"Hall Monitor": "late", "Cellar Monitor": "at a boot", "Attic Monitor": "not seen"})
         self.assertIn("Hall Monitor late +40m", rest["note"])
         [(sev, bad)] = by["key_switch_unforecast"]
-        self.assertEqual((sev, bad["name"]), ("notice", "Kitchen Sensor"))
-        self.assertIn("Kitchen Sensor took 91 at ", bad["note"])
+        self.assertEqual((sev, bad["name"]), ("notice", "Kids Room Sensor"))
+        self.assertIn("Kids Room Sensor took 91 at ", bad["note"])
         self.assertIn("before the forecast: a boot nothing recorded", bad["note"])
         # Nothing is graded twice.
         state, events, cache = kn.run(state, self.devs(recorded.items()), now + HOUR, cache)
@@ -338,7 +339,7 @@ class ChecksTest(unittest.TestCase):
     def test_a_switch_is_graded_only_once_the_lag_has_passed(self):
         r1 = T + 72 * HOUR
         state, _events, cache = kn.run(None, self.devs(), T)
-        recorded = {"Mudroom Monitor": ((), (Switch(r1 + 5, 90, 91),))}
+        recorded = {"Mezzanine Monitor": ((), (Switch(r1 + 5, 90, 91),))}
         state, events, cache = kn.run(state, self.devs(recorded.items()), r1 + kn.LAG_S - 60, cache)
         self.assertEqual(events, [])
         state, events, cache = kn.run(state, self.devs(recorded.items()), r1 + kn.LAG_S + 60, cache)
@@ -347,21 +348,21 @@ class ChecksTest(unittest.TestCase):
     def test_a_missed_number_is_not_seen_and_a_late_one_is_late(self):
         r1 = T + 72 * HOUR
         state, _events, cache = kn.run(None, self.devs(), T)
-        # No switch on record: the forecast now has Mudroom's rotation as overdue and fires none.
+        # No switch on record: the forecast now has Mezzanine's rotation as overdue and fires none.
         state, events, cache = kn.run(state, self.devs(), r1 + HOUR, cache)
         self.assertEqual(events, [])
         state, events, cache = kn.run(state, self.devs(), r1 + 3 * HOUR, cache)
         notes = [f["note"] for e, _s, f in events if e == "key_forecast_check"]
-        self.assertTrue(any(n.startswith("91 was forecast for ") and "from Mudroom Monitor" in n for n in notes))
+        self.assertTrue(any(n.startswith("91 was forecast for ") and "from Mezzanine Monitor" in n for n in notes))
         rest = next(f for e, _s, f in events if e == "key_forecast_check" and f["name"] is None)
         self.assertEqual({r["name"] for r in rest["switches"]}, {"Hall Monitor", "Attic Monitor", "Cellar Monitor"})
         # It comes, two and a half hours late, and the mesh follows: late, not unforecast.
         late = r1 + 2.5 * HOUR
         recorded = {n: ((), (Switch(late + i, 90, 91),)) for i, n in enumerate(
-            ("Mudroom Monitor", "Hall Monitor", "Attic Monitor", "Cellar Monitor"))}
+            ("Mezzanine Monitor", "Hall Monitor", "Attic Monitor", "Cellar Monitor"))}
         state, events, cache = kn.run(state, self.devs(recorded.items()), late + 2 * HOUR, cache)
         self.assertNotIn("key_switch_unforecast", [e for e, _s, _f in events])
-        head = next(f for e, _s, f in events if e == "key_forecast_check" and f["name"] == "Mudroom Monitor")
+        head = next(f for e, _s, f in events if e == "key_forecast_check" and f["name"] == "Mezzanine Monitor")
         self.assertIn("missed (+2h30m against ", head["note"])
         rest = next(f for e, _s, f in events if e == "key_forecast_check" and f["name"] is None)
         self.assertEqual({r["kind"] for r in rest["switches"]}, {"late"})
@@ -374,7 +375,7 @@ class ChecksTest(unittest.TestCase):
         head = next(f for e, _s, f in events if e == "key_forecast_check")
         self.assertIn("91 started ", head["note"])
         self.assertIn("by Attic Monitor: missed (-2d14h against ", head["note"])
-        self.assertIn(" from Mudroom Monitor)", head["note"])
+        self.assertIn(" from Mezzanine Monitor)", head["note"])
         self.assertEqual([e for e, _s, _f in events].count("key_switch_unforecast"), 1)
 
 

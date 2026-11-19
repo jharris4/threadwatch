@@ -62,10 +62,10 @@ class WireTest(unittest.TestCase):
     def test_compressed_names_and_record_types(self):
         # The service name once, then every other name points back into it.
         service = encode_name(SERVICE)                          # at offset 12
-        inst = b"\x13AppleTV Living Room" + b"\xc0\x0c"          # "AppleTV Living Room" + pointer to the service
+        inst = b"\x0fAppleTV Library" + b"\xc0\x0c"          # "AppleTV Library" + pointer to the service
         inst_off = 12 + len(service) + 10                       # where the PTR rdata (the instance name) sits
         inst_ptr = bytes([0xC0, inst_off])
-        host = encode_name("AppleTV-Living-Room.local")
+        host = encode_name("AppleTV-Library.local")
         msg = response([
             rr(service, TYPE_PTR, inst),
             rr(inst_ptr, TYPE_SRV, struct.pack(">HHH", 0, 0, 49153) + host),
@@ -75,18 +75,18 @@ class WireTest(unittest.TestCase):
             rr(host, TYPE_A, bytes([192, 0, 2, 73])),        # answered twice (both queries): listed once
         ])
         recs = parse_message(msg)
-        self.assertEqual(recs[0], (SERVICE, TYPE_PTR, "AppleTV Living Room." + SERVICE))
-        self.assertEqual(recs[1], ("AppleTV Living Room." + SERVICE, TYPE_SRV, (49153, "AppleTV-Living-Room.local")))
+        self.assertEqual(recs[0], (SERVICE, TYPE_PTR, "AppleTV Library." + SERVICE))
+        self.assertEqual(recs[1], ("AppleTV Library." + SERVICE, TYPE_SRV, (49153, "AppleTV-Library.local")))
         self.assertEqual(recs[2][1], TYPE_TXT)
         self.assertEqual(recs[2][2]["xa"], EXT)
-        self.assertEqual(recs[3], ("AppleTV-Living-Room.local", TYPE_A, "192.0.2.73"))
+        self.assertEqual(recs[3], ("AppleTV-Library.local", TYPE_A, "192.0.2.73"))
         self.assertEqual(len(recs), 5)
         routers = collect_routers(recs)
-        self.assertEqual(list(routers), ["appletv living room." + SERVICE])
-        r = routers["appletv living room." + SERVICE]
+        self.assertEqual(list(routers), ["appletv library." + SERVICE])
+        r = routers["appletv library." + SERVICE]
         self.assertEqual((r["instance"], r["hostname"], r["port"], r["ext"], r["network_name"], r["vendor"], r["model"],
                           r["addresses"], r["complete"]),
-                         ("AppleTV Living Room", "appletv-living-room.local", 49153, EXT.hex(), "MyHome", "Apple",
+                         ("AppleTV Library", "appletv-library.local", 49153, EXT.hex(), "MyHome", "Apple",
                           "BorderRouter", ["192.0.2.73"], True))
         self.assertEqual(r["ext_pan_id"], bytes(range(8)).hex())
 

@@ -18,13 +18,13 @@ MOTION = "3f9c2e7a4b1d4c8e9f0a1b2c3d4e5f60"
 GARDEN = "a81b07d4c2e34f6a8b9c0d1e2f3a4b5c"
 PLUG = "c0ffee00c0ffee00c0ffee00c0ffee00"
 DEVICES = [
-    {"ha_device_id": MOTION, "name": "Motion HA Name", "addr": "C233A4A5BF8391C9", "node_id": 7},
+    {"ha_device_id": MOTION, "name": "Motion HA Name", "addr": "5A17C0DE2B9E4F61", "node_id": 7},
     {"ha_device_id": GARDEN, "name": "Garden Sensor", "addr": "1669674DD15CF0FA", "node_id": 8},
     {"ha_device_id": PLUG, "name": "Plug", "addr": "B62C32BF669272DB", "node_id": 9},
 ]
 ENTRIES = [
-    {"name": "Front Path Motion", "extendedAddress": "c233a4a5bf8391c9"},
-    {"name": "Living Room Plug", "extendedAddresses": ["B62C32BF669272DB", "E6C279E8F0C70298"]},
+    {"name": "Fence Motion", "extendedAddress": "5a17c0de2b9e4f61"},
+    {"name": "Library Plug", "extendedAddresses": ["B62C32BF669272DB", "E6C279E8F0C70298"]},
 ]
 
 
@@ -38,7 +38,7 @@ class MapAndPollTest(unittest.TestCase):
         {"id": GARDEN, "name": "Garden Sensor", "identifiers": [["matter", "x-2"]]},
         {"id": "wifi", "name": "Wifi Plug", "identifiers": [["matter", "x-3"]]},
     ]
-    DIAGS = {MOTION: {"node_id": 7, "network_type": "thread", "mac_address": "c2:33:a4:a5:bf:83:91:c9"},
+    DIAGS = {MOTION: {"node_id": 7, "network_type": "thread", "mac_address": "5a:17:c0:de:2b:9e:4f:61"},
              GARDEN: {"node_id": 8, "network_type": "thread", "mac_address": "16:69:67:4d:d1:5c:f0:fa"},
              "wifi": {"node_id": 9, "network_type": "wifi", "mac_address": "aa:bb:cc:dd:ee:ff"}}
     ENTITIES = [
@@ -61,8 +61,8 @@ class MapAndPollTest(unittest.TestCase):
     def test_devices_are_matched_to_the_inventory_by_address_and_entities_filtered(self):
         mapping = haavail.build_map(self._fake(), ENTRIES)
         self.assertEqual(sorted(mapping), sorted([MOTION, GARDEN]))                  # the Wi-Fi plug is not Thread
-        self.assertEqual(mapping[MOTION], {"addr": "C233A4A5BF8391C9", "node_id": 7, "ha_name": "Motion HA Name",
-                                           "name": "Front Path Motion", "matched": True,
+        self.assertEqual(mapping[MOTION], {"addr": "5A17C0DE2B9E4F61", "node_id": 7, "ha_name": "Motion HA Name",
+                                           "name": "Fence Motion", "matched": True,
                                            "model": "Motion Sensor 20XYZ", "sw_version": "3.2.1",
                                            "entities": ["binary_sensor.motion"]})     # not diagnostic, config, disabled
         self.assertEqual((mapping[GARDEN]["name"], mapping[GARDEN]["matched"], mapping[GARDEN]["entities"],
@@ -92,10 +92,10 @@ class MapAndPollTest(unittest.TestCase):
         logs = []
         kept = haavail.build_map(self._failing(MOTION), ENTRIES, logs.append, previous=previous, now=t + 3600,
                                  carry_s=7200)
-        self.assertEqual(kept[MOTION], {**previous[MOTION], "name": "Front Path Motion", "carried_since": t + 3600})
+        self.assertEqual(kept[MOTION], {**previous[MOTION], "name": "Fence Motion", "carried_since": t + 3600})
         self.assertIsNot(kept[MOTION], previous[MOTION])
         self.assertNotIn("carried_since", previous[MOTION])  # the capture thread's map is not written
-        self.assertIn("Front Path Motion kept from the last map", logs)
+        self.assertIn("Fence Motion kept from the last map", logs)
         # Still failing: the first failure is kept as the mark, and once
         # carry_s has passed since it the device is dropped as before.
         again = haavail.build_map(self._failing(MOTION), ENTRIES, previous=kept, now=t + 7200, carry_s=7200)
@@ -607,8 +607,8 @@ class RecorderAvailabilityTest(unittest.TestCase):
         threading.Thread(target=self.httpd.serve_forever, args=(0.005,), daemon=True).start()
         (self.d / "ha.env").write_text(f"HA_URL=http://127.0.0.1:{self.httpd.server_port}\nHA_TOKEN=tk_SECRET_TOKEN\n")
         # The websocket registry is faked at the module boundary.
-        self.mapping = {MOTION: {"addr": "C233A4A5BF8391C9", "node_id": 7, "ha_name": "Motion HA Name",
-                                 "name": "Front Path Motion", "matched": True, "entities": ["binary_sensor.motion"]}}
+        self.mapping = {MOTION: {"addr": "5A17C0DE2B9E4F61", "node_id": 7, "ha_name": "Motion HA Name",
+                                 "name": "Fence Motion", "matched": True, "entities": ["binary_sensor.motion"]}}
         self.refreshes = []
         self._real = haavail.refresh_map
         self.carries = []
@@ -649,9 +649,9 @@ class RecorderAvailabilityTest(unittest.TestCase):
         evs = [r for r in pipe.events.records if r["event"] == "ha_unavailable"]
         self.assertEqual(len(evs), 1)
         self.assertEqual((evs[0]["name"], evs[0]["addr"], evs[0]["severity"]),
-                         ("Front Path Motion", "c233a4a5bf8391c9", "warning"))
+                         ("Fence Motion", "5a17c0de2b9e4f61", "warning"))
         self.assertEqual(len(self.refreshes), 1)                        # the map is not rebuilt at every poll
-        self.assertEqual([o["name"] for o in pipe.ha_availability_status()["open"]], ["Front Path Motion"])
+        self.assertEqual([o["name"] for o in pipe.ha_availability_status()["open"]], ["Fence Motion"])
         state = json.loads((self.cfg.state_dir / "ha-availability.json").read_text())
         self.assertIn(MOTION, state["episodes"])
         self.assertNotIn("tk_SECRET_TOKEN", json.dumps(pipe.events.records))
@@ -686,7 +686,7 @@ class RecorderAvailabilityTest(unittest.TestCase):
         self._cycle(pipe, now + 200)                                    # ... the entry's own 120 s is what counts
         evs = [r for r in pipe.events.records if r["event"] == "ha_unavailable"]
         self.assertEqual([(e["name"], e["hold_s"], e["muted"], e["severity"]) for e in evs],
-                         [("Front Path Motion", 120.0, False, "warning")])
+                         [("Fence Motion", 120.0, False, "warning")])
 
     def test_the_state_files_travel_with_a_snapshot(self):
         from threadwatch.snapshot import STATE_FILES, save_snapshot
@@ -709,15 +709,15 @@ class RecorderAvailabilityTest(unittest.TestCase):
         pipe._next_haavail = 0.0
         self._cycle(pipe, now + 60)
         summary = pipe.summary(now + 120)
-        self.assertEqual([(d["name"], d["open"]) for d in summary["ha_unavailable_24h"]], [("Front Path Motion", True)])
-        self.assertIn("HA unavailable: Front Path Motion", summary["note"])
+        self.assertEqual([(d["name"], d["open"]) for d in summary["ha_unavailable_24h"]], [("Fence Motion", True)])
+        self.assertIn("HA unavailable: Fence Motion", summary["note"])
         self.assertIn("still", summary["note"])
         self.states[0].update(state="on")
         pipe._next_haavail = 0.0
         self._cycle(pipe, now + 120)
         summary = pipe.summary(now + 200)
         self.assertEqual([(d["name"], d["open"], d["down_for_s"] > 0) for d in summary["ha_unavailable_24h"]],
-                         [("Front Path Motion", False, True)])
+                         [("Fence Motion", False, True)])
 
     def _register(self, pipe, addr, ts, dns_id=5):
         pipe._note_srp({"kind": "request", "id": dns_id, "rcode": None, "client": addr, "server": None}, ts)
@@ -733,7 +733,7 @@ class RecorderAvailabilityTest(unittest.TestCase):
         pipe._next_haavail = now + 3600                                  # the regular poll is not due
         self._register(pipe, NEW, now + 100)
         self._register(pipe, NEW, now + 101, dns_id=6)                   # its retries ask nothing more
-        self._register(pipe, "c233a4a5bf8391c9", now + 102, dns_id=7)   # a named address is not asked about
+        self._register(pipe, "5a17c0de2b9e4f61", now + 102, dns_id=7)   # a named address is not asked about
         self.assertEqual(list(pipe._identify), [NEW])
         pipe._poll_ha_availability(now + 120)
         self.assertIsNone(pipe._haavail_thread)                          # not before IDENTIFY_DELAY_S
@@ -742,7 +742,7 @@ class RecorderAvailabilityTest(unittest.TestCase):
         self.assertEqual(len(self.refreshes), 2)
         rot = [r for r in pipe.events.records if r["event"] == "device_address_changed"]
         self.assertEqual([(r["addr"], r["previous"], r["name"]) for r in rot],
-                         [(NEW, "c233a4a5bf8391c9", "Front Path Motion")])
+                         [(NEW, "5a17c0de2b9e4f61", "Fence Motion")])
         self.assertEqual(pipe._identify, {})
         self._cycle(pipe, now + 500)                                     # the regular poll, on the cached map:
         self.assertEqual(len(self.refreshes), 2)                         # no retry once the map had it
@@ -762,9 +762,9 @@ class RecorderAvailabilityTest(unittest.TestCase):
         self._register(pipe, NEW, now + 4000, dns_id=8)                  # an hour on: not asked about again
         self.assertEqual(pipe._identify, {})
 
-    OLD, NEW, READDED = "c233a4a5bf8391c9", "5a5b5c5d5e5f6061", "e0e1e2e3e4e5e6e7e8e9eaebecedeeef"
+    OLD, NEW, READDED = "5a17c0de2b9e4f61", "5a5b5c5d5e5f6061", "e0e1e2e3e4e5e6e7e8e9eaebecedeeef"
 
-    def _readd(self, pipe, now, ha_name="Front Path Motion", rebuild=True, **more):
+    def _readd(self, pipe, now, ha_name="Fence Motion", rebuild=True, **more):
         """A rebuilt map carrying a new node for the reset device; with
         ``more``, other devices beside it."""
         self.mapping = {self.READDED: {"addr": self.NEW.upper(), "node_id": 132, "ha_name": ha_name,
@@ -800,17 +800,17 @@ class RecorderAvailabilityTest(unittest.TestCase):
             self._readd(pipe, now + 200)
         rot = self._changed(pipe)
         self.assertEqual([(r["addr"], r["previous"], r["name"], r["reason"]) for r in rot],
-                         [(self.NEW, self.OLD, "Front Path Motion", "readded")])
-        self.assertIn("a new Matter node (node 132) named 'Front Path Motion'", rot[0]["evidence"])
+                         [(self.NEW, self.OLD, "Fence Motion", "readded")])
+        self.assertIn("a new Matter node (node 132) named 'Fence Motion'", rot[0]["evidence"])
         self.assertIn("a factory reset gives it one", rot[0]["note"])
-        self.assertIn(f'confirm with: threadwatch name {self.NEW} "Front Path Motion"', rot[0]["note"])
-        self.assertEqual((pipe.names.name(self.NEW), pipe.names.hold_s(self.NEW)), ("Front Path Motion", 7200.0))
+        self.assertIn(f'confirm with: threadwatch name {self.NEW} "Fence Motion"', rot[0]["note"])
+        self.assertEqual((pipe.names.name(self.NEW), pipe.names.hold_s(self.NEW)), ("Fence Motion", 7200.0))
         self.assertIn(self.NEW, pipe.names.learned)                    # named, not confirmed
         self.assertEqual(pipe.seen.table[self.OLD]["rotated_to"], self.NEW)
         self.assertIsNone(pipe._brief_visit(self.NEW, pipe.seen.table[self.NEW]))   # never filed as a visit
-        self.assertEqual(pipe._haavail.mapping[self.READDED]["name"], "Front Path Motion")   # the tracker's label
+        self.assertEqual(pipe._haavail.mapping[self.READDED]["name"], "Fence Motion")   # the tracker's label
         again = DeviceNames(self.cfg.devices_path, None, self.cfg.state_dir / "device-rotations.json")
-        self.assertEqual(again.name(self.NEW), "Front Path Motion")    # every later process too
+        self.assertEqual(again.name(self.NEW), "Fence Motion")    # every later process too
         # The next rebuild finds the address named, and says nothing more.
         self._readd(pipe, now + 4000)
         self.assertEqual(len(self.refreshes), 3)
@@ -878,13 +878,13 @@ class RecorderAvailabilityTest(unittest.TestCase):
             self._readd(pipe, now + 200)
         self.assertIn(self.NEW, pipe.names.learned)
         before = len(pipe.events.records)
-        adopt(self.d / "devices.json", self.NEW, "Front Path Motion")
+        adopt(self.d / "devices.json", self.NEW, "Fence Motion")
         pipe.periodic(now + 230)
         self.assertNotIn(self.NEW, pipe.names.learned)
         self.assertEqual(pipe.names.entry_addresses_of(self.NEW), [self.NEW, self.OLD])
         self.assertEqual(pipe.seen.table[self.OLD]["rotated_to"], self.NEW)
         self.assertEqual([(r["event"], r.get("gained")) for r in pipe.events.records[before:]],
-                         [("inventory_reloaded", {"Front Path Motion": [self.NEW]})])
+                         [("inventory_reloaded", {"Fence Motion": [self.NEW]})])
 
     def test_a_re_add_lists_the_unnamed_addresses_that_joined_before_it_as_attempts_and_binds_none(self):
         """2026-10-08: two abandoned attempts joined, fell silent and were
@@ -912,9 +912,9 @@ class RecorderAvailabilityTest(unittest.TestCase):
         rot = self._changed(pipe)
         self.assertEqual([(a["addr"], a["first_seen"]) for a in rot[0]["attempts"]],
                          [("2222222222222222", start - 2400), ("1111111111111111", start - 1200)])
-        self.assertEqual(rot[0]["attempts"][1]["command"], 'threadwatch name 1111111111111111 "Front Path Motion"')
+        self.assertEqual(rot[0]["attempts"][1]["command"], 'threadwatch name 1111111111111111 "Fence Motion"')
         self.assertIn('2222222222222222, first heard', rot[0]["note"])
-        self.assertIn('threadwatch name 1111111111111111 "Front Path Motion"', rot[0]["note"])
+        self.assertIn('threadwatch name 1111111111111111 "Fence Motion"', rot[0]["note"])
         self.assertIsNone(pipe.names.name("1111111111111111"))         # a hint, never a binding
         self.assertIsNone(pipe.names.name("2222222222222222"))
 
@@ -925,15 +925,15 @@ class RecorderAvailabilityTest(unittest.TestCase):
         now = 1_800_000_000.0
         self._cycle(pipe, now)
         self._heard(pipe, now - 3600, now + 100)
-        self.mapping = {MOTION: {"addr": self.NEW.upper(), "node_id": 7, "ha_name": "Front Path Motion",
-                                 "name": "Front Path Motion", "matched": False, "entities": ["binary_sensor.motion"]}}
+        self.mapping = {MOTION: {"addr": self.NEW.upper(), "node_id": 7, "ha_name": "Fence Motion",
+                                 "name": "Fence Motion", "matched": False, "entities": ["binary_sensor.motion"]}}
         pipe._haavail_map_ts = now - 7200
         pipe._next_haavail = 0.0
         with redirect_stderr(io.StringIO()):
             self._cycle(pipe, now + 200)
         self.assertEqual([(r["addr"], r["previous"], r["reason"]) for r in self._changed(pipe)],
                          [(self.NEW, self.OLD, "rotation")])
-        self.assertEqual(pipe._haavail.mapping[MOTION]["name"], "Front Path Motion")
+        self.assertEqual(pipe._haavail.mapping[MOTION]["name"], "Fence Motion")
 
     def test_a_learned_address_still_on_air_blocks_a_re_add(self):
         """The device's current address is a learned rotation, never
@@ -948,11 +948,11 @@ class RecorderAvailabilityTest(unittest.TestCase):
         pipe.seen.touch(self.OLD, now - 7200, 1)
         pipe.seen.touch(learned, now - 3600, 1)
         pipe.names.rotate(learned, self.OLD, "a test", now - 3600)
-        pipe._retire_rotated(self.OLD, learned, "Front Path Motion", now - 3600)
+        pipe._retire_rotated(self.OLD, learned, "Fence Motion", now - 3600)
         pipe.seen.touch(new, now + 100, 1)
         pipe.seen.touch(learned, now + 150, 1)
-        self.mapping = {self.READDED: {"addr": new.upper(), "node_id": 132, "ha_name": "Front Path Motion",
-                                       "name": "Front Path Motion", "matched": False, "entities": []}}
+        self.mapping = {self.READDED: {"addr": new.upper(), "node_id": 132, "ha_name": "Fence Motion",
+                                       "name": "Fence Motion", "matched": False, "entities": []}}
         pipe._haavail_map_ts = now - 7200
         pipe._next_haavail = 0.0
         err = io.StringIO()
@@ -971,7 +971,7 @@ class RecorderAvailabilityTest(unittest.TestCase):
         now = 1_800_000_000.0
         self._cycle(pipe, now)
         self._heard(pipe, now - 3600, now + 100)
-        carried = {MOTION: dict(self.mapping[MOTION], ha_name="Front Path Motion", carried_since=now + 150)}
+        carried = {MOTION: dict(self.mapping[MOTION], ha_name="Fence Motion", carried_since=now + 150)}
         with redirect_stderr(io.StringIO()):
             self._readd(pipe, now + 200, **carried)
         self.assertEqual([(r["addr"], r["previous"], r["reason"]) for r in self._changed(pipe)],
@@ -982,11 +982,11 @@ class RecorderAvailabilityTest(unittest.TestCase):
         from contextlib import redirect_stderr
         now = 1_800_000_000.0
         twin = {"f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff": {"addr": "7A7B7C7D7E7F8081", "node_id": 133,
-                                                   "ha_name": "front path motion", "name": "front path motion",
+                                                   "ha_name": "fence motion", "name": "fence motion",
                                                    "matched": False, "entities": []}}
         old_node = {MOTION: dict(self.mapping[MOTION], ha_name="Old Motion")}
         cases = [
-            ("the name is shared in HA", dict(more=twin), "'Front Path Motion' names 2 devices"),
+            ("the name is shared in HA", dict(more=twin), "'Fence Motion' names 2 devices"),
             ("HA still has the old node", dict(more=old_node),
              f"Home Assistant still reports another device at {self.OLD}"),
             ("the old address is still on air", dict(old_last=now + 150), f"{self.OLD}, which is the entry's, "
@@ -1007,7 +1007,7 @@ class RecorderAvailabilityTest(unittest.TestCase):
                 self.assertEqual(self._changed(pipe), [])
                 self.assertIsNone(pipe.names.name(self.NEW))
                 self.assertNotIn("rotated_to", pipe.seen.table[self.OLD])
-                self.assertIn(f"{self.NEW} (HA node 132) is not taken for 'Front Path Motion' re-added: {why}",
+                self.assertIn(f"{self.NEW} (HA node 132) is not taken for 'Fence Motion' re-added: {why}",
                               err.getvalue())
 
     def test_a_re_added_device_under_a_name_no_entry_has_is_said_once_with_the_command(self):

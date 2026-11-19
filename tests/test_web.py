@@ -123,7 +123,7 @@ class PageBranchTest(unittest.TestCase):
         self.d = Path(self.tmp.name)
         (self.d / "devices.json").write_text(json.dumps([
             {"name": "Office AQ", "extendedAddress": AQ},
-            {"name": "Living Room Apple TV", "extendedAddresses": [TV1, TV2]},
+            {"name": "Library Apple TV", "extendedAddresses": [TV1, TV2]},
         ]))
         self.cfg = Config(data_dir=self.d / "data", devices_path=self.d / "devices.json", pan_id=0x4e21)
         self.cfg.state_dir.mkdir(parents=True, exist_ok=True)
@@ -227,9 +227,9 @@ class PageBranchTest(unittest.TestCase):
         self.assertIn("not matched to a device yet", body)
         self.status(updated=self.now, last_frame_age_s=3,
                     partition={"id": 12345, "leader_router": 60, "leader_rloc16": "f000",
-                               "leader_addr": TV1, "leader_name": "Living Room Apple TV"})
+                               "leader_addr": TV1, "leader_name": "Library Apple TV"})
         _st, body = self.get("/status")
-        self.assertIn(f'<a href="/device/{TV1}">Living Room Apple TV</a>', body)
+        self.assertIn(f'<a href="/device/{TV1}">Library Apple TV</a>', body)
         self.assertNotIn("not matched to a device yet", body)
 
     def test_the_status_page_and_the_header_say_when_recording_has_gone_stale(self):
@@ -309,8 +309,8 @@ class PageBranchTest(unittest.TestCase):
         # The recorder has learned two border routers from mDNS: the TV, which
         # devices.json names, and one no entry covers.
         (self.cfg.state_dir / "border-routers.json").write_text(json.dumps({
-            "appletv-living-room.local": {"addr": TV2, "name": "Living Room Apple TV",
-                                          "instance": "AppleTV Living Room", "vendor": "Apple",
+            "appletv-library.local": {"addr": TV2, "name": "Library Apple TV",
+                                          "instance": "AppleTV Library", "vendor": "Apple",
                                           "model": "BorderRouter", "previous": [{"addr": TV1}]},
             "core-otbr.local": {"addr": "72d035122fdf06f6", "instance": "Home Assistant OpenThread Border Router",
                                 "vendor": "Home Assistant", "model": "OpenThread Border Router"}}))
@@ -320,7 +320,7 @@ class PageBranchTest(unittest.TestCase):
         self.assertNotIn(TV1, body)
         self.assertIn("1 retired hidden", body)
         self.assertIn('<a href="/devices" class=cur>hide</a>', body)
-        self.assertEqual(body.count('Living Room Apple TV <span class="muted">border router</span></a>'), 1)
+        self.assertEqual(body.count('Library Apple TV <span class="muted">border router</span></a>'), 1)
         _st, body = self.get("/devices?retired=show")
         self.assertIn(f'retired: now <a href="/device/{TV2}">{TV2}</a>', body)
         self.assertNotIn("retired hidden", body)
@@ -340,8 +340,8 @@ class PageBranchTest(unittest.TestCase):
         # A named border router carries only the tag, on its live and its
         # retired address alike; the unnamed one keeps the label that is all
         # it has.
-        self.assertEqual(body.count('Living Room Apple TV <span class="muted">border router</span></a>'), 2)
-        self.assertNotIn("AppleTV Living Room", body)
+        self.assertEqual(body.count('Library Apple TV <span class="muted">border router</span></a>'), 2)
+        self.assertNotIn("AppleTV Library", body)
         self.assertIn('<span class="warn">unknown</span> <span class="muted">border router '
                       'Home Assistant OpenThread Border Router (Home Assistant OpenThread Border Router)</span>', body)
         self.assertNotIn("by model", body)                          # no entry carries a model
@@ -361,7 +361,7 @@ class PageBranchTest(unittest.TestCase):
         self.assertIn("named in visitors.json", body)
         _st, down = self.get("/devices?only=down")
         self.assertIn("Office AQ", down)
-        self.assertNotIn("Living Room Apple TV", down)
+        self.assertNotIn("Library Apple TV", down)
         # The device page carries the same verdict on the address itself.
         _st, page = self.get(f"/device/{AQ}")
         self.assertIn('<span class="warn">signal down</span>', page)
@@ -408,12 +408,12 @@ class PageBranchTest(unittest.TestCase):
         self.assertNotIn("<th>key generation</th>", status)
         self.assertIn('<th>keys</th><td><span class="bad"><b>problem</b></span> &middot; '
                       f'1 device on 86 &middot; 1 on 84<br><span class="muted">newest 86, first heard from '
-                      f'<a href="/device/{TV2}">Living Room Apple TV</a>', status)
-        self.assertIn(f'previously 85; origin candidates: <a href="/device/{TV2}">Living Room Apple TV</a>, '
+                      f'<a href="/device/{TV2}">Library Apple TV</a>', status)
+        self.assertIn(f'previously 85; origin candidates: <a href="/device/{TV2}">Library Apple TV</a>, '
                       f'<a href="/device/{AQ}">Office AQ</a> (ahead of last known parent sequence)</span>'
                       '<table class="keys">', status)
         self.assertIn(f'<tr><td><a href="/device/{AQ}">Office AQ</a></td><td><span class="bad">cut off</span></td>'
-                      f'<td>84</td><td><a href="/device/{TV2}">Living Room Apple TV</a></td><td>86</td></tr>', status)
+                      f'<td>84</td><td><a href="/device/{TV2}">Library Apple TV</a></td><td>86</td></tr>', status)
 
     def test_the_device_page_lists_each_key_across_every_address_newest_first(self):
         t0 = self.now - 90000
@@ -524,7 +524,7 @@ class PageBranchTest(unittest.TestCase):
         self.cfg.ha_availability_enabled = True
         (self.cfg.state_dir / "ha-map.json").write_text(json.dumps({
             "id-aq": {"addr": AQ.upper(), "ha_name": "AQ", "name": "Office AQ", "matched": True, "entities": ["s.aq"]},
-            "id-tv": {"addr": TV2.upper(), "ha_name": "TV", "name": "Living Room Apple TV", "matched": True,
+            "id-tv": {"addr": TV2.upper(), "ha_name": "TV", "name": "Library Apple TV", "matched": True,
                       "entities": ["s.tv"]}}))
         (self.cfg.state_dir / "ha-availability.json").write_text(json.dumps({
             "episodes": {"id-aq": {"since": self.now - 900, "opened_ts": self.now - 840, "paged": True,
@@ -578,10 +578,10 @@ class PageBranchTest(unittest.TestCase):
         noon = time.mktime(time.strptime(day + " 12:00", "%Y-%m-%d %H:%M"))
         log = EventLog(self.cfg.events_dir)
         log.emit("device_rebooted", "notice", noon - 3600, addr=AQ, name="Office AQ", reason_name="power-on reboot")
-        log.emit("device_rebooted", "notice", noon, addr=TV2, name="Living Room Apple TV",
+        log.emit("device_rebooted", "notice", noon, addr=TV2, name="Library Apple TV",
                  reason_name="power-on reboot")
         _st, body = self.get(f"/day/{day}")
-        self.assertLess(body.index("Living Room Apple TV"), body.index("Office AQ"))
+        self.assertLess(body.index("Library Apple TV"), body.index("Office AQ"))
 
     def test_a_path_that_is_not_a_page_is_a_404_in_the_shape_the_caller_asked_for(self):
         for path, body in (("/nope", b"not found"), ("/day/notaday", b"bad day"),
@@ -623,7 +623,7 @@ class DevicesByModelTest(unittest.TestCase):
             (d / "devices.json").write_text(json.dumps([
                 {"name": "Office AQ", "extendedAddress": AQ, "model": "ALPSTUGA air quality monitor"},
                 {"name": "Hall AQ", "extendedAddress": "1afe3b8423f332de", "model": "ALPSTUGA air quality monitor"},
-                {"name": "Living Room Apple TV", "extendedAddresses": [TV1, TV2], "model": "Apple TV 4K"},
+                {"name": "Library Apple TV", "extendedAddresses": [TV1, TV2], "model": "Apple TV 4K"},
                 {"name": "Plain Outlet", "extendedAddress": "72d035122fdf06f6"},
             ]))
             cfg = Config(data_dir=d / "data", devices_path=d / "devices.json", pan_id=0x4e21)

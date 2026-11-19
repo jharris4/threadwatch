@@ -49,7 +49,7 @@ proxy that authenticates.
   level ("heard by"). The role comes from the RLOC16 the
   device was last seen using (the top six bits are a router id; the low
   ten, when non-zero, a child id): *router 33*, *leader · router 60*, or
-  *child of Mudroom Air Quality*, each with the address and how long ago
+  *child of Mezzanine Air Quality*, each with the address and how long ago
   it was confirmed, since a re-attach changes it and a sleepy child only
   refreshes it when it next talks.
   A border router carries its mDNS identity (instance, vendor, model),

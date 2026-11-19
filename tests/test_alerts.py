@@ -67,22 +67,22 @@ class _Server:
 
 
 REC = {"ts": 1700000000.0, "event": "device_quiet", "severity": "warning",
-       "addr": "1669674dd15cf0fa", "name": 'Living "Room" AQ', "silent_for_s": 1823,
+       "addr": "1669674dd15cf0fa", "name": 'Study "Nook" AQ', "silent_for_s": 1823,
        "note": "no frames heard"}
 
 
 class RenderTests(unittest.TestCase):
     def test_missing_fields_render_empty(self):
         self.assertEqual(alerts.render("[{event}] {nope}|{name}", REC, False),
-                         '[device_quiet] |Living "Room" AQ')
+                         '[device_quiet] |Study "Nook" AQ')
 
     def test_json_escaping_keeps_document_valid(self):
         body = alerts.render('{{"t": "{name}", "n": "{note}", "s": {silent_for_s}}}', REC, True)
-        self.assertEqual(json.loads(body), {"t": 'Living "Room" AQ', "n": "no frames heard", "s": 1823})
+        self.assertEqual(json.loads(body), {"t": 'Study "Nook" AQ', "n": "no frames heard", "s": 1823})
 
     def test_summary_and_severity_value(self):
         f = alerts.template_fields(REC, {"warning": 4})
-        self.assertEqual(f["summary"], 'device_quiet - Living "Room" AQ - no frames heard')
+        self.assertEqual(f["summary"], 'device_quiet - Study "Nook" AQ - no frames heard')
         self.assertEqual(f["severity_value"], 4)
         self.assertEqual(f["severity_index"], 2)
 
@@ -113,7 +113,7 @@ class SinkBuildTests(unittest.TestCase):
         self.assertEqual(s.headers["Authorization"], "Bearer tk_1")
         doc = json.loads(s.payload(REC))
         self.assertEqual(doc["topic"], "alerts")
-        self.assertEqual(doc["title"], 'device_quiet: Living "Room" AQ')
+        self.assertEqual(doc["title"], 'device_quiet: Study "Nook" AQ')
         self.assertEqual(doc["message"], "no frames heard")
         self.assertEqual(doc["priority"], 4)
         self.assertEqual(doc["tags"], ["device_quiet"])
@@ -350,7 +350,7 @@ class DeliveryTests(unittest.TestCase):
         r = self.srv.wait(1)[0]
         self.assertEqual(r["path"], "/hook")
         self.assertEqual(r["headers"]["authorization"], "Bearer x")
-        self.assertEqual(json.loads(r["body"]), {"text": 'device_quiet - Living "Room" AQ - no frames heard'})
+        self.assertEqual(json.loads(r["body"]), {"text": 'device_quiet - Study "Nook" AQ - no frames heard'})
 
     def test_ntfy_partial_priority_table_still_renders_valid_json(self):
         raw = alerts._ntfy_preset({"url": "http://x", "topic": "t", "priority": {"warning": 4, "critical": 5}})
@@ -1194,7 +1194,7 @@ class AlertChainTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             (d / "devices.json").write_text(json.dumps([
-                {"name": "Living Room AQ", "extendedAddress": "1669674dd15cf0fa"},
+                {"name": "Library AQ", "extendedAddress": "1669674dd15cf0fa"},
                 {"name": "Porch Sensor", "extendedAddress": "b62c32bf669272db"}]))
             (d / "config.toml").write_text(
                 "[network]\npan_id = \"0x4e21\"\n"
@@ -1224,7 +1224,7 @@ class AlertChainTest(unittest.TestCase):
             quiet = sorted((json.loads(r["body"]) for r in reqs if json.loads(r["body"])["event"] == "device_quiet"),
                            key=lambda b: b["name"])
             self.assertEqual([(b["name"], b["event"], b["severity"]) for b in quiet],
-                             [("Living Room AQ", "device_quiet", "warning"),
+                             [("Library AQ", "device_quiet", "warning"),
                               ("Porch Sensor", "device_quiet", "notice")])
             self.assertEqual([r["event"] for r in read_all(cfg.events_dir) if r["event"] == "device_quiet"],
                              ["device_quiet", "device_quiet"])

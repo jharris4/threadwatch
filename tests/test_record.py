@@ -1133,11 +1133,21 @@ class RunRecordTest(unittest.TestCase):
         import threading
         return {t.ident for t in threading.enumerate() if t.name == "watchdog" and t.is_alive()}
 
+    def _ring_frames(self) -> list:
+        """Every frame in the ring, oldest hour first. The frames carry
+        real-time stamps a second apart, so a run in the last seconds of an
+        hour writes them to two hour files."""
+        from threadwatch.pcap import PcapStreamReader
+        frames = []
+        for path in sorted(self.cfg.ring_dir.glob("threadwatch-*.pcap")):
+            with open(path, "rb") as fh:
+                frames.extend(PcapStreamReader(fh))
+        return frames
+
     def _exit_note(self):
         return json.loads((self.cfg.state_dir / EXIT_FILE).read_text())
 
     def test_a_stream_that_ends_is_exit_3_with_everything_saved_and_closed(self):
-        from threadwatch.pcap import PcapStreamReader
         before = self._watchdogs()
         self.hold.set()                                    # three frames, then the sniffer closes its end
         code, out = self._run()
@@ -1149,10 +1159,7 @@ class RunRecordTest(unittest.TestCase):
         # and readable, FIFO gone, the exit noted, the event log closed.
         self.assertEqual([c[0] for c in self.calls[1:]], ["stop", "events.close"])
         self.assertIn(self.DEV, json.loads((self.cfg.state_dir / "last-seen.json").read_text()))
-        ring = sorted(self.cfg.ring_dir.glob("threadwatch-*.pcap"))
-        self.assertEqual(len(ring), 1)
-        with open(ring[0], "rb") as fh:
-            written = [f.ts for f in PcapStreamReader(fh)]
+        written = [f.ts for f in self._ring_frames()]
         self.assertEqual(len(written), 3)
         # The FIFO carries frames one second apart. Every stamp used to be
         # replaced with time.time() as the loop got to it, so two seconds of
@@ -1260,15 +1267,11 @@ class RunRecordTest(unittest.TestCase):
     def test_a_stop_writes_the_frames_still_queued_behind_the_main_loop(self):
         # The stop used to close the ring without them: a hole ending
         # exactly at the stop, and no line saying so.
-        from threadwatch.pcap import PcapStreamReader
         code, out = self._stopped_with_a_backlog()
         self.assertEqual(code, 0)
         self.assertIn("exit: 3 queued frames written", out)
         self.assertIn("stopped after 3 frames", out)
-        ring = sorted(self.cfg.ring_dir.glob("threadwatch-*.pcap"))
-        self.assertEqual(len(ring), 1)
-        with open(ring[0], "rb") as fh:
-            self.assertEqual(len(list(PcapStreamReader(fh))), 3)
+        self.assertEqual(len(self._ring_frames()), 3)
         self.assertIn(self.DEV, json.loads((self.cfg.state_dir / "last-seen.json").read_text()))
 
     def test_a_backlog_that_outlasts_the_drain_is_counted_not_waited_on(self):

@@ -962,6 +962,10 @@ The model, per stack:
   rest of the mesh is doing.
 - Unknown stacks (the Apple TVs) and current-logic routers are taken to
   follow every new number at once: the worst case for their children.
+- A sleepy child whose parent the forecast does not have (not in
+  `devices.json`, or no key on record) hears nobody and is heard by nobody:
+  it never follows a number, and its own rotations start none. `/keys` lists
+  such a child.
 
 The notice goes out when the forecast first leaves a child two behind, again
 when its answer changes, again when its power-cycle window opens, and

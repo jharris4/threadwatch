@@ -1275,7 +1275,8 @@ class Site:
         device they give no role or parent is listed, since keylog takes it
         for a router, and so is a sleepy child whose parent the forecast
         does not have (not in the inventory, or no key on record): it hears
-        nobody, so it never shows as two behind. A switch at the start
+        nobody, so it never shows as two behind, and nobody hears it, so its
+        own rotations start no number. A switch at the start
         itself is shown as due now."""
         from . import keyforecast as kf
         from . import keylog
@@ -1292,6 +1293,7 @@ class Site:
         links = keylog.links(newest)
         unplaced = {n: ("never heard" if n not in newest else "no role on record") + ", so it is forecast as a router"
                     if n not in links else "a child with no parent on record, so nothing is judged against a parent"
+                    + (" and its own rotations start no number" if links[n][1] else "")
                     for n in inventory if n not in links or links[n][0] is None and newest[n]["role"] == "child"}
         otbr = self.cfg.key_otbr_device
         devs = keylog.devices(journal.records, names.entries, self.cfg.key_stacks, load_map(self.cfg.state_dir),
@@ -1302,7 +1304,7 @@ class Site:
             if sleepy and parent is not None and (parent not in fc.guards or fc.guards[parent].key is None):
                 unplaced[n] = (f'a sleepy child of {esc(parent)}, which '
                                + ("is not in devices.json" if parent not in fc.guards else "has no key on record")
-                               + ', so nothing is judged against a parent')
+                               + ', so nothing is judged against a parent and its own rotations start no number')
 
         def stamp(ts):
             return time.strftime("%m-%d %H:%M:%S", time.localtime(ts)) if ts is not None else "-"

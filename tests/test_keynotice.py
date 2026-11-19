@@ -390,6 +390,23 @@ class ChecksTest(unittest.TestCase):
         self.assertIn("by Attic Monitor: missed (-2d14h against ", head["note"])
         self.assertIn(" from Mezzanine Monitor)", head["note"])
 
+    def test_a_sleepy_child_nobody_hears_starts_no_number_in_the_checks(self):
+        # Gate Sensor's parent is not in the inventory. Its own rotation takes it to 91 at T + 10 h: graded as
+        # its own switch, and 91 is still Mezzanine's number when it comes at T + 72 h.
+        def devs(recorded=(), switched=True):
+            gate = clear("Gate Sensor", CURRENT, T - 662 * HOUR, parent="Shed Monitor", sleepy=True)
+            return self.devs(recorded) + [Device(gate.name, gate.stack, gate.boots, gate.switches + (
+                (Switch(T + 10 * HOUR, 90, 91),) if switched else ()), gate.parent, gate.sleepy)]
+        state, _events, cache = kn.run(None, devs(switched=False), T - HOUR)
+        state, events, cache = kn.run(state, devs(), T + 12 * HOUR, cache)
+        [(_e, _sev, f)] = events
+        self.assertEqual((f["name"], f["note"]), ("Gate Sensor", "key switches: 1 as forecast (Gate Sensor 90->91)"))
+        r1 = T + 72 * HOUR
+        state, events, cache = kn.run(state, devs({"Mezzanine Monitor": ((), (Switch(r1 + 5, 90, 91),))}.items()),
+                                      r1 + 2 * HOUR, cache)
+        head = next(f for e, _s, f in events if e == "key_forecast_check" and f["name"] == "Mezzanine Monitor")
+        self.assertIn("by Mezzanine Monitor: as forecast (+5s against ", head["note"])
+
     def test_a_switch_first_seen_after_a_gap_is_graded_against_the_whole_gap(self):
         # The recorder is down from T + 71 h to T + 80 h, over Mezzanine's 91 at T + 72 h. Each router is first
         # heard on 91 at T + 80 h. Mezzanine and Cellar were last heard on 90 at T + 71 h: the forecast time is in

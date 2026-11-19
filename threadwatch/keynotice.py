@@ -235,8 +235,10 @@ def grade(state: dict, devs, now: float) -> list[dict]:
     by = {d.name: d for d in devs}
     sw = sorted((s.ts, d.name, s) for d in devs for s in d.switches if s.old is not None and s.new > s.old)
     first = {}
+    lone = kf.lone_children(devs)       # heard by nobody: what they take starts no number
     for ts, n, s in sw:
-        first.setdefault(s.new, (ts, n))
+        if n not in lone:
+            first.setdefault(s.new, (ts, n))
     starts = {int(k): tuple(v) for k, v in state["numbers"].items()}
     out = []
     for ts, n, s in sw:
@@ -250,7 +252,7 @@ def grade(state: dict, devs, now: float) -> list[dict]:
         delta = None if e is None else _off(r, e[2])
         kind = ("as forecast" if delta is not None and abs(delta) <= TOL_S else "at a boot" if boot
                 else "not forecast" if e is None else "early" if delta < 0 else "late")
-        out.append({**r, "kind": kind, "known": by[n].stack[0] in RULES, "starts": first[s.new] == (ts, n),
+        out.append({**r, "kind": kind, "known": by[n].stack[0] in RULES, "starts": first.get(s.new) == (ts, n),
                     "number_forecast": starts.get(s.new)})
     # A switch on record and not graded yet (it waits LAG_S, so one first
     # heard after a recorder gap can come over GRACE_S after its forecast
@@ -323,7 +325,8 @@ def run(state: dict | None, devs, now: float, cache=None):
     # is graded against the start that was forecast. A time passed stays,
     # as in the ledger; an entry goes once the number's first switch is
     # graded, or when the forecast drops a number not on record.
-    top = max((g.key for g in fc.guards.values() if g.key is not None), default=0)
+    lone = kf.lone_children(devs)
+    top = max((g.key for n, g in fc.guards.items() if g.key is not None and n not in lone), default=0)
     waiting = {s.new for d in devs for s in d.switches if s.ts > state["cursor"]}
     numbers = state["numbers"]
     late = {fc.guards[n].key + 1 for n, _t in fc.overdue}     # a number whose own rotation is missed or late

@@ -135,6 +135,24 @@ class WhoHearsWhatTest(unittest.TestCase):
             (ROTATION_S, "Hall Monitor", 90, 91, kf.FOLLOWED, False)])
 
 
+    def test_a_sleepy_child_with_no_parent_in_the_forecast_starts_no_number(self):
+        # Gate Sensor's parent is not in the forecast: nobody hears it, so its own rotations (T + 10 h, then
+        # 672 h later) are steps of its own and no number, and the mesh's numbers and where the forecast stops
+        # are as without it, whether it is level with the mesh or already ahead at the start.
+        mesh = [clear("Hall Bulb", CURRENT, T - 22 * HOUR),
+                armed("Hall Door", CURRENT, T - 21 * HOUR, parent="Hall Bulb", sleepy=True)]
+        alone = forecast(mesh, T)
+        self.assertEqual([(s.ts - T, s.name, s.new) for s in alone.numbers],
+                         [(650 * HOUR, "Hall Bulb", 91), (1322 * HOUR, "Hall Bulb", 92)])
+        for key in (90, 91):
+            gate = clear("Gate Sensor", CURRENT, T - 662 * HOUR, key=key, parent="Shed Monitor", sleepy=True)
+            fc = forecast(mesh + [gate], T)
+            self.assertEqual(fc.numbers, alone.numbers)
+            self.assertEqual(fc.end, alone.end)
+            self.assertEqual([(s.ts - T, s.new, s.why, s.number) for s in fc.steps if s.name == "Gate Sensor"][:2],
+                             [(10 * HOUR, key + 1, kf.OWN, False), (682 * HOUR, key + 2, kf.OWN, False)])
+
+
 class TwoBehindTest(unittest.TestCase):
     def mesh(self):
         """91 at T + 100 h and 92 at T + 200 h (as in the jump test), and three parents that reach 92 at

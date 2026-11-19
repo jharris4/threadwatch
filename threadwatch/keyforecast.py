@@ -6,7 +6,10 @@ keyguard.after moves it on one simulated event at a time, so each switch
 changes the follower's own guard and timer before the next is worked out.
 
 Who hears a new number: a sleepy child only its parent; a router or a
-mains child every router and mains child, and its own children.
+mains child every router and mains child, and its own children. A sleepy
+child whose parent is not in the forecast (not in the inventory, or no key
+on record) hears nobody and is heard by nobody: its own rotations are its
+steps alone, and start no number.
 
 What a device does with a higher number it hears:
 - one ahead: it follows if its guard is open, else when the guard opens
@@ -122,6 +125,14 @@ class Forecast:
         return keys
 
 
+def lone_children(devices) -> set[str]:
+    """The sleepy children whose parent is not in the forecast: not among
+    ``devices``, or with no key on record. Nobody hears them, so a key they
+    take is no new number for the mesh."""
+    keyed = {d.name for d in devices if d.switches}
+    return {d.name for d in devices if d.sleepy and d.parent not in keyed}
+
+
 def forecast(devices, now: float, boots=(), max_numbers: int = MAX_NUMBERS) -> Forecast:
     """Step the mesh from ``now``. ``boots`` are (name, time) pairs at or
     after ``now``: boots known to come after the start, or hypothetical. A
@@ -139,10 +150,12 @@ def forecast(devices, now: float, boots=(), max_numbers: int = MAX_NUMBERS) -> F
     steps: list[Step] = []
     stranded: list[Stranded] = []
     behind: set[str] = set()
-    top = max((g[n].key for n in live), default=0)
 
     def parent(n):
         return dev[n].parent if dev[n].parent in live else None
+
+    lone = lone_children(devices)
+    top = max((g[n].key for n in live if n not in lone), default=0)
 
     def heard(n):
         if dev[n].sleepy:
@@ -154,9 +167,10 @@ def forecast(devices, now: float, boots=(), max_numbers: int = MAX_NUMBERS) -> F
 
     def take(n, new, t, why):
         nonlocal top
-        steps.append(Step(t, n, g[n].key, new, why, new > top))
+        steps.append(Step(t, n, g[n].key, new, why, new > top and n not in lone))
         g[n] = after(g[n], Switch(t, g[n].key, new), own=why in FIRINGS)
-        top = max(top, new)
+        if n not in lone:
+            top = max(top, new)
 
     def settle(t):
         """Everything the mesh does at once at ``t``, until nothing moves."""

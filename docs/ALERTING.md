@@ -1008,7 +1008,10 @@ power cycle tried"; and a child already two behind is left to `key_lag`.
 hourly boot read can land first) against the last forecast made before it,
 or, once a forecast time has passed, against the one made before that time:
 as forecast within 15 min, late, at a boot on record, or not seen an hour
-after its time. `key_switch_unforecast` names the switches taken early or
+after its time. The switch that starts a new number is also graded against
+who was forecast to start it and when, as last forecast before anyone was on
+it: a number another device starts days early is "missed" against that start,
+even though the forecast starter is by then only forecast to follow it. `key_switch_unforecast` names the switches taken early or
 with no forecast on a device whose stack is known. Each means one of the
 model's blind spots, which have to be explained by hand:
 

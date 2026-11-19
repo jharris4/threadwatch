@@ -489,8 +489,9 @@ it up if you care about the history; nothing else holds it.
                              their age ("Key-transition journal", below)
         journal-inbox/       reboots queued for the key journal by threadwatch rebooted or a seed;
                              the recorder takes each file within a minute and deletes it
-        key-forecast.json    the key forecast's hourly pass: the stranding notice last sent, and
-                             each forecast switch still to be checked against the record
+        key-forecast.json    the key forecast's hourly pass: the stranding notice last sent, each
+                             forecast switch still to be checked against the record, and who was
+                             forecast to start each number not yet checked
         ha-map.json          with [ha_availability]: HA device id -> extended address, HA name, the
                              inventory's name for it, and the entities whose state counts; rebuilt
                              over the websocket once an hour and cached so a restart polls at once;

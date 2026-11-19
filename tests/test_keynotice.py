@@ -378,6 +378,18 @@ class ChecksTest(unittest.TestCase):
         self.assertIn(" from Mezzanine Monitor)", head["note"])
         self.assertEqual([e for e, _s, _f in events].count("key_switch_unforecast"), 1)
 
+    def test_a_number_started_early_keeps_its_forecast_start_through_the_hourly_passes(self):
+        # Attic starts 91 at T + 10 h. The pass an hour later, before it is graded, forecasts Mezzanine only
+        # following 91 when its guard opens: the start forecast for T + 72 h is what it is graded against.
+        state, _events, cache = kn.run(None, self.devs(), T)
+        early = T + 10 * HOUR
+        recorded = {"Attic Monitor": ((), (Switch(early, 90, 91),))}
+        for now in (early + HOUR, early + 2 * HOUR):
+            state, events, cache = kn.run(json.loads(json.dumps(state)), self.devs(recorded.items()), now, cache)
+        head = next(f for e, _s, f in events if e == "key_forecast_check")
+        self.assertIn("by Attic Monitor: missed (-2d14h against ", head["note"])
+        self.assertIn(" from Mezzanine Monitor)", head["note"])
+
 
 class RecorderTest(unittest.TestCase):
     """The capture thread's side: a pass on a worker thread from copies, its

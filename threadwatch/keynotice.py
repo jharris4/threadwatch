@@ -205,15 +205,16 @@ def same(a: dict, b: dict, now: float) -> bool:
 
 def grade(state: dict, devs, now: float) -> list[dict]:
     """Each switch recorded since the last pass, up to LAG_S ago, against
-    the ledger of forecast switches, and each forecast switch not seen
-    GRACE_S after its time. Pops what it grades from state["ledger"]."""
+    the ledger of forecast switches (the one that starts a number also
+    against state["numbers"]), and each forecast switch not seen GRACE_S
+    after its time. Pops what it grades from state["ledger"]."""
     ledger, cursor, upto = state["ledger"], state["cursor"], now - LAG_S
     by = {d.name: d for d in devs}
     sw = sorted((s.ts, d.name, s) for d in devs for s in d.switches if s.old is not None and s.new > s.old)
     first = {}
     for ts, n, s in sw:
         first.setdefault(s.new, (ts, n))
-    starts = {e[1]: (e[2], e[0]) for e in ledger.values() if e[5]}
+    starts = {int(k): tuple(v) for k, v in state["numbers"].items()}
     out = []
     for ts, n, s in sw:
         if not cursor < ts <= upto:
@@ -280,9 +281,26 @@ def run(state: dict | None, devs, now: float, cache=None):
     pass returned (None at first: nothing before now is graded); ``cache``
     holds the last notice for the same devices, since the remedy search
     takes some hundred forecasts."""
-    state = {"ledger": {}, "cursor": now, "notice": None, **(state or {})}
+    state = {"ledger": {}, "numbers": {}, "cursor": now, "notice": None, **(state or {})}
     fc = kf.forecast(devs, now)
     events = check_events(grade(state, devs, now))
+    # Who starts each new number, and when, as last forecast before the
+    # number was on record. Kept apart from the ledger: a number another
+    # device starts early leaves the forecast starter only following it,
+    # and the ledger takes that new time for its switch, while the number
+    # is graded against the start that was forecast. A time passed stays,
+    # as in the ledger; an entry goes once the number's first switch is
+    # graded, or when the forecast drops a number not on record.
+    top = max((g.key for g in fc.guards.values() if g.key is not None), default=0)
+    waiting = {s.new for d in devs for s in d.switches if s.ts > state["cursor"]}
+    numbers = state["numbers"]
+    late = {fc.guards[n].key + 1 for n, _t in fc.overdue}     # a number whose own rotation is missed or late
+    have = {str(s.new) for s in fc.numbers if s.ts >= fc.start}
+    for k in list(numbers):
+        if int(k) <= top and int(k) not in waiting or int(k) > top and k not in have and int(k) not in late:
+            del numbers[k]
+    numbers.update((str(s.new), [s.ts, s.name]) for s in fc.numbers
+                   if s.ts > fc.start and s.new > top and (str(s.new) not in numbers or numbers[str(s.new)][0] > now))
     # The ledger keeps, for each switch still to come, the last forecast made
     # before it. A switch the model has as due at the start, one on a
     # number whose own rotation is overdue (the forecast fires none, so it
@@ -295,7 +313,6 @@ def run(state: dict | None, devs, now: float, cache=None):
     ahead = {f"{s.name}\t{s.new}": [s.name, s.new, s.ts, now, s.why, s.number, False]
              for s in fc.steps if s.ts > fc.start}
     due = {f"{s.name}\t{s.new}" for s in fc.steps if s.ts == fc.start}
-    late = {fc.guards[n].key + 1 for n, _t in fc.overdue}     # a number whose own rotation is missed or late
     for k, e in list(ledger.items()):
         g = fc.guards.get(e[0])
         if k not in due and k not in ahead and e[1] not in late \
